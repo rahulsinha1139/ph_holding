@@ -1,0 +1,635 @@
+// =============================================================================
+// BANK TRANSACTION MATCHER SERVICE
+//
+// MISSION: Auto-match bank statement lines to invoices and payments
+// FEATURES: Type detection, invoice extraction, customer/supplier matching
+// =============================================================================
+
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"regexp"
+	"strings"
+)
+
+// =============================================================================
+// TRANSACTION TYPE CONSTANTS
+// =============================================================================
+
+const (
+	TxTypeCustomerPayment     = "CUSTOMER_PAYMENT"
+	TxTypeChequeReceived      = "CHEQUE_RECEIVED"
+	TxTypeSupplierPayment     = "SUPPLIER_PAYMENT"
+	TxTypeChequeIssued        = "CHEQUE_ISSUED"
+	TxTypeBankFee             = "BANK_FEE"
+	TxTypeSwiftCharge         = "SWIFT_CHARGE"
+	TxTypeVATOnFee            = "VAT_ON_FEE"
+	TxTypeBGFee               = "BG_FEE"
+	TxTypeCorrespondentCharge = "CORRESPONDENT_CHARGE"
+	TxTypeInternalTransfer    = "INTERNAL_TRANSFER"
+	TxTypeFXConversion        = "FX_CONVERSION"
+	TxTypeSalary              = "SALARY"
+	TxTypeBillPayment         = "BILL_PAYMENT"
+	TxTypeOther               = "OTHER"
+)
+
+// BankReconciliationMatchResult holds the result of auto-matching
+type BankReconciliationMatchResult struct {
+	MatchedCount     int     `json:"matched_count"`
+	UnmatchedCount   int     `json:"unmatched_count"`
+	TotalLines       int     `json:"total_lines"`
+	MatchedPercent   float64 `json:"matched_percent"`
+	AutoMatchedCount int     `json:"auto_matched_count"`
+}
+
+// AllocationInput for split payment allocation
+type AllocationInput struct {
+	AllocationType  string  `json:"allocation_type"` // CUSTOMER_INVOICE, SUPPLIER_INVOICE, EXPENSE
+	EntityID        string  `json:"entity_id"`
+	AllocatedAmount float64 `json:"allocated_amount"`
+}
+
+// =============================================================================
+// AUTO-MATCHING
+// =============================================================================
+
+// AutoMatchBankLines attempts to auto-match all unmatched lines in a statement
+func (a *App) AutoMatchBankLines(statementID string) (*BankReconciliationMatchResult, error) {
+	if err := a.requirePermission("finance:create"); err != nil {
+		return nil, err
+	}
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	// Get statement
+	var statement BankStatement
+	if err := a.db.First(&statement, "id = ?", statementID).Error; err != nil {
+		return nil, fmt.Errorf("statement not found: %w", err)
+	}
+
+	if statement.Status == "Reconciled" {
+		return nil, fmt.Errorf("statement already reconciled")
+	}
+
+	// Get unmatched lines
+	var lines []BankStatementLine
+	a.db.Where("bank_statement_id = ? AND is_matched = ?", statementID, false).Find(&lines)
+
+	// Get known customers and suppliers for matching
+	var customerNames []string
+	var supplierNames []string
+	a.db.Model(&CustomerMaster{}).Pluck("business_name", &customerNames)
+	a.db.Model(&SupplierMaster{}).Pluck("supplier_name", &supplierNames)
+
+	matchedCount := 0
+	autoMatchedCount := 0
+
+	for i := range lines {
+		line := &lines[i]
+
+		// Step 1: Categorize the transaction
+		isCredit := line.Credit > 0
+		txType := detectTransactionType(line.Description, isCredit)
+
+		// Step 2: Extract invoice numbers and entity names
+		invoiceNumbers := extractInvoiceNumbers(line.Description)
+		poNumbers := extractPONumbers(line.Description)
+		customerName, supplierName := extractBankEntityName(line.Description, customerNames, supplierNames)
+
+		// Update line with extracted data
+		updates := map[string]interface{}{
+			"transaction_type":    txType,
+			"extracted_invoices":  toJSONArray(invoiceNumbers),
+			"extracted_po_numbers": toJSONArray(poNumbers),
+			"extracted_customer":  customerName,
+			"extracted_supplier":  supplierName,
+		}
+
+		// Step 3: Attempt matching based on transaction type
+		var matched bool
+		var matchedID string
+		var confidence float64
+
+		switch txType {
+		case TxTypeCustomerPayment, TxTypeChequeReceived:
+			matched, matchedID, confidence = a.matchToCustomerInvoice(line, invoiceNumbers, customerName)
+		case TxTypeSupplierPayment, TxTypeChequeIssued:
+			matched, matchedID, confidence = a.matchToSupplierPayment(line, poNumbers, supplierName)
+		case TxTypeBankFee, TxTypeSwiftCharge, TxTypeVATOnFee, TxTypeBGFee, TxTypeCorrespondentCharge:
+			// Auto-create expense entry for bank fees
+			a.createExpenseFromBankLine(line, txType)
+			matched = true
+			confidence = 1.0
+		}
+
+		if matched {
+			updates["is_matched"] = true
+			updates["match_type"] = "Auto"
+			updates["match_confidence"] = confidence
+			updates["matched_invoice_ids"] = matchedID
+			matchedCount++
+			autoMatchedCount++
+
+			// Log the match
+			lineID := line.ID
+			a.LogReconciliationAction(statementID, &lineID, "MATCH",
+				map[string]interface{}{
+					"type":       "Auto",
+					"tx_type":    txType,
+					"matched_to": matchedID,
+					"confidence": confidence,
+				},
+				"System", true, confidence, "Auto-matched")
+		}
+
+		a.db.Model(line).Updates(updates)
+	}
+
+	// Count final matched/unmatched
+	var totalLines, finalMatchedCount int64
+	a.db.Model(&BankStatementLine{}).Where("bank_statement_id = ?", statementID).Count(&totalLines)
+	a.db.Model(&BankStatementLine{}).Where("bank_statement_id = ? AND is_matched = ?", statementID, true).Count(&finalMatchedCount)
+
+	matchedPercent := 0.0
+	if totalLines > 0 {
+		matchedPercent = float64(finalMatchedCount) / float64(totalLines) * 100
+	}
+
+	// Update statement status
+	newStatus := "InProgress"
+	if finalMatchedCount == totalLines {
+		newStatus = "InProgress" // Still needs verification before reconciled
+	}
+	a.db.Model(&statement).Update("status", newStatus)
+
+	log.Printf("🔄 Auto-matched %d/%d lines (%.1f%%) for statement %s",
+		matchedCount, totalLines, matchedPercent, statementID)
+
+	return &BankReconciliationMatchResult{
+		MatchedCount:     int(finalMatchedCount),
+		UnmatchedCount:   int(totalLines - finalMatchedCount),
+		TotalLines:       int(totalLines),
+		MatchedPercent:   matchedPercent,
+		AutoMatchedCount: autoMatchedCount,
+	}, nil
+}
+
+// =============================================================================
+// TYPE DETECTION
+// =============================================================================
+
+// detectTransactionType determines the transaction type from description
+func detectTransactionType(description string, isCredit bool) string {
+	desc := strings.ToUpper(description)
+
+	// Credits (money in)
+	if isCredit {
+		if strings.Contains(desc, "FAWRI") && strings.Contains(desc, "TRANSFER") {
+			return TxTypeCustomerPayment
+		}
+		if strings.Contains(desc, "CHEQUE") || strings.Contains(desc, "CHQ") {
+			return TxTypeChequeReceived
+		}
+		if strings.Contains(desc, "INTERNAL") || strings.Contains(desc, "NBB TRF FROM") {
+			return TxTypeInternalTransfer
+		}
+		return TxTypeCustomerPayment // Default for credits
+	}
+
+	// Debits (money out)
+	if strings.Contains(desc, "SWIFT FEE") || strings.Contains(desc, "SWIFT CHG") {
+		return TxTypeSwiftCharge
+	}
+	if strings.Contains(desc, "VAT") && (strings.Contains(desc, "FEE") || strings.Contains(desc, "CHARGE")) {
+		return TxTypeVATOnFee
+	}
+	if strings.Contains(desc, "EFTS CHARGE") || strings.Contains(desc, "SERVICE CHARGE") {
+		return TxTypeBankFee
+	}
+	if strings.Contains(desc, "AMENDBG") || strings.Contains(desc, "BGG") || strings.Contains(desc, "GUARANTEE") {
+		return TxTypeBGFee
+	}
+	if strings.Contains(desc, "CORR BNK CHG") || strings.Contains(desc, "CORRESPONDENT") {
+		return TxTypeCorrespondentCharge
+	}
+	if strings.Contains(desc, "NBB TRF FROM") && strings.Contains(desc, "TO") {
+		return TxTypeInternalTransfer
+	}
+	if strings.Contains(desc, "FAWATEER") || strings.Contains(desc, "NBL-") {
+		return TxTypeBillPayment
+	}
+	if strings.Contains(desc, "CHQ NO") || strings.Contains(desc, "CHEQUE") {
+		return TxTypeChequeIssued
+	}
+	if strings.Contains(desc, "DGC") || strings.Contains(desc, "FAWRI") || strings.Contains(desc, "REMITTANCE") {
+		return TxTypeSupplierPayment
+	}
+	if strings.Contains(desc, "SALARY") || strings.Contains(desc, "PAYROLL") {
+		return TxTypeSalary
+	}
+
+	return TxTypeOther
+}
+
+// =============================================================================
+// EXTRACTION
+// =============================================================================
+
+// extractInvoiceNumbers extracts invoice numbers from description
+func extractInvoiceNumbers(description string) []string {
+	var invoices []string
+
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)/INV/([A-Z0-9/-]+)`),          // /INV/PH25/091
+		regexp.MustCompile(`(?i)PH(\d{2})[/-]?(\d{3,4})`),      // PH25/091, PH25-091, PH24159
+		regexp.MustCompile(`(?i)INV[/-]?(\d{4})[/-](\d{3,4})`), // INV-2026-001
+	}
+
+	for _, pattern := range patterns {
+		matches := pattern.FindAllString(description, -1)
+		invoices = append(invoices, matches...)
+	}
+
+	// Remove duplicates
+	seen := make(map[string]bool)
+	unique := []string{}
+	for _, inv := range invoices {
+		if !seen[inv] {
+			seen[inv] = true
+			unique = append(unique, inv)
+		}
+	}
+
+	return unique
+}
+
+// extractPONumbers extracts purchase order numbers from description
+func extractPONumbers(description string) []string {
+	var pos []string
+
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)PO[/-]?(\d{4})[/-](\d{3,4})`), // PO-2025-001
+		regexp.MustCompile(`(?i)PUR[/-]?(\d+)`),                // PUR-12345
+	}
+
+	for _, pattern := range patterns {
+		matches := pattern.FindAllString(description, -1)
+		pos = append(pos, matches...)
+	}
+
+	return pos
+}
+
+// extractBankEntityName extracts customer or supplier name from description
+func extractBankEntityName(description string, knownCustomers, knownSuppliers []string) (customer, supplier string) {
+	desc := strings.ToUpper(description)
+
+	// Check against known customers
+	for _, cust := range knownCustomers {
+		if strings.Contains(desc, strings.ToUpper(cust)) {
+			return cust, ""
+		}
+	}
+
+	// Check against known suppliers
+	for _, supp := range knownSuppliers {
+		if strings.Contains(desc, strings.ToUpper(supp)) {
+			return "", supp
+		}
+	}
+
+	// Try to extract from common patterns
+	if strings.Contains(desc, "TRANSFER") {
+		parts := strings.Split(desc, "TRANSFER")
+		if len(parts) > 1 {
+			name := strings.TrimSpace(parts[1])
+			name = strings.Split(name, " FTRF")[0]
+			name = strings.Split(name, " W.L.L")[0]
+			name = strings.Split(name, " WLL")[0]
+			name = strings.Split(name, " B.S.C")[0]
+			if len(name) > 3 {
+				return strings.TrimSpace(name), ""
+			}
+		}
+	}
+
+	return "", ""
+}
+
+// =============================================================================
+// INVOICE MATCHING
+// =============================================================================
+
+// matchToCustomerInvoice attempts to match a credit line to customer invoices
+func (a *App) matchToCustomerInvoice(line *BankStatementLine, invoiceNumbers []string, customerName string) (bool, string, float64) {
+	// Try matching by invoice number first
+	for _, invNum := range invoiceNumbers {
+		var invoice Invoice
+		err := a.db.Where("invoice_number LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(invNum)+"%").First(&invoice).Error
+		if err == nil {
+			// Found matching invoice
+			return true, invoice.ID, 0.95
+		}
+	}
+
+	// Try matching by customer name and amount
+	if customerName != "" {
+		var customer CustomerMaster
+		err := a.db.Where("business_name LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(customerName)+"%").First(&customer).Error
+		if err == nil {
+			// Found customer, look for matching invoice amount
+			var invoice Invoice
+			err = a.db.Where("customer_id = ? AND grand_total_bhd = ? AND status = ?",
+				customer.ID, line.Credit, "Outstanding").First(&invoice).Error
+			if err == nil {
+				return true, invoice.ID, 0.85
+			}
+		}
+	}
+
+	// Try matching by amount only (low confidence)
+	var invoice Invoice
+	err := a.db.Where("grand_total_bhd = ? AND status = ?", line.Credit, "Outstanding").First(&invoice).Error
+	if err == nil {
+		return true, invoice.ID, 0.60
+	}
+
+	return false, "", 0
+}
+
+// matchToSupplierPayment attempts to match a debit line to supplier payments
+func (a *App) matchToSupplierPayment(line *BankStatementLine, poNumbers []string, supplierName string) (bool, string, float64) {
+	// Try matching by PO number
+	for _, poNum := range poNumbers {
+		var po PurchaseOrder
+		err := a.db.Where("po_number LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(poNum)+"%").First(&po).Error
+		if err == nil {
+			return true, po.ID, 0.90
+		}
+	}
+
+	// Try matching by supplier name and amount
+	if supplierName != "" {
+		var supplier SupplierMaster
+		err := a.db.Where("supplier_name LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(supplierName)+"%").First(&supplier).Error
+		if err == nil {
+			var invoice SupplierInvoice
+			err = a.db.Where("supplier_id = ? AND total_bhd = ? AND status != ?",
+				supplier.ID, line.Debit, "Paid").First(&invoice).Error
+			if err == nil {
+				return true, invoice.ID, 0.80
+			}
+		}
+	}
+
+	return false, "", 0
+}
+
+// =============================================================================
+// EXPENSE CREATION
+// =============================================================================
+
+// createExpenseFromBankLine creates an expense entry for bank fees
+func (a *App) createExpenseFromBankLine(line *BankStatementLine, txType string) error {
+	expense := BankExpenseEntry{
+		BankStatementLineID: line.ID,
+		ExpenseDate:         line.TransactionDate,
+		Description:         line.Description,
+		Category:            txType,
+		Amount:              line.Debit,
+		Currency:            "BHD",
+	}
+
+	// Add VAT if this is a VAT entry
+	if txType == TxTypeVATOnFee {
+		expense.VATAmount = line.Debit
+	}
+
+	return a.db.Create(&expense).Error
+}
+
+// =============================================================================
+// MANUAL MATCHING
+// =============================================================================
+
+// ManualMatchLine manually matches a bank line to an entity
+func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
+	if err := a.requirePermission("finance:create"); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	var line BankStatementLine
+	if err := a.db.First(&line, "id = ?", lineID).Error; err != nil {
+		return fmt.Errorf("line not found: %w", err)
+	}
+
+	if line.IsMatched {
+		return fmt.Errorf("line already matched")
+	}
+
+	updates := map[string]interface{}{
+		"is_matched":       true,
+		"match_type":       "Manual",
+		"match_confidence": 1.0,
+	}
+
+	switch entityType {
+	case "CUSTOMER_INVOICE":
+		updates["matched_invoice_ids"] = entityID
+	case "SUPPLIER_INVOICE":
+		updates["matched_payment_ids"] = entityID
+	case "EXPENSE":
+		updates["matched_expense_id"] = entityID
+	}
+
+	if err := a.db.Model(&line).Updates(updates).Error; err != nil {
+		return fmt.Errorf("failed to update line: %w", err)
+	}
+
+	// Log the action
+	a.LogReconciliationAction(line.BankStatementID, &lineID, "MATCH",
+		map[string]interface{}{
+			"type":        "Manual",
+			"entity_type": entityType,
+			"entity_id":   entityID,
+		},
+		user, false, 1.0, "Manual match")
+
+	log.Printf("🔗 Manual match: Line %s → %s %s", lineID, entityType, entityID)
+	return nil
+}
+
+// UnmatchLine removes a match from a bank line
+func (a *App) UnmatchLine(lineID, user, reason string) error {
+	if err := a.requirePermission("finance:create"); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	var line BankStatementLine
+	if err := a.db.First(&line, "id = ?", lineID).Error; err != nil {
+		return fmt.Errorf("line not found: %w", err)
+	}
+
+	previousMatch := line.MatchedInvoiceIDs
+	if previousMatch == "" {
+		previousMatch = line.MatchedPaymentID
+	}
+
+	updates := map[string]interface{}{
+		"is_matched":          false,
+		"match_type":          "Unmatched",
+		"match_confidence":    0,
+		"matched_invoice_ids": "",
+		"matched_payment_ids": "",
+		"matched_expense_id":  nil,
+	}
+
+	if err := a.db.Model(&line).Updates(updates).Error; err != nil {
+		return fmt.Errorf("failed to unmatch line: %w", err)
+	}
+
+	// Log the action
+	a.LogReconciliationAction(line.BankStatementID, &lineID, "UNMATCH",
+		map[string]interface{}{
+			"previous_match": previousMatch,
+			"reason":         reason,
+		},
+		user, false, 1.0, reason)
+
+	log.Printf("🔓 Unmatched: Line %s by %s: %s", lineID, user, reason)
+	return nil
+}
+
+// =============================================================================
+// SPLIT ALLOCATION
+// =============================================================================
+
+// CreateSplitAllocation splits a bank line across multiple entities
+func (a *App) CreateSplitAllocation(lineID string, allocations []AllocationInput, user string) error {
+	if err := a.requirePermission("finance:create"); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	var line BankStatementLine
+	if err := a.db.First(&line, "id = ?", lineID).Error; err != nil {
+		return fmt.Errorf("line not found: %w", err)
+	}
+
+	// Validate total allocation matches line amount
+	lineAmount := line.Credit
+	if lineAmount == 0 {
+		lineAmount = line.Debit
+	}
+
+	var totalAllocated float64
+	for _, alloc := range allocations {
+		totalAllocated += alloc.AllocatedAmount
+	}
+
+	if totalAllocated != lineAmount {
+		return fmt.Errorf("allocation total (%.3f) does not match line amount (%.3f)",
+			totalAllocated, lineAmount)
+	}
+
+	// Create allocation records
+	for _, alloc := range allocations {
+		allocation := BankLinePaymentAllocation{
+			BankStatementLineID: lineID,
+			AllocationType:      alloc.AllocationType,
+			AllocatedAmount:     alloc.AllocatedAmount,
+			Currency:            "BHD",
+			Status:              "Allocated",
+		}
+
+		switch alloc.AllocationType {
+		case "CUSTOMER_INVOICE":
+			allocation.CustomerInvoiceID = &alloc.EntityID
+		case "SUPPLIER_INVOICE":
+			allocation.SupplierInvoiceID = &alloc.EntityID
+		case "EXPENSE":
+			allocation.ExpenseEntryID = &alloc.EntityID
+		}
+
+		if err := a.db.Create(&allocation).Error; err != nil {
+			return fmt.Errorf("failed to create allocation: %w", err)
+		}
+	}
+
+	// Mark line as matched
+	allocationIDs := make([]string, len(allocations))
+	for i, alloc := range allocations {
+		allocationIDs[i] = alloc.EntityID
+	}
+
+	a.db.Model(&line).Updates(map[string]interface{}{
+		"is_matched":          true,
+		"match_type":          "Split",
+		"match_confidence":    1.0,
+		"matched_invoice_ids": toJSONArray(allocationIDs),
+	})
+
+	// Log the action
+	allocJSON, _ := json.Marshal(allocations)
+	a.LogReconciliationAction(line.BankStatementID, &lineID, "SPLIT",
+		map[string]interface{}{"allocations": string(allocJSON)},
+		user, false, 1.0, "Split allocation")
+
+	log.Printf("✂️ Split allocation created for line %s: %d allocations", lineID, len(allocations))
+	return nil
+}
+
+// =============================================================================
+// BULK CATEGORIZATION
+// =============================================================================
+
+// CategorizeTransactions categorizes all lines in a statement
+func (a *App) CategorizeTransactions(statementID string) error {
+	if err := a.requirePermission("finance:create"); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	var lines []BankStatementLine
+	a.db.Where("bank_statement_id = ?", statementID).Find(&lines)
+
+	var customerNames []string
+	var supplierNames []string
+	a.db.Model(&CustomerMaster{}).Pluck("business_name", &customerNames)
+	a.db.Model(&SupplierMaster{}).Pluck("supplier_name", &supplierNames)
+
+	categorizedCount := 0
+	for _, line := range lines {
+		isCredit := line.Credit > 0
+		txType := detectTransactionType(line.Description, isCredit)
+		invoices := extractInvoiceNumbers(line.Description)
+		pos := extractPONumbers(line.Description)
+		customer, supplier := extractBankEntityName(line.Description, customerNames, supplierNames)
+
+		a.db.Model(&line).Updates(map[string]interface{}{
+			"transaction_type":    txType,
+			"extracted_invoices":  toJSONArray(invoices),
+			"extracted_po_numbers": toJSONArray(pos),
+			"extracted_customer":  customer,
+			"extracted_supplier":  supplier,
+		})
+		categorizedCount++
+	}
+
+	log.Printf("🏷️ Categorized %d transactions for statement %s", categorizedCount, statementID)
+	return nil
+}

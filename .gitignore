@@ -1,0 +1,88 @@
+# =============================================
+# PH Holdings Sovereign UI - .gitignore
+# =============================================
+
+# === Build Artifacts ===
+build/
+dist/
+*.exe
+*.dll
+*.dylib
+*.so
+*.app
+
+# === Dependencies ===
+node_modules/
+frontend/node_modules/
+
+# === Environment & Secrets ===
+.env
+.env.local
+.env.production
+# .env.example is committed (template without secrets)
+
+# === Databases ===
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# === IDE / Editor ===
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+
+# === OS Files ===
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# === Logs ===
+*.log
+*.out
+crash_log.*
+
+# === Test Artifacts ===
+coverage.out
+test-results/
+playwright-report/
+*.test.exe
+
+# === Vite Temp Files ===
+*.timestamp-*.mjs
+
+# === Generated Output ===
+exports/intelligence/
+batch_output/
+test_output/
+
+# === Archives & Packages ===
+*.zip
+*.7z
+*.tar.gz
+*.tar
+*.rar
+
+# === Temporary Files ===
+*.tmp
+*.bak
+*.backup
+nul
+
+# === Business Documents (NEVER commit) ===
+Bank_Statements/
+Costing_Sheets/
+Offers*/
+
+# === Mac Dev Setup (local only) ===
+mac_dev_setup/
+
+# === AI Tool Config (local only) ===
+.agent/
+.claude/

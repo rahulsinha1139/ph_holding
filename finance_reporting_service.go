@@ -1,0 +1,536 @@
+package main
+
+import (
+	"log"
+	"sort"
+	"time"
+)
+
+// ============================================================================
+// P2 FINANCE REPORTING SERVICE (Medium Priority - 2026-01-27)
+// ============================================================================
+// This service provides advanced finance reporting capabilities:
+// 1. Payment Aging Report - AR aging with customer-level breakdown
+// 2. Cash Flow Projection - Forecasting based on due dates and payment history
+// 3. Profit Margin Analysis - Customer and product profitability
+// 4. VAT Reconciliation - Output VAT vs Input VAT calculation
+// 5. Financial Period Close - Prevent edits to closed periods
+// ============================================================================
+
+// PaymentAgingBucket represents aging analysis for a customer
+type PaymentAgingBucket struct {
+	CustomerID       string  `json:"customer_id"`
+	CustomerName     string  `json:"customer_name"`
+	Current          float64 `json:"current"`           // 0-30 days
+	Days1To30        float64 `json:"days_1_to_30"`      // 1-30 days overdue
+	Days31To60       float64 `json:"days_31_to_60"`     // 31-60 days overdue
+	Days61To90       float64 `json:"days_61_to_90"`     // 61-90 days overdue
+	Over90Days       float64 `json:"over_90_days"`      // 90+ days overdue
+	TotalOutstanding float64 `json:"total_outstanding"`
+	AvgDaysOverdue   float64 `json:"avg_days_overdue"`  // Weighted average
+}
+
+// PaymentAgingReport represents complete aging report
+type PaymentAgingReport struct {
+	ReportDate       time.Time            `json:"report_date"`
+	TotalCurrent     float64              `json:"total_current"`
+	TotalDays1To30   float64              `json:"total_days_1_to_30"`
+	TotalDays31To60  float64              `json:"total_days_31_to_60"`
+	TotalDays61To90  float64              `json:"total_days_61_to_90"`
+	TotalOver90Days  float64              `json:"total_over_90_days"`
+	GrandTotal       float64              `json:"grand_total"`
+	AvgDaysOverdue   float64              `json:"avg_days_overdue"`
+	CustomerBuckets  []PaymentAgingBucket `json:"customer_buckets"`
+}
+
+// GetPaymentAgingReport generates AR aging report with customer-level breakdown
+func (a *App) GetPaymentAgingReport() (PaymentAgingReport, error) {
+	if a.db == nil {
+		return PaymentAgingReport{}, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	report := PaymentAgingReport{
+		ReportDate:      time.Now(),
+		CustomerBuckets: []PaymentAgingBucket{},
+	}
+
+	// Get all unpaid invoices with customer details
+	var invoices []Invoice
+	if err := a.db.Where("status != ?", "Paid").Find(&invoices).Error; err != nil {
+		return report, newError("DB_QUERY_FAILED", "Failed to retrieve invoices", err.Error())
+	}
+
+	// Group by customer
+	customerMap := make(map[string]*PaymentAgingBucket)
+	now := time.Now()
+
+	for _, inv := range invoices {
+		// Calculate days overdue (negative = not yet due)
+		daysOverdue := int(now.Sub(inv.DueDate).Hours() / 24)
+		outstanding := inv.OutstandingBHD
+
+		// Get or create customer bucket
+		bucket, exists := customerMap[inv.CustomerID]
+		if !exists {
+			bucket = &PaymentAgingBucket{
+				CustomerID:   inv.CustomerID,
+				CustomerName: inv.CustomerName,
+			}
+			customerMap[inv.CustomerID] = bucket
+		}
+
+		// Categorize into aging buckets
+		if daysOverdue <= 0 {
+			// Not yet due (current)
+			bucket.Current += outstanding
+		} else if daysOverdue <= 30 {
+			bucket.Days1To30 += outstanding
+		} else if daysOverdue <= 60 {
+			bucket.Days31To60 += outstanding
+		} else if daysOverdue <= 90 {
+			bucket.Days61To90 += outstanding
+		} else {
+			bucket.Over90Days += outstanding
+		}
+
+		bucket.TotalOutstanding += outstanding
+
+		// Calculate weighted average days overdue
+		if daysOverdue > 0 {
+			bucket.AvgDaysOverdue += float64(daysOverdue) * outstanding
+		}
+	}
+
+	// Finalize buckets and calculate totals
+	var totalWeightedDays float64
+	for _, bucket := range customerMap {
+		// Finalize weighted average
+		if bucket.TotalOutstanding > 0 {
+			bucket.AvgDaysOverdue = bucket.AvgDaysOverdue / bucket.TotalOutstanding
+		}
+
+		// Add to report totals
+		report.TotalCurrent += bucket.Current
+		report.TotalDays1To30 += bucket.Days1To30
+		report.TotalDays31To60 += bucket.Days31To60
+		report.TotalDays61To90 += bucket.Days61To90
+		report.TotalOver90Days += bucket.Over90Days
+		report.GrandTotal += bucket.TotalOutstanding
+
+		totalWeightedDays += bucket.AvgDaysOverdue * bucket.TotalOutstanding
+
+		report.CustomerBuckets = append(report.CustomerBuckets, *bucket)
+	}
+
+	// Calculate global weighted average
+	if report.GrandTotal > 0 {
+		report.AvgDaysOverdue = totalWeightedDays / report.GrandTotal
+	}
+
+	// Sort by total outstanding (descending)
+	sort.Slice(report.CustomerBuckets, func(i, j int) bool {
+		return report.CustomerBuckets[i].TotalOutstanding > report.CustomerBuckets[j].TotalOutstanding
+	})
+
+	log.Printf("💳 Payment Aging Report: %.3f BHD outstanding, %.1f avg days overdue, %d customers",
+		report.GrandTotal, report.AvgDaysOverdue, len(report.CustomerBuckets))
+
+	return report, nil
+}
+
+// CashFlowProjectionDay represents projected cash for a single day
+type CashFlowProjectionDay struct {
+	Date              time.Time `json:"date"`
+	ExpectedInflows   float64   `json:"expected_inflows"`   // Customer payments
+	ExpectedOutflows  float64   `json:"expected_outflows"`  // Supplier payments
+	NetCashFlow       float64   `json:"net_cash_flow"`
+	CumulativeCash    float64   `json:"cumulative_cash"`
+	OpeningBalance    float64   `json:"opening_balance"`
+	ClosingBalance    float64   `json:"closing_balance"`
+}
+
+// CashFlowProjection represents cash flow forecast
+type CashFlowProjection struct {
+	StartDate         time.Time               `json:"start_date"`
+	EndDate           time.Time               `json:"end_date"`
+	OpeningCash       float64                 `json:"opening_cash"`
+	TotalInflows      float64                 `json:"total_inflows"`
+	TotalOutflows     float64                 `json:"total_outflows"`
+	ProjectedCash     float64                 `json:"projected_cash"`
+	DailyProjections  []CashFlowProjectionDay `json:"daily_projections"`
+}
+
+// GetCashFlowProjection generates cash flow forecast based on due dates and payment history
+func (a *App) GetCashFlowProjection(days int) (CashFlowProjection, error) {
+	if a.db == nil {
+		return CashFlowProjection{}, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	now := time.Now()
+	endDate := now.AddDate(0, 0, days)
+
+	// Query current bank account balances for opening cash
+	var openingCash float64
+	var bankAccounts []BankAccount
+	if err := a.db.Find(&bankAccounts).Error; err == nil {
+		for _, account := range bankAccounts {
+			if account.Currency == "BHD" {
+				openingCash += account.CurrentBalance
+			}
+			// NOTE: For non-BHD accounts, should convert using exchange rates.
+			// Currently summing BHD accounts only for simplicity.
+		}
+	}
+
+	projection := CashFlowProjection{
+		StartDate:        now,
+		EndDate:          endDate,
+		OpeningCash:      openingCash,
+		DailyProjections: []CashFlowProjectionDay{},
+	}
+
+	// Create daily buckets
+	dailyMap := make(map[string]*CashFlowProjectionDay)
+	for d := 0; d <= days; d++ {
+		date := now.AddDate(0, 0, d)
+		dateKey := date.Format("2006-01-02")
+		dailyMap[dateKey] = &CashFlowProjectionDay{
+			Date: date,
+		}
+	}
+
+	// 1. Project INFLOWS from customer invoices (based on due dates + payment history)
+	var unpaidInvoices []Invoice
+	if err := a.db.Where("status != ? AND due_date BETWEEN ? AND ?", "Paid", now, endDate).
+		Find(&unpaidInvoices).Error; err != nil {
+		return projection, newError("DB_QUERY_FAILED", "Failed to retrieve invoices", err.Error())
+	}
+
+	for _, inv := range unpaidInvoices {
+		// Get customer's average payment delay
+		var customer CustomerMaster
+		a.db.First(&customer, "id = ?", inv.CustomerID)
+
+		// Adjust due date by average payment days
+		expectedDate := inv.DueDate
+		if customer.AvgPaymentDays > 0 {
+			expectedDate = inv.DueDate.AddDate(0, 0, int(customer.AvgPaymentDays))
+		}
+
+		// Check if expected date is within projection window
+		if expectedDate.After(now) && expectedDate.Before(endDate) {
+			dateKey := expectedDate.Format("2006-01-02")
+			if day, exists := dailyMap[dateKey]; exists {
+				day.ExpectedInflows += inv.OutstandingBHD
+				projection.TotalInflows += inv.OutstandingBHD
+			}
+		}
+	}
+
+	// 2. Project OUTFLOWS from supplier invoices (based on due dates)
+	var unpaidSupplierInvoices []SupplierInvoice
+	if err := a.db.Where("payment_status != ? AND due_date BETWEEN ? AND ?", "Paid", now, endDate).
+		Find(&unpaidSupplierInvoices).Error; err != nil {
+		log.Printf("⚠️ Failed to retrieve supplier invoices: %v", err)
+		// Continue with customer inflows only
+	} else {
+		for _, inv := range unpaidSupplierInvoices {
+			dateKey := inv.DueDate.Format("2006-01-02")
+			if day, exists := dailyMap[dateKey]; exists {
+				day.ExpectedOutflows += inv.TotalBHD
+				projection.TotalOutflows += inv.TotalBHD
+			}
+		}
+	}
+
+	// 3. Calculate cumulative cash
+	cumulativeCash := projection.OpeningCash
+	for d := 0; d <= days; d++ {
+		date := now.AddDate(0, 0, d)
+		dateKey := date.Format("2006-01-02")
+		day := dailyMap[dateKey]
+
+		day.OpeningBalance = cumulativeCash
+		day.NetCashFlow = day.ExpectedInflows - day.ExpectedOutflows
+		cumulativeCash += day.NetCashFlow
+		day.ClosingBalance = cumulativeCash
+		day.CumulativeCash = cumulativeCash
+
+		projection.DailyProjections = append(projection.DailyProjections, *day)
+	}
+
+	projection.ProjectedCash = cumulativeCash
+
+	log.Printf("💰 Cash Flow Projection (%d days): +%.3f BHD inflows, -%.3f BHD outflows, %.3f BHD projected",
+		days, projection.TotalInflows, projection.TotalOutflows, projection.ProjectedCash)
+
+	return projection, nil
+}
+
+// MarginAnalysisByCustomer represents margin breakdown per customer
+type MarginAnalysisByCustomer struct {
+	CustomerID      string  `json:"customer_id"`
+	CustomerName    string  `json:"customer_name"`
+	TotalRevenue    float64 `json:"total_revenue"`
+	TotalCost       float64 `json:"total_cost"`
+	GrossMargin     float64 `json:"gross_margin"`
+	MarginPercent   float64 `json:"margin_percent"`
+	OrderCount      int     `json:"order_count"`
+	AvgMarginPct    float64 `json:"avg_margin_pct"`
+}
+
+// MarginAnalysisByProduct represents margin breakdown per product category
+type MarginAnalysisByProduct struct {
+	ProductCategory string  `json:"product_category"`
+	TotalRevenue    float64 `json:"total_revenue"`
+	TotalCost       float64 `json:"total_cost"`
+	GrossMargin     float64 `json:"gross_margin"`
+	MarginPercent   float64 `json:"margin_percent"`
+	OrderCount      int     `json:"order_count"`
+}
+
+// GetMarginAnalysisByCustomer returns profitability per customer
+func (a *App) GetMarginAnalysisByCustomer() ([]MarginAnalysisByCustomer, error) {
+	if a.db == nil {
+		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	var invoices []Invoice
+	if err := a.db.Preload("Items").Find(&invoices).Error; err != nil {
+		return nil, newError("DB_QUERY_FAILED", "Failed to retrieve invoices", err.Error())
+	}
+
+	// Group by customer
+	customerMap := make(map[string]*MarginAnalysisByCustomer)
+
+	for _, inv := range invoices {
+		analysis, exists := customerMap[inv.CustomerID]
+		if !exists {
+			analysis = &MarginAnalysisByCustomer{
+				CustomerID:   inv.CustomerID,
+				CustomerName: inv.CustomerName,
+			}
+			customerMap[inv.CustomerID] = analysis
+		}
+
+		analysis.TotalRevenue += inv.GrandTotalBHD
+		analysis.TotalCost += inv.TotalSupplierCostBHD
+		analysis.OrderCount++
+	}
+
+	// Calculate margins
+	results := []MarginAnalysisByCustomer{}
+	for _, analysis := range customerMap {
+		analysis.GrossMargin = analysis.TotalRevenue - analysis.TotalCost
+		if analysis.TotalRevenue > 0 {
+			analysis.MarginPercent = (analysis.GrossMargin / analysis.TotalRevenue) * 100
+			analysis.AvgMarginPct = analysis.MarginPercent
+		}
+		results = append(results, *analysis)
+	}
+
+	// Sort by margin (descending)
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].GrossMargin > results[j].GrossMargin
+	})
+
+	log.Printf("📊 Margin Analysis by Customer: %d customers analyzed", len(results))
+
+	return results, nil
+}
+
+// GetMarginAnalysisByProduct returns profitability per product category
+func (a *App) GetMarginAnalysisByProduct() ([]MarginAnalysisByProduct, error) {
+	if a.db == nil {
+		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	var items []DBInvoiceItem
+	if err := a.db.Find(&items).Error; err != nil {
+		return nil, newError("DB_QUERY_FAILED", "Failed to retrieve invoice items", err.Error())
+	}
+
+	// Get product details for category mapping
+	productMap := make(map[string]string) // productID -> category
+	var products []ProductMaster
+	a.db.Find(&products)
+	for _, p := range products {
+		productMap[p.ID] = p.ProductCategory
+	}
+
+	// Group by product category
+	categoryMap := make(map[string]*MarginAnalysisByProduct)
+
+	for _, item := range items {
+		category := productMap[item.ProductID]
+		if category == "" {
+			category = "Uncategorized"
+		}
+
+		analysis, exists := categoryMap[category]
+		if !exists {
+			analysis = &MarginAnalysisByProduct{
+				ProductCategory: category,
+			}
+			categoryMap[category] = analysis
+		}
+
+		revenue := item.TotalPrice
+		cost := item.TotalCost * item.Quantity
+
+		analysis.TotalRevenue += revenue
+		analysis.TotalCost += cost
+		analysis.OrderCount++
+	}
+
+	// Calculate margins
+	results := []MarginAnalysisByProduct{}
+	for _, analysis := range categoryMap {
+		analysis.GrossMargin = analysis.TotalRevenue - analysis.TotalCost
+		if analysis.TotalRevenue > 0 {
+			analysis.MarginPercent = (analysis.GrossMargin / analysis.TotalRevenue) * 100
+		}
+		results = append(results, *analysis)
+	}
+
+	// Sort by margin (descending)
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].GrossMargin > results[j].GrossMargin
+	})
+
+	log.Printf("📊 Margin Analysis by Product: %d categories analyzed", len(results))
+
+	return results, nil
+}
+
+// VATReconciliation represents VAT summary for a period
+type VATReconciliation struct {
+	StartDate       time.Time `json:"start_date"`
+	EndDate         time.Time `json:"end_date"`
+	OutputVAT       float64   `json:"output_vat"`        // VAT collected from customers
+	InputVAT        float64   `json:"input_vat"`         // VAT paid to suppliers
+	NetVAT          float64   `json:"net_vat"`           // Payable (positive) or Receivable (negative)
+	CustomerInvoices int      `json:"customer_invoices"` // Count of customer invoices
+	SupplierInvoices int      `json:"supplier_invoices"` // Count of supplier invoices
+}
+
+// GetVATReconciliation calculates VAT payable/receivable for a date range
+func (a *App) GetVATReconciliation(startDateStr, endDateStr string) (VATReconciliation, error) {
+	if a.db == nil {
+		return VATReconciliation{}, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	// Parse dates
+	startDate, err := time.Parse("2006-01-02", startDateStr)
+	if err != nil {
+		return VATReconciliation{}, newError("INVALID_DATE", "Invalid start date format, expected YYYY-MM-DD", err.Error())
+	}
+
+	endDate, err := time.Parse("2006-01-02", endDateStr)
+	if err != nil {
+		return VATReconciliation{}, newError("INVALID_DATE", "Invalid end date format, expected YYYY-MM-DD", err.Error())
+	}
+
+	reconciliation := VATReconciliation{
+		StartDate: startDate,
+		EndDate:   endDate,
+	}
+
+	// 1. Sum OUTPUT VAT from customer invoices (VAT collected)
+	var customerInvoices []Invoice
+	if err := a.db.Where("invoice_date BETWEEN ? AND ?", startDate, endDate).
+		Find(&customerInvoices).Error; err != nil {
+		return reconciliation, newError("DB_QUERY_FAILED", "Failed to retrieve customer invoices", err.Error())
+	}
+
+	for _, inv := range customerInvoices {
+		reconciliation.OutputVAT += inv.VATBHD
+	}
+	reconciliation.CustomerInvoices = len(customerInvoices)
+
+	// 2. Sum INPUT VAT from supplier invoices (VAT paid)
+	var supplierInvoices []SupplierInvoice
+	if err := a.db.Where("invoice_date BETWEEN ? AND ?", startDate, endDate).
+		Find(&supplierInvoices).Error; err != nil {
+		log.Printf("⚠️ Failed to retrieve supplier invoices: %v", err)
+		// Continue with output VAT only
+	} else {
+		for _, inv := range supplierInvoices {
+			reconciliation.InputVAT += inv.VATBHD
+		}
+		reconciliation.SupplierInvoices = len(supplierInvoices)
+	}
+
+	// 3. Calculate net VAT (positive = payable, negative = receivable)
+	reconciliation.NetVAT = reconciliation.OutputVAT - reconciliation.InputVAT
+
+	log.Printf("💼 VAT Reconciliation (%s to %s): Output %.3f BHD - Input %.3f BHD = Net %.3f BHD",
+		startDateStr, endDateStr, reconciliation.OutputVAT, reconciliation.InputVAT, reconciliation.NetVAT)
+
+	return reconciliation, nil
+}
+
+// ClosePeriod closes a fiscal period to prevent edits
+func (a *App) ClosePeriod(periodID string) error {
+	if a.db == nil {
+		return newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	// Check permission (requires finance:manage permission)
+	// Note: Add PERM_CLOSE_PERIOD = "finance:close_period" to app.go permission constants if needed
+	const PERM_CLOSE_PERIOD = "finance:manage"
+	if err := a.requirePermission(PERM_CLOSE_PERIOD); err != nil {
+		return err
+	}
+
+	// Get period
+	var period FiscalPeriod
+	if err := a.db.First(&period, "id = ?", periodID).Error; err != nil {
+		return newError("PERIOD_NOT_FOUND", "Fiscal period not found", err.Error())
+	}
+
+	// Check if already closed
+	if period.Status == "Closed" || period.Status == "Locked" {
+		return newError("PERIOD_ALREADY_CLOSED", "Period is already closed", "")
+	}
+
+	// Update status
+	now := time.Now()
+	period.Status = "Closed"
+	period.ClosedAt = &now
+	period.ClosedBy = a.getCurrentUserID()
+
+	if err := a.db.Save(&period).Error; err != nil {
+		return newError("DB_UPDATE_FAILED", "Failed to close period", err.Error())
+	}
+
+	log.Printf("🔒 Period closed: %d/%d by %s", period.FiscalYear, period.Period, period.ClosedBy)
+
+	return nil
+}
+
+// IsPeriodClosed checks if a date falls within a closed period
+func (a *App) IsPeriodClosed(dateStr string) (bool, error) {
+	if a.db == nil {
+		return false, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	// Parse date
+	date, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return false, newError("INVALID_DATE", "Invalid date format, expected YYYY-MM-DD", err.Error())
+	}
+
+	// Find period containing this date
+	var period FiscalPeriod
+	if err := a.db.Where("period_start <= ? AND period_end >= ?", date, date).
+		First(&period).Error; err != nil {
+		// No period found = not closed
+		return false, nil
+	}
+
+	// Check if period is closed or locked
+	isClosed := period.Status == "Closed" || period.Status == "Locked"
+
+	return isClosed, nil
+}
