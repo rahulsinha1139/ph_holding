@@ -22,14 +22,6 @@ type TallyImportResult struct {
 	BatchID      string   `json:"batch_id"`
 }
 
-// escapeLikeWildcards escapes SQL LIKE wildcard characters to prevent injection
-func escapeLikeWildcards(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\") // Escape backslash first
-	s = strings.ReplaceAll(s, "%", "\\%")
-	s = strings.ReplaceAll(s, "_", "\\_")
-	return s
-}
-
 // ImportTallyInvoices imports invoices from Tally Excel export
 func (a *App) ImportTallyInvoices(year int) (*TallyImportResult, error) {
 	if err := a.requirePermission("data:import"); err != nil {

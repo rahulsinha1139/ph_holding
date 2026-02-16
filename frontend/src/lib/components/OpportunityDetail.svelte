@@ -110,6 +110,10 @@
     let addingComment = false;
     let updatingStage = false;
 
+    // Guard: track which opportunity ID we've already loaded to prevent infinite loops
+    let lastLoadedOpportunityId: number | null = null;
+    let lastLoadedTab: string = '';
+
     // 9-stage pipeline options (Phase 2)
     const stageOptions = [
         'RFQ Received', 'Offer Sent', 'Follow-up/Eval',
@@ -147,28 +151,31 @@
         }
     }
 
-    // Watch for tab changes
-    $: if (activeTab === 'purchase-orders' && opportunity?.id && purchaseOrders.length === 0) {
-        loadPurchaseOrders();
-    }
-
-    // Phase 4: Refresh opportunity data on tab change
-    $: if (activeTab && opportunity?.id) {
+    // Watch for opportunity changes - only reload when the ID actually changes
+    $: if (opportunity?.id && opportunity.id !== lastLoadedOpportunityId) {
+        lastLoadedOpportunityId = opportunity.id;
+        lastLoadedTab = '';
+        purchaseOrders = [];
+        loadComments();
         refreshOpportunityData();
     }
 
-    // Phase 3: Load comments when opportunity changes
-    $: if (opportunity?.id) {
-        loadComments();
+    // Watch for tab changes - only load POs once per opportunity
+    $: if (activeTab === 'purchase-orders' && opportunity?.id && lastLoadedTab !== 'purchase-orders-' + opportunity.id) {
+        lastLoadedTab = 'purchase-orders-' + opportunity.id;
+        loadPurchaseOrders();
     }
 
-    // Refresh opportunity data
+    // Refresh opportunity data (updates fields in-place to avoid triggering reactive loops)
     async function refreshOpportunityData() {
         if (!opportunity?.id) return;
         try {
             const fresh = await GetRFQ(opportunity.id);
             if (fresh) {
-                opportunity = { ...opportunity, ...fresh };
+                // Update individual fields without reassigning opportunity object
+                // This prevents the reactive $: block from firing again
+                Object.assign(opportunity, fresh);
+                opportunity = opportunity; // single reactivity trigger
             }
         } catch (err) {
             devLog.error('Failed to refresh opportunity:', err);

@@ -103,8 +103,8 @@ func (a *App) UploadAsset(name, description, filePath string) error {
 	return nil
 }
 
-// GetAsset retrieves an asset from the database and returns the raw bytes
-func (a *App) GetAsset(name string) ([]byte, error) {
+// getAssetInternal retrieves an asset without permission check (for internal use like PDF generation)
+func (a *App) getAssetInternal(name string) ([]byte, error) {
 	var asset Asset
 	if err := a.db.Where("name = ?", name).First(&asset).Error; err != nil {
 		return nil, fmt.Errorf("asset not found: %s", name)
@@ -119,10 +119,18 @@ func (a *App) GetAsset(name string) ([]byte, error) {
 	return data, nil
 }
 
+// GetAsset retrieves an asset from the database and returns the raw bytes (Wails-bound, requires permission)
+func (a *App) GetAsset(name string) ([]byte, error) {
+	if err := a.requirePermission("settings:view"); err != nil {
+		return nil, err
+	}
+	return a.getAssetInternal(name)
+}
+
 // GetAssetToFile retrieves an asset and saves it to a file, returning the path
-// This is useful for PDF generation which needs a file path
+// This is useful for PDF generation which needs a file path (internal, no permission check)
 func (a *App) GetAssetToFile(name string) (string, error) {
-	data, err := a.GetAsset(name)
+	data, err := a.getAssetInternal(name)
 	if err != nil {
 		return "", err
 	}
@@ -149,6 +157,9 @@ func (a *App) GetAssetToFile(name string) (string, error) {
 
 // ListAssets returns info about all stored assets (without the data)
 func (a *App) ListAssets() ([]AssetInfo, error) {
+	if err := a.requirePermission("settings:view"); err != nil {
+		return nil, err
+	}
 	var assets []Asset
 	if err := a.db.Find(&assets).Error; err != nil {
 		return nil, err

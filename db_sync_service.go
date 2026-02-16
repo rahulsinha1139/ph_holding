@@ -83,6 +83,12 @@ var dbSyncTables = []string{
 	"delivery_notes",
 	"delivery_note_items",
 	"entity_notes",
+	"license_keys",
+	"bank_accounts",
+	"bank_statements",
+	"bank_statement_lines",
+	"costing_sheets",
+	"costing_line_items",
 }
 
 // emitDBSyncProgress sends a sync progress event to the frontend

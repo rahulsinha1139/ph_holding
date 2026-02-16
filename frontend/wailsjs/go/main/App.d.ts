@@ -307,6 +307,8 @@ export function ExportCostingToPDF(arg1:main.CostingExportData):Promise<string>;
 
 export function ExportCustomerTemplate():Promise<main.Customer>;
 
+export function ExportEncryptionBackup():Promise<Record<string, string>>;
+
 export function ExportGraphJSON():Promise<string>;
 
 export function ExportReconciliationReport(arg1:main.ReconciliationResult,arg2:string):Promise<void>;
@@ -865,6 +867,8 @@ export function HasLicensePermission(arg1:string):Promise<boolean>;
 
 export function HasPermission(arg1:string,arg2:string):Promise<boolean>;
 
+export function Import2026BusinessData(arg1:string):Promise<Record<string, any>>;
+
 export function ImportARDefaulters():Promise<main.TallyImportResult>;
 
 export function ImportAllTallyData():Promise<main.TallyImportResult>;
@@ -876,6 +880,8 @@ export function ImportBankStatementPDF(arg1:string,arg2:string):Promise<main.Ban
 export function ImportBankStatementWithDialog(arg1:string):Promise<main.BankStatement>;
 
 export function ImportCostingToOpportunity(arg1:main.ExcelCostingData):Promise<void>;
+
+export function ImportEncryptionBackup(arg1:string,arg2:string):Promise<void>;
 
 export function ImportSSOTData():Promise<data.ImportResult>;
 
@@ -988,6 +994,8 @@ export function MarkOfferLost(arg1:string,arg2:string):Promise<void>;
 export function MarkOfferWon(arg1:string,arg2:string):Promise<main.Order>;
 
 export function MarkSupplierInvoicePaid(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function MigrateBankAccountEncryption():Promise<void>;
 
 export function NeedsLicenseActivation():Promise<boolean>;
 
@@ -1115,6 +1123,8 @@ export function ReverseRevaluation(arg1:string,arg2:string,arg3:string):Promise<
 
 export function RevokeLicense(arg1:string):Promise<void>;
 
+export function RotateEncryptionKey():Promise<void>;
+
 export function RouteEvent(arg1:main.ERPEvent):Promise<main.RoutingResult>;
 
 export function RunAllDataFixes():Promise<Record<string, any>>;
@@ -1143,6 +1153,8 @@ export function SearchOrders(arg1:string):Promise<Array<main.OrderSearchResult>>
 
 export function SearchProducts(arg1:string):Promise<Array<main.ProductMaster>>;
 
+export function SeedAdditionalBankAccounts():Promise<void>;
+
 export function SeedBankDemoData():Promise<void>;
 
 export function SeedCompanyBankAccounts():Promise<void>;
@@ -1158,6 +1170,10 @@ export function SeedDefaultChartOfAccounts():Promise<void>;
 export function SeedDefaultExchangeRates():Promise<void>;
 
 export function SeedDefaultRoles():Promise<void>;
+
+export function SeedEmployeeKeys():Promise<void>;
+
+export function SeedLicenseKeys():Promise<void>;
 
 export function SeedProductDatabase():Promise<void>;
 

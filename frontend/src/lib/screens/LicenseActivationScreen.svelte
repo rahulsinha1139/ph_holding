@@ -43,13 +43,11 @@
         }
     }
 
-    // Check if key is valid for activation
-    function isKeyValid(): boolean {
-        return licenseKey.length === 13 && LICENSE_KEY_PATTERN.test(licenseKey);
-    }
+    // Reactive validation - updates whenever licenseKey changes
+    $: keyValid = licenseKey.length === 13 && LICENSE_KEY_PATTERN.test(licenseKey);
 
     async function handleActivate() {
-        if (loading || !isKeyValid()) return;
+        if (loading || !keyValid) return;
 
         loading = true;
         error = "";
@@ -85,6 +83,7 @@
 
                 dispatch("activated", {
                     role: result.role,
+                    display_name: result.display_name,
                     permissions: result.permissions,
                     deviceHash: result.device_hash
                 });
@@ -103,7 +102,7 @@
     }
 
     function handleKeyPress(event: KeyboardEvent) {
-        if (event.key === "Enter" && isKeyValid()) {
+        if (event.key === "Enter" && keyValid) {
             handleActivate();
         }
     }
@@ -120,7 +119,7 @@
             <input
                 id="license-key"
                 type="text"
-                bind:value={licenseKey}
+                value={licenseKey}
                 on:input={formatKey}
                 on:keypress={handleKeyPress}
                 placeholder="PH-ADM-A1B2C3"
@@ -143,7 +142,7 @@
         <button
             class="btn-primary"
             on:click={handleActivate}
-            disabled={loading || syncing || !isKeyValid()}
+            disabled={loading || syncing || !keyValid}
         >
             {#if syncing}
                 <span class="spinner"></span>

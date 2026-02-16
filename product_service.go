@@ -33,9 +33,10 @@ func (a *App) SearchProducts(query string) ([]ProductMaster, error) {
 		return products, nil // Return empty results for very short/invalid queries
 	}
 
-	// Simple case-insensitive search (SQLite LIKE is case-insensitive for ASCII)
-	searchPattern := "%" + sanitized + "%"
-	err := a.db.Where("product_code LIKE ? OR product_name LIKE ? OR description LIKE ?",
+	// SECURITY: Escape LIKE wildcards to prevent LIKE injection
+	escaped := escapeLikeWildcards(sanitized)
+	searchPattern := "%" + escaped + "%"
+	err := a.db.Where("product_code LIKE ? ESCAPE '\\' OR product_name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\'",
 		searchPattern, searchPattern, searchPattern).
 		Limit(100). // Limit results to prevent DOS
 		Find(&products).Error

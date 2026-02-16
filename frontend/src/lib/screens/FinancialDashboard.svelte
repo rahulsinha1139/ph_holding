@@ -13,7 +13,7 @@
     let loading = true;
     let data: any = null;
     let availableYears: number[] = [];
-    let selectedYear = 2025; // Default to current year
+    let selectedYear = new Date().getFullYear(); // Default to current year
     let noDataForYear = false;
     let liveCashTotal = 0; // Sum of closing balances from all bank accounts
 
@@ -46,14 +46,15 @@
                 // Default to latest available year
                 selectedYear = years[0] || new Date().getFullYear();
             } else {
-                // Fallback: audited years + current year
-                availableYears = [2025, 2024, 2023];
-                selectedYear = 2025;
+                // Fallback: current year + audited years
+                const curYear = new Date().getFullYear();
+                availableYears = [curYear, 2025, 2024, 2023];
+                selectedYear = curYear;
             }
         } catch (err) {
             console.error('Failed to load available years:', err);
-            // Fallback: audited years + current
-            availableYears = [2025, 2024, 2023];
+            // Fallback: current year + audited years
+            availableYears = [new Date().getFullYear(), 2025, 2024, 2023];
             selectedYear = 2024;
         }
     }
@@ -487,6 +488,8 @@
                         <strong>Note:</strong> FY2025 data is from Tally imports (unaudited). Revenue decline reflects return to normal operations post-EWA contract.
                     {:else if selectedYear === 2023}
                         <strong>Note:</strong> FY2023 included the EWA smart meter mega-contract (93% of revenue). This was a one-time project, not recurring business.
+                    {:else if selectedYear === 2026}
+                        <strong>Note:</strong> FY2026 estimates based on active offer pipeline and bank statement data. Revenue projections use 40% pipeline conversion rate.
                     {:else}
                         <strong>Note:</strong> Comparing {data.period} to {data.prior_year}. All figures in BHD.
                     {/if}
@@ -496,7 +499,7 @@
 
         <!-- Footer -->
         <div class="dashboard-footer">
-            <span>Source: PH Trading WLL {isAuditedYear ? 'Audited Financial Statements FS2024' : `Tally Data FY${selectedYear}`}</span>
+            <span>Source: {data?.source || (isAuditedYear ? 'Audited Financial Statements FS2024' : `Live Data FY${selectedYear}`)}</span>
             {#if isAuditedYear}
                 <span>Auditor: Grant Thornton - Abdulaal (May 2025)</span>
             {:else}

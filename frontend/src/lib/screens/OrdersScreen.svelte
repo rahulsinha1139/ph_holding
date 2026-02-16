@@ -46,6 +46,10 @@
   let loading = true;
   let activeFilter = 'All';
   let searchQuery = '';
+  let selectedYear = 'All';
+  let selectedCustomer = 'All';
+  let availableYears: string[] = [];
+  let availableCustomers: string[] = [];
 
   // Create/Edit modal
   let showModal = false;
@@ -138,7 +142,7 @@
     loading = true;
     try {
       const [ordersData, customersData] = await Promise.all([
-        ListOrders(500, 0),
+        ListOrders(10000, 0),
         ListCustomers(500, 0)
       ]);
 
@@ -156,6 +160,20 @@
           }
         })
       );
+
+      // Extract unique years from order dates
+      const yearsSet = new Set<string>();
+      const customersSet = new Set<string>();
+      orders.forEach(o => {
+        if (o.order_date) {
+          yearsSet.add(new Date(o.order_date).getFullYear().toString());
+        }
+        if (o.customer_name) {
+          customersSet.add(o.customer_name);
+        }
+      });
+      availableYears = Array.from(yearsSet).sort().reverse();
+      availableCustomers = Array.from(customersSet).sort();
 
       applyFilters();
     } catch (err) {
@@ -175,6 +193,19 @@
       result = result.filter(o => o.status === activeFilter);
     }
 
+    // Year filter
+    if (selectedYear !== 'All') {
+      result = result.filter(o => {
+        if (!o.order_date) return false;
+        return new Date(o.order_date).getFullYear().toString() === selectedYear;
+      });
+    }
+
+    // Customer filter
+    if (selectedCustomer !== 'All') {
+      result = result.filter(o => o.customer_name === selectedCustomer);
+    }
+
     // Search filter
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
@@ -191,6 +222,8 @@
   $: {
     searchQuery;
     activeFilter;
+    selectedYear;
+    selectedCustomer;
     applyFilters();
   }
 
@@ -478,30 +511,97 @@
 </script>
 
 {#if embedded}
-  <!-- Embedded mode - minimal UI for dashboard widgets -->
+  <!-- Embedded mode - ALL orders grouped by year -->
   <div class="orders-embedded">
-    <h3>Recent Orders</h3>
+    <!-- Summary bar -->
+    <div class="embedded-header">
+      <h3>All Orders ({orders.length})</h3>
+      <div class="embedded-stats">
+        <span class="embedded-stat">{formatCurrency(stats.totalValue)} total</span>
+        <span class="embedded-stat">{stats.confirmed} confirmed</span>
+        <span class="embedded-stat">{stats.delivered} delivered</span>
+      </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="embedded-filters">
+      <input
+        type="text"
+        placeholder="Search orders..."
+        bind:value={searchQuery}
+        class="embedded-search"
+      />
+      <select class="embedded-select" bind:value={activeFilter}>
+        <option value="All">All Status</option>
+        {#each ORDER_STATUSES as status}
+          <option value={status.key}>{status.label}</option>
+        {/each}
+      </select>
+    </div>
+
     {#if loading}
       <div class="loading-container">
         <WabiSpinner size="md" />
       </div>
-    {:else if orders.length === 0}
-      <p class="empty-message">No orders yet</p>
+    {:else if filteredOrders.length === 0}
+      <p class="empty-message">No orders found</p>
     {:else}
-      <div class="orders-list">
-        {#each orders.slice(0, 5) as order}
-          <div class="order-item" on:click={() => handleRowClick(order)}>
-            <div class="order-info">
-              <span class="order-number">{order.order_number}</span>
-              <span class="order-customer">{order.customer_name}</span>
+      <!-- Group orders by year -->
+      {#each availableYears as year}
+        {@const yearOrders = filteredOrders.filter(o => o.order_date && new Date(o.order_date).getFullYear().toString() === year)}
+        {#if yearOrders.length > 0}
+          <div class="year-group">
+            <div class="year-header">
+              <span class="year-label">{year}</span>
+              <span class="year-count">{yearOrders.length} orders</span>
+              <span class="year-value">{formatCurrency(yearOrders.reduce((sum, o) => sum + (o.total_value_bhd || 0), 0))}</span>
             </div>
-            <div class="order-meta">
-              <StatusBadge status={order.status} size="sm" />
-              <span class="order-value">{formatCurrency(order.total_value_bhd || 0)}</span>
+            <div class="orders-list">
+              {#each yearOrders as order}
+                <div class="order-item" on:click={() => handleRowClick(order)}>
+                  <div class="order-left">
+                    <span class="order-number">{order.order_number}</span>
+                    <span class="order-customer">{order.customer_name}</span>
+                    {#if order.customer_po_number}
+                      <span class="order-ref">Ref: {order.customer_po_number}</span>
+                    {/if}
+                  </div>
+                  <div class="order-right">
+                    <StatusBadge status={order.status} size="sm" />
+                    <span class="order-value">{formatCurrency(order.total_value_bhd || 0)}</span>
+                    <span class="order-date">{formatDate(order.order_date)}</span>
+                  </div>
+                </div>
+              {/each}
             </div>
           </div>
-        {/each}
-      </div>
+        {/if}
+      {/each}
+
+      <!-- Orders without dates -->
+      {@const undatedOrders = filteredOrders.filter(o => !o.order_date)}
+      {#if undatedOrders.length > 0}
+        <div class="year-group">
+          <div class="year-header">
+            <span class="year-label">No Date</span>
+            <span class="year-count">{undatedOrders.length} orders</span>
+          </div>
+          <div class="orders-list">
+            {#each undatedOrders as order}
+              <div class="order-item" on:click={() => handleRowClick(order)}>
+                <div class="order-left">
+                  <span class="order-number">{order.order_number}</span>
+                  <span class="order-customer">{order.customer_name}</span>
+                </div>
+                <div class="order-right">
+                  <StatusBadge status={order.status} size="sm" />
+                  <span class="order-value">{formatCurrency(order.total_value_bhd || 0)}</span>
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
     {/if}
   </div>
 {:else}
@@ -542,6 +642,22 @@
             {status.label} ({orders.filter(o => o.status === status.key).length})
           </button>
         {/each}
+      </div>
+
+      <div class="dropdown-filters">
+        <select class="filter-select" bind:value={selectedYear}>
+          <option value="All">All Years</option>
+          {#each availableYears as year}
+            <option value={year}>{year}</option>
+          {/each}
+        </select>
+
+        <select class="filter-select" bind:value={selectedCustomer}>
+          <option value="All">All Customers</option>
+          {#each availableCustomers as customer}
+            <option value={customer}>{customer}</option>
+          {/each}
+        </select>
       </div>
 
       <div class="search-box">
@@ -834,65 +950,176 @@
   /* Embedded Mode */
   .orders-embedded {
     padding: 16px;
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+  }
+
+  .embedded-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
   }
 
   .orders-embedded h3 {
-    margin: 0 0 12px 0;
+    margin: 0;
     font-size: 14px;
     font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .embedded-stats {
+    display: flex;
+    gap: 16px;
+  }
+
+  .embedded-stat {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono, monospace);
+  }
+
+  .embedded-filters {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .embedded-search {
+    flex: 1;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    font-size: 12px;
+    outline: none;
+  }
+
+  .embedded-search:focus {
+    border-color: var(--primary, #4F46E5);
+  }
+
+  .embedded-select {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    font-size: 12px;
+    background: transparent;
+    outline: none;
+    cursor: pointer;
+    min-width: 120px;
+  }
+
+  /* Year Groups */
+  .year-group {
+    margin-bottom: 20px;
+  }
+
+  .year-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 2px solid var(--text-primary, #1a1a1a);
+    margin-bottom: 8px;
+  }
+
+  .year-label {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-family: var(--font-mono, monospace);
+  }
+
+  .year-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .year-value {
+    margin-left: auto;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: var(--font-mono, monospace);
     color: var(--text-primary);
   }
 
   .orders-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 4px;
   }
 
   .order-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px;
-    background: var(--bg-subtle);
-    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    background: var(--surface, #fafafa);
+    border: 1px solid var(--border, #e5e5e5);
+    border-radius: var(--radius-md, 6px);
     cursor: pointer;
-    transition: background 0.2s;
+    transition: all 0.15s;
   }
 
   .order-item:hover {
-    background: var(--bg-hover);
+    background: var(--bg-hover, #f0f0f0);
+    border-color: var(--text-muted, #999);
   }
 
-  .order-info {
+  .order-left {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
   }
 
   .order-number {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
-    font-family: var(--font-mono);
+    font-family: var(--font-mono, monospace);
     color: var(--text-primary);
+    white-space: nowrap;
   }
 
   .order-customer {
     font-size: 12px;
     color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 200px;
   }
 
-  .order-meta {
+  .order-ref {
+    font-size: 10px;
+    color: var(--text-muted, #999);
+    font-family: var(--font-mono, monospace);
+    white-space: nowrap;
+  }
+
+  .order-right {
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 4px;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
   }
 
   .order-value {
     font-size: 12px;
-    font-family: var(--font-mono);
+    font-family: var(--font-mono, monospace);
+    font-weight: 600;
     color: var(--text-primary);
+    min-width: 100px;
+    text-align: right;
+  }
+
+  .order-date {
+    font-size: 11px;
+    color: var(--text-muted, #999);
+    min-width: 80px;
+    text-align: right;
   }
 
   /* Full Screen Mode */
@@ -936,6 +1163,7 @@
     align-items: center;
     margin-bottom: 16px;
     gap: 16px;
+    flex-wrap: wrap;
   }
 
   .filter-tabs {
@@ -964,6 +1192,28 @@
   .filter-tab.active {
     background: var(--primary);
     color: white;
+    border-color: var(--primary);
+  }
+
+  .dropdown-filters {
+    display: flex;
+    gap: 8px;
+  }
+
+  .filter-select {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-size: 13px;
+    background: transparent;
+    color: var(--text-primary);
+    outline: none;
+    cursor: pointer;
+    min-width: 140px;
+    transition: border-color 0.2s;
+  }
+
+  .filter-select:focus {
     border-color: var(--primary);
   }
 

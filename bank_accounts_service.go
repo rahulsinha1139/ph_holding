@@ -139,7 +139,10 @@ func (a *App) GetBankAccountByID(id string) (*CompanyBankAccount, error) {
 	var bank CompanyBankAccount
 	err := a.db.First(&bank, "id = ?", id).Error
 	if err != nil {
-		return nil, err
+		// Log detailed error for debugging
+		log.Printf("GetBankAccountByID error: %v", err)
+		// Return sanitized error to frontend
+		return nil, fmt.Errorf("operation failed. Please try again or contact support")
 	}
 	return &bank, nil
 }
@@ -156,7 +159,11 @@ func (a *App) GetAllBankAccounts() ([]CompanyBankAccount, error) {
 
 	var banks []CompanyBankAccount
 	err := a.db.Order("display_order").Find(&banks).Error
-	return banks, err
+	if err != nil {
+		log.Printf("GetAllBankAccounts error: %v", err)
+		return nil, fmt.Errorf("operation failed. Please try again or contact support")
+	}
+	return banks, nil
 }
 
 // CreateBankAccount creates a new bank account (user-entered or from OCR)
@@ -205,7 +212,8 @@ func (a *App) CreateBankAccount(account CompanyBankAccount) (*CompanyBankAccount
 	// Create in database
 	err := a.db.Create(&account).Error
 	if err != nil {
-		return nil, fmt.Errorf("failed to create bank account: %w", err)
+		log.Printf("CreateBankAccount error: %v", err)
+		return nil, fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	log.Printf("✅ Created bank account: %s - %s", account.BankName, account.AccountNumber)
@@ -226,7 +234,8 @@ func (a *App) UpdateBankAccount(id string, updates map[string]interface{}) (*Com
 	var account CompanyBankAccount
 	err := a.db.First(&account, "id = ?", id).Error
 	if err != nil {
-		return nil, fmt.Errorf("bank account not found: %w", err)
+		log.Printf("UpdateBankAccount find error: %v", err)
+		return nil, fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	// Set updated_at
@@ -235,13 +244,15 @@ func (a *App) UpdateBankAccount(id string, updates map[string]interface{}) (*Com
 	// Apply updates
 	err = a.db.Model(&account).Updates(updates).Error
 	if err != nil {
-		return nil, fmt.Errorf("failed to update bank account: %w", err)
+		log.Printf("UpdateBankAccount update error: %v", err)
+		return nil, fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	// Fetch updated record
 	err = a.db.First(&account, "id = ?", id).Error
 	if err != nil {
-		return nil, err
+		log.Printf("UpdateBankAccount refetch error: %v", err)
+		return nil, fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	log.Printf("✅ Updated bank account: %s", id)
@@ -262,17 +273,19 @@ func (a *App) DeleteBankAccount(id string) error {
 	var statementCount int64
 	err := a.db.Model(&BankStatement{}).Where("bank_account_id = ?", id).Count(&statementCount).Error
 	if err != nil {
-		return fmt.Errorf("failed to check linked statements: %w", err)
+		log.Printf("DeleteBankAccount count error: %v", err)
+		return fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	if statementCount > 0 {
-		return fmt.Errorf("cannot delete account with %d linked bank statements - deactivate instead", statementCount)
+		return fmt.Errorf("cannot delete account with linked bank statements - please deactivate instead")
 	}
 
 	// Soft delete - set is_active to false
 	err = a.db.Model(&CompanyBankAccount{}).Where("id = ?", id).Update("is_active", false).Error
 	if err != nil {
-		return fmt.Errorf("failed to deactivate bank account: %w", err)
+		log.Printf("DeleteBankAccount deactivate error: %v", err)
+		return fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	log.Printf("✅ Deactivated bank account: %s", id)

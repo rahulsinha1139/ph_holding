@@ -270,21 +270,37 @@ func (a *App) calculateFinancialYearFromTally(year int) (*FinancialYearSummary, 
 		summary.TradePayables = summary.CostOfSales * 0.10 // ~35 days DPO
 	}
 
-	// Estimate cash and balance sheet - use 2024 as base
-	// For unaudited years, we use conservative estimates based on known data
-	// fs2024 already loaded at start of function
+	// Cash position - try to get from actual bank statements first
 	summary.RelatedPartyRecv = fs2024.RelatedPartyRecv
 
-	// For cash, use 2024 value as starting point
-	// Only adjust if we have positive net profit (conservative approach)
-	summary.CashEquivalents = fs2024.CashEquivalents
-	if summary.NetProfit > 0 {
-		// Add profit retention
-		summary.CashEquivalents += summary.NetProfit * 0.7 // 70% retained
+	// Query actual bank balances from latest bank statements
+	var totalBankBalance float64
+	var bankBalanceFound bool
+	type BalanceResult struct {
+		Balance float64
 	}
-	// Don't let cash go negative (we'd see this in actual data if it were real)
-	if summary.CashEquivalents < 0 {
-		summary.CashEquivalents = fs2024.CashEquivalents * 0.8 // Estimate 20% drawdown max
+	var balResult BalanceResult
+	err = a.db.Model(&BankStatement{}).
+		Where("strftime('%Y', period_end) = ?", fmt.Sprintf("%d", year)).
+		Select("COALESCE(SUM(closing_balance), 0) as balance").
+		Scan(&balResult).Error
+	if err == nil && balResult.Balance > 0 {
+		totalBankBalance = balResult.Balance
+		bankBalanceFound = true
+		log.Printf("📊 Year %d cash from bank statements: %.3f BHD", year, totalBankBalance)
+	}
+
+	if bankBalanceFound {
+		summary.CashEquivalents = totalBankBalance
+	} else {
+		// Fallback: use 2024 value as starting point
+		summary.CashEquivalents = fs2024.CashEquivalents
+		if summary.NetProfit > 0 {
+			summary.CashEquivalents += summary.NetProfit * 0.7
+		}
+		if summary.CashEquivalents < 0 {
+			summary.CashEquivalents = fs2024.CashEquivalents * 0.8
+		}
 	}
 
 	// Calculate totals - use actual AR/AP from database queries (most reliable)
@@ -312,6 +328,28 @@ func (a *App) calculateFinancialYearFromTally(year int) (*FinancialYearSummary, 
 	summary.LeaseCurrent = fs2024.LeaseCurrent
 	summary.CurrentLiabilities = summary.TradePayables + summary.LeaseCurrent
 	summary.TotalLiabilities = summary.CurrentLiabilities + summary.LeaseNonCurrent
+
+	// For current year with no invoices yet, show offer pipeline as context
+	if summary.Revenue == 0 {
+		var pipelineValue float64
+		var offerCount int64
+		a.db.Model(&Offer{}).
+			Where("strftime('%Y', quotation_date) = ? AND stage NOT IN ('Lost', 'Expired')", fmt.Sprintf("%d", year)).
+			Select("COALESCE(SUM(total_value_bhd), 0)").Scan(&pipelineValue)
+		a.db.Model(&Offer{}).
+			Where("strftime('%Y', quotation_date) = ? AND stage NOT IN ('Lost', 'Expired')", fmt.Sprintf("%d", year)).
+			Count(&offerCount)
+
+		if pipelineValue > 0 || offerCount > 0 {
+			summary.Source = fmt.Sprintf("Pipeline Data (%d offers, Unaudited)", offerCount)
+			// Use pipeline as estimated revenue (weighted by typical conversion rate)
+			summary.Revenue = pipelineValue * 0.4 // 40% conversion estimate
+			summary.CostOfSales = summary.Revenue * (1 - grossMarginPct2024)
+			summary.GrossProfit = summary.Revenue - summary.CostOfSales
+			log.Printf("📊 Year %d: Using offer pipeline (%.2f BHD, %d offers) for estimates",
+				year, pipelineValue, offerCount)
+		}
+	}
 
 	log.Printf("✅ Calculated financial data for year %d: Revenue=%.2f, GrossProfit=%.2f",
 		year, summary.Revenue, summary.GrossProfit)
@@ -464,9 +502,9 @@ func (a *App) calculateARAging(year int) ARAging {
 	aging := ARAging{}
 	now := time.Now()
 
-	// Get unpaid invoices for the year
+	// Get unpaid invoices for the year (SQLite strftime)
 	var invoices []Invoice
-	err := a.db.Where("EXTRACT(YEAR FROM invoice_date) = ? AND status NOT IN ('Paid', 'Cancelled')", year).
+	err := a.db.Where("strftime('%Y', invoice_date) = ? AND status NOT IN ('Paid', 'Cancelled')", fmt.Sprintf("%d", year)).
 		Find(&invoices).Error
 	if err != nil {
 		log.Printf("⚠️ Error fetching invoices for AR aging: %v", err)
@@ -586,6 +624,42 @@ func (a *App) GetAvailableFinancialYears() ([]int, error) {
 				var year int
 				fmt.Sscanf(yearStr, "%d", &year)
 				if year > 0 && year != 2023 && year != 2024 {
+					yearsMap[year] = true
+				}
+			}
+		}
+	}
+
+	// Add years from offers (for current year pipeline visibility)
+	var offerYears []string
+	err = a.db.Model(&Offer{}).
+		Select("DISTINCT strftime('%Y', quotation_date) as year").
+		Where("quotation_date IS NOT NULL AND deleted_at IS NULL").
+		Pluck("year", &offerYears).Error
+	if err == nil {
+		for _, yearStr := range offerYears {
+			if yearStr != "" {
+				var year int
+				fmt.Sscanf(yearStr, "%d", &year)
+				if year > 0 {
+					yearsMap[year] = true
+				}
+			}
+		}
+	}
+
+	// Add years from bank statements
+	var bankYears []string
+	err = a.db.Model(&BankStatement{}).
+		Select("DISTINCT strftime('%Y', period_end) as year").
+		Where("period_end IS NOT NULL").
+		Pluck("year", &bankYears).Error
+	if err == nil {
+		for _, yearStr := range bankYears {
+			if yearStr != "" {
+				var year int
+				fmt.Sscanf(yearStr, "%d", &year)
+				if year > 0 {
 					yearsMap[year] = true
 				}
 			}

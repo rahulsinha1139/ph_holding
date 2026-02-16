@@ -602,6 +602,10 @@ export function ExportCustomerTemplate() {
   return window['go']['main']['App']['ExportCustomerTemplate']();
 }
 
+export function ExportEncryptionBackup() {
+  return window['go']['main']['App']['ExportEncryptionBackup']();
+}
+
 export function ExportGraphJSON() {
   return window['go']['main']['App']['ExportGraphJSON']();
 }
@@ -1718,6 +1722,10 @@ export function HasPermission(arg1, arg2) {
   return window['go']['main']['App']['HasPermission'](arg1, arg2);
 }
 
+export function Import2026BusinessData(arg1) {
+  return window['go']['main']['App']['Import2026BusinessData'](arg1);
+}
+
 export function ImportARDefaulters() {
   return window['go']['main']['App']['ImportARDefaulters']();
 }
@@ -1740,6 +1748,10 @@ export function ImportBankStatementWithDialog(arg1) {
 
 export function ImportCostingToOpportunity(arg1) {
   return window['go']['main']['App']['ImportCostingToOpportunity'](arg1);
+}
+
+export function ImportEncryptionBackup(arg1, arg2) {
+  return window['go']['main']['App']['ImportEncryptionBackup'](arg1, arg2);
 }
 
 export function ImportSSOTData() {
@@ -1964,6 +1976,10 @@ export function MarkOfferWon(arg1, arg2) {
 
 export function MarkSupplierInvoicePaid(arg1, arg2, arg3) {
   return window['go']['main']['App']['MarkSupplierInvoicePaid'](arg1, arg2, arg3);
+}
+
+export function MigrateBankAccountEncryption() {
+  return window['go']['main']['App']['MigrateBankAccountEncryption']();
 }
 
 export function NeedsLicenseActivation() {
@@ -2218,6 +2234,10 @@ export function RevokeLicense(arg1) {
   return window['go']['main']['App']['RevokeLicense'](arg1);
 }
 
+export function RotateEncryptionKey() {
+  return window['go']['main']['App']['RotateEncryptionKey']();
+}
+
 export function RouteEvent(arg1) {
   return window['go']['main']['App']['RouteEvent'](arg1);
 }
@@ -2274,6 +2294,10 @@ export function SearchProducts(arg1) {
   return window['go']['main']['App']['SearchProducts'](arg1);
 }
 
+export function SeedAdditionalBankAccounts() {
+  return window['go']['main']['App']['SeedAdditionalBankAccounts']();
+}
+
 export function SeedBankDemoData() {
   return window['go']['main']['App']['SeedBankDemoData']();
 }
@@ -2304,6 +2328,14 @@ export function SeedDefaultExchangeRates() {
 
 export function SeedDefaultRoles() {
   return window['go']['main']['App']['SeedDefaultRoles']();
+}
+
+export function SeedEmployeeKeys() {
+  return window['go']['main']['App']['SeedEmployeeKeys']();
+}
+
+export function SeedLicenseKeys() {
+  return window['go']['main']['App']['SeedLicenseKeys']();
 }
 
 export function SeedProductDatabase() {

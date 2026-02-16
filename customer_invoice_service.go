@@ -425,6 +425,7 @@ func (a *App) GetCustomerInvoiceByID(id string) (Invoice, error) {
 // UpdateCustomerInvoice updates an existing customer invoice
 // Recalculates margin if costs changed, updates timestamp
 // FIX: Uses Save() instead of Updates() to preserve ALL fields including zero-value strings
+// SECURITY: Paid invoices are immutable to prevent audit trail tampering
 func (a *App) UpdateCustomerInvoice(inv Invoice) (Invoice, error) {
 	if err := a.requirePermission("invoices:update"); err != nil {
 		return Invoice{}, err
@@ -437,6 +438,11 @@ func (a *App) UpdateCustomerInvoice(inv Invoice) (Invoice, error) {
 	var existing Invoice
 	if err := a.db.Where("id = ?", inv.ID).First(&existing).Error; err != nil {
 		return Invoice{}, fmt.Errorf("invoice not found: %w", err)
+	}
+
+	// SECURITY: If invoice is Paid, block any status regression (immutable for audit compliance)
+	if existing.Status == "Paid" && inv.Status != "Paid" {
+		return Invoice{}, fmt.Errorf("cannot change status of paid invoice (immutable for audit compliance)")
 	}
 
 	// CRITICAL FIX: Preserve ALL fields that weren't sent from frontend
@@ -494,6 +500,7 @@ func (a *App) UpdateCustomerInvoice(inv Invoice) (Invoice, error) {
 // DeleteCustomerInvoice deletes a customer invoice
 // Only allows deletion if not paid (to prevent accounting issues)
 // Reverses QuantityInvoiced updates on order items
+// SECURITY: Blocks deletion if any payment history exists (audit requirement)
 func (a *App) DeleteCustomerInvoice(id string) error {
 	if err := a.requirePermission("invoices:delete"); err != nil {
 		return err
@@ -511,6 +518,13 @@ func (a *App) DeleteCustomerInvoice(id string) error {
 	// Check if invoice can be deleted (not paid)
 	if invoice.Status == "Paid" {
 		return fmt.Errorf("cannot delete paid invoice: %s", invoice.InvoiceNumber)
+	}
+
+	// SECURITY: Block deletion if any payment history exists (audit requirement)
+	var paymentCount int64
+	a.db.Model(&Payment{}).Where("invoice_id = ?", id).Count(&paymentCount)
+	if paymentCount > 0 {
+		return fmt.Errorf("cannot delete invoice with payment history (%d payment(s) - audit requirement)", paymentCount)
 	}
 
 	// Reverse QuantityInvoiced on order items if order exists

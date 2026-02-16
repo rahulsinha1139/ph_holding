@@ -142,11 +142,14 @@ export async function initAuthContext() {
             permissions.set(perms);
         }
 
-        console.log('Auth context initialized:', {
-            user: user?.full_name,
-            role: user?.role_name,
-            permissions: (await GetUserPermissions(user?.id))?.length || 0
-        });
+        // Only log in development mode to prevent information disclosure
+        if (import.meta.env.DEV) {
+            console.log('Auth context initialized:', {
+                user: user?.full_name,
+                role: user?.role_name,
+                permissions: (await GetUserPermissions(user?.id))?.length || 0
+            });
+        }
 
     } catch (err) {
         console.error('Failed to initialize auth context:', err);

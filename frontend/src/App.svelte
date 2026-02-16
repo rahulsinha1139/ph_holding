@@ -403,13 +403,12 @@
 
                 if (licenseResult && licenseResult.valid) {
                     // License is valid - set up user context from license
-                    devLog.info(`Valid license found: role=${licenseResult.role}`);
+                    devLog.info(`Valid license found: role=${licenseResult.role}, name=${licenseResult.display_name}`);
                     deviceStatus = "approved";
                     licenseRole = licenseResult.role;
                     licensePermissions = licenseResult.permissions || [];
 
-                    // Set user context based on license
-                    // FIX #15: Use descriptive name instead of duplicating role
+                    // Set user context - use employee name from license if available
                     const roleDisplayNames: Record<string, string> = {
                         'admin': 'Administrator',
                         'manager': 'Manager',
@@ -417,9 +416,10 @@
                         'operations': 'Ops User',
                         'dev': 'Developer',
                     };
+                    const displayName = licenseResult.display_name || roleDisplayNames[licenseResult.role] || 'PH User';
                     currentUser.set({
                         id: `license-${licenseResult.role}`,
-                        full_name: roleDisplayNames[licenseResult.role] || 'PH User',
+                        full_name: displayName,
                         role_name: licenseResult.role,
                     });
 
@@ -428,7 +428,7 @@
 
                     devLog.info(`Permissions set from license: ${JSON.stringify(licensePermissions)}`);
 
-                    toast.success(`Welcome! License: ${licenseResult.role.toUpperCase()}`);
+                    toast.success(`Welcome, ${displayName}!`);
 
                     // Register file drop handler now that license is valid
                     registerFileDropHandler();
@@ -600,15 +600,14 @@
 
     // Handle license activation success
     async function handleLicenseActivated(event: CustomEvent) {
-        const { role, permissions: permsFromLicense, deviceHash } = event.detail;
-        devLog.info(`License activated: role=${role}`);
+        const { role, permissions: permsFromLicense, deviceHash, display_name } = event.detail;
+        devLog.info(`License activated: role=${role}, name=${display_name}`);
 
         deviceStatus = "approved";
         licenseRole = role;
         licensePermissions = permsFromLicense || [];
 
-        // Set user context based on license
-        // FIX #15: Use descriptive name instead of duplicating role
+        // Set user context - use employee name from license if available
         const roleDisplayNames: Record<string, string> = {
             'admin': 'Administrator',
             'manager': 'Manager',
@@ -616,9 +615,10 @@
             'operations': 'Ops User',
             'dev': 'Developer',
         };
+        const displayName = display_name || roleDisplayNames[role] || 'PH User';
         currentUser.set({
             id: `license-${role}`,
-            full_name: roleDisplayNames[role] || 'PH User',
+            full_name: displayName,
             role_name: role,
         });
 

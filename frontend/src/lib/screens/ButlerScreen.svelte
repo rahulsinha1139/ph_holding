@@ -190,7 +190,7 @@
                                         {:else}
                                             <span class="chip-icon">+</span>
                                         {/if}
-                                        <span>{action.data || action.target}</span>
+                                        <span>{typeof action.data === 'string' ? action.data : (action.target || action.label || 'View')}</span>
                                     </button>
                                 {/each}
                             </div>

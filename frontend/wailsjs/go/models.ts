@@ -5670,6 +5670,7 @@ export namespace main {
 	    amount: number;
 	    contact: string;
 	    notes: string;
+	    completed_at?: time.Time;
 	
 	    static createFrom(source: any = {}) {
 	        return new FollowUpTask(source);
@@ -5692,6 +5693,7 @@ export namespace main {
 	        this.amount = source["amount"];
 	        this.contact = source["contact"];
 	        this.notes = source["notes"];
+	        this.completed_at = this.convertValues(source["completed_at"], time.Time);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -7511,6 +7513,7 @@ export namespace main {
 	    success: boolean;
 	    message: string;
 	    role: string;
+	    display_name: string;
 	    permissions: string[];
 	    device_hash: string;
 	
@@ -7523,6 +7526,7 @@ export namespace main {
 	        this.success = source["success"];
 	        this.message = source["message"];
 	        this.role = source["role"];
+	        this.display_name = source["display_name"];
 	        this.permissions = source["permissions"];
 	        this.device_hash = source["device_hash"];
 	    }
@@ -7531,6 +7535,7 @@ export namespace main {
 	    id: number;
 	    key: string;
 	    role: string;
+	    display_name: string;
 	    device_hash: string;
 	    activated: boolean;
 	    activated_at?: time.Time;
@@ -7548,6 +7553,7 @@ export namespace main {
 	        this.id = source["id"];
 	        this.key = source["key"];
 	        this.role = source["role"];
+	        this.display_name = source["display_name"];
 	        this.device_hash = source["device_hash"];
 	        this.activated = source["activated"];
 	        this.activated_at = this.convertValues(source["activated_at"], time.Time);
@@ -7579,6 +7585,7 @@ export namespace main {
 	    valid: boolean;
 	    role: string;
 	    key: string;
+	    display_name: string;
 	    permissions: string[];
 	    expires_at?: string;
 	
@@ -7591,6 +7598,7 @@ export namespace main {
 	        this.valid = source["valid"];
 	        this.role = source["role"];
 	        this.key = source["key"];
+	        this.display_name = source["display_name"];
 	        this.permissions = source["permissions"];
 	        this.expires_at = source["expires_at"];
 	    }
@@ -8050,6 +8058,7 @@ export namespace main {
 	    payment_terms: string;
 	    delivery_terms: string;
 	    discount: number;
+	    stage: string;
 	    items: OfferUpdateItem[];
 	
 	    static createFrom(source: any = {}) {
@@ -8066,6 +8075,7 @@ export namespace main {
 	        this.payment_terms = source["payment_terms"];
 	        this.delivery_terms = source["delivery_terms"];
 	        this.discount = source["discount"];
+	        this.stage = source["stage"];
 	        this.items = this.convertValues(source["items"], OfferUpdateItem);
 	    }
 	

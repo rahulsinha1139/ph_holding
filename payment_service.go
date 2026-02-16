@@ -288,6 +288,28 @@ func (a *App) DeletePayment(id string) error {
 		}
 	}()
 
+	// SECURITY: Audit log BEFORE deletion (financial transaction)
+	log.Printf("🔒 AUDIT: Payment %s (%.3f BHD) deleted for invoice %s by user %s",
+		payment.ID, payment.AmountBHD, payment.InvoiceID, a.getCurrentUserID())
+
+	if GlobalAuditLogger != nil {
+		GlobalAuditLogger.LogFinancialTransaction(
+			a.getCurrentUserID(),
+			"payment_deleted",
+			"payment",
+			payment.ID,
+			payment.AmountBHD,
+			"BHD",
+			true,
+			map[string]interface{}{
+				"invoice_id":     payment.InvoiceID,
+				"invoice_number": payment.InvoiceNumber,
+				"payment_method": payment.PaymentMethod,
+				"reference":      payment.Reference,
+			},
+		)
+	}
+
 	// Delete payment
 	if err := tx.Delete(&payment).Error; err != nil {
 		tx.Rollback()

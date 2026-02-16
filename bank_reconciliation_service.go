@@ -39,7 +39,8 @@ func (a *App) GetBankStatements(bankAccountID string) ([]BankStatement, error) {
 	}
 
 	if err := query.Find(&statements).Error; err != nil {
-		return nil, fmt.Errorf("failed to retrieve bank statements: %w", err)
+		log.Printf("GetBankStatements error: %v", err)
+		return nil, fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	return statements, nil
@@ -56,7 +57,8 @@ func (a *App) GetBankStatementByID(id string) (*BankStatement, error) {
 
 	var statement BankStatement
 	if err := a.db.Preload("Lines").First(&statement, "id = ?", id).Error; err != nil {
-		return nil, fmt.Errorf("statement not found: %w", err)
+		log.Printf("GetBankStatementByID error: %v", err)
+		return nil, fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	return &statement, nil
@@ -76,7 +78,8 @@ func (a *App) CreateBankStatement(statement *BankStatement) error {
 	}
 
 	if err := a.db.Create(statement).Error; err != nil {
-		return fmt.Errorf("failed to create statement: %w", err)
+		log.Printf("CreateBankStatement error: %v", err)
+		return fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	log.Printf("📊 Bank statement created: %s (Period: %s to %s)",
@@ -98,7 +101,8 @@ func (a *App) UpdateBankStatement(id string, updates map[string]interface{}) err
 
 	result := a.db.Model(&BankStatement{}).Where("id = ?", id).Updates(updates)
 	if result.Error != nil {
-		return fmt.Errorf("failed to update statement: %w", result.Error)
+		log.Printf("UpdateBankStatement error: %v", result.Error)
+		return fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	if result.RowsAffected == 0 {
@@ -119,7 +123,8 @@ func (a *App) DeleteBankStatement(id string) error {
 
 	result := a.db.Delete(&BankStatement{}, "id = ?", id)
 	if result.Error != nil {
-		return fmt.Errorf("failed to delete statement: %w", result.Error)
+		log.Printf("DeleteBankStatement error: %v", result.Error)
+		return fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	log.Printf("🗑️ Bank statement deleted: %s", id)
@@ -143,7 +148,8 @@ func (a *App) GetBankStatementLines(statementID string) ([]BankStatementLine, er
 	if err := a.db.Where("bank_statement_id = ?", statementID).
 		Order("line_number ASC").
 		Find(&lines).Error; err != nil {
-		return nil, fmt.Errorf("failed to retrieve statement lines: %w", err)
+		log.Printf("GetBankStatementLines error: %v", err)
+		return nil, fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	return lines, nil
@@ -162,7 +168,8 @@ func (a *App) GetUnmatchedLines(statementID string) ([]BankStatementLine, error)
 	if err := a.db.Where("bank_statement_id = ? AND is_matched = ?", statementID, false).
 		Order("line_number ASC").
 		Find(&lines).Error; err != nil {
-		return nil, fmt.Errorf("failed to retrieve unmatched lines: %w", err)
+		log.Printf("GetUnmatchedLines error: %v", err)
+		return nil, fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	return lines, nil
@@ -179,7 +186,8 @@ func (a *App) UpdateBankStatementLine(lineID string, updates map[string]interfac
 
 	result := a.db.Model(&BankStatementLine{}).Where("id = ?", lineID).Updates(updates)
 	if result.Error != nil {
-		return fmt.Errorf("failed to update line: %w", result.Error)
+		log.Printf("UpdateBankStatementLine error: %v", result.Error)
+		return fmt.Errorf("operation failed. Please try again or contact support")
 	}
 
 	return nil
@@ -239,12 +247,42 @@ func (a *App) CreateBankStatementLine(statementID string, line map[string]interf
 }
 
 // DeleteBankStatementLine soft-deletes a statement line
+// SECURITY: Audit log before deletion (financial transaction)
 func (a *App) DeleteBankStatementLine(lineID string) error {
 	if err := a.requirePermission("finance:delete"); err != nil {
 		return err
 	}
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
+	}
+
+	// Get line details for audit log
+	var line BankStatementLine
+	if err := a.db.First(&line, "id = ?", lineID).Error; err != nil {
+		return fmt.Errorf("line not found: %w", err)
+	}
+
+	// SECURITY: Audit log BEFORE deletion
+	log.Printf("🔒 AUDIT: Bank statement line %s deleted (Amount: %.3f BHD, Desc: %s) by user %s",
+		lineID, line.Debit+line.Credit, line.Description, a.getCurrentUserID())
+
+	if GlobalAuditLogger != nil {
+		GlobalAuditLogger.LogFinancialTransaction(
+			a.getCurrentUserID(),
+			"bank_line_deleted",
+			"bank_statement_line",
+			lineID,
+			line.Debit+line.Credit,
+			"BHD",
+			true,
+			map[string]interface{}{
+				"bank_statement_id": line.BankStatementID,
+				"description":       line.Description,
+				"reference":         line.Reference,
+				"debit":             line.Debit,
+				"credit":            line.Credit,
+			},
+		)
 	}
 
 	result := a.db.Delete(&BankStatementLine{}, "id = ?", lineID)

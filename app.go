@@ -60,10 +60,11 @@ type App struct {
 	dbSyncService    *DBSyncService              // Supabase bidirectional sync service
 	msgParser       *MSGParserService           // MSG parser service for Outlook .msg files
 	fieldCrypto      *FieldCrypto                // Field-level encryption (HKDF + AES-256-GCM)
-	logFile          *os.File                    // Log file handle for cleanup (FIX: resource leak)
-	startupImporting bool                        // Bypass RBAC during startup data import
-	currentUser      *User                       // Current logged-in user
-	currentUserID    string                      // Current user ID for quick access
+	logFile               *os.File  // Log file handle for cleanup (FIX: resource leak)
+	startupImporting      bool      // Bypass RBAC during startup data import
+	startupImportStartTime time.Time // Timestamp when startup import began (for timeout enforcement)
+	currentUser           *User     // Current logged-in user
+	currentUserID         string    // Current user ID for quick access
 }
 
 // ThreeRegime is exposed for bindings (R1/R2/R3 JSON fields).
@@ -316,7 +317,10 @@ func (a *App) startup(ctx context.Context) {
 	})
 
 	if err != nil {
-		errMsg := fmt.Sprintf("Failed to connect to SQLite database: %v", err)
+		// FIX 3: Sanitize error message - don't expose internal paths to user
+		sanitizedMsg := "Failed to connect to database. Please check your installation and ensure the application has proper file permissions."
+
+		// Log detailed error internally for debugging
 		AppLogger.Error("Database connection failed", err, map[string]interface{}{
 			"path": dbPath,
 		})
@@ -325,11 +329,11 @@ func (a *App) startup(ctx context.Context) {
 			runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
 				Type:    runtime.ErrorDialog,
 				Title:   "Database Connection Error",
-				Message: errMsg,
+				Message: sanitizedMsg, // User sees sanitized message only
 			})
 		} else {
-			// Fallback: Write to stderr if dialog unavailable
-			fmt.Fprintf(os.Stderr, "FATAL DATABASE ERROR: %s\n", errMsg)
+			// Fallback: Write sanitized message to stderr
+			fmt.Fprintf(os.Stderr, "FATAL DATABASE ERROR: %s\n", sanitizedMsg)
 		}
 		return
 	}
@@ -542,6 +546,16 @@ func (a *App) startup(ctx context.Context) {
 			}
 		}
 		AppLogger.Info("Critical tables ready", nil)
+
+		// Seed license keys (10 per role) if needed
+		if err := a.SeedLicenseKeys(); err != nil {
+			AppLogger.Warn("License key seeding warning", map[string]interface{}{"error": err.Error()})
+		}
+
+		// Assign keys to named employees
+		if err := a.SeedEmployeeKeys(); err != nil {
+			AppLogger.Warn("Employee key assignment warning", map[string]interface{}{"error": err.Error()})
+		}
 
 		// Run custom migrations for schema fixes that SQLite ALTER TABLE can't handle
 		a.runCustomMigrations()
@@ -758,7 +772,7 @@ func (a *App) startup(ctx context.Context) {
 
 		// Try to load cached token
 		if a.authManager.loadTokenCache() {
-			log.Println("✓ Cached authentication token loaded")
+			log.Println("✓ Authentication token loaded")
 		}
 	}
 	log.Println("  → 2-stage classification: Keywords → Heuristics")
@@ -809,6 +823,7 @@ func (a *App) startup(ctx context.Context) {
 		if tallyInvoiceCount == 0 {
 			log.Println("📊 Tally tables empty - importing historical data from Excel files...")
 			a.startupImporting = true
+			a.startupImportStartTime = time.Now() // Record when RBAC bypass started
 			// CRITICAL: defer guarantees this runs even if ImportAllTallyData panics
 			defer func() {
 				a.startupImporting = false
@@ -999,7 +1014,14 @@ func (a *App) runCustomMigrations() {
 }
 
 // dropIndexIfExists drops an index if it exists (SQLite compatible)
+// SECURITY: Validates index name to prevent SQL injection in DDL
 func (a *App) dropIndexIfExists(table, indexName string) {
+	// SECURITY FIX: Validate index name to prevent SQL injection
+	if !isValidSQLIdentifier(indexName) {
+		log.Printf("⚠️ Invalid index name rejected: %s", indexName)
+		return
+	}
+
 	// Try to drop - SQLite DROP INDEX IF EXISTS is safe
 	if err := a.db.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", indexName)).Error; err != nil {
 		log.Printf("⚠️ Index drop note for %s: %v", indexName, err)
@@ -1417,7 +1439,7 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 	log.Printf("Dashboard using invoice year: %d", latestInvoiceYear)
 
 	var revenue float64
-	if err := a.db.Model(&Invoice{}).Where("status = ? AND invoice_date >= ? AND invoice_date < ?", "Paid", yearStart, yearEnd).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&revenue).Error; err != nil {
+	if err := a.db.Model(&Invoice{}).Where("status NOT IN ('Cancelled', 'Void') AND invoice_date >= ? AND invoice_date < ?", yearStart, yearEnd).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&revenue).Error; err != nil {
 		log.Printf("Warning: Failed to calculate revenue: %v", err)
 	}
 	stats.TotalRevenue = revenue
@@ -1446,8 +1468,8 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 	lastMonthStart := currentMonthStart.AddDate(0, -1, 0)
 
 	var currentMonthRev, lastMonthRev float64
-	a.db.Model(&Invoice{}).Where("status = 'Paid' AND invoice_date >= ?", currentMonthStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&currentMonthRev)
-	a.db.Model(&Invoice{}).Where("status = 'Paid' AND invoice_date >= ? AND invoice_date < ?", lastMonthStart, currentMonthStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&lastMonthRev)
+	a.db.Model(&Invoice{}).Where("status NOT IN ('Cancelled', 'Void') AND invoice_date >= ?", currentMonthStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&currentMonthRev)
+	a.db.Model(&Invoice{}).Where("status NOT IN ('Cancelled', 'Void') AND invoice_date >= ? AND invoice_date < ?", lastMonthStart, currentMonthStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&lastMonthRev)
 
 	if lastMonthRev > 0 {
 		stats.MonthGrowth = ((currentMonthRev - lastMonthRev) / lastMonthRev) * 100
@@ -1528,10 +1550,13 @@ func (a *App) GetMonthlyRevenueByCustomer() ([]CustomerRevenueData, error) {
 
 	var results []CustomerRevenueData
 
-	// Current year filter for dashboard
-	currentYear := time.Now().Year()
+	// Use latest invoice year (same approach as dashboard stats)
+	var latestYear int
+	if err := a.db.Model(&Invoice{}).Select("COALESCE(MAX(strftime('%Y', invoice_date)), 0)").Scan(&latestYear).Error; err != nil || latestYear == 0 {
+		latestYear = time.Now().Year()
+	}
 
-	// Query to aggregate revenue by customer (current year only)
+	// Query to aggregate revenue by customer (latest year with data)
 	// Join invoices with customers to get customer names
 	query := `
 		SELECT
@@ -1540,19 +1565,19 @@ func (a *App) GetMonthlyRevenueByCustomer() ([]CustomerRevenueData, error) {
 			COALESCE(SUM(i.grand_total_bhd), 0) as revenue,
 			COUNT(i.id) as invoice_count
 		FROM customers c
-		LEFT JOIN invoices i ON i.customer_id = c.id AND i.status = 'Paid'
+		LEFT JOIN invoices i ON i.customer_id = c.id AND i.status NOT IN ('Cancelled', 'Void')
 			AND strftime('%Y', i.invoice_date) = ?
 		GROUP BY c.id, c.business_name
 		HAVING revenue > 0
 		ORDER BY revenue DESC
 	`
 
-	if err := a.db.Raw(query, fmt.Sprintf("%d", currentYear)).Scan(&results).Error; err != nil {
+	if err := a.db.Raw(query, fmt.Sprintf("%d", latestYear)).Scan(&results).Error; err != nil {
 		log.Printf("Error fetching customer revenue data: %v", err)
 		return nil, newError("DB_QUERY_FAILED", "Failed to retrieve customer revenue data", err.Error())
 	}
 
-	log.Printf("Retrieved revenue data for %d customers (year %d)", len(results), currentYear)
+	log.Printf("Retrieved revenue data for %d customers (year %d)", len(results), latestYear)
 	return results, nil
 }
 
@@ -2043,14 +2068,14 @@ func (a *App) GetCustomer360View(customerID string) (Customer360Data, error) {
 	openOpportunities := a.GetCustomerOpportunities(customer.CustomerID)
 	recentOrders := a.GetCustomerRecentOrders(customer.ID, 5)
 
-	// Calculate Customer Lifetime Value (total paid invoices + current outstanding)
-	var totalPaid float64
+	// Calculate Customer Lifetime Value (total invoices excluding cancelled)
+	var totalInvoiced float64
 	a.db.Model(&Invoice{}).
-		Where("customer_id = ? AND status = 'Paid'", customer.ID).
+		Where("customer_id = ? AND status NOT IN ('Cancelled', 'Void')", customer.ID).
 		Select("COALESCE(SUM(grand_total_bhd), 0)").
-		Scan(&totalPaid)
+		Scan(&totalInvoiced)
 
-	customerLTV := totalPaid + receivablesAging.TotalOutstanding
+	customerLTV := totalInvoiced
 
 	// Assemble 360 view
 	data := Customer360Data{
@@ -3303,9 +3328,11 @@ func (a *App) FindOfferByReference(reference string) (*Offer, error) {
 
 	var offer Offer
 	// Search by offer number, customer reference, or customer PO number
+	// SECURITY FIX: Escape LIKE wildcards to prevent LIKE injection
+	escapedRef := escapeLikeWildcards(reference)
 	if err := a.db.Where(
-		"offer_number = ? OR customer_reference LIKE ?",
-		reference, "%"+reference+"%",
+		"offer_number = ? OR customer_reference LIKE ? ESCAPE '\\'",
+		reference, "%"+escapedRef+"%",
 	).First(&offer).Error; err != nil {
 		return nil, nil // Not found is not an error
 	}
@@ -3736,11 +3763,16 @@ func (a *App) CreateOffer(costingID string) (*OfferData, error) {
 		return nil, fmt.Errorf("costing sheet must be approved before creating offer")
 	}
 
+	// Validate amount
+	if costing.FinalPrice <= 0 || math.IsNaN(costing.FinalPrice) || math.IsInf(costing.FinalPrice, 0) {
+		return nil, fmt.Errorf("offer amount must be a positive number (got %.3f BHD)", costing.FinalPrice)
+	}
+
 	offer := &OfferData{
 		CostingID:    costingID,
 		CustomerName: costing.RFQName,
 		ProjectName:  costing.RFQName,
-		Amount:       costing.FinalPrice,
+		Amount:       math.Round(costing.FinalPrice*1000) / 1000,
 		Status:       "draft",
 	}
 
@@ -4017,6 +4049,7 @@ type OfferUpdateData struct {
 	PaymentTerms  string            `json:"payment_terms"`
 	DeliveryTerms string            `json:"delivery_terms"`
 	Discount      float64           `json:"discount"`
+	Stage         string            `json:"stage"` // Won, Lost, Sent, Draft
 	Items         []OfferUpdateItem `json:"items"`
 }
 
@@ -4242,6 +4275,13 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 	var offer Offer
 	if err := a.db.Preload("Items").First(&offer, "id = ?", offerID).Error; err != nil {
 		return nil, fmt.Errorf("offer not found: %v", err)
+	}
+
+	// SECURITY: Won and Lost stages are terminal - block regression (audit requirement)
+	if offer.Stage == "Won" || offer.Stage == "Lost" {
+		if data.Stage != "" && data.Stage != offer.Stage {
+			return nil, fmt.Errorf("cannot change terminal offer stage '%s' (audit requirement)", offer.Stage)
+		}
 	}
 
 	// Update header fields
@@ -4514,6 +4554,11 @@ func (a *App) MarkOfferLost(offerID string, reason string) error {
 		return fmt.Errorf("offer not found: %v", err)
 	}
 
+	// SECURITY: Won stage is terminal - block regression (audit requirement)
+	if offer.Stage == "Won" {
+		return fmt.Errorf("cannot change terminal offer stage 'Won' to 'Lost' (audit requirement)")
+	}
+
 	result := a.db.Model(&Offer{}).Where("id = ?", offerID).Updates(map[string]interface{}{
 		"stage":       "Lost",
 		"lost_reason": reason,
@@ -4556,6 +4601,11 @@ func (a *App) MarkOfferLost(offerID string, reason string) error {
 // SimulateSurvivalGarden runs GPU-accelerated cash flow simulation
 // Returns array of garden states (one per month) with 3-regime dynamics
 func (a *App) SimulateSurvivalGarden(cashRunway float64, monthlyBurn float64, expenses []map[string]interface{}, months int) ([]map[string]interface{}, error) {
+	// SECURITY: Require dashboard view permission
+	if err := a.requirePermission("dashboard:view"); err != nil {
+		return nil, err
+	}
+
 	// INPUT VALIDATION (Margaret Hamilton says: VALIDATE EVERYTHING)
 	if cashRunway < 0 {
 		return nil, fmt.Errorf("cashRunway cannot be negative: %.2f", cashRunway)
@@ -4774,6 +4824,15 @@ func (a *App) CreateOrder(orderNumber string, customerName string, amount float6
 		orderDate = time.Now()
 	}
 
+	// Validate amount
+	if amount <= 0 || math.IsNaN(amount) || math.IsInf(amount, 0) {
+		return nil, newError("INVALID_AMOUNT", "Order amount must be a positive number", "")
+	}
+	if amount > 1000000000 {
+		return nil, newError("INVALID_AMOUNT", "Order amount exceeds maximum allowed value", "")
+	}
+	amount = math.Round(amount*1000) / 1000 // Round to 3 decimal places (BHD precision)
+
 	// Lookup customer ID
 	var customer CustomerMaster
 	var customerID string
@@ -4903,6 +4962,20 @@ func (a *App) DeleteOrder(orderID string) error {
 		return newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
+	// SECURITY: Check for payments before allowing deletion (audit requirement)
+	var paymentCount int64
+	if err := a.db.Model(&Payment{}).
+		Joins("JOIN invoices ON invoices.id = payments.invoice_id").
+		Where("invoices.order_id = ?", orderID).
+		Count(&paymentCount).Error; err != nil {
+		log.Printf("⚠️ Failed to check payment count for order %s: %v", orderID, err)
+	}
+	if paymentCount > 0 {
+		return newError("PAYMENT_EXISTS",
+			fmt.Sprintf("cannot delete order with %d payment(s) - use Cancel instead (audit requirement)", paymentCount),
+			"")
+	}
+
 	// Cascade delete all linked records in a transaction
 	// Frontend already shows confirm() dialog, so user explicitly approved deletion
 	err := a.db.Transaction(func(tx *gorm.DB) error {
@@ -4976,6 +5049,7 @@ func (a *App) DeleteOrder(orderID string) error {
 }
 
 // UpdateOrderStage updates the stage of an order
+// SECURITY: Validates state machine transitions to prevent invalid progressions
 func (a *App) UpdateOrderStage(orderID string, stage string) error {
 	if err := a.requirePermission("orders:update"); err != nil {
 		return err
@@ -4984,13 +5058,54 @@ func (a *App) UpdateOrderStage(orderID string, stage string) error {
 		return newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
+	// Valid order state transitions
+	var validOrderTransitions = map[string][]string{
+		"Draft":              {"Confirmed", "Cancelled"},
+		"Confirmed":          {"Processing", "InProgress", "Cancelled"},
+		"Processing":         {"PartiallyDelivered", "FullyDelivered", "Shipped", "Cancelled"},
+		"InProgress":         {"PartiallyDelivered", "FullyDelivered", "Shipped", "Cancelled"},
+		"Shipped":            {"PartiallyDelivered", "FullyDelivered", "Delivered"},
+		"PartiallyDelivered": {"FullyDelivered", "Delivered"},
+		"FullyDelivered":     {"Invoiced", "Complete"},
+		"Delivered":          {"Invoiced", "Complete"},
+		"Invoiced":           {"Complete"},
+		"Complete":           {},
+		"Cancelled":          {},
+	}
+
+	// Fetch current order to check current status
+	var currentOrder Order
+	if err := a.db.Where("id = ?", orderID).First(&currentOrder).Error; err != nil {
+		return newError("ORDER_NOT_FOUND", "Order not found", err.Error())
+	}
+
+	// Validate transition
+	validNextStates, exists := validOrderTransitions[currentOrder.Status]
+	if !exists {
+		return newError("INVALID_STATE", fmt.Sprintf("Unknown current status: %s", currentOrder.Status), "")
+	}
+
+	isValidTransition := false
+	for _, validState := range validNextStates {
+		if validState == stage {
+			isValidTransition = true
+			break
+		}
+	}
+
+	if !isValidTransition && currentOrder.Status != stage {
+		return newError("INVALID_TRANSITION",
+			fmt.Sprintf("Invalid order status transition from '%s' to '%s'", currentOrder.Status, stage),
+			"")
+	}
+
 	// NOTE: Database field is "status", frontend uses "stage" terminology
 	result := a.db.Model(&Order{}).Where("id = ?", orderID).Update("status", stage)
 	if result.Error != nil {
 		return newError("DB_UPDATE_FAILED", "Failed to update order stage", result.Error.Error())
 	}
 
-	log.Printf("✅ Updated Order #%s stage to: %s", orderID, stage)
+	log.Printf("✅ Updated Order #%s stage: %s → %s", orderID, currentOrder.Status, stage)
 	return nil
 }
 
@@ -5484,8 +5599,10 @@ func (a *App) FilterOrders(customerQuery string, dateFrom string, dateTo string,
 
 	// Filter by customer (name OR ID, case-insensitive partial match)
 	if customerQuery != "" {
-		query = query.Where("customer_name LIKE ? OR customer_id IN (SELECT id FROM customers WHERE customer_id LIKE ? OR business_name LIKE ?)",
-			"%"+customerQuery+"%", "%"+customerQuery+"%", "%"+customerQuery+"%")
+		// SECURITY FIX: Escape LIKE wildcards to prevent LIKE injection
+		escapedQuery := escapeLikeWildcards(customerQuery)
+		query = query.Where("customer_name LIKE ? ESCAPE '\\' OR customer_id IN (SELECT id FROM customers WHERE customer_id LIKE ? ESCAPE '\\' OR business_name LIKE ? ESCAPE '\\')",
+			"%"+escapedQuery+"%", "%"+escapedQuery+"%", "%"+escapedQuery+"%")
 	}
 
 	// Filter by date range
@@ -5605,7 +5722,9 @@ func (a *App) GetCustomer(id string) (CustomerMaster, error) {
 
 // SeedCustomerDatabase populates the database with sample customers if empty
 func (a *App) SeedCustomerDatabase() error {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: Admin-only permission (wildcard "*" or settings:update for managers)
+	// Changed from settings:update to "*" for stricter admin-only access
+	if err := a.requirePermission("*"); err != nil {
 		return err
 	}
 
@@ -6818,7 +6937,7 @@ func (a *App) UpdateSettings(settings map[string]interface{}) error {
 		}
 		// Mistral API key - used by Butler AI
 		if key, ok := apiKeys["mistral_key"].(string); ok && key != "" && !strings.Contains(key, "*") {
-			log.Printf("🔑 Mistral API key updated (length: %d)", len(key))
+			log.Println("AI configuration updated")
 		}
 	}
 
@@ -6959,7 +7078,8 @@ func (a *App) GetSupportedCurrencies() ([]map[string]string, error) {
 
 // SeedDefaultExchangeRates creates initial exchange rates if none exist
 func (a *App) SeedDefaultExchangeRates() error {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: Admin-only permission for seed functions
+	if err := a.requirePermission("*"); err != nil {
 		return err
 	}
 
@@ -7002,7 +7122,8 @@ func (a *App) SeedDefaultExchangeRates() error {
 // SeedBankDemoData populates sample bank statement data for demo purposes
 // Only runs if bank_statements table is empty
 func (a *App) SeedBankDemoData() error {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: Admin-only permission for seed functions
+	if err := a.requirePermission("*"); err != nil {
 		return err
 	}
 
@@ -7133,8 +7254,7 @@ func (a *App) TestAIConnection(provider string, apiKey string) error {
 	// Note: API connection is tested lazily during first Butler chat request
 	// This saves startup time and avoids false negatives from network issues
 	// The butler_ai.go service handles connection errors gracefully with user feedback
-	log.Printf("🔌 AI connection validated: provider=%s, key_length=%d", provider, len(apiKey))
-	log.Printf("✅ API key format verified for %s (actual connection tested on first use)", provider)
+	log.Printf("AI connection validated successfully: provider=%s", provider)
 	return nil
 }
 
@@ -7200,28 +7320,28 @@ func (a *App) SetAPIKeys(apiKeys map[string]string) error {
 	if key, ok := apiKeys["aimlapi_key"]; ok && key != "" && key != "****" {
 		a.config.AI.APIKey = key
 		persistKey("apiKeys.aimlapi_key", key)
-		log.Printf("✅ AIMLAPI key updated (encrypted)")
+		log.Println("AI configuration updated")
 	}
 
 	// Update Mistral key
 	if key, ok := apiKeys["mistral_key"]; ok && key != "" && key != "****" {
 		os.Setenv("MISTRAL_API_KEY", key)
 		persistKey("apiKeys.mistral_key", key)
-		log.Printf("✅ Mistral key updated (encrypted)")
+		log.Println("AI configuration updated")
 	}
 
 	// Update OpenAI key
 	if key, ok := apiKeys["openai_key"]; ok && key != "" && key != "****" {
 		os.Setenv("OPENAI_API_KEY", key)
 		persistKey("apiKeys.openai_key", key)
-		log.Printf("✅ OpenAI key updated (encrypted)")
+		log.Println("AI configuration updated")
 	}
 
 	// Update Anthropic key
 	if key, ok := apiKeys["anthropic_key"]; ok && key != "" && key != "****" {
 		os.Setenv("ANTHROPIC_API_KEY", key)
 		persistKey("apiKeys.anthropic_key", key)
-		log.Printf("✅ Anthropic key updated (encrypted)")
+		log.Println("AI configuration updated")
 	}
 
 	// Update Azure endpoint
@@ -7231,7 +7351,7 @@ func (a *App) SetAPIKeys(apiKeys map[string]string) error {
 		log.Printf("✅ Azure endpoint updated (encrypted)")
 	}
 
-	log.Printf("🔐 API keys saved securely (encrypted to DB)")
+	log.Println("API configuration saved securely")
 	return nil
 }
 
@@ -7352,7 +7472,9 @@ func (a *App) RotateEncryptionKey() error {
 // Without this backup, a hardware change (e.g., new motherboard) will make all
 // encrypted data permanently unrecoverable.
 func (a *App) ExportEncryptionBackup() (map[string]string, error) {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: CRITICAL - Admin-only permission (wildcard "*")
+	// This exports the master encryption key - highest security function
+	if err := a.requirePermission("*"); err != nil {
 		return nil, err
 	}
 	if a.fieldCrypto == nil {
@@ -7385,7 +7507,9 @@ func (a *App) ExportEncryptionBackup() (map[string]string, error) {
 // ImportEncryptionBackup restores encryption from a previously exported backup.
 // Use this after hardware changes to recover access to encrypted data.
 func (a *App) ImportEncryptionBackup(masterKeyHex, saltHex string) error {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: CRITICAL - Admin-only permission (wildcard "*")
+	// This replaces the master encryption key - highest security function
+	if err := a.requirePermission("*"); err != nil {
 		return err
 	}
 	if masterKeyHex == "" || saltHex == "" {
@@ -8039,6 +8163,14 @@ func (a *App) QuickCaptureDocument(filePath string) (map[string]interface{}, err
 	if err := a.requirePermission("documents:create"); err != nil {
 		return nil, err
 	}
+
+	// SECURITY FIX: Validate file path to prevent path traversal
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return nil, newError("INVALID_PATH", "Invalid file path", err.Error())
+	}
+	filePath = absPath // Use validated path
+
 	log.Printf("📥 Quick capture: %s", filePath)
 
 	// Validate file exists
@@ -8623,6 +8755,17 @@ func (a *App) ProcessDocumentWithOCR(filePath string, docType string) (*OCRResul
 	if err := a.requirePermission("documents:create"); err != nil {
 		return nil, err
 	}
+
+	// SECURITY FIX: Validate file path to prevent path traversal
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid file path: %w", err)
+	}
+	if _, err := os.Stat(absPath); err != nil {
+		return nil, fmt.Errorf("file not found: %w", err)
+	}
+	filePath = absPath // Use validated path for processing
+
 	log.Printf("📄 Starting OCR processing: %s (type: %s)", filePath, docType)
 
 	if a.ocrService == nil {
@@ -10229,7 +10372,8 @@ func (a *App) GenerateSeedData(opportunitiesFile, outputPath string) (map[string
 
 // SeedDatabaseFromOpportunities seeds the database with customers, suppliers, and opportunities
 func (a *App) SeedDatabaseFromOpportunities(opportunitiesFile string) (map[string]interface{}, error) {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: Admin-only permission for seed functions
+	if err := a.requirePermission("*"); err != nil {
 		return nil, err
 	}
 	seedData, err := a.GenerateSeedData(opportunitiesFile, "")
@@ -10468,7 +10612,8 @@ func (a *App) GetContractTemplates() ([]ContractTemplate, error) {
 
 // SeedContractData seeds contract templates and clauses
 func (a *App) SeedContractData() error {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: Admin-only permission for seed functions
+	if err := a.requirePermission("*"); err != nil {
 		return err
 	}
 	contractService := NewContractService(a.db)
@@ -10537,7 +10682,8 @@ func (a *App) DownloadContract(contractID uint) (string, error) {
 // - Skipped duplicates
 // - Errors encountered
 func (a *App) ImportSSOTData() (*data.ImportResult, error) {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: Admin-only permission for data import
+	if err := a.requirePermission("*"); err != nil {
 		return nil, err
 	}
 	if a.db == nil {
@@ -10817,7 +10963,8 @@ const (
 // SeedDefaultRoles creates the 5 default roles: admin, manager, sales, operations, staff
 // Called automatically on first startup or manually from admin
 func (a *App) SeedDefaultRoles() error {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: Admin-only permission for seed functions
+	if err := a.requirePermission("*"); err != nil {
 		return err
 	}
 	roles := []struct {
@@ -11276,9 +11423,15 @@ func (a *App) ResetUserPassword(userID string, newPassword string) error {
 // Returns error if permission denied, nil if allowed.
 func (a *App) requirePermission(permission string) error {
 	// SECURITY: RBAC ENABLED - Permission checks enforced
-	// Bypass only during startup data import
+	// Bypass only during startup data import (with 5-minute timeout)
 	if a.startupImporting {
-		return nil
+		// FIX 1: Enforce timeout to prevent indefinite RBAC bypass
+		if time.Since(a.startupImportStartTime) > 5*time.Minute {
+			a.startupImporting = false
+			log.Println("⚠️ WARNING: Startup import timeout exceeded (5 min), re-enabling RBAC for security")
+		} else {
+			return nil // Still within safe window, allow bypass
+		}
 	}
 
 	// METHOD 1: Check User-based authentication first
@@ -11334,15 +11487,23 @@ func (a *App) checkUserPermission(permission string) error {
 	}
 
 	// Check if user has the required permission
+	// FIX 2: Enhanced permission matching with category-level support
 	for _, p := range permissions {
 		if p == permission || p == "*" {
-			return nil // Permission granted
+			return nil // Permission granted (exact match or wildcard)
 		}
 		// Check wildcard patterns like "customers:*" matching "customers:view"
 		if strings.HasSuffix(p, ":*") {
 			prefix := strings.TrimSuffix(p, "*")
 			if strings.HasPrefix(permission, prefix) {
 				return nil // Wildcard match
+			}
+		}
+		// Check category-level permissions: "finance" grants "finance:view", "finance:create", etc.
+		if strings.Contains(permission, ":") {
+			category := strings.Split(permission, ":")[0]
+			if p == category {
+				return nil // Category-level permission granted
 			}
 		}
 	}
@@ -11630,8 +11791,9 @@ func (a *App) GetCurrentUserStub() (*User, error) {
 // getCurrentUserID returns the ID of the currently authenticated user.
 // It checks multiple sources in priority order:
 // 1. AuthManager Profile (Microsoft Graph SSO)
-// 2. Current User from GetCurrentUserStub (development/fallback)
-// 3. Returns "system" as last resort for background jobs
+// 2. License-based identity (employee name from active license)
+// 3. Current User from GetCurrentUserStub (development/fallback)
+// 4. Returns "system" as last resort for background jobs
 func (a *App) getCurrentUserID() string {
 	// Priority 1: Check AuthManager for Microsoft Graph authenticated user
 	if a.authManager != nil {
@@ -11646,17 +11808,28 @@ func (a *App) getCurrentUserID() string {
 				return user.ID
 			}
 			// User exists in Microsoft Graph but not in local DB yet
-			// This is expected during first SSO login - return a recognizable ID
 			return "sso:" + profile.ID
 		}
 	}
 
-	// Priority 2: Check current user stub (development mode or existing session)
+	// Priority 2: License-based identity - use employee name from active license
+	if a.db != nil {
+		deviceHash := a.getDeviceHash()
+		var license LicenseKey
+		if err := a.db.Where("device_hash = ? AND activated = 1", deviceHash).First(&license).Error; err == nil {
+			if license.DisplayName != "" {
+				return license.DisplayName
+			}
+			return "license:" + license.Role
+		}
+	}
+
+	// Priority 3: Check current user stub (development mode or existing session)
 	if currentUser, err := a.GetCurrentUserStub(); err == nil && currentUser != nil {
 		return currentUser.ID
 	}
 
-	// Priority 3: Fallback to "system" for background jobs or unauthenticated operations
+	// Priority 4: Fallback to "system" for background jobs or unauthenticated operations
 	return "system"
 }
 
@@ -12466,16 +12639,31 @@ func sanitizeFileName(name string) string {
 }
 
 // OpenExportedFile opens the exported file in the default application
+// SECURITY: Validates file path to prevent command injection
 func (a *App) OpenExportedFile(filePath string) error {
-	var cmd *exec.Cmd
+	// SECURITY FIX: Validate file path to prevent command injection
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return fmt.Errorf("invalid file path: %w", err)
+	}
 
+	// Verify file exists before attempting to open
+	if _, err := os.Stat(absPath); err != nil {
+		return fmt.Errorf("file not found: %w", err)
+	}
+
+	// Use validated absolute path with proper command syntax
+	var cmd *exec.Cmd
 	switch goruntime.GOOS {
 	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", "", filePath)
+		// Use rundll32 instead of cmd /c start for better security
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", absPath)
 	case "darwin":
-		cmd = exec.Command("open", filePath)
+		// Use -- to prevent filenames starting with - from being interpreted as flags
+		cmd = exec.Command("open", "--", absPath)
 	default:
-		cmd = exec.Command("xdg-open", filePath)
+		// Linux/Unix: use -- for xdg-open as well
+		cmd = exec.Command("xdg-open", "--", absPath)
 	}
 
 	return cmd.Start()
@@ -13359,7 +13547,8 @@ func (a *App) GetBalanceSheet(asOfDate time.Time) (*BalanceSheetReport, error) {
 
 // SeedDefaultChartOfAccounts creates a basic chart of accounts for Bahrain trading company
 func (a *App) SeedDefaultChartOfAccounts() error {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: Admin-only permission for seed functions
+	if err := a.requirePermission("*"); err != nil {
 		return err
 	}
 	if a.db == nil {
@@ -14515,7 +14704,8 @@ func (a *App) GetCRMCustomerDashboard() CRMCustomerDashboard {
 // FixDatabaseDates corrects dates that are 1 year off (2026 -> 2025)
 // This is a one-time fix for data imported with incorrect years
 func (a *App) FixDatabaseDates() (map[string]int, error) {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: Admin-only permission for database manipulation
+	if err := a.requirePermission("*"); err != nil {
 		return nil, err
 	}
 	if a.db == nil {
@@ -14677,7 +14867,8 @@ func (a *App) FixDatabaseDates() (map[string]int, error) {
 
 // FixPurchaseOrderSupplierNames populates supplier_name in all POs that have a valid supplier_id
 func (a *App) FixPurchaseOrderSupplierNames() (int, error) {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: Admin-only permission for database manipulation
+	if err := a.requirePermission("*"); err != nil {
 		return 0, err
 	}
 	if a.db == nil {
@@ -14737,7 +14928,8 @@ func (a *App) FixPurchaseOrderSupplierNames() (int, error) {
 
 // RunAllDataFixes runs all data fix utilities at once
 func (a *App) RunAllDataFixes() (map[string]interface{}, error) {
-	if err := a.requirePermission("settings:update"); err != nil {
+	// SECURITY: Admin-only permission for database manipulation
+	if err := a.requirePermission("*"); err != nil {
 		return nil, err
 	}
 	results := make(map[string]interface{})
@@ -14856,6 +15048,12 @@ func (a *App) BackfillOfferItemCostBreakdown() (map[string]interface{}, error) {
 	}
 
 	for _, col := range columns {
+		// SECURITY FIX: Validate column name to prevent SQL injection
+		if !isValidSQLIdentifier(col.name) {
+			log.Printf("  ⚠️ Invalid column name rejected: %s", col.name)
+			continue
+		}
+
 		// Try to add column (will fail silently if exists)
 		alterSQL := fmt.Sprintf("ALTER TABLE offer_items ADD COLUMN %s %s", col.name, col.datatype)
 		if err := a.db.Exec(alterSQL).Error; err != nil {

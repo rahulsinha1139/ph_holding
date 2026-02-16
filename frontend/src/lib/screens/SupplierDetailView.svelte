@@ -202,6 +202,49 @@
       <Button variant="primary" on:click={loadProfile}>Retry</Button>
     </div>
   {:else if profile}
+    <!-- Contacts Strip - Full Width -->
+    <div class="contacts-strip">
+      <div class="contacts-strip-header">
+        <h3 class="strip-title">CONTACTS</h3>
+        <button class="add-contact-btn-inline" on:click={() => showContactModal = true}>+ Add</button>
+      </div>
+      <div class="contacts-scroll-container">
+        {#if supplierContacts.length > 0}
+          {#each supplierContacts as contact}
+            <div class="contact-card">
+              <div class="contact-card-avatar">
+                {contact.contact_name?.charAt(0)?.toUpperCase() || '?'}
+              </div>
+              <div class="contact-card-info">
+                <span class="contact-card-name">
+                  {contact.contact_name}
+                  {#if contact.is_primary_contact}<span class="primary-tag">Primary</span>{/if}
+                </span>
+                {#if contact.job_title}<span class="contact-card-role">{contact.job_title}</span>{/if}
+                {#if contact.email}<span class="contact-card-detail">{contact.email}</span>{/if}
+                {#if contact.phone}<span class="contact-card-detail">{contact.phone}</span>{/if}
+              </div>
+            </div>
+          {/each}
+        {:else if profile.primary_contact || profile.email || profile.phone}
+          <div class="contact-card">
+            <div class="contact-card-avatar">
+              {profile.primary_contact?.charAt(0)?.toUpperCase() || '?'}
+            </div>
+            <div class="contact-card-info">
+              {#if profile.primary_contact}<span class="contact-card-name">{profile.primary_contact}</span>{/if}
+              {#if profile.email}<span class="contact-card-detail">{profile.email}</span>{/if}
+              {#if profile.phone}<span class="contact-card-detail">{profile.phone}</span>{/if}
+            </div>
+          </div>
+        {:else}
+          <div class="contact-card empty-contact">
+            <span class="empty-contact-text">No contacts on file</span>
+          </div>
+        {/if}
+      </div>
+    </div>
+
     <div class="content-layout">
       <!-- Left Sidebar -->
       <aside class="sidebar">
@@ -235,35 +278,6 @@
             </div>
             {/if}
           </div>
-        </Card>
-
-        <Card padding="md">
-          <h3 class="sidebar-title">CONTACTS</h3>
-          {#if supplierContacts.length > 0}
-            <div class="contacts-list">
-              {#each supplierContacts as contact}
-                <div class="contact-item">
-                  <span class="contact-name">
-                    {contact.contact_name}
-                    {#if contact.is_primary_contact}<span class="primary-badge">Primary</span>{/if}
-                  </span>
-                  {#if contact.job_title}<span class="contact-detail">{contact.job_title}</span>{/if}
-                  {#if contact.email}<span class="contact-detail">{contact.email}</span>{/if}
-                  {#if contact.phone}<span class="contact-detail">{contact.phone}</span>{/if}
-                  {#if contact.address}<span class="contact-detail">{contact.address}</span>{/if}
-                </div>
-              {/each}
-            </div>
-          {:else if profile.primary_contact || profile.email || profile.phone}
-            <div class="contact-item">
-              {#if profile.primary_contact}<span class="contact-name">{profile.primary_contact}</span>{/if}
-              {#if profile.email}<span class="contact-detail">{profile.email}</span>{/if}
-              {#if profile.phone}<span class="contact-detail">{profile.phone}</span>{/if}
-            </div>
-          {:else}
-            <p class="empty-text">No contacts on file</p>
-          {/if}
-          <button class="add-contact-btn" on:click={() => showContactModal = true}>+ Add Contact</button>
         </Card>
 
         <Card padding="md">
@@ -649,14 +663,149 @@
   .value { font-size: 14px; font-weight: 500; }
   .value.code { font-family: 'JetBrains Mono', monospace; color: var(--brand-indigo); }
 
-  .contacts-list { display: flex; flex-direction: column; gap: 0; }
-  .contact-item { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-  .contact-item:last-child { border-bottom: none; }
-  .contact-name { font-weight: 500; font-size: 14px; display: flex; align-items: center; gap: 6px; }
-  .contact-detail { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
-  .primary-badge { font-size: 10px; background: var(--onyx, #1D1D1F); color: #fff; padding: 1px 6px; border-radius: 3px; font-weight: 600; }
-  .add-contact-btn { margin-top: 8px; width: 100%; background: none; border: 1px dashed var(--border); padding: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer; border-radius: 4px; }
-  .add-contact-btn:hover { border-color: var(--onyx); color: var(--text-primary); }
+  .contacts-strip {
+    margin-bottom: 24px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 12px;
+    padding: 16px;
+  }
+
+  .contacts-strip-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+
+  .strip-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  .add-contact-btn-inline {
+    background: none;
+    border: 1px solid var(--border);
+    padding: 4px 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-radius: 6px;
+    transition: all 0.2s;
+  }
+
+  .add-contact-btn-inline:hover {
+    border-color: var(--brand-indigo, #1D1D1F);
+    color: var(--text-primary);
+  }
+
+  .contacts-scroll-container {
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    padding-bottom: 8px;
+    scroll-snap-type: x mandatory;
+  }
+
+  /* Scrollbar styling */
+  .contacts-scroll-container::-webkit-scrollbar {
+    height: 4px;
+  }
+  .contacts-scroll-container::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .contacts-scroll-container::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 2px;
+  }
+
+  .contact-card {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 12px 16px;
+    background: var(--surface-elevated, #F8F8F8);
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 8px;
+    min-width: 240px;
+    max-width: 280px;
+    flex-shrink: 0;
+    scroll-snap-align: start;
+    transition: border-color 0.2s;
+  }
+
+  .contact-card:hover {
+    border-color: var(--brand-indigo, #6366F1);
+  }
+
+  .contact-card-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--brand-indigo, #1D1D1F);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .contact-card-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .contact-card-name {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .primary-tag {
+    font-size: 9px;
+    background: var(--brand-indigo, #1D1D1F);
+    color: white;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .contact-card-role {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+
+  .contact-card-detail {
+    font-size: 11px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .empty-contact {
+    border-style: dashed;
+    justify-content: center;
+    min-width: 200px;
+  }
+
+  .empty-contact-text {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-style: italic;
+  }
 
   .brands-list { display: flex; flex-wrap: wrap; gap: 8px; }
   .brand-tag { padding: 4px 8px; background: var(--surface-elevated); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; }

@@ -86,11 +86,11 @@ const (
 // ============================================================================
 
 var (
-	customerKeywords   = []string{"customer", "client", "buyer", "account", "bapco", "alba", "ewa", "gpic", "noga"}
-	supplierKeywords   = []string{"supplier", "vendor", "source", "endress", "hauser", "servomex", "landis"}
-	financialKeywords  = []string{"cash", "payment", "invoice", "receivable", "payable", "balance", "revenue", "profit", "margin", "ar", "aging", "dso", "outstanding"}
-	operationsKeywords = []string{"quote", "rfq", "order", "pipeline", "delivery", "purchase", "costing", "offer", "grn", "shipment"}
-	riskKeywords       = []string{"overdue", "late", "risk", "aging", "collection", "blocked", "dispute", "critical", "warning"}
+	customerKeywords   = []string{"customer", "client", "buyer", "account", "bapco", "alba", "ewa", "gpic", "noga", "aluminium bahrain", "bahrain petroleum", "electricity water", "gulf petrochemical", "tatweer", "banagas", "business with", "total business", "how much", "who is our", "top customer", "biggest customer", "best customer", "worst customer"}
+	supplierKeywords   = []string{"supplier", "vendor", "source", "endress", "hauser", "servomex", "landis", "gyr", "e+h", "bought from", "purchased from", "procurement", "supply chain", "top supplier", "lead time"}
+	financialKeywords  = []string{"cash", "payment", "invoice", "receivable", "payable", "balance", "revenue", "profit", "margin", "ar", "aging", "dso", "outstanding", "collection", "money", "owe", "owes", "paid", "unpaid", "earned", "income", "expense", "cashflow", "cash flow", "how much did we", "total sales", "turnover", "gross", "net", "bhd", "fiscal", "financial year"}
+	operationsKeywords = []string{"quote", "rfq", "order", "pipeline", "delivery", "purchase", "costing", "offer", "grn", "shipment", "po", "purchase order", "win rate", "conversion", "open orders", "pending", "active orders", "quotation"}
+	riskKeywords       = []string{"overdue", "late", "risk", "aging", "collection", "blocked", "dispute", "critical", "warning", "defaulter", "slow payer", "bad debt", "credit block"}
 	marketKeywords     = []string{"price", "market", "competitor", "trend", "industry", "steel", "instrumentation"}
 
 	// Patterns that indicate complex queries needing mistral-large
@@ -187,18 +187,26 @@ func extractEntityName(query string) string {
 
 	// Look for words after common prepositions/verbs
 	triggers := []string{"about", "is", "for", "with", "from", "customer", "supplier", "client"}
+	stopWords := map[string]bool{
+		"is": true, "the": true, "doing": true, "has": true, "with": true,
+		"last": true, "this": true, "next": true, "year": true, "month": true,
+		"quarter": true, "week": true, "total": true, "business": true,
+		"in": true, "on": true, "at": true, "to": true, "and": true,
+		"we": true, "have": true, "had": true, "been": true, "was": true,
+		"how": true, "what": true, "much": true, "many": true, "give": true,
+		"me": true, "our": true, "their": true, "since": true, "during": true,
+		"?": true, "all": true, "can": true, "you": true,
+	}
 	for i, word := range words {
 		wordLower := strings.ToLower(word)
 		for _, trigger := range triggers {
 			if wordLower == trigger && i+1 < len(words) {
-				// Collect subsequent capitalized or quoted words
+				// Collect subsequent words that look like entity names
 				name := []string{}
 				for j := i + 1; j < len(words) && j < i+5; j++ {
 					w := words[j]
-					// Stop at common stop words
 					wLower := strings.ToLower(w)
-					if wLower == "is" || wLower == "the" || wLower == "doing" ||
-						wLower == "has" || wLower == "with" || wLower == "?" {
+					if stopWords[wLower] {
 						break
 					}
 					name = append(name, w)
@@ -431,9 +439,13 @@ func (a *App) buildIntentContext(intent Intent) map[string]interface{} {
 		context["ar_summary"] = a.getARSummary()
 
 	default:
-		// General query - provide overview
+		// General query - provide comprehensive overview
+		context["customer_data"] = a.getCustomerContext(intent.EntityName)
 		context["ar_summary"] = a.getARSummary()
 		context["operations_data"] = a.getOperationsContext()
+		if hasFinanceAccess {
+			context["financial_data"] = a.getFinancialContext()
+		}
 	}
 
 	return context
@@ -472,6 +484,52 @@ func (a *App) getBusinessSummary() map[string]interface{} {
 	a.db.Model(&Invoice{}).Where("status != ?", "Paid").Select("COALESCE(SUM(outstanding_bhd), 0)").Scan(&totalOutstanding)
 	summary["total_outstanding_bhd"] = totalOutstanding
 
+	// Yearly revenue breakdown
+	var allInvoices []Invoice
+	a.db.Select("grand_total_bhd, invoice_date, status").Find(&allInvoices)
+	yearlyRevenue := make(map[string]float64)
+	yearlyInvCount := make(map[string]int)
+	yearlyPaidCount := make(map[string]int)
+	for _, inv := range allInvoices {
+		year := inv.InvoiceDate.Format("2006")
+		yearlyRevenue[year] += inv.GrandTotalBHD
+		yearlyInvCount[year]++
+		if inv.Status == "Paid" {
+			yearlyPaidCount[year]++
+		}
+	}
+	yearBreakdown := make([]map[string]interface{}, 0)
+	for year, rev := range yearlyRevenue {
+		yearBreakdown = append(yearBreakdown, map[string]interface{}{
+			"year":           year,
+			"revenue_bhd":    fmt.Sprintf("%.3f", rev),
+			"invoice_count":  yearlyInvCount[year],
+			"paid_count":     yearlyPaidCount[year],
+			"collection_pct": fmt.Sprintf("%.1f", float64(yearlyPaidCount[year])/float64(yearlyInvCount[year])*100),
+		})
+	}
+	summary["yearly_revenue"] = yearBreakdown
+
+	// Total payments received
+	var totalPaymentsReceived float64
+	a.db.Model(&Payment{}).Select("COALESCE(SUM(amount_bhd), 0)").Scan(&totalPaymentsReceived)
+	summary["total_payments_received_bhd"] = totalPaymentsReceived
+
+	// Top 10 customers by total business
+	var topByBusiness []CustomerMaster
+	a.db.Where("total_orders_value > 0").Order("total_orders_value DESC").Limit(10).Find(&topByBusiness)
+	topBizList := make([]map[string]interface{}, 0)
+	for _, c := range topByBusiness {
+		topBizList = append(topBizList, map[string]interface{}{
+			"name":          c.BusinessName,
+			"total_value":   c.TotalOrdersValue,
+			"total_orders":  c.TotalOrdersCount,
+			"outstanding":   c.OutstandingBHD,
+			"grade":         c.CustomerGrade,
+		})
+	}
+	summary["top_customers_by_business"] = topBizList
+
 	return summary
 }
 
@@ -500,12 +558,40 @@ func (a *App) getCustomerContext(entityName string) map[string]interface{} {
 				"ar_risk_tier":    customer.ARRiskTier,
 			}
 
-			// Get recent invoices for this customer
+			// Get ALL invoices for this customer (for yearly aggregation)
 			var invoices []Invoice
 			a.db.Where("customer_id = ?", customer.CustomerID).
-				Order("invoice_date DESC").Limit(5).Find(&invoices)
-			invSummary := make([]map[string]interface{}, 0)
+				Order("invoice_date DESC").Find(&invoices)
+
+			// Build yearly aggregates
+			yearlyTotals := make(map[string]float64)
+			yearlyCount := make(map[string]int)
+			yearlyOutstanding := make(map[string]float64)
 			for _, inv := range invoices {
+				year := inv.InvoiceDate.Format("2006")
+				yearlyTotals[year] += inv.GrandTotalBHD
+				yearlyCount[year]++
+				yearlyOutstanding[year] += inv.OutstandingBHD
+			}
+
+			yearSummary := make([]map[string]interface{}, 0)
+			for year, total := range yearlyTotals {
+				yearSummary = append(yearSummary, map[string]interface{}{
+					"year":         year,
+					"total_bhd":    fmt.Sprintf("%.3f", total),
+					"invoice_count": yearlyCount[year],
+					"outstanding":  fmt.Sprintf("%.3f", yearlyOutstanding[year]),
+				})
+			}
+			result["yearly_business_summary"] = yearSummary
+
+			// Recent invoices (last 10)
+			invSummary := make([]map[string]interface{}, 0)
+			limit := 10
+			if len(invoices) < limit {
+				limit = len(invoices)
+			}
+			for _, inv := range invoices[:limit] {
 				invSummary = append(invSummary, map[string]interface{}{
 					"number":      inv.InvoiceNumber,
 					"date":        inv.InvoiceDate.Format("2006-01-02"),
@@ -520,7 +606,7 @@ func (a *App) getCustomerContext(entityName string) map[string]interface{} {
 			var payments []Payment
 			a.db.Joins("JOIN invoices ON invoices.id = payments.invoice_id").
 				Where("invoices.customer_id = ?", customer.CustomerID).
-				Order("payments.payment_date DESC").Limit(5).Find(&payments)
+				Order("payments.payment_date DESC").Limit(10).Find(&payments)
 			paySummary := make([]map[string]interface{}, 0)
 			for _, pay := range payments {
 				paySummary = append(paySummary, map[string]interface{}{
@@ -590,13 +676,37 @@ func (a *App) getSupplierContext(entityName string) map[string]interface{} {
 				"email":         supplier.Email,
 			}
 
-			// Get recent POs for this supplier
+			// Get ALL POs for this supplier (for yearly aggregation)
 			var pos []PurchaseOrder
 			a.db.Where("supplier_id = ?", supplier.ID).
-				Order("po_date DESC").Limit(5).Find(&pos)
+				Order("po_date DESC").Find(&pos)
+
+			// Build yearly aggregates
+			yearlyPO := make(map[string]float64)
+			yearlyPOCount := make(map[string]int)
+			for _, po := range pos {
+				year := po.PODate.Format("2006")
+				yearlyPO[year] += po.TotalBHD
+				yearlyPOCount[year]++
+			}
+			yearlyPOSummary := make([]map[string]interface{}, 0)
+			for year, total := range yearlyPO {
+				yearlyPOSummary = append(yearlyPOSummary, map[string]interface{}{
+					"year":     year,
+					"total_bhd": fmt.Sprintf("%.3f", total),
+					"po_count": yearlyPOCount[year],
+				})
+			}
+			result["yearly_purchase_summary"] = yearlyPOSummary
+
+			// Recent POs (last 10)
 			poSummary := make([]map[string]interface{}, 0)
 			var totalPOValue float64
-			for _, po := range pos {
+			limit := 10
+			if len(pos) < limit {
+				limit = len(pos)
+			}
+			for _, po := range pos[:limit] {
 				totalPOValue += po.TotalBHD
 				poSummary = append(poSummary, map[string]interface{}{
 					"number": po.PONumber,
@@ -607,6 +717,24 @@ func (a *App) getSupplierContext(entityName string) map[string]interface{} {
 			}
 			result["recent_purchase_orders"] = poSummary
 			result["total_po_value_recent"] = totalPOValue
+
+			// Supplier invoices
+			var supInvoices []SupplierInvoice
+			a.db.Where("supplier_id = ?", supplier.ID).
+				Order("invoice_date DESC").Limit(10).Find(&supInvoices)
+			supInvSummary := make([]map[string]interface{}, 0)
+			var totalSupInvValue float64
+			for _, si := range supInvoices {
+				totalSupInvValue += si.TotalBHD
+				supInvSummary = append(supInvSummary, map[string]interface{}{
+					"number": si.InvoiceNumber,
+					"date":   si.InvoiceDate.Format("2006-01-02"),
+					"total":  si.TotalBHD,
+					"status": si.Status,
+				})
+			}
+			result["recent_supplier_invoices"] = supInvSummary
+			result["total_supplier_invoice_value"] = totalSupInvValue
 		}
 	}
 
@@ -660,7 +788,7 @@ func (a *App) getFinancialContext() map[string]interface{} {
 
 	// Recent payments
 	var recentPayments []Payment
-	a.db.Order("payment_date DESC").Limit(5).Find(&recentPayments)
+	a.db.Order("payment_date DESC").Limit(10).Find(&recentPayments)
 	payList := make([]map[string]interface{}, 0)
 	for _, p := range recentPayments {
 		payList = append(payList, map[string]interface{}{
@@ -671,6 +799,49 @@ func (a *App) getFinancialContext() map[string]interface{} {
 		})
 	}
 	result["recent_payments"] = payList
+
+	// Yearly financial breakdown
+	var allInvs []Invoice
+	a.db.Select("grand_total_bhd, outstanding_bhd, invoice_date, status, gross_margin_percent").Find(&allInvs)
+	yearlyData := make(map[string]map[string]float64)
+	for _, inv := range allInvs {
+		year := inv.InvoiceDate.Format("2006")
+		if yearlyData[year] == nil {
+			yearlyData[year] = map[string]float64{}
+		}
+		yearlyData[year]["invoiced"] += inv.GrandTotalBHD
+		yearlyData[year]["outstanding"] += inv.OutstandingBHD
+		yearlyData[year]["count"]++
+		if inv.Status == "Paid" {
+			yearlyData[year]["paid_count"]++
+			yearlyData[year]["paid_value"] += inv.GrandTotalBHD
+		}
+		if inv.GrossMarginPercent > 0 {
+			yearlyData[year]["margin_sum"] += inv.GrossMarginPercent
+			yearlyData[year]["margin_count"]++
+		}
+	}
+	yearlyFinance := make([]map[string]interface{}, 0)
+	for year, data := range yearlyData {
+		entry := map[string]interface{}{
+			"year":            year,
+			"total_invoiced":  fmt.Sprintf("%.3f", data["invoiced"]),
+			"total_paid":      fmt.Sprintf("%.3f", data["paid_value"]),
+			"outstanding":     fmt.Sprintf("%.3f", data["outstanding"]),
+			"invoice_count":   int(data["count"]),
+			"collection_rate": fmt.Sprintf("%.1f%%", data["paid_count"]/data["count"]*100),
+		}
+		if data["margin_count"] > 0 {
+			entry["avg_margin"] = fmt.Sprintf("%.1f%%", data["margin_sum"]/data["margin_count"])
+		}
+		yearlyFinance = append(yearlyFinance, entry)
+	}
+	result["yearly_financial_summary"] = yearlyFinance
+
+	// Supplier payments summary
+	var totalSupplierPayments float64
+	a.db.Model(&SupplierPayment{}).Select("COALESCE(SUM(amount_bhd), 0)").Scan(&totalSupplierPayments)
+	result["total_supplier_payments_bhd"] = totalSupplierPayments
 
 	return result
 }
@@ -716,6 +887,37 @@ func (a *App) getOperationsContext() map[string]interface{} {
 	var pendingDN int64
 	a.db.Model(&DeliveryNote{}).Where("status != ?", "Delivered").Count(&pendingDN)
 	result["pending_deliveries"] = pendingDN
+
+	// RFQ pipeline (RFQs are Offers at stage "RFQ")
+	var totalRFQs int64
+	a.db.Model(&Offer{}).Where("stage = ?", "RFQ").Count(&totalRFQs)
+	result["open_rfqs"] = totalRFQs
+
+	// GRN stats
+	var totalGRNs int64
+	a.db.Model(&GoodsReceivedNote{}).Count(&totalGRNs)
+	result["total_grns"] = totalGRNs
+
+	// Recent orders (last 10 for context)
+	var recentOrders []Order
+	a.db.Order("created_at DESC").Limit(10).Find(&recentOrders)
+	orderList := make([]map[string]interface{}, 0)
+	for _, o := range recentOrders {
+		orderList = append(orderList, map[string]interface{}{
+			"number":   o.OrderNumber,
+			"customer": o.CustomerName,
+			"total":    o.GrandTotalBHD,
+			"status":   o.Status,
+			"date":     o.OrderDate.Format("2006-01-02"),
+		})
+	}
+	result["recent_orders"] = orderList
+
+	// Offer pipeline value
+	var totalOfferValue float64
+	a.db.Model(&Offer{}).Where("stage NOT IN ?", []string{"Lost", "Cancelled"}).
+		Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&totalOfferValue)
+	result["active_offer_pipeline_bhd"] = totalOfferValue
 
 	return result
 }
@@ -1226,7 +1428,7 @@ func getMistralAPIKey() string {
 		return key
 	}
 
-	// 3. Hardcoded fallback for deployment (kept intentionally - removing breaks pipeline)
+	// 3. Hardcoded fallback for deployment (ensures client pipeline never breaks)
 	return "2vdwji2sDL8ny9JD3MnIxjoNQD6tblbE"
 }
 
