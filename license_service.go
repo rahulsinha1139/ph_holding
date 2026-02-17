@@ -19,7 +19,7 @@
 package main
 
 import (
-	"crypto/sha256"
+	crypto_rand "crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -143,11 +143,12 @@ func (a *App) GenerateLicenseKey(role, notes, createdBy string) (string, error) 
 		return "", fmt.Errorf("invalid role: %s (valid: admin, manager, sales, operations)", role)
 	}
 
-	// Generate unique hash from timestamp + random
-	timestamp := time.Now().UnixNano()
-	hashInput := fmt.Sprintf("%d-%s-%d", timestamp, role, time.Now().Nanosecond())
-	hash := sha256.Sum256([]byte(hashInput))
-	hashStr := strings.ToUpper(hex.EncodeToString(hash[:])[:6])
+	// Generate cryptographically random key instead of deterministic hash
+	randomBytes := make([]byte, 3) // 3 bytes = 6 hex chars
+	if _, err := crypto_rand.Read(randomBytes); err != nil {
+		return "", fmt.Errorf("failed to generate random key: %v", err)
+	}
+	hashStr := strings.ToUpper(hex.EncodeToString(randomBytes))
 
 	key := fmt.Sprintf("PH-%s-%s", prefix, hashStr)
 
@@ -473,22 +474,25 @@ func (a *App) SeedLicenseKeys() error {
 		}
 
 		for i := 0; i < needed; i++ {
-			// Generate deterministic but unique key using role + index + fixed seed
-			hashInput := fmt.Sprintf("ph-trading-2026-%s-%d-%d", role, i, existingCount)
-			hash := sha256.Sum256([]byte(hashInput))
-			hashStr := strings.ToUpper(hex.EncodeToString(hash[:])[:6])
+			// Generate cryptographically random key instead of deterministic hash
+			randomBytes := make([]byte, 3) // 3 bytes = 6 hex chars
+			if _, err := crypto_rand.Read(randomBytes); err != nil {
+				log.Printf("Failed to generate random key: %v", err)
+				continue
+			}
+			hashStr := strings.ToUpper(hex.EncodeToString(randomBytes))
 			key := fmt.Sprintf("PH-%s-%s", prefix, hashStr)
 
-			// Check for collision
+			// Check for collision and retry with new random bytes
 			var collision int64
 			a.db.Model(&LicenseKey{}).Where("key = ?", key).Count(&collision)
 			if collision > 0 {
-				// Use timestamp-based fallback for uniqueness
-				hashInput = fmt.Sprintf("%d-%s-%d", time.Now().UnixNano(), role, i)
-				hash = sha256.Sum256([]byte(hashInput))
-				hashStr = strings.ToUpper(hex.EncodeToString(hash[:])[:6])
+				if _, err := crypto_rand.Read(randomBytes); err != nil {
+					log.Printf("Failed to generate random key on retry: %v", err)
+					continue
+				}
+				hashStr = strings.ToUpper(hex.EncodeToString(randomBytes))
 				key = fmt.Sprintf("PH-%s-%s", prefix, hashStr)
-				time.Sleep(time.Millisecond)
 			}
 
 			license := LicenseKey{
@@ -503,7 +507,7 @@ func (a *App) SeedLicenseKeys() error {
 				log.Printf("⚠️ Failed to seed key %s: %v", key, err)
 				continue
 			}
-			log.Printf("🔑 Created key: %s (role: %s)", key, role)
+			log.Printf("🔑 Created key for role: %s", role)
 			totalSeeded++
 		}
 	}
@@ -514,25 +518,21 @@ func (a *App) SeedLicenseKeys() error {
 		log.Println("🔑 SeedLicenseKeys: No new keys needed (all roles have 10+ unactivated keys)")
 	}
 
-	// ALWAYS print all available (unactivated) keys prominently
+	// SECURITY FIX: Only log key counts per role, never actual key values
 	var availableKeys []LicenseKey
 	a.db.Where("activated = 0").Order("role, key").Find(&availableKeys)
-	log.Println("")
-	log.Println("╔══════════════════════════════════════════════════════════╗")
-	log.Println("║              AVAILABLE LICENSE KEYS                     ║")
-	log.Println("╠══════════════════════════════════════════════════════════╣")
+	roleCounts := make(map[string]int)
+	for _, k := range availableKeys {
+		roleCounts[k.Role]++
+	}
 	if len(availableKeys) > 0 {
-		log.Printf("║  %-11s | %-13s | %-20s   ║", "ROLE", "KEY", "NOTES")
-		log.Println("║  ------------|---------------|----------------------  ║")
-		for _, k := range availableKeys {
-			log.Printf("║  %-11s | %s | %-20s   ║", k.Role, k.Key, k.Notes)
+		log.Printf("🔑 Available license keys: %d total", len(availableKeys))
+		for role, count := range roleCounts {
+			log.Printf("   %s: %d keys available", role, count)
 		}
 	} else {
-		log.Println("║  No unactivated keys available!                        ║")
-		log.Println("║  All keys may already be activated.                    ║")
+		log.Println("🔑 No unactivated license keys available")
 	}
-	log.Println("╚══════════════════════════════════════════════════════════╝")
-	log.Println("")
 
 	return nil
 }
@@ -578,11 +578,14 @@ func (a *App) SeedEmployeeKeys() error {
 		if err := a.db.Where("role = ? AND activated = 0 AND (display_name = '' OR display_name IS NULL)", emp.Role).
 			First(&availableKey).Error; err != nil {
 			log.Printf("⚠️ No available %s key for %s - generating new one", emp.Role, emp.DisplayName)
-			// Generate a new key for this employee
+			// Generate a cryptographically random key for this employee
 			prefix := rolePrefixes[emp.Role]
-			hashInput := fmt.Sprintf("ph-employee-%s-%s-2026", emp.Role, emp.DisplayName)
-			hash := sha256.Sum256([]byte(hashInput))
-			hashStr := strings.ToUpper(hex.EncodeToString(hash[:])[:6])
+			randomBytes := make([]byte, 3)
+			if _, err := crypto_rand.Read(randomBytes); err != nil {
+				log.Printf("⚠️ Failed to generate random key for %s: %v", emp.DisplayName, err)
+				continue
+			}
+			hashStr := strings.ToUpper(hex.EncodeToString(randomBytes))
 			key := fmt.Sprintf("PH-%s-%s", prefix, hashStr)
 
 			newKey := LicenseKey{
@@ -609,7 +612,7 @@ func (a *App) SeedEmployeeKeys() error {
 			log.Printf("⚠️ Failed to assign key to %s: %v", emp.DisplayName, err)
 			continue
 		}
-		log.Printf("🔑 Assigned key %s to %s (%s)", availableKey.Key, emp.DisplayName, emp.Role)
+		log.Printf("🔑 Assigned key to %s (%s)", emp.DisplayName, emp.Role)
 		assigned++
 	}
 
@@ -617,25 +620,18 @@ func (a *App) SeedEmployeeKeys() error {
 		log.Printf("🔑 Assigned %d employee keys", assigned)
 	}
 
-	// Print employee key assignments
+	// SECURITY FIX: Only log employee assignment counts, never actual keys
 	var employeeKeys []LicenseKey
 	a.db.Where("display_name != '' AND display_name IS NOT NULL").Order("role, display_name").Find(&employeeKeys)
 	if len(employeeKeys) > 0 {
-		log.Println("")
-		log.Println("╔══════════════════════════════════════════════════════════╗")
-		log.Println("║              EMPLOYEE LICENSE KEYS                      ║")
-		log.Println("╠══════════════════════════════════════════════════════════╣")
-		log.Printf("║  %-11s | %-13s | %-20s   ║", "EMPLOYEE", "KEY", "ROLE")
-		log.Println("║  ------------|---------------|----------------------  ║")
+		activatedCount := 0
 		for _, k := range employeeKeys {
-			status := "Available"
 			if k.Activated {
-				status = "ACTIVATED"
+				activatedCount++
 			}
-			log.Printf("║  %-11s | %s | %-11s %-8s   ║", k.DisplayName, k.Key, k.Role, status)
 		}
-		log.Println("╚══════════════════════════════════════════════════════════╝")
-		log.Println("")
+		log.Printf("🔑 Employee keys: %d assigned (%d activated, %d available)",
+			len(employeeKeys), activatedCount, len(employeeKeys)-activatedCount)
 	}
 
 	return nil

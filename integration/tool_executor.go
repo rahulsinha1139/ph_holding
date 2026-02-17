@@ -312,10 +312,38 @@ func (e *ProductionToolExecutor) QueryJSON(ctx context.Context, input, query str
 	return string(output), nil
 }
 
+// isReadOnlySQLQuery validates that a query is a safe, read-only SELECT statement.
+// SECURITY: Prevents command injection via sqlite3 dot-commands (.shell, .system)
+// and rejects any write/DDL operations.
+func isReadOnlySQLQuery(query string) bool {
+	q := strings.TrimSpace(strings.ToUpper(query))
+	// Reject dot-commands (sqlite3 shell commands like .shell, .system)
+	if strings.HasPrefix(q, ".") {
+		return false
+	}
+	// Only allow SELECT queries
+	if !strings.HasPrefix(q, "SELECT") {
+		return false
+	}
+	// Reject dangerous patterns
+	dangerous := []string{"DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "CREATE", "ATTACH", "DETACH"}
+	for _, d := range dangerous {
+		if strings.Contains(q, d) {
+			return false
+		}
+	}
+	return true
+}
+
 // ExecuteSQLQuery executes SQLite query
 func (e *ProductionToolExecutor) ExecuteSQLQuery(ctx context.Context, dbPath, query string) (string, error) {
 	if !e.IsToolAvailable("sqlite") {
 		return "", fmt.Errorf("sqlite3 not available. Install from: %s", e.tools["sqlite"].InstallURL)
+	}
+
+	// SECURITY: Validate query is read-only and contains no dot-commands
+	if !isReadOnlySQLQuery(query) {
+		return "", fmt.Errorf("query rejected: only read-only SELECT statements are allowed")
 	}
 
 	cmd := exec.CommandContext(ctx, "sqlite3", dbPath, query)

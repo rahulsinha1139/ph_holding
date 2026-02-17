@@ -40,6 +40,7 @@
   import Input from '$lib/components/ui/Input.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
+  import { escapeHtml } from '$lib/utils/escapeHtml';
 
   // Props
   export let embedded = false;
@@ -114,7 +115,7 @@
       label: 'Cheque #',
       sortable: true,
       width: '100px',
-      render: (row: OutstandingCheque) => `<span style="font-family: var(--font-mono); font-weight: 600;">${row.cheque_number}</span>`
+      render: (row: OutstandingCheque) => `<span style="font-family: var(--font-mono); font-weight: 600;">${escapeHtml(row.cheque_number)}</span>`
     },
     {
       key: 'issued_date',

@@ -70,36 +70,49 @@ func (a *App) RecordSupplierPayment(invoiceID string, amount float64, currency, 
 		return nil, fmt.Errorf("payment date cannot be in the future")
 	}
 
-	// Check for existing payments to calculate outstanding balance
-	var totalPaidBefore float64
-	if err := a.db.Model(&SupplierPayment{}).
-		Where("supplier_invoice_id = ?", invoiceID).
-		Select("COALESCE(SUM(amount_bhd), 0)").
-		Scan(&totalPaidBefore).Error; err != nil {
-		return nil, fmt.Errorf("failed to calculate existing payments: %w", err)
-	}
-
-	// Validate payment doesn't exceed outstanding balance
-	outstanding := invoice.TotalBHD - totalPaidBefore
-	if amountBHD > outstanding+FloatingPointTolerance { // Small tolerance for floating point
-		return nil, fmt.Errorf("payment amount %.3f BHD exceeds outstanding balance %.3f BHD", amountBHD, outstanding)
-	}
-
-	// Check for duplicate payment (same invoice, reference, and amount)
-	if reference != "" {
-		var existingCount int64
-		a.db.Model(&SupplierPayment{}).
-			Where("supplier_invoice_id = ? AND reference = ? AND amount_bhd = ?", invoiceID, reference, amountBHD).
-			Count(&existingCount)
-		if existingCount > 0 {
-			return nil, fmt.Errorf("duplicate payment detected: same invoice, reference, and amount already exists")
-		}
-	}
-
-	// Start transaction for atomic payment creation + invoice status update
+	// SECURITY FIX (TOCTOU): Start transaction BEFORE balance check to prevent race conditions
+	// Two concurrent payments can no longer both pass validation (SELECT FOR UPDATE locks the row)
 	tx := a.db.Begin()
 	if tx.Error != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", tx.Error)
+	}
+
+	// Check for existing payments to calculate outstanding balance (INSIDE transaction)
+	var totalPaidBefore float64
+	if err := tx.Model(&SupplierPayment{}).
+		Where("supplier_invoice_id = ?", invoiceID).
+		Select("COALESCE(SUM(amount_bhd), 0)").
+		Scan(&totalPaidBefore).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to calculate existing payments: %w", err)
+	}
+
+	// Validate payment doesn't exceed outstanding balance (within locked transaction)
+	outstanding := invoice.TotalBHD - totalPaidBefore
+	if amountBHD > outstanding+FloatingPointTolerance { // Small tolerance for floating point
+		tx.Rollback()
+		return nil, fmt.Errorf("payment amount %.3f BHD exceeds outstanding balance %.3f BHD", amountBHD, outstanding)
+	}
+
+	// SECURITY FIX: Duplicate payment detection regardless of reference
+	var duplicateCount int64
+	duplicateQuery := tx.Model(&SupplierPayment{}).Where("supplier_invoice_id = ? AND amount_bhd = ?", invoiceID, amountBHD)
+	if reference != "" {
+		duplicateQuery = duplicateQuery.Where("reference = ?", reference)
+	} else {
+		// For payments without reference, check same amount on same date
+		duplicateQuery = duplicateQuery.Where("DATE(payment_date) = DATE(?)", paymentDate)
+	}
+	duplicateQuery.Count(&duplicateCount)
+	if duplicateCount > 0 {
+		tx.Rollback()
+		return nil, fmt.Errorf("duplicate payment detected: matching invoice, amount, and %s already exists",
+			func() string {
+				if reference != "" {
+					return "reference"
+				}
+				return "date"
+			}())
 	}
 
 	// Create payment record with display fields populated from invoice
@@ -296,6 +309,7 @@ func (a *App) GetSupplierPayment(id string) (SupplierPayment, error) {
 
 // UpdateSupplierPayment updates an existing supplier payment
 // P3 FIX: Added missing CRUD operation for consistency
+// SECURITY FIX: Added validation for amount, invoice bounds, and invoice change prevention
 func (a *App) UpdateSupplierPayment(id string, payment SupplierPayment) (*SupplierPayment, error) {
 	if err := a.requirePermission("supplier_payments:update"); err != nil {
 		return nil, err
@@ -314,13 +328,78 @@ func (a *App) UpdateSupplierPayment(id string, payment SupplierPayment) (*Suppli
 		return nil, newError("DB_QUERY_FAILED", "Failed to retrieve supplier payment", err.Error())
 	}
 
-	// Preserve ID and timestamps
+	// SECURITY FIX: Validate amount is positive
+	if payment.AmountBHD <= 0 {
+		return nil, newError("INVALID_AMOUNT", "Payment amount must be greater than zero", fmt.Sprintf("got: %.3f", payment.AmountBHD))
+	}
+
+	// SECURITY FIX: Prevent changing the linked supplier invoice
+	if payment.SupplierInvoiceID != "" && payment.SupplierInvoiceID != existing.SupplierInvoiceID {
+		return nil, newError("INVALID_UPDATE", "Cannot change the supplier invoice linked to a payment - delete and recreate instead", "")
+	}
+
+	// SECURITY FIX: Validate amount against supplier invoice outstanding balance
+	var invoice SupplierInvoice
+	if err := a.db.First(&invoice, "id = ?", existing.SupplierInvoiceID).Error; err != nil {
+		return nil, newError("INVOICE_NOT_FOUND", "Linked supplier invoice not found", err.Error())
+	}
+
+	// Calculate total already paid for this invoice (excluding current payment being updated)
+	var totalPaidExcludingCurrent float64
+	if err := a.db.Model(&SupplierPayment{}).
+		Where("supplier_invoice_id = ? AND id != ?", existing.SupplierInvoiceID, id).
+		Select("COALESCE(SUM(amount_bhd), 0)").
+		Scan(&totalPaidExcludingCurrent).Error; err != nil {
+		return nil, newError("DB_QUERY_FAILED", "Failed to calculate existing payments", err.Error())
+	}
+
+	// The max allowed is invoice total minus what others have paid
+	maxAllowedAmount := invoice.TotalBHD - totalPaidExcludingCurrent + FloatingPointTolerance
+	if payment.AmountBHD > maxAllowedAmount {
+		return nil, newError("INVALID_AMOUNT",
+			fmt.Sprintf("Payment amount %.3f BHD exceeds available balance %.3f BHD (invoice total %.3f - other payments %.3f)",
+				payment.AmountBHD, maxAllowedAmount-FloatingPointTolerance, invoice.TotalBHD, totalPaidExcludingCurrent),
+			"")
+	}
+
+	log.Printf("AUDIT: UpdateSupplierPayment id=%s by user=%s: amount %.3f -> %.3f, invoice=%s",
+		id, a.getCurrentUserID(), existing.AmountBHD, payment.AmountBHD, existing.SupplierInvoiceID)
+
+	// Preserve ID, timestamps, and invoice linkage
 	payment.ID = existing.ID
 	payment.CreatedAt = existing.CreatedAt
+	payment.SupplierInvoiceID = existing.SupplierInvoiceID
+	payment.SupplierID = existing.SupplierID
 
 	// Update payment
 	if err := a.db.Model(&existing).Updates(payment).Error; err != nil {
 		return nil, newError("DB_UPDATE_FAILED", "Failed to update supplier payment", err.Error())
+	}
+
+	// Recalculate invoice payment status if amount changed
+	if payment.AmountBHD != existing.AmountBHD {
+		var newTotalPaid float64
+		if err := a.db.Model(&SupplierPayment{}).
+			Where("supplier_invoice_id = ?", existing.SupplierInvoiceID).
+			Select("COALESCE(SUM(amount_bhd), 0)").
+			Scan(&newTotalPaid).Error; err != nil {
+			log.Printf("WARNING: Failed to recalculate total paid for invoice %s: %v", existing.SupplierInvoiceID, err)
+		} else {
+			var newPaymentStatus string
+			if newTotalPaid >= invoice.TotalBHD-FloatingPointTolerance {
+				newPaymentStatus = "Paid"
+			} else if newTotalPaid > 0 {
+				newPaymentStatus = "Partial"
+			} else {
+				newPaymentStatus = "Unpaid"
+			}
+			if err := a.db.Model(&SupplierInvoice{}).Where("id = ?", existing.SupplierInvoiceID).
+				Update("payment_status", newPaymentStatus).Error; err != nil {
+				log.Printf("WARNING: Failed to update invoice payment status: %v", err)
+			}
+			log.Printf("AUDIT: Supplier invoice %s payment status recalculated: %s (total paid: %.3f / %.3f)",
+				invoice.InvoiceNumber, newPaymentStatus, newTotalPaid, invoice.TotalBHD)
+		}
 	}
 
 	// Reload
@@ -328,7 +407,8 @@ func (a *App) UpdateSupplierPayment(id string, payment SupplierPayment) (*Suppli
 		return nil, newError("DB_QUERY_FAILED", "Failed to reload supplier payment", err.Error())
 	}
 
-	log.Printf("✅ Updated Supplier Payment: %s", id)
+	log.Printf("AUDIT: Supplier payment updated successfully: id=%s, amount=%.3f BHD, invoice=%s",
+		id, existing.AmountBHD, existing.SupplierInvoiceID)
 	return &existing, nil
 }
 

@@ -178,7 +178,7 @@
       label: 'Statement #',
       sortable: true,
       width: '140px',
-      render: (row: BankStatement) => `<span style="font-family: var(--font-mono); font-size: 12px;">${row.statement_number}</span>`
+      render: (row: BankStatement) => `<span style="font-family: var(--font-mono); font-size: 12px;">${escapeHtml(row.statement_number)}</span>`
     },
     {
       key: 'period_end',
@@ -208,7 +208,7 @@
           'Verified': '#059669'
         };
         const color = statusColors[row.status] || '#6B7280';
-        return `<span style="color: ${color}; font-weight: 500; font-size: 12px;">${row.status}</span>`;
+        return `<span style="color: ${color}; font-weight: 500; font-size: 12px;">${escapeHtml(row.status)}</span>`;
       }
     }
   ];
@@ -237,7 +237,7 @@
       label: 'Reference',
       sortable: true,
       width: '120px',
-      render: (row: BankStatementLine) => `<span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);">${row.reference || '-'}</span>`
+      render: (row: BankStatementLine) => `<span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);">${escapeHtml(row.reference || '-')}</span>`
     },
     {
       key: 'debit',
@@ -271,7 +271,7 @@
         };
         const color = typeColors[row.transaction_type] || '#6B7280';
         const label = row.transaction_type?.replace(/_/g, ' ') || 'Unknown';
-        return `<span style="color: ${color}; font-size: 11px; font-weight: 500;">${label}</span>`;
+        return `<span style="color: ${color}; font-size: 11px; font-weight: 500;">${escapeHtml(label)}</span>`;
       }
     },
     {

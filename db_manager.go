@@ -598,6 +598,11 @@ func (m *DBManager) DownloadFullDatabase() (int, error) {
 // downloadTable downloads a single table from Supabase to local SQLite
 // SAFE VERSION: Uses UPSERT instead of DELETE-then-INSERT to prevent data loss
 func (m *DBManager) downloadTable(table string) (int, error) {
+	// SECURITY: Validate table name to prevent SQL injection in raw SQL statements
+	if !isValidSQLIdentifier(table) {
+		return 0, fmt.Errorf("invalid table name: %s", table)
+	}
+
 	if m.remote == nil || m.local == nil {
 		return 0, fmt.Errorf("databases not connected")
 	}

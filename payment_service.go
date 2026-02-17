@@ -546,6 +546,7 @@ func (a *App) GetPayment(id string) (Payment, error) {
 
 // UpdatePayment updates an existing payment
 // P3 FIX: Added missing CRUD operation for consistency
+// SECURITY FIX: Added validation for amount, invoice bounds, and invoice change prevention
 func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 	if err := a.requirePermission("payments:update"); err != nil {
 		return nil, err
@@ -564,9 +565,74 @@ func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 		return nil, newError("DB_QUERY_FAILED", "Failed to retrieve payment", err.Error())
 	}
 
-	// Preserve ID and timestamps
+	// SECURITY FIX: Validate amount is positive
+	if payment.AmountBHD <= 0 {
+		return nil, newError("INVALID_AMOUNT", "Payment amount must be greater than zero", fmt.Sprintf("got: %.3f", payment.AmountBHD))
+	}
+
+	// SECURITY FIX: Prevent changing the linked invoice
+	if payment.InvoiceID != "" && payment.InvoiceID != existing.InvoiceID {
+		return nil, newError("INVALID_UPDATE", "Cannot change the invoice linked to a payment - delete and recreate instead", "")
+	}
+
+	// SECURITY FIX: Validate amount against invoice outstanding balance
+	var invoice Invoice
+	if err := a.db.First(&invoice, "id = ?", existing.InvoiceID).Error; err != nil {
+		return nil, newError("INVOICE_NOT_FOUND", "Linked invoice not found", err.Error())
+	}
+
+	// The allowed amount is the current outstanding + the existing payment amount (since we're replacing it)
+	maxAllowedAmount := invoice.OutstandingBHD + existing.AmountBHD
+	maxAllowedAmount = math.Round(maxAllowedAmount*BHDPrecisionMultiplier) / BHDPrecisionMultiplier
+	if payment.AmountBHD > maxAllowedAmount {
+		return nil, newError("INVALID_AMOUNT",
+			fmt.Sprintf("Payment amount %.3f BHD exceeds available balance %.3f BHD (outstanding %.3f + current payment %.3f)",
+				payment.AmountBHD, maxAllowedAmount, invoice.OutstandingBHD, existing.AmountBHD),
+			"")
+	}
+
+	// Round to BHD precision
+	payment.AmountBHD = math.Round(payment.AmountBHD*BHDPrecisionMultiplier) / BHDPrecisionMultiplier
+
+	log.Printf("AUDIT: UpdatePayment id=%s by user=%s: amount %.3f -> %.3f, invoice=%s",
+		id, a.getCurrentUserID(), existing.AmountBHD, payment.AmountBHD, existing.InvoiceID)
+
+	// Preserve ID, timestamps, and invoice linkage
 	payment.ID = existing.ID
 	payment.CreatedAt = existing.CreatedAt
+	payment.InvoiceID = existing.InvoiceID
+	payment.InvoiceNumber = existing.InvoiceNumber
+
+	// Recalculate invoice outstanding balance if amount changed
+	if payment.AmountBHD != existing.AmountBHD {
+		amountDifference := payment.AmountBHD - existing.AmountBHD
+		newOutstanding := invoice.OutstandingBHD - amountDifference
+		newOutstanding = math.Round(newOutstanding*BHDPrecisionMultiplier) / BHDPrecisionMultiplier
+		if newOutstanding < 0 {
+			newOutstanding = 0
+		}
+
+		// Determine new invoice status
+		var newStatus string
+		if newOutstanding <= 0 {
+			newStatus = "Paid"
+			newOutstanding = 0
+		} else if newOutstanding < invoice.GrandTotalBHD {
+			newStatus = "PartiallyPaid"
+		} else {
+			newStatus = invoice.Status
+		}
+
+		if err := a.db.Model(&invoice).Updates(map[string]interface{}{
+			"outstanding_bhd": newOutstanding,
+			"status":          newStatus,
+		}).Error; err != nil {
+			return nil, newError("DB_UPDATE_FAILED", "Failed to update invoice balance", err.Error())
+		}
+
+		log.Printf("AUDIT: Invoice %s balance recalculated: outstanding %.3f -> %.3f, status %s -> %s",
+			invoice.InvoiceNumber, invoice.OutstandingBHD, newOutstanding, invoice.Status, newStatus)
+	}
 
 	// Update payment
 	if err := a.db.Model(&existing).Updates(payment).Error; err != nil {
@@ -578,6 +644,7 @@ func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 		return nil, newError("DB_QUERY_FAILED", "Failed to reload payment", err.Error())
 	}
 
-	log.Printf("✅ Updated Payment: %s", id)
+	log.Printf("AUDIT: Payment updated successfully: id=%s, amount=%.3f BHD, invoice=%s",
+		id, existing.AmountBHD, existing.InvoiceID)
 	return &existing, nil
 }

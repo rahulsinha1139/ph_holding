@@ -155,11 +155,18 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 			// Block at 100% of credit limit (hard limit)
 			// Race condition prevented: customer row is locked, so concurrent invoice
 			// creation will wait for this check to complete before proceeding
-			if newTotalOutstanding > creditLimit && !customer.IsCreditBlocked {
-				log.Printf("🚫 BLOCKED: Customer %s exceeds credit limit (%.3f BHD > %.3f BHD)",
+			// SECURITY FIX: First check if customer is explicitly credit-blocked (reject unconditionally)
+			if customer.IsCreditBlocked {
+				log.Printf("BLOCKED: Customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
+				return Invoice{}, fmt.Errorf("customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
+			}
+
+			// Second check: enforce credit limit (hard limit at 100%)
+			if newTotalOutstanding > creditLimit {
+				log.Printf("BLOCKED: Customer %s exceeds credit limit (%.3f BHD > %.3f BHD)",
 					customer.BusinessName, newTotalOutstanding, creditLimit)
 				return Invoice{}, fmt.Errorf(
-					"customer %s exceeds credit limit: total outstanding would be %.3f BHD (limit: %.3f BHD) - approval required",
+					"credit limit exceeded for %s: new outstanding %.3f exceeds limit %.3f",
 					customer.BusinessName,
 					newTotalOutstanding,
 					creditLimit,

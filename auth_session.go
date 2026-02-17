@@ -23,10 +23,24 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"time"
 )
+
+// hashToken creates a SHA-256 hash of a token for safe storage.
+// The actual token value is never stored in the database - only the hash.
+// Lookups use the same hash function to match.
+func hashToken(token string) string {
+	if token == "" {
+		return ""
+	}
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS - Session Expiration Defaults
@@ -58,10 +72,12 @@ func (am *AuthManager) CreateSession(userID string, token *TokenResponse) error 
 
 	now := time.Now()
 
+	// SECURITY FIX: Store hashed tokens instead of plaintext
+	// The actual tokens remain in memory only; DB stores hashes for lookup/invalidation
 	session := UserSession{
 		UserID:             userID,
-		Token:              token.AccessToken,
-		RefreshToken:       token.RefreshToken,
+		Token:              hashToken(token.AccessToken),
+		RefreshToken:       hashToken(token.RefreshToken),
 		AccessTokenExpiry:  token.ExpiresAt,
 		RefreshTokenExpiry: now.Add(DefaultRefreshTokenLifetime),
 		LastActivityAt:     now,
@@ -83,8 +99,9 @@ func (am *AuthManager) UpdateSessionActivity(accessToken string) error {
 		return fmt.Errorf("database not initialized")
 	}
 
+	// SECURITY FIX: Compare against hashed token
 	result := am.app.db.Model(&UserSession{}).
-		Where("token = ? AND is_active = ?", accessToken, true).
+		Where("token = ? AND is_active = ?", hashToken(accessToken), true).
 		Update("last_activity_at", time.Now())
 
 	if result.Error != nil {
@@ -109,7 +126,8 @@ func (am *AuthManager) ValidateSession(accessToken string) (*UserSession, error)
 	}
 
 	var session UserSession
-	if err := am.app.db.Where("token = ? AND is_active = ?", accessToken, true).First(&session).Error; err != nil {
+	// SECURITY FIX: Lookup by hashed token
+	if err := am.app.db.Where("token = ? AND is_active = ?", hashToken(accessToken), true).First(&session).Error; err != nil {
 		return nil, fmt.Errorf("session not found: %w", err)
 	}
 
@@ -182,8 +200,9 @@ func (am *AuthManager) InvalidateSessionByToken(accessToken string, reason strin
 		return fmt.Errorf("database not initialized")
 	}
 
+	// SECURITY FIX: Lookup by hashed token
 	var session UserSession
-	if err := am.app.db.Where("token = ?", accessToken).First(&session).Error; err != nil {
+	if err := am.app.db.Where("token = ?", hashToken(accessToken)).First(&session).Error; err != nil {
 		return fmt.Errorf("session not found: %w", err)
 	}
 
@@ -309,8 +328,17 @@ func (a *App) RefreshAuthWithSession(session *UserSession) error {
 		return fmt.Errorf("auth manager not initialized")
 	}
 
-	// Use refresh token from session
-	newToken, err := a.authManager.refreshToken(session.RefreshToken)
+	// Use refresh token from in-memory state (DB only stores hash)
+	a.authManager.mu.RLock()
+	refreshToken := ""
+	if a.authManager.Token != nil {
+		refreshToken = a.authManager.Token.RefreshToken
+	}
+	a.authManager.mu.RUnlock()
+	if refreshToken == "" {
+		return fmt.Errorf("no refresh token available in memory")
+	}
+	newToken, err := a.authManager.refreshToken(refreshToken)
 	if err != nil {
 		// Refresh failed - invalidate session
 		a.authManager.InvalidateSession(session.ID, "refresh_failed")
@@ -327,7 +355,7 @@ func (a *App) RefreshAuthWithSession(session *UserSession) error {
 	err = a.db.Model(&UserSession{}).
 		Where("id = ?", session.ID).
 		Updates(map[string]interface{}{
-			"token":               newToken.AccessToken,
+			"token":               hashToken(newToken.AccessToken),
 			"access_token_expiry": newToken.ExpiresAt,
 			"last_activity_at":    now,
 		}).Error
@@ -364,8 +392,17 @@ func (a *App) LogoutWithSession() error {
 		}
 	}
 
-	// Clear in-memory state
-	return a.Logout()
+	// Clear in-memory state directly (do NOT call a.Logout() — that calls back here, causing infinite recursion)
+	a.authManager.mu.Lock()
+	a.authManager.Token = nil
+	a.authManager.Profile = nil
+	a.authManager.mu.Unlock()
+
+	// Remove cached token file from disk
+	os.Remove(".auth_token.json")
+
+	log.Println("✅ Logout complete: tokens cleared, session invalidated")
+	return nil
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

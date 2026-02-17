@@ -27,6 +27,7 @@
     GetFXExposureReport,
     GetFXGainLossSummary,
   } from '../../../wailsjs/go/main/App';
+  import { escapeHtml } from '$lib/utils/escapeHtml';
 
   // Design system components
   import PageLayout from '$lib/components/layout/PageLayout.svelte';
@@ -131,7 +132,7 @@
       key: 'foreign_currency',
       label: 'Currency',
       width: '80px',
-      render: (row: FXRevaluation) => `<span style="font-weight: 600;">${row.foreign_currency}</span>`
+      render: (row: FXRevaluation) => `<span style="font-weight: 600;">${escapeHtml(row.foreign_currency || '')}</span>`
     },
     {
       key: 'foreign_balance',
@@ -185,7 +186,7 @@
       key: 'currency',
       label: 'Currency',
       width: '80px',
-      render: (row: ExposureReport) => `<span style="font-weight: 600;">${row.currency}</span>`
+      render: (row: ExposureReport) => `<span style="font-weight: 600;">${escapeHtml(row.currency || '')}</span>`
     },
     {
       key: 'account_count',

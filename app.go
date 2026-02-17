@@ -128,9 +128,9 @@ func (a *App) ValidateCSRFToken(token string) bool {
 func generateSecureToken(length int) string {
 	bytes := make([]byte, length)
 	if _, err := rand.Read(bytes); err != nil {
-		// Fallback to timestamp-based (less secure but functional)
-		log.Printf("⚠️ crypto/rand failed, using fallback: %v", err)
-		return fmt.Sprintf("%d-%x", time.Now().UnixNano(), time.Now().UnixNano())
+		// SECURITY: crypto/rand failure is a critical system issue.
+		// Do NOT fall back to predictable tokens - that silently degrades security.
+		log.Fatalf("CRITICAL: crypto/rand.Read failed, cannot generate secure token: %v", err)
 	}
 	return hex.EncodeToString(bytes)
 }
@@ -8263,7 +8263,20 @@ func (a *App) QuickCaptureDocumentFromBase64(base64Data string, fileName string)
 	if err := a.requirePermission("documents:create"); err != nil {
 		return nil, err
 	}
-	log.Printf("📥 Quick capture from base64: %s", fileName)
+
+	// SECURITY FIX: Size limit to prevent OOM from large base64 payloads
+	const maxBase64Size = 75 * 1024 * 1024 // ~50MB decoded
+	if len(base64Data) > maxBase64Size {
+		return nil, fmt.Errorf("file too large: maximum 50MB allowed")
+	}
+
+	// SECURITY FIX: Sanitize filename to prevent path traversal
+	safeName := filepath.Base(fileName)
+	if safeName == "." || safeName == "/" || safeName == "" {
+		return nil, fmt.Errorf("invalid file name")
+	}
+
+	log.Printf("📥 Quick capture from base64: %s", safeName)
 
 	// Decode base64
 	data, err := base64.StdEncoding.DecodeString(base64Data)
@@ -8273,7 +8286,7 @@ func (a *App) QuickCaptureDocumentFromBase64(base64Data string, fileName string)
 
 	// Create temp file
 	tempDir := os.TempDir()
-	tempPath := filepath.Join(tempDir, "ph_capture_"+fileName)
+	tempPath := filepath.Join(tempDir, "ph_capture_"+safeName)
 
 	if err := os.WriteFile(tempPath, data, 0644); err != nil {
 		return nil, fmt.Errorf("failed to write temp file: %w", err)
@@ -11430,7 +11443,21 @@ func (a *App) requirePermission(permission string) error {
 			a.startupImporting = false
 			log.Println("⚠️ WARNING: Startup import timeout exceeded (5 min), re-enabling RBAC for security")
 		} else {
-			return nil // Still within safe window, allow bypass
+			// FIX 2: Only bypass RBAC for import/data-seeding operations, not all permissions
+			importAllowedPerms := map[string]bool{
+				"settings:update": true,
+				"settings:view":   true,
+				"finance:create":  true,
+				"finance:read":    true,
+				"orders:create":   true,
+				"orders:read":     true,
+				"po:create":       true,
+				"po:read":         true,
+			}
+			if importAllowedPerms[permission] {
+				return nil // Allow only import-related operations during startup
+			}
+			// All other permissions (users:manage, licenses, admin, etc.) still enforced
 		}
 	}
 

@@ -1,8 +1,8 @@
 # CLAUDE.md - PH Holdings Sovereign UI
 
 **Project**: PH Holdings ERP System (Wails + Go + Svelte)
-**Status**: SHIPPED TO CLIENT (Phase 16 Complete)
-**Last Updated**: 2026-01-29
+**Status**: SECURITY HARDENING IN PROGRESS (Phase 17)
+**Last Updated**: 2026-02-16
 
 ---
 
@@ -109,6 +109,93 @@ MISTRAL_API_KEY=your_key
 ---
 
 ## Development History
+
+### Phase 17: Security Red Team Audit & Hardening (2026-02-16) - IN PROGRESS
+
+**Dev Environment Setup (New Mac):**
+- Cloned repo from `github.com/rahul-asymmetrica/ph_holdings`
+- Installed Go 1.26.0, Wails CLI v2.11.0, frontend npm deps
+- Fixed cross-platform build issue: extracted `ExcelWorkbookData` and `WordDocumentData` types from Windows-only `com_automation.go` into shared `integration/com_types.go`
+- Verified full build passes (`go build ./...` + `wails build`)
+
+**Red Team Audit (6 Parallel Agents):**
+Ran 6 concurrent security audit agents covering: Authentication & Sessions, SQL/Command Injection, Data Security, API & Input Validation, Infrastructure & Config, Business Logic & Race Conditions. Total raw findings: **117** (deduplicated to ~74 unique).
+
+**P0 Fixes Applied (Critical - Same Day):**
+
+| Fix | File | Description |
+|-----|------|-------------|
+| Logout infinite recursion | `auth_session.go:367` | `Logout()` called `LogoutWithSession()` which called `Logout()` - infinite loop. Replaced with direct cleanup: nil Token/Profile, remove `.auth_token.json` |
+| RBAC startup bypass scoped | `app.go:11433` | Previously ALL permissions bypassed for 5 min on startup. Now only import-related permissions (`settings:update/view`, `finance:create/read`, `orders:create/read`, `po:create/read`) are bypassed |
+
+**P1 Fixes Applied (High Priority - 15 files, +411/-116 lines):**
+
+*Injection Fixes:*
+- PowerShell command injection: added `escapePowerShell()` sanitizer (`intent_processor.go`)
+- sqlite3 CLI injection: added `isReadOnlySQLQuery()` validation rejecting dot-commands and non-SELECT queries (`tool_executor.go`)
+- SQL injection via table names: added `isValidSQLIdentifier()` check in `downloadTable` (`db_manager.go`)
+- CSRF token predictable fallback: `log.Fatalf` instead of degrading to timestamp-based token (`app.go`)
+
+*Payment & Financial Controls:*
+- `UpdatePayment`: added amount > 0 validation, invoice bounds check, prevented changing linked invoice, added invoice balance recalculation and audit logging (`payment_service.go`)
+- `UpdateSupplierPayment`: same controls as above (`supplier_payment_service.go`)
+- Credit limit bypass: fixed inverted `IsCreditBlocked` logic - blocked customers now correctly rejected (`customer_invoice_service.go`)
+- Supplier payment race condition: moved balance check inside transaction with `SELECT FOR UPDATE` (`supplier_payment_service.go`)
+- Duplicate supplier payments: detection now works even when reference is empty (checks amount + date) (`supplier_payment_service.go`)
+
+*PO Controls:*
+- PO financial field protection: blocked amount/total/rate changes on Approved/Sent/Received POs (`purchase_order_service.go`)
+- PO status state machine: added valid transition map, terminal states (Received, Cancelled) can't revert (`purchase_order_service.go`)
+
+*XSS Fixes:*
+- Added `escapeHtml()` to render functions in `ChequeRegisterScreen.svelte`, `BankReconciliationScreen.svelte`, `FXRevaluationScreen.svelte`
+- OAuth error page: `html.EscapeString(errorDesc)` prevents reflected XSS (`auth_handler.go`)
+
+*Auth, Crypto & Upload:*
+- Predictable license keys: replaced deterministic `SHA-256(role+index)` with `crypto/rand` (`license_service.go`)
+- License keys no longer logged to console on startup - only counts per role (`license_service.go`)
+- OAuth tokens stored as SHA-256 hashes in DB, not plaintext. Lookups use `hashToken()` (`auth_session.go`)
+- OAuth scopes reduced: `Files.ReadWrite` (not `.All`), `Mail.Send` (removed `Mail.ReadWrite`), `Calendars.Read`, `Sites.Read.All` (`auth_handler.go`)
+- Path traversal fix: `filepath.Base(fileName)` sanitization in `QuickCaptureDocumentFromBase64` (`app.go`)
+- Size limit: 50MB max on base64 upload to prevent OOM (`app.go`)
+
+*Crash Fix:*
+- `InitializeDefaultAssets` nil pointer dereference: `GetApplicationPaths()` returns nil when no license activated. Added nil check (`assets_service.go`)
+
+---
+
+### NEXT SESSION: P2 Fixes Required for Production Readiness
+
+The following P2 (Medium priority) fixes must be completed before the app can be considered production-ready:
+
+**Crypto & Config (4 fixes):**
+1. **Deterministic PBKDF2 salt** - Salt derived from the secret itself in `field_crypto.go:70`. Generate a random salt on first run and store it separately.
+2. **OAuth callback binds to all interfaces** - `auth_handler.go:447` listens on `:8080` instead of `127.0.0.1:8080`. Remote machines on the same network can reach it.
+3. **Cloud sync defaults to enabled** - `config.go:532`. Default `ENABLE_CLOUD_SYNC` to `false` to prevent accidental production data corruption.
+4. **`.env` file traversal** - `config.go:179` walks parent directories looking for `.env`. Restrict to app directory only.
+
+**Business Logic (5 fixes):**
+5. **Business invariants not enforced** - `business_invariants.go` defines rules (Grade D = 100% advance, 8% min margin) but they're never called in create/update paths. Wire `ValidateAll()` into mutation flows.
+6. **FX rate manipulation** - `fx_revaluation_service.go:21`. No sanity check on exchange rates. Add bounds validation (+/- 20% of last rate).
+7. **Bank reconciliation amount mismatch** - `bank_transaction_matcher.go:420`. Manual match doesn't validate amounts. A 100 BHD credit can be matched to a 50,000 BHD invoice.
+8. **Supplier invoice approval lacks segregation of duties** - `supplier_invoice_service.go:307`. Uses `po:create` permission (not a dedicated approval perm), and creator can approve their own invoice.
+9. **Negative inventory not prevented** - Delivery notes can be created with quantities exceeding available stock.
+
+**Input Validation & API (5 fixes):**
+10. **`CreateUser` skips validation** - `app.go:11248`. Doesn't call `ValidateUserInput()`. Accepts XSS in `fullName`, no length limits on `department`/`jobTitle`.
+11. **Filesystem traversal in document classifier** - `document_classifier.go:706`. Accepts any `basePath`, can enumerate entire filesystem.
+12. **`ProcessInboxDocument` no auth** - `runtime_handlers.go:37`. No `requirePermission()` call, no path validation.
+13. **Batch operations unbounded** - `batch_operations.go:116`. No max size limit on batch update/delete. Can mass-delete all orders in one call.
+14. **Butler AI prompt injection** - `butler_ai.go:232`. Raw customer names/data injected into Mistral prompts without sanitization.
+
+**Frontend & Dependencies (3 fixes):**
+15. **Outdated frontend deps** - Vite 3.x and Svelte 3.x have known CVEs (CVE-2023-34092, CVE-2024-23331). Upgrade to Vite 6.x and Svelte 4/5.x.
+16. **Incomplete log sanitization** - `security_enhancements.go:329`. `SanitizeForLog` doesn't mask `api_key`, `token`, `secret` fields. Expand patterns.
+17. **Log file world-readable** - `app.go:223`. Created with permission `0666`. Change to `0600`.
+
+**Estimated P2 effort:** ~2-3 hours with parallel agents. After P2, the app will be production-ready from a security standpoint.
+
+---
 
 ### Phase 16: Client Ship & Bug Fixes (2026-01-29) ✅ SHIPPED
 

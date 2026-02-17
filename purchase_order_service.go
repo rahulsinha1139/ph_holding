@@ -228,6 +228,16 @@ func (a *App) UpdatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
 		return PurchaseOrder{}, newError("PO_NOT_FOUND", "Purchase order not found", err.Error())
 	}
 
+	// Block financial field changes on approved/sent POs
+	protectedStatuses := map[string]bool{"Approved": true, "Sent": true, "Partially Received": true, "Received": true}
+	if protectedStatuses[existing.Status] {
+		if po.SubtotalForeign != existing.SubtotalForeign || po.SubtotalBHD != existing.SubtotalBHD ||
+			po.TotalForeign != existing.TotalForeign || po.TotalBHD != existing.TotalBHD ||
+			po.ExchangeRate != existing.ExchangeRate || po.VATAmount != existing.VATAmount {
+			return PurchaseOrder{}, fmt.Errorf("cannot modify financial fields on PO with status '%s' - requires new PO or status reset to Draft", existing.Status)
+		}
+	}
+
 	// Recalculate BHD amounts if exchange rate changed
 	if po.ExchangeRate > 0 {
 		po.SubtotalBHD = po.SubtotalForeign * po.ExchangeRate
@@ -311,6 +321,41 @@ func (a *App) UpdatePOStatus(id string, status string) error {
 	}
 	if a.db == nil {
 		return newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	// Validate status transition
+	validTransitions := map[string][]string{
+		"Draft":                {"Pending Approval", "Approved", "Sent", "Cancelled"},
+		"Pending Approval":    {"Approved", "Draft", "Cancelled"},
+		"Approved":            {"Sent", "Cancelled"},
+		"Sent":                {"Acknowledged", "Partially Received", "Received", "Cancelled"},
+		"Acknowledged":        {"Partially Received", "Received", "Cancelled"},
+		"Partially Received":  {"Received", "Cancelled"},
+		"Received":            {},  // Terminal state
+		"Closed":              {},  // Terminal state
+		"Cancelled":           {},  // Terminal state
+	}
+
+	// Look up the current PO status
+	var current PurchaseOrder
+	if err := a.db.Select("status").First(&current, "id = ?", id).Error; err != nil {
+		return newError("PO_NOT_FOUND", "Purchase order not found", err.Error())
+	}
+
+	allowed, knownStatus := validTransitions[current.Status]
+	if !knownStatus {
+		return fmt.Errorf("PO has unrecognized current status '%s'", current.Status)
+	}
+
+	isValid := false
+	for _, s := range allowed {
+		if s == status {
+			isValid = true
+			break
+		}
+	}
+	if !isValid {
+		return fmt.Errorf("invalid status transition from '%s' to '%s'", current.Status, status)
 	}
 
 	result := a.db.Model(&PurchaseOrder{}).Where("id = ?", id).Update("status", status)

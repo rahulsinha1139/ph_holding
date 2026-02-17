@@ -225,9 +225,11 @@ func (a *App) InitializeDefaultAssets() {
 	letterheadFile := "PH Trading Quotation Template.png"
 	candidatePaths := []string{}
 
-	// Check various locations
+	// Check various locations - GetApplicationPaths may return nil if no license is activated
 	paths := a.GetApplicationPaths()
-	candidatePaths = append(candidatePaths, filepath.Join(paths.ProjectRoot, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile))
+	if paths != nil {
+		candidatePaths = append(candidatePaths, filepath.Join(paths.ProjectRoot, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile))
+	}
 
 	if exePath, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exePath)

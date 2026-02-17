@@ -1,0 +1,56 @@
+===============================================================================
+                    PH HOLDINGS ERP - LICENSE KEYS
+                    Generated: 2026-02-17
+===============================================================================
+
+INSTRUCTIONS:
+  1. Copy the deploy_package folder to your PC
+  2. Run ph_holdings_app (or ph_holdings_app.exe on Windows)
+  3. Enter YOUR license key when prompted
+  4. Each key works on ONE PC only - do not share keys
+
+-------------------------------------------------------------------------------
+ADMIN (Full Access - Dashboard, Finance, Operations, CRM, Intelligence)
+-------------------------------------------------------------------------------
+
+  Abhie (SPOC)     PH-ADM-ABH1E0
+  Stanley          PH-ADM-STNLY1
+  Daniel           PH-ADM-DAN1EL
+
+-------------------------------------------------------------------------------
+MANAGER (Dashboard, Finance, Operations, CRM, Intelligence)
+-------------------------------------------------------------------------------
+
+  Sundar           PH-MGR-SUNDR1
+
+-------------------------------------------------------------------------------
+SALES (Dashboard, Opportunities, CRM, Intelligence)
+-------------------------------------------------------------------------------
+
+  Peri             PH-SLS-PER1S0
+  Ebin             PH-SLS-EB1N01
+  Support          PH-SLS-SUPRT1
+
+-------------------------------------------------------------------------------
+OPERATIONS (Dashboard, Operations Hub, Intelligence)
+-------------------------------------------------------------------------------
+
+  Clinton          PH-OPS-CLNTN1
+
+===============================================================================
+                    ROLE ACCESS MATRIX
+===============================================================================
+
+  Screen            Admin   Manager   Sales   Operations
+  -------           -----   -------   -----   ----------
+  Dashboard           Y       Y         Y        Y
+  Opportunities       Y       Y         Y        -
+  Operations          Y       Y         -        Y
+  Finance Hub         Y       Y         -        -
+  Relationships       Y       Y         Y        -
+  Intelligence        Y       Y         Y        Y
+
+===============================================================================
+  SUPPORT: Contact Abhie (SPOC) for key issues or new key requests
+  CLOUD SYNC: Auto-syncs every 10 minutes when online
+===============================================================================

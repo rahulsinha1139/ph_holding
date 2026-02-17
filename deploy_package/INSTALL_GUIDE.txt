@@ -1,0 +1,90 @@
+===============================================================================
+                PH HOLDINGS ERP - INSTALLATION GUIDE
+                Version: 2026-02-17 | Phase 17
+===============================================================================
+
+QUICK START (3 Steps)
+---------------------
+
+  1. COPY this entire folder to your PC
+     - Windows: C:\PH_Holdings\
+     - Mac: ~/PH_Holdings/
+
+  2. RUN the application
+     - Windows: Double-click AsymmFlow.exe
+     - Mac: Run ./AsymmFlow from Terminal
+
+  3. ENTER your license key when prompted
+     - See LICENSE_KEYS.txt for your personal key
+     - Key activates on first use and binds to your PC
+
+That's it! The app will open to the Dashboard.
+
+
+FOLDER STRUCTURE
+----------------
+
+  deploy_package/
+  ├── AsymmFlow              <- The application (Mac)
+  ├── AsymmFlow.exe          <- The application (Windows)
+  ├── .env                   <- Cloud sync configuration
+  ├── data/
+  │   └── ph_holdings.db     <- Database with all company data
+  ├── LICENSE_KEYS.txt       <- Your license key
+  └── INSTALL_GUIDE.txt      <- This file
+
+
+FEATURES BY ROLE
+-----------------
+
+  ADMIN (Abhie, Stanley, Daniel):
+    - Full access to all modules
+    - User management and license administration
+    - Finance Hub with bank reconciliation
+    - All reports and AI queries
+
+  MANAGER (Sundar):
+    - Dashboard with KPIs
+    - Finance Hub (invoices, payments, bank recon)
+    - Operations Hub (POs, supplier invoices)
+    - CRM (customers and suppliers)
+    - Butler AI for business intelligence
+
+  SALES (Peri, Ebin, Support):
+    - Dashboard with pipeline metrics
+    - Opportunities (RFQ, Costing, Offers, Orders)
+    - CRM (customer profiles and contacts)
+    - Butler AI for sales queries
+
+  OPERATIONS (Clinton):
+    - Dashboard
+    - Operations Hub (Purchase Orders, GRN, Deliveries)
+    - Butler AI for operations queries
+
+
+CLOUD SYNC
+----------
+
+  - Data syncs automatically every 10 minutes
+  - Green dot = Connected | Yellow = Connecting | Gray = Offline
+  - App works fully offline - changes sync when reconnected
+  - All PCs share the same data through Supabase cloud
+
+
+TROUBLESHOOTING
+---------------
+
+  Problem                     Solution
+  -------                     --------
+  App won't start             Make sure .env file is in same folder
+  "Invalid license key"       Check LICENSE_KEYS.txt for correct key
+  "Already activated"         Each key works on ONE PC only
+  Database locked             Close other app instances
+  Data not syncing            Check internet connection, wait 10 min
+  Empty dashboard             Make sure data/ph_holdings.db exists
+
+  For all issues: Contact Abhie (SPOC)
+
+===============================================================================
+  PH Trading WLL | Powered by Asymmetrica Mathematical Organism
+===============================================================================

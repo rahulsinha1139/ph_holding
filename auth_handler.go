@@ -30,6 +30,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -64,12 +65,12 @@ const (
 
 // Required Microsoft Graph scopes for PH Holdings
 var RequiredScopes = []string{
-	"User.Read",           // User profile
-	"Files.ReadWrite.All", // OneDrive/SharePoint files
-	"Mail.Send",           // Send emails
-	"Mail.ReadWrite",      // Create drafts
-	"Calendars.ReadWrite", // Calendar events
-	"Sites.ReadWrite.All", // SharePoint sites
+	"User.Read",          // User profile
+	"Files.ReadWrite",    // OneDrive files (user's own, not .All)
+	"Mail.Send",          // Send emails only (removed Mail.ReadWrite)
+	"Calendars.Read",     // Read calendar (reduced from ReadWrite)
+	"Sites.Read.All",     // Read SharePoint sites (reduced from ReadWrite)
+	"offline_access",     // Refresh tokens
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -384,7 +385,7 @@ func (am *AuthManager) startCallbackServer() error {
 		// Check for errors
 		if errorParam != "" {
 			am.errorChan <- fmt.Errorf("OAuth error: %s - %s", errorParam, errorDesc)
-			fmt.Fprintf(w, "<html><body><h1>Authentication Failed</h1><p>%s</p></body></html>", errorDesc)
+			fmt.Fprintf(w, "<html><body><h1>Authentication Failed</h1><p>%s</p></body></html>", html.EscapeString(errorDesc))
 			return
 		}
 
