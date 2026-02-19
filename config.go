@@ -177,18 +177,14 @@ func LoadConfig() (*Config, error) {
 	// Try to load .env file from multiple locations
 	// This is needed because the app can run from build/bin/ or project root
 	envLocations := []string{
-		".env",           // Current directory
-		"../.env",        // Parent (if in build/)
-		"../../.env",     // Two levels up (if in build/bin/)
+		".env", // Current directory
 	}
 
-	// Also try relative to executable location
+	// Also try executable directory (no parent traversal)
 	if exePath, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exePath)
 		envLocations = append(envLocations,
 			filepath.Join(exeDir, ".env"),
-			filepath.Join(exeDir, "..", ".env"),
-			filepath.Join(exeDir, "..", "..", ".env"),
 		)
 	}
 
@@ -529,7 +525,7 @@ func (c *Config) EnsureOneDrivePaths() error {
 // loadDatabaseConfig loads Supabase config for cloud sync (SQLite is primary)
 func loadDatabaseConfig() SupabaseConfig {
 	// Check if cloud sync is enabled
-	enableSync := getEnvBool("ENABLE_CLOUD_SYNC", true)
+	enableSync := getEnvBool("ENABLE_CLOUD_SYNC", false)
 
 	// Priority 1: DATABASE_URL (if provided by hosting platform)
 	databaseURL := getEnv("DATABASE_URL", "")

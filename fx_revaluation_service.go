@@ -30,6 +30,18 @@ func (a *App) CreateFXRate(fromCurrency, toCurrency string, rate float64, rateDa
 		return nil, fmt.Errorf("rate must be positive")
 	}
 
+	// Bounds validation: rate must be within ±20% of last known rate
+	var lastRate FXRate
+	lastErr := a.db.Where("from_currency = ? AND to_currency = ?", fromCurrency, toCurrency).
+		Order("rate_date DESC").First(&lastRate).Error
+	if lastErr == nil && lastRate.Rate > 0 {
+		ratio := rate / lastRate.Rate
+		if ratio < 0.80 || ratio > 1.20 {
+			return nil, fmt.Errorf("rate %.6f is outside ±20%% of last known rate %.6f (bounds: %.6f - %.6f)",
+				rate, lastRate.Rate, lastRate.Rate*0.80, lastRate.Rate*1.20)
+		}
+	}
+
 	// Check for existing rate on same date
 	var existing FXRate
 	err := a.db.Where("from_currency = ? AND to_currency = ? AND rate_date = ?",

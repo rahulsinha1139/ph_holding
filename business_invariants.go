@@ -719,6 +719,32 @@ func PrintValidationResults(results []InvariantValidationResult) {
 // STATISTICS & REPORTING
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ValidateCostingApproval validates key business rules for costing/order approval
+// without requiring the full Context struct. Returns nil if all checks pass.
+func ValidateCostingApproval(customerGrade string, actualMarginPct float64, advanceRequired float64, hasABBCompetition bool) error {
+	// 8% minimum margin for approved orders
+	if actualMarginPct < 0.08 {
+		return fmt.Errorf("actual margin %.1f%% is below minimum 8%% threshold", actualMarginPct*100)
+	}
+
+	// Grade D requires 100% advance
+	if customerGrade == "D" && advanceRequired < 1.0 {
+		return fmt.Errorf("grade D customer requires 100%% advance (got %.0f%%)", advanceRequired*100)
+	}
+
+	// Grade C requires 50% advance
+	if customerGrade == "C" && advanceRequired < 0.50 {
+		return fmt.Errorf("grade C customer requires at least 50%% advance (got %.0f%%)", advanceRequired*100)
+	}
+
+	// ABB competition requires 15% margin
+	if hasABBCompetition && actualMarginPct < 0.15 {
+		return fmt.Errorf("ABB competing: margin %.1f%% is below 15%% threshold", actualMarginPct*100)
+	}
+
+	return nil
+}
+
 // InvariantStatistics provides overview of registered invariants
 func InvariantStatistics() map[string]int {
 	stats := make(map[string]int)

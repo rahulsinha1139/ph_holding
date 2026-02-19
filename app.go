@@ -220,7 +220,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
 	// 1. Setup File Logging (FIX: Handle error, store file handle for cleanup)
-	logFile, err := os.OpenFile("app_debug.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	logFile, err := os.OpenFile("app_debug.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	if err != nil {
 		log.Printf(" Failed to open log file: %v, logging to stderr", err)
 	} else {
@@ -4268,6 +4268,9 @@ func (a *App) GetAllOffers() ([]Offer, error) {
 
 // UpdateOfferFull updates an offer's details and line items
 func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, error) {
+	if err := a.requirePermission("offers:edit"); err != nil {
+		return nil, err
+	}
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
@@ -4362,6 +4365,9 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 
 // MarkOfferWon marks an offer as Won and creates an Order with line items
 func (a *App) MarkOfferWon(offerID string, customerPO string) (*Order, error) {
+	if err := a.requirePermission("offers:edit"); err != nil {
+		return nil, err
+	}
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
@@ -4544,6 +4550,9 @@ func (a *App) MarkOfferWon(offerID string, customerPO string) (*Order, error) {
 
 // MarkOfferLost marks an offer as Lost with a reason
 func (a *App) MarkOfferLost(offerID string, reason string) error {
+	if err := a.requirePermission("offers:edit"); err != nil {
+		return err
+	}
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
@@ -11272,6 +11281,19 @@ func (a *App) CreateUser(username, email, password, fullName, department, jobTit
 	// Validate required fields
 	if username == "" || email == "" {
 		return nil, fmt.Errorf("username and email are required")
+	}
+
+	// Validate all user inputs for length, XSS, and format
+	if GlobalValidator != nil {
+		if err := GlobalValidator.ValidateUserInput(username, password, fullName, email); err != nil {
+			return nil, fmt.Errorf("input validation failed: %w", err)
+		}
+		if err := GlobalValidator.ValidateString("Department", department, 100, false); err != nil {
+			return nil, fmt.Errorf("input validation failed: %w", err)
+		}
+		if err := GlobalValidator.ValidateString("Job Title", jobTitle, 100, false); err != nil {
+			return nil, fmt.Errorf("input validation failed: %w", err)
+		}
 	}
 
 	// Validate password complexity

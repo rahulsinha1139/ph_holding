@@ -708,6 +708,17 @@ func (a *App) ClassifyFilesystemDocuments(basePath string) (*FilesystemClassific
 		return nil, err
 	}
 
+	// Validate basePath to prevent filesystem traversal
+	absPath, err := filepath.Abs(basePath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base path: %w", err)
+	}
+	homeDir, _ := os.UserHomeDir()
+	if homeDir != "" && !strings.HasPrefix(absPath, homeDir) {
+		return nil, fmt.Errorf("base path must be within user's home directory")
+	}
+	basePath = absPath
+
 	startTime := time.Now()
 
 	service := NewFilesystemDocumentClassifierService()
@@ -722,7 +733,7 @@ func (a *App) ClassifyFilesystemDocuments(basePath string) (*FilesystemClassific
 	}
 
 	// Walk through all files
-	err := filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip files with errors
 		}

@@ -36,6 +36,28 @@ func (a *App) CreateDeliveryNote(dn DeliveryNote) (DeliveryNote, error) {
 		dn.DNNumber = dnNumber
 	}
 
+	// Validate delivery item quantities won't go negative
+	if len(dn.Items) > 0 && dn.OrderID != "" {
+		remainingQty, err := a.GetOrderDeliveryStatus(dn.OrderID)
+		if err == nil {
+			for _, item := range dn.Items {
+				if item.OrderItemID != "" {
+					if remaining, ok := remainingQty[item.OrderItemID]; ok {
+						if item.QuantityDelivered > remaining {
+							return DeliveryNote{}, newError("QUANTITY_EXCEEDED",
+								fmt.Sprintf("Cannot deliver %.2f units for %s - only %.2f remaining",
+									item.QuantityDelivered, item.ProductCode, remaining), "")
+						}
+					}
+				}
+				if item.QuantityDelivered <= 0 {
+					return DeliveryNote{}, newError("INVALID_QUANTITY",
+						fmt.Sprintf("Delivery quantity must be positive, got: %.2f", item.QuantityDelivered), "")
+				}
+			}
+		}
+	}
+
 	// Set defaults
 	if dn.Status == "" {
 		dn.Status = "Prepared"

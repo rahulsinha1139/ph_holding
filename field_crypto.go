@@ -67,9 +67,14 @@ func NewFieldCrypto() (*FieldCrypto, error) {
 		secret = hwID
 	}
 
-	// Deterministic salt derived from the secret itself (so same machine = same keys)
-	saltHash := sha256.Sum256([]byte("ph-holdings-field-crypto-salt-v1:" + secret))
-	salt := saltHash[:]
+	// Load or generate random salt (stored in .field_crypto_salt file)
+	salt, err := loadOrCreateSalt()
+	if err != nil {
+		// Fallback to deterministic salt if file system fails
+		log.Printf("field_crypto: salt file unavailable, using deterministic fallback: %v", err)
+		saltHash := sha256.Sum256([]byte("ph-holdings-field-crypto-salt-v1:" + secret))
+		salt = saltHash[:]
+	}
 
 	// Derive master key: if secret is long enough hex, use directly; else PBKDF2
 	var masterKey []byte
@@ -326,6 +331,31 @@ func hexByte(hi, lo byte) (byte, error) {
 		return 0, fmt.Errorf("invalid hex")
 	}
 	return (h << 4) | l, nil
+}
+
+// loadOrCreateSalt reads salt from .field_crypto_salt file, or creates one with random bytes.
+func loadOrCreateSalt() ([]byte, error) {
+	saltFile := ".field_crypto_salt"
+
+	// Try to read existing salt
+	data, err := os.ReadFile(saltFile)
+	if err == nil && len(data) == fieldCryptoSaltSize {
+		return data, nil
+	}
+
+	// Generate new random salt
+	salt := make([]byte, fieldCryptoSaltSize)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return nil, fmt.Errorf("failed to generate random salt: %w", err)
+	}
+
+	// Save to file (0600 permissions - owner only)
+	if err := os.WriteFile(saltFile, salt, 0600); err != nil {
+		return nil, fmt.Errorf("failed to save salt file: %w", err)
+	}
+
+	log.Printf("field_crypto: generated new random salt file")
+	return salt, nil
 }
 
 func hexVal(b byte) (byte, bool) {

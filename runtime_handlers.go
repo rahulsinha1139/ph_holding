@@ -35,6 +35,13 @@ import (
 // Endpoint: POST /api/inbox/process
 // Returns: Auto-classified document with extracted data + suggested actions
 func (a *App) ProcessInboxDocument(filePath string, rawText string) (*InboxProcessResult, error) {
+	if err := a.requirePermission("documents:classify"); err != nil {
+		return nil, err
+	}
+
+	// Sanitize file path
+	filePath = filepath.Clean(filePath)
+
 	log.Printf("📄 Processing inbox document via Runtime: %s", filePath)
 
 	// Create Runtime client

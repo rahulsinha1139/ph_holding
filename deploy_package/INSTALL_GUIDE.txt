@@ -1,14 +1,14 @@
 ===============================================================================
-                PH HOLDINGS ERP - INSTALLATION GUIDE
-                Version: 2026-02-17 | Phase 17
+                ASYMMFLOW ERP - INSTALLATION GUIDE
+                Version: 2026-02-19 | Phase 19
 ===============================================================================
 
 QUICK START (3 Steps)
 ---------------------
 
   1. COPY this entire folder to your PC
-     - Windows: C:\PH_Holdings\
-     - Mac: ~/PH_Holdings/
+     - Windows: C:\AsymmFlow\
+     - Mac: ~/AsymmFlow/
 
   2. RUN the application
      - Windows: Double-click AsymmFlow.exe
@@ -34,10 +34,19 @@ FOLDER STRUCTURE
   └── INSTALL_GUIDE.txt      <- This file
 
 
+WINDOWS REQUIREMENTS
+--------------------
+
+  - WebView2 Runtime: Pre-installed on Windows 10 21H2+ and Windows 11
+    If your PC has an older Windows version, download WebView2 from:
+    https://developer.microsoft.com/en-us/microsoft-edge/webview2/
+  - No other dependencies needed
+
+
 FEATURES BY ROLE
 -----------------
 
-  ADMIN (Abhie, Stanley, Daniel):
+  ADMIN (Abhie, Stanley, Daniel, Rishu):
     - Full access to all modules
     - User management and license administration
     - Finance Hub with bank reconciliation
@@ -76,6 +85,7 @@ TROUBLESHOOTING
 
   Problem                     Solution
   -------                     --------
+  App won't start (Windows)   Install WebView2 Runtime (see above)
   App won't start             Make sure .env file is in same folder
   "Invalid license key"       Check LICENSE_KEYS.txt for correct key
   "Already activated"         Each key works on ONE PC only

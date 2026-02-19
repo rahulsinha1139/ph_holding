@@ -434,6 +434,33 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 		return fmt.Errorf("line already matched")
 	}
 
+	// Validate amount ratio between bank line and matched entity
+	var entityAmount float64
+	switch entityType {
+	case "CUSTOMER_INVOICE":
+		var inv Invoice
+		if err := a.db.First(&inv, "id = ?", entityID).Error; err == nil {
+			entityAmount = inv.GrandTotalBHD
+		}
+	case "SUPPLIER_INVOICE":
+		var sinv SupplierInvoice
+		if err := a.db.First(&sinv, "id = ?", entityID).Error; err == nil {
+			entityAmount = sinv.TotalBHD
+		}
+	}
+	if entityAmount > 0 {
+		lineAmt := line.Credit
+		if lineAmt == 0 {
+			lineAmt = line.Debit
+		}
+		if lineAmt > 0 {
+			ratio := lineAmt / entityAmount
+			if ratio < 0.5 || ratio > 2.0 {
+				return fmt.Errorf("amount mismatch: bank line %.3f BHD vs entity %.3f BHD (ratio %.2f outside 0.5-2.0 range)", lineAmt, entityAmount, ratio)
+			}
+		}
+	}
+
 	updates := map[string]interface{}{
 		"is_matched":       true,
 		"match_type":       "Manual",

@@ -1,11 +1,11 @@
 ===============================================================================
-                    PH HOLDINGS ERP - LICENSE KEYS
-                    Generated: 2026-02-17
+                    ASYMMFLOW ERP - LICENSE KEYS
+                    Generated: 2026-02-19
 ===============================================================================
 
 INSTRUCTIONS:
   1. Copy the deploy_package folder to your PC
-  2. Run ph_holdings_app (or ph_holdings_app.exe on Windows)
+  2. Run AsymmFlow.exe (Windows) or AsymmFlow (Mac)
   3. Enter YOUR license key when prompted
   4. Each key works on ONE PC only - do not share keys
 
@@ -16,6 +16,7 @@ ADMIN (Full Access - Dashboard, Finance, Operations, CRM, Intelligence)
   Abhie (SPOC)     PH-ADM-ABH1E0
   Stanley          PH-ADM-STNLY1
   Daniel           PH-ADM-DAN1EL
+  Rishu            PH-ADM-37528F
 
 -------------------------------------------------------------------------------
 MANAGER (Dashboard, Finance, Operations, CRM, Intelligence)

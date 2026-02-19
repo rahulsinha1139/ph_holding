@@ -1,8 +1,8 @@
-# CLAUDE.md - PH Holdings Sovereign UI
+# CLAUDE.md - AsymmFlow (formerly PH Holdings Sovereign UI)
 
-**Project**: PH Holdings ERP System (Wails + Go + Svelte)
-**Status**: SECURITY HARDENING IN PROGRESS (Phase 17)
-**Last Updated**: 2026-02-16
+**Project**: AsymmFlow ERP System (Wails + Go + Svelte)
+**Status**: DEPLOYED TO TEAM (Phase 18)
+**Last Updated**: 2026-02-17
 
 ---
 
@@ -12,10 +12,13 @@
 # Development
 wails dev
 
-# Production build
+# Production build (Mac)
 wails build
 
-# Output: build/bin/ph_holdings_app.exe
+# Production build (Windows cross-compile - requires mingw-w64)
+CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 wails build
+
+# Output: build/bin/AsymmFlow (Mac) or build/bin/AsymmFlow.exe (Windows)
 ```
 
 ---
@@ -24,12 +27,13 @@ wails build
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    PH Holdings ERP                          │
+│                    AsymmFlow ERP                             │
 ├─────────────────────────────────────────────────────────────┤
 │  Frontend: Svelte + TypeScript (Onyx & Ether Design)        │
 │  Backend:  Go + Wails v2.11.0                               │
 │  Database: SQLite (Primary) + Supabase (Cloud Sync)         │
 │  AI:       Mistral API (Butler Intelligence)                │
+│  Icon:     Asymmetrica Logo (Dark Mode)                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -37,13 +41,18 @@ wails build
 | Path | Purpose |
 |------|---------|
 | `app.go` | Main backend (11,000+ LOC) |
+| `wails.json` | App config - name: "AsymmFlow", outputfilename: "AsymmFlow" |
 | `license_service.go` | License key generation & validation (350+ LOC) |
+| `payment_service.go` | Customer payment CRUD with invoice reconciliation |
+| `supplier_payment_service.go` | Supplier payment CRUD with race condition protection |
 | `financial_year_service.go` | Dynamic finance with verified FS2024 data |
+| `integration/com_types.go` | Shared types extracted from Windows-only `com_automation.go` |
 | `frontend/src/lib/screens/` | All UI screens |
-| `frontend/src/lib/screens/LicenseActivationScreen.svelte` | License entry UI |
+| `frontend/src/lib/components/ui/EnterpriseSidebar.svelte` | Nav with RBAC permission filtering |
+| `build/appicon.png` | Asymmetrica Logo (Dark Mode) - embedded in app |
 | `build/bin/` | Compiled executables |
-| `deploy_package/` | Client deployment package |
-| `mentor_package/` | Full source + exe for mentor |
+| `deploy_package/` | Client deployment package (AsymmFlow + keys + DB) |
+| `.env` | Supabase credentials (project: xkyydcxxkzjbnsrmzkpp) |
 
 ---
 
@@ -97,10 +106,10 @@ wails build
 ## Environment Configuration
 
 ```bash
-# .env file
+# .env file (updated 2026-02-17 - new Supabase project)
 SUPABASE_DB_HOST=aws-1-ap-southeast-1.pooler.supabase.com
 SUPABASE_DB_PORT=5432
-SUPABASE_DB_USER=postgres.jgpwtuyfndtuxxyrytel
+SUPABASE_DB_USER=postgres.xkyydcxxkzjbnsrmzkpp
 SUPABASE_DB_PASSWORD=PHHoldings2026
 ENABLE_CLOUD_SYNC=true
 MISTRAL_API_KEY=your_key
@@ -110,7 +119,81 @@ MISTRAL_API_KEY=your_key
 
 ## Development History
 
-### Phase 17: Security Red Team Audit & Hardening (2026-02-16) - IN PROGRESS
+### Phase 18: AsymmFlow Rebrand, Data Reconciliation & Team Deployment (2026-02-17) ✅ DEPLOYED
+
+**App Rebranded to AsymmFlow:**
+- Renamed from `ph_holdings_app` to `AsymmFlow` in `wails.json` (name + outputfilename)
+- App icon changed to Asymmetrica Logo (Dark Mode) via `build/appicon.png`
+- All deployment artifacts updated with new branding
+
+**Database Setup on New Mac:**
+- Pulled `ph_holdings.db` (8.2MB) and `.env` from GitHub (pushed from other system)
+- Fixed schema: added missing `display_name` column to `license_keys` table
+- Cleared old unactivated keys, configured fresh license system
+
+**Data Reconciliation (Major - Invoice/Payment Accuracy):**
+- **Un-soft-deleted 107 customers** that had `deleted_at = 2026-02-02` (bulk soft-delete artifact)
+- **Fixed 2023/2024 invoices**: All 313 invoices incorrectly marked "Sent" → corrected to "Paid" with `outstanding_bhd = 0`
+- **Fixed Tally VAT import artifact**: 93 payments recorded pre-VAT amounts (payment × 1.1 = invoice total). Updated all payment amounts to include 10% VAT, marked invoices as Paid
+- **Reconciled 2025 invoices**: Matched payments to invoices, set PartiallyPaid/Paid status correctly
+- **Final verified state**: 406 Paid, 62 genuinely Overdue, Outstanding AR = 272,819 BHD
+
+**Supabase Migration to New Project:**
+- Old project (`jgpwtuyfndtuxxyrytel`) was dead - "Tenant or user not found"
+- Migrated to new Supabase project: `xkyydcxxkzjbnsrmzkpp`
+- Updated `.env` with new Session Pooler credentials
+- **Manual full sync**: Generated INSERT SQL for 242 missing records across 6 tables (customers, orders, order_items, offers, offer_items, customer_contacts)
+- Fixed Supabase schema differences: boolean types, VARCHAR lengths, missing columns (`unit_price_bhd`, `total_price_bhd` on order_items, `display_name` on license_keys)
+- **All 17 tables verified matching** between SQLite and Supabase
+
+**Windows Cross-Compilation Fix:**
+- Windows `.exe` wouldn't launch - `mattn/go-sqlite3` requires CGO with C compiler
+- Previous build produced 27MB binary without proper SQLite linking (silent failure)
+- Installed `mingw-w64` via Homebrew (1.4GB cross-compiler toolchain)
+- Rebuilt with: `CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 wails build`
+- New exe: **35MB** (properly linked) vs 27MB (broken)
+
+**Personalized License Keys for 8 Team Members:**
+
+| Person | Role | Key Format |
+|--------|------|------------|
+| Abhie (SPOC) | Admin | `PH-ADM-XXXXXX` |
+| Stanley | Admin | `PH-ADM-XXXXXX` |
+| Daniel | Admin | `PH-ADM-XXXXXX` |
+| Sundar | Manager | `PH-MGR-XXXXXX` |
+| Peri | Sales | `PH-SLS-XXXXXX` |
+| Ebin | Sales | `PH-SLS-XXXXXX` |
+| Support | Sales | `PH-SLS-XXXXXX` |
+| Clinton | Operations | `PH-OPS-XXXXXX` |
+
+(Actual keys in `deploy_package/LICENSE_KEYS.txt` and seeded in database)
+
+**Deployment Package Shipped:**
+```
+deploy_package/PH_Holdings_Deploy_2026_02_17.tar.gz (28MB)
+├── AsymmFlow        (32MB - Mac binary)
+├── AsymmFlow.exe    (35MB - Windows binary, CGO-linked)
+├── .env             (New Supabase credentials)
+├── data/ph_holdings.db (7.9MB - reconciled data)
+├── LICENSE_KEYS.txt (8 personalized keys with role matrix)
+└── INSTALL_GUIDE.txt
+```
+
+**Pipeline Visibility Verified:**
+- Frontend: `EnterpriseSidebar.svelte` filters nav items by permission store
+- Backend: `requirePermission()` guards on all 33+ API functions
+- Sales sees: Dashboard, Opportunities, Relationships, Intelligence
+- Operations sees: Dashboard, Operations, Relationships, Intelligence
+- Manager sees: All except user management
+- Admin sees: Everything
+
+**Commits Pushed:**
+- `c7da7d5` - feat: Phase 17 security hardening, data reconciliation, AsymmFlow rebrand
+- `1f2ddcb` - fix: Update Supabase credentials to new project and full cloud sync
+
+---
+
+### Phase 17: Security Red Team Audit & Hardening (2026-02-16) ✅ COMPLETE
 
 **Dev Environment Setup (New Mac):**
 - Cloned repo from `github.com/rahul-asymmetrica/ph_holdings`
@@ -164,9 +247,9 @@ Ran 6 concurrent security audit agents covering: Authentication & Sessions, SQL/
 
 ---
 
-### NEXT SESSION: P2 Fixes Required for Production Readiness
+### STILL PENDING: P2 Fixes for Production Hardening
 
-The following P2 (Medium priority) fixes must be completed before the app can be considered production-ready:
+The following P2 (Medium priority) fixes were identified in Phase 17 but deferred in favor of deployment. Should be completed when time permits:
 
 **Crypto & Config (4 fixes):**
 1. **Deterministic PBKDF2 salt** - Salt derived from the secret itself in `field_crypto.go:70`. Generate a random salt on first run and store it separately.
@@ -252,32 +335,13 @@ The following P2 (Medium priority) fixes must be completed before the app can be
 - Connected to new Supabase Pro account ($25/month)
 - Works fully offline, syncs when connected
 
-**Deployment Packages Created**:
+**Deployment Packages Created** (Phase 15 - superseded by Phase 18):
 ```
-deploy_package/           <- For client (5-7 users)
-├── ph_holdings_app.exe   (34 MB)
-├── .env                  (Supabase credentials)
-├── LICENSE_KEYS.txt      (10 keys: 1 Admin, 2 Manager, 5 Sales, 2 Ops)
-├── INSTALL_GUIDE.txt
-├── data/ph_holdings.db
-└── CRITICAL_PH_CONTEXT_SSOT/
-
-mentor_package/           <- Full source for mentor
-├── ph_holdings_app.exe
-├── *.go (all source)
-├── frontend/ (Svelte)
-├── LICENSE_KEYS.txt
-└── ph_holdings.db
+deploy_package/           <- Updated in Phase 18 with AsymmFlow branding
+mentor_package/           <- Full source for mentor (Phase 15)
 ```
 
-**Generated License Keys**:
-| Role | Keys |
-|------|------|
-| Admin | `PH-ADM-A0C85B` |
-| Manager | `PH-MGR-8F4B94`, `PH-MGR-8613CB` |
-| Sales | `PH-SLS-AA8C4A`, `PH-SLS-BD453E`, `PH-SLS-E44617`, `PH-SLS-EFFCC6`, `PH-SLS-F7E6F0` |
-| Operations | `PH-OPS-3ADB85`, `PH-OPS-32605D` |
-| Developer | `PH-DEV-M3NT0R` (mentor test key) |
+**Note:** Phase 15 license keys (`PH-ADM-A0C85B`, etc.) are now obsolete. Phase 18 keys are personalized per team member - see `deploy_package/LICENSE_KEYS.txt`.
 
 ---
 
@@ -333,32 +397,42 @@ mentor_package/           <- Full source for mentor
 |-------|----------------|
 | Duplicate invoice | `uniqueIndex` on OrderID + backend check |
 | Overpayment | Backend validates amount ≤ outstanding |
-| State machine | Lost offers cannot be re-won |
+| State machine | Lost offers cannot be re-won; PO terminal states enforced |
 | RBAC | `requirePermission()` on 33+ functions |
 | XSS | `escapeHtml()` on all DataTable renders |
-| SQL injection | Parameterized queries, wildcard escaping |
-| Path traversal | Sanitized filenames in PDF/reports |
+| SQL injection | Parameterized queries, wildcard escaping, `isValidSQLIdentifier()` |
+| Path traversal | Sanitized filenames in PDF/reports, `filepath.Base()` |
+| Command injection | `escapePowerShell()`, `isReadOnlySQLQuery()` |
+| Credit limit | `IsCreditBlocked` enforced with row locking |
+| PO field protection | Amount/total/rate locked on Approved/Sent/Received POs |
+| Payment integrity | Amount > 0, invoice bounds check, balance recalculation on CRUD |
 | Device approval | Pending devices cannot access app |
 | Session timeout | 8 hours auto-logout |
+| License binding | `crypto/rand` keys, one device per key, hashed tokens |
 
 ---
 
 ## Deployment Guide (License-Based)
 
 ### Installation Steps
-1. **Extract** `deploy_package/` to target PC (e.g., `C:\PH_Holdings\`)
-2. **Run** `ph_holdings_app.exe`
-3. **Enter License Key** when prompted:
-   - Admin: `PH-ADM-A0C85B` (full access)
-   - Manager: `PH-MGR-XXXXXX` (finance + operations)
-   - Sales: `PH-SLS-XXXXXX` (sales pipeline only)
-   - Operations: `PH-OPS-XXXXXX` (procurement only)
+1. **Extract** `deploy_package/` to target PC (e.g., `C:\AsymmFlow\`)
+2. **Run** `AsymmFlow.exe` (Windows) or `AsymmFlow` (Mac)
+3. **Enter License Key** when prompted (see `LICENSE_KEYS.txt` for personalized keys):
+   - Admin: Full access (Abhie, Stanley, Daniel)
+   - Manager: Finance + operations (Sundar)
+   - Sales: Sales pipeline only (Peri, Ebin, Support)
+   - Operations: Procurement only (Clinton)
 4. **Done** - App opens to dashboard
 
+### Windows Requirements
+- **WebView2 Runtime**: Pre-installed on Windows 10 21H2+ and Windows 11. Older systems need manual install from Microsoft.
+- **CGO Note**: Windows binary must be cross-compiled with `mingw-w64` for SQLite support (see Quick Start)
+
 ### License Key Rules
-- Each key activates **ONE PC only**
+- Each key activates **ONE PC only** (binds to device hash)
 - License persists after activation (no re-entry needed)
 - DEV keys (`PH-DEV-XXXXXX`) have full admin access for testing
+- Key format: `PH-{ROLE}-{6-char}` (exactly 13 characters)
 
 ### Role Permissions
 | Feature | Admin | Manager | Sales | Operations |
@@ -382,13 +456,18 @@ mentor_package/           <- Full source for mentor
 |-------|----------|
 | "Function not found" | Run `wails build` to regenerate bindings |
 | Database locked | Close other app instances |
-| Supabase yellow dot | Check `.env` credentials, use Session Pooler host |
+| Supabase yellow dot | Check `.env` credentials, use Session Pooler host (`xkyydcxxkzjbnsrmzkpp`) |
 | Build fails | `go mod tidy`, check Go 1.21+ |
 | Dates showing 2026 | App auto-fixes on startup, or call `RunAllDataFixes()` |
 | Unknown Supplier in POs | Call `FixPurchaseOrderSupplierNames()` |
-| License key rejected | Check format: `PH-XXX-YYYYYY` (valid prefixes: ADM, MGR, SLS, OPS, DEV) |
+| License key rejected | Check format: `PH-XXX-YYYYYY` exactly 13 chars (valid prefixes: ADM, MGR, SLS, OPS, DEV) |
 | License already used | Each key binds to one PC - use a different key |
 | Activation screen keeps appearing | Check `license_keys` table has `activated=1` for device |
+| Windows exe won't open | Must cross-compile with mingw-w64 for CGO/SQLite. Binary should be ~35MB, not ~27MB |
+| Windows exe needs WebView2 | Pre-installed on Win10 21H2+. Older systems: install from Microsoft |
+| Dashboard shows wrong invoices | Check invoice statuses - historical imports may need reconciliation (see Phase 18) |
+| Missing `display_name` column | `ALTER TABLE license_keys ADD COLUMN display_name TEXT DEFAULT ''` |
+| Supabase boolean mismatch | SQLite uses 0/1, PostgreSQL uses true/false. Cast in INSERT statements |
 
 ---
 

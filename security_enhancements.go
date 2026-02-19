@@ -360,6 +360,14 @@ func (m *DataMasker) SanitizeForLog(fields map[string]interface{}) map[string]in
 			} else {
 				sanitized[k] = v
 			}
+		case strings.Contains(lowerKey, "api_key") || strings.Contains(lowerKey, "apikey"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "token"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "secret"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "authorization"):
+			sanitized[k] = "***REDACTED***"
 		default:
 			sanitized[k] = v
 		}

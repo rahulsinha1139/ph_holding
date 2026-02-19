@@ -1221,6 +1221,14 @@ func buildMistralSystemPrompt(context map[string]interface{}, regime map[string]
 	// Serialize context to JSON for injection
 	contextJSON, _ := json.MarshalIndent(context, "", "  ")
 
+	// Sanitize context data to prevent prompt injection
+	contextStr := string(contextJSON)
+	contextStr = strings.ReplaceAll(contextStr, "[ACTIONS]", "")
+	contextStr = strings.ReplaceAll(contextStr, "[/ACTIONS]", "")
+	contextStr = strings.ReplaceAll(contextStr, "SYSTEM:", "")
+	contextStr = strings.ReplaceAll(contextStr, "system:", "")
+	contextStr = strings.ReplaceAll(contextStr, "INSTRUCTIONS:", "")
+
 	// Build regime guidance
 	regimeGuidance := buildRegimeGuidance(regime)
 
@@ -1262,7 +1270,7 @@ RESPONSE STYLE:
 - Concise and business-oriented
 - Proactive (suggest next steps)
 - Data-driven (cite numbers from context)
-- Honest about limitations`, string(contextJSON), regimeGuidance)
+- Honest about limitations`, contextStr, regimeGuidance)
 
 	return prompt
 }

@@ -312,9 +312,19 @@ func (a *App) ApproveSupplierInvoice(id string, approvedBy string) error {
 		return fmt.Errorf("database not initialized")
 	}
 
+	// Require approver identity
+	if approvedBy == "" {
+		return fmt.Errorf("approver identity is required")
+	}
+
 	var invoice SupplierInvoice
 	if err := a.db.Where("id = ?", id).First(&invoice).Error; err != nil {
 		return fmt.Errorf("supplier invoice not found: %w", err)
+	}
+
+	// Segregation of duties: creator cannot approve their own invoice
+	if invoice.CreatedBy != "" && invoice.CreatedBy == approvedBy {
+		return fmt.Errorf("segregation of duties: invoice creator %s cannot approve their own invoice", approvedBy)
 	}
 
 	// Verify 3-way match passed before approving

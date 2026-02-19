@@ -164,6 +164,10 @@ func (b *BatchOperations) BatchDeleteOrders(orderIDs []string) error {
 		return nil
 	}
 
+	if len(orderIDs) > 500 {
+		return fmt.Errorf("batch delete size %d exceeds maximum of 500", len(orderIDs))
+	}
+
 	return b.db.Where("id IN ?", orderIDs).Delete(&Order{}).Error
 }
 
@@ -171,6 +175,10 @@ func (b *BatchOperations) BatchDeleteOrders(orderIDs []string) error {
 func (b *BatchOperations) BatchDeleteInvoices(invoiceIDs []string) error {
 	if len(invoiceIDs) == 0 {
 		return nil
+	}
+
+	if len(invoiceIDs) > 500 {
+		return fmt.Errorf("batch delete size %d exceeds maximum of 500", len(invoiceIDs))
 	}
 
 	return b.db.Where("id IN ?", invoiceIDs).Delete(&Invoice{}).Error
@@ -182,6 +190,10 @@ func (b *BatchOperations) BatchDeleteInvoices(invoiceIDs []string) error {
 func (a *App) BatchCreateInvoiceItems(items []DBInvoiceItem) error {
 	if err := a.requirePermission(PermInvoicesCreate); err != nil {
 		return err
+	}
+
+	if len(items) > 500 {
+		return fmt.Errorf("batch size %d exceeds maximum of 500 items", len(items))
 	}
 
 	batch := NewBatchOperations(a.db)
@@ -203,6 +215,10 @@ func (a *App) BatchUpdateOrderStatus(orderIDs []string, status string) error {
 		return err
 	}
 
+	if len(orderIDs) > 500 {
+		return fmt.Errorf("batch size %d exceeds maximum of 500 items", len(orderIDs))
+	}
+
 	batch := NewBatchOperations(a.db)
 	if err := batch.BatchUpdateOrderStatus(orderIDs, status); err != nil {
 		return fmt.Errorf("batch update order status failed: %w", err)
@@ -220,6 +236,10 @@ func (a *App) BatchUpdateOrderStatus(orderIDs []string, status string) error {
 func (a *App) BatchUpdateCustomerGrade(customerIDs []string, grade string) error {
 	if err := a.requirePermission(PermCustomersEdit); err != nil {
 		return err
+	}
+
+	if len(customerIDs) > 500 {
+		return fmt.Errorf("batch size %d exceeds maximum of 500 items", len(customerIDs))
 	}
 
 	batch := NewBatchOperations(a.db)
