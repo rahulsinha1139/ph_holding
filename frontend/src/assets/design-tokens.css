@@ -217,7 +217,7 @@ body {
 }
 
 .card:hover {
-  transform: scale(1.005);
+  transform: none;
   box-shadow: var(--shadow-lift);
 }
 
@@ -611,9 +611,9 @@ body {
 }
 
 @keyframes flourish {
-  0% { transform: scale(0.95) translateY(8px); opacity: 0; }
-  60% { transform: scale(1.01) translateY(-2px); opacity: 1; }
-  100% { transform: scale(1) translateY(0); opacity: 1; }
+  0% { transform: translateY(8px); opacity: 0; }
+  60% { transform: translateY(-2px); opacity: 1; }
+  100% { transform: translateY(0); opacity: 1; }
 }
 
 @keyframes shimmer {

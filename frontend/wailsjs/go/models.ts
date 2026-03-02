@@ -2671,6 +2671,7 @@ export namespace main {
 	    supplier: string;
 	    equipment: string;
 	    model: string;
+	    longCode: string;
 	    specification: string;
 	    detailedDescription: string;
 	    currency: string;
@@ -2705,6 +2706,7 @@ export namespace main {
 	        this.supplier = source["supplier"];
 	        this.equipment = source["equipment"];
 	        this.model = source["model"];
+	        this.longCode = source["longCode"];
 	        this.specification = source["specification"];
 	        this.detailedDescription = source["detailedDescription"];
 	        this.currency = source["currency"];
@@ -3046,6 +3048,102 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class CreditNote {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    deleted_at: gorm.DeletedAt;
+	    credit_note_number: string;
+	    credit_note_date: time.Time;
+	    invoice_id: string;
+	    invoice_number: string;
+	    customer_id: string;
+	    customer_name: string;
+	    reason: string;
+	    subtotal_bhd: number;
+	    vat_bhd: number;
+	    vat_percent: number;
+	    grand_total_bhd: number;
+	    status: string;
+	    applied_at: time.Time;
+	    credit_note_hash: string;
+	    items: CreditNoteItem[];
+
+	    static createFrom(source: any = {}) {
+	        return new CreditNote(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	        this.deleted_at = source["deleted_at"];
+	        this.credit_note_number = source["credit_note_number"];
+	        this.credit_note_date = source["credit_note_date"];
+	        this.invoice_id = source["invoice_id"];
+	        this.invoice_number = source["invoice_number"];
+	        this.customer_id = source["customer_id"];
+	        this.customer_name = source["customer_name"];
+	        this.reason = source["reason"];
+	        this.subtotal_bhd = source["subtotal_bhd"];
+	        this.vat_bhd = source["vat_bhd"];
+	        this.vat_percent = source["vat_percent"];
+	        this.grand_total_bhd = source["grand_total_bhd"];
+	        this.status = source["status"];
+	        this.applied_at = source["applied_at"];
+	        this.credit_note_hash = source["credit_note_hash"];
+	        this.items = this.convertValues(source["items"], CreditNoteItem);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CreditNoteItem {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    deleted_at: gorm.DeletedAt;
+	    credit_note_id: string;
+	    line_number: number;
+	    description: string;
+	    quantity: number;
+	    rate: number;
+	    total_bhd: number;
+
+	    static createFrom(source: any = {}) {
+	        return new CreditNoteItem(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	        this.deleted_at = source["deleted_at"];
+	        this.credit_note_id = source["credit_note_id"];
+	        this.line_number = source["line_number"];
+	        this.description = source["description"];
+	        this.quantity = source["quantity"];
+	        this.rate = source["rate"];
+	        this.total_bhd = source["total_bhd"];
+	    }
 	}
 	export class CurrencyExchangeRate {
 	    id: string;
@@ -4555,6 +4653,20 @@ export namespace main {
 		}
 	}
 	
+	export class DeliveryNoteItemInput {
+	    order_item_id: string;
+	    ship_qty: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeliveryNoteItemInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.order_item_id = source["order_item_id"];
+	        this.ship_qty = source["ship_qty"];
+	    }
+	}
 	export class DeliveryPlanningItem {
 	    id: string;
 	    created_at: time.Time;
@@ -4889,6 +5001,38 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class DivisionFinancialSummary {
+	    division: string;
+	    year: number;
+	    revenue: number;
+	    invoice_count: number;
+	    order_count: number;
+	    outstanding_ar: number;
+	    paid_amount: number;
+	    overdue_amount: number;
+	    overdue_count: number;
+	    avg_invoice_size: number;
+	    has_data: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DivisionFinancialSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.division = source["division"];
+	        this.year = source["year"];
+	        this.revenue = source["revenue"];
+	        this.invoice_count = source["invoice_count"];
+	        this.order_count = source["order_count"];
+	        this.outstanding_ar = source["outstanding_ar"];
+	        this.paid_amount = source["paid_amount"];
+	        this.overdue_amount = source["overdue_amount"];
+	        this.overdue_count = source["overdue_count"];
+	        this.avg_invoice_size = source["avg_invoice_size"];
+	        this.has_data = source["has_data"];
+	    }
 	}
 	export class ERPEvent {
 	    type: string;
@@ -6405,6 +6549,7 @@ export namespace main {
 	    discount_percent: number;
 	    payment_terms: string;
 	    delivery_terms: string;
+	    division: string;
 	    field_visibility: string;
 	    delivery_note_ref: string;
 	    mode_of_payment: string;
@@ -6467,6 +6612,7 @@ export namespace main {
 	        this.discount_percent = source["discount_percent"];
 	        this.payment_terms = source["payment_terms"];
 	        this.delivery_terms = source["delivery_terms"];
+	        this.division = source["division"];
 	        this.field_visibility = source["field_visibility"];
 	        this.delivery_note_ref = source["delivery_note_ref"];
 	        this.mode_of_payment = source["mode_of_payment"];
@@ -6911,6 +7057,7 @@ export namespace main {
 	    issued_by: string;
 	    contact_phone: string;
 	    discount_percent: number;
+	    division: string;
 	    items?: OrderItem[];
 	
 	    static createFrom(source: any = {}) {
@@ -6949,6 +7096,7 @@ export namespace main {
 	        this.issued_by = source["issued_by"];
 	        this.contact_phone = source["contact_phone"];
 	        this.discount_percent = source["discount_percent"];
+	        this.division = source["division"];
 	        this.items = this.convertValues(source["items"], OrderItem);
 	    }
 	
@@ -6984,6 +7132,7 @@ export namespace main {
 	    description: string;
 	    quantity: number;
 	    unit_price_bhd: number;
+	    long_code: string;
 	    equipment: string;
 	    specification: string;
 	    detailed_description: string;
@@ -7026,6 +7175,7 @@ export namespace main {
 	        this.description = source["description"];
 	        this.quantity = source["quantity"];
 	        this.unit_price_bhd = source["unit_price_bhd"];
+	        this.long_code = source["long_code"];
 	        this.equipment = source["equipment"];
 	        this.specification = source["specification"];
 	        this.detailed_description = source["detailed_description"];
@@ -7917,6 +8067,52 @@ export namespace main {
 		}
 	}
 	
+	export class OfferNote {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    version: number;
+	    created_by: string;
+	    offer_id: string;
+	    note_date: time.Time;
+	    content: string;
+	    created_by: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new OfferNote(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.version = source["version"];
+	        this.created_by = source["created_by"];
+	        this.offer_id = source["offer_id"];
+	        this.note_date = this.convertValues(source["note_date"], time.Time);
+	        this.content = source["content"];
+	        this.created_by = source["created_by"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class OfferRevision {
 	    id: string;
 	    offer_id: string;
@@ -8169,6 +8365,75 @@ export namespace main {
 		}
 	}
 	
+	
+	export class OrderFulfillmentItem {
+	    order_item_id: string;
+	    product_code: string;
+	    description: string;
+	    ordered_qty: number;
+	    shipped_qty: number;
+	    delivered_qty: number;
+	    invoiced_qty: number;
+	    remaining_qty: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new OrderFulfillmentItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.order_item_id = source["order_item_id"];
+	        this.product_code = source["product_code"];
+	        this.description = source["description"];
+	        this.ordered_qty = source["ordered_qty"];
+	        this.shipped_qty = source["shipped_qty"];
+	        this.delivered_qty = source["delivered_qty"];
+	        this.invoiced_qty = source["invoiced_qty"];
+	        this.remaining_qty = source["remaining_qty"];
+	    }
+	}
+	export class OrderFulfillment {
+	    order_id: string;
+	    order_number: string;
+	    customer_name: string;
+	    status: string;
+	    items: OrderFulfillmentItem[];
+	    fully_delivered: boolean;
+	    fully_invoiced: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new OrderFulfillment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.order_id = source["order_id"];
+	        this.order_number = source["order_number"];
+	        this.customer_name = source["customer_name"];
+	        this.status = source["status"];
+	        this.items = this.convertValues(source["items"], OrderFulfillmentItem);
+	        this.fully_delivered = source["fully_delivered"];
+	        this.fully_invoiced = source["fully_invoiced"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	
 	export class OrderSearchResult {
@@ -9274,6 +9539,72 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class SerialNumber {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    deleted_at: gorm.DeletedAt;
+	    product_id: string;
+	    product_code: string;
+	    serial_no: string;
+	    lot_number: string;
+	    status: string;
+	    po_id: string;
+	    po_number: string;
+	    grn_item_id: string;
+	    grn_number: string;
+	    dn_item_id: string;
+	    dn_number: string;
+	    invoice_id: string;
+	    invoice_number: string;
+	    customer_id: string;
+	    customer_name: string;
+	    received_date: time.Time;
+	    shipped_date: time.Time;
+	    warranty_start_date: time.Time;
+	    warranty_end_date: time.Time;
+	    warranty_months: number;
+	    calibration_date: time.Time;
+	    calibration_due_date: time.Time;
+	    calibration_cert_path: string;
+	    notes: string;
+
+	    static createFrom(source: any = {}) {
+	        return new SerialNumber(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	        this.deleted_at = source["deleted_at"];
+	        this.product_id = source["product_id"];
+	        this.product_code = source["product_code"];
+	        this.serial_no = source["serial_no"];
+	        this.lot_number = source["lot_number"];
+	        this.status = source["status"];
+	        this.po_id = source["po_id"];
+	        this.po_number = source["po_number"];
+	        this.grn_item_id = source["grn_item_id"];
+	        this.grn_number = source["grn_number"];
+	        this.dn_item_id = source["dn_item_id"];
+	        this.dn_number = source["dn_number"];
+	        this.invoice_id = source["invoice_id"];
+	        this.invoice_number = source["invoice_number"];
+	        this.customer_id = source["customer_id"];
+	        this.customer_name = source["customer_name"];
+	        this.received_date = source["received_date"];
+	        this.shipped_date = source["shipped_date"];
+	        this.warranty_start_date = source["warranty_start_date"];
+	        this.warranty_end_date = source["warranty_end_date"];
+	        this.warranty_months = source["warranty_months"];
+	        this.calibration_date = source["calibration_date"];
+	        this.calibration_due_date = source["calibration_due_date"];
+	        this.calibration_cert_path = source["calibration_cert_path"];
+	        this.notes = source["notes"];
+	    }
+	}
 	export class SalesPipelineData {
 	    stage: string;
 	    count: number;
@@ -10364,48 +10695,6 @@ export namespace main {
 	        this.is_active = source["is_active"];
 	        this.invalidated_at = this.convertValues(source["invalidated_at"], time.Time);
 	        this.invalidated_reason = source["invalidated_reason"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class VATReconciliation {
-	    start_date: time.Time;
-	    end_date: time.Time;
-	    output_vat: number;
-	    input_vat: number;
-	    net_vat: number;
-	    customer_invoices: number;
-	    supplier_invoices: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new VATReconciliation(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.start_date = this.convertValues(source["start_date"], time.Time);
-	        this.end_date = this.convertValues(source["end_date"], time.Time);
-	        this.output_vat = source["output_vat"];
-	        this.input_vat = source["input_vat"];
-	        this.net_vat = source["net_vat"];
-	        this.customer_invoices = source["customer_invoices"];
-	        this.supplier_invoices = source["supplier_invoices"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

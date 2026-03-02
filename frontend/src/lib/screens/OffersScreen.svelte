@@ -24,7 +24,11 @@
     AddOfferFollowUp,
     GetPendingFollowUps,
     CompleteOfferFollowUp,
-    GenerateOfferPDF
+    GenerateOfferPDF,
+    OpenExportedFile,
+    AddOfferNote,
+    GetOfferNotes,
+    DeleteOfferNote
   } from '../../../wailsjs/go/main/App';
   import PageLayout from '$lib/components/layout/PageLayout.svelte';
   import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -58,10 +62,32 @@
     sent_at?: any;
     created_at?: any;
     updated_at?: any;
+    estimated_margin?: number;
     items?: any[];
     days_until_expiry?: number;
     is_expiring_soon?: boolean;
     is_expired?: boolean;
+    // Editable header fields
+    folder_number?: string;
+    payment_terms?: string;
+    delivery_terms?: string;
+    delivery_weeks?: string;
+    country_of_origin?: string;
+    issued_by?: string;
+    contact_phone?: string;
+    customer_reference?: string;
+    attention_person?: string;
+    attention_company?: string;
+    attention_phone?: string;
+    attention_address?: string;
+    discount_percent?: number;
+    coc_coo?: string;
+    test_certificate?: string;
+    installation?: string;
+    commissioning?: string;
+    testing?: string;
+    has_abb_competition?: boolean;
+    lost_reason?: string;
   }
 
   // State
@@ -84,6 +110,14 @@
   let actionLoading = false;
   let showViewModal = false;
   let viewOffer: OfferDisplay | null = null;
+
+  // View modal save state
+  let viewSaving = false;
+
+  // Notes state
+  let offerNotes: any[] = [];
+  let newNoteContent = '';
+  let notesLoading = false;
 
   // Follow-up state
   let showFollowUpModal = false;
@@ -380,6 +414,7 @@
       quotation_date: offer.quotation_date || offer.created_at,
       validity_date: offer.validity_date,
       total_value_bhd: offer.total_value_bhd || 0,
+      estimated_margin: offer.estimated_margin,
       pdf_path: offer.pdf_path,
       sent_at: offer.sent_at,
       created_at: offer.created_at,
@@ -387,7 +422,28 @@
       items: offer.items || [],
       days_until_expiry: daysUntilExpiry,
       is_expired: daysUntilExpiry < 0,
-      is_expiring_soon: daysUntilExpiry >= 0 && daysUntilExpiry <= 7
+      is_expiring_soon: daysUntilExpiry >= 0 && daysUntilExpiry <= 7,
+      // Header fields for view/edit modal
+      folder_number: offer.folder_number || '',
+      payment_terms: offer.payment_terms || '',
+      delivery_terms: offer.delivery_terms || '',
+      delivery_weeks: offer.delivery_weeks || '',
+      country_of_origin: offer.country_of_origin || '',
+      issued_by: offer.issued_by || '',
+      contact_phone: offer.contact_phone || '',
+      customer_reference: offer.customer_reference || '',
+      attention_person: offer.attention_person || '',
+      attention_company: offer.attention_company || '',
+      attention_phone: offer.attention_phone || '',
+      attention_address: offer.attention_address || '',
+      discount_percent: offer.discount_percent,
+      coc_coo: offer.coc_coo || '',
+      test_certificate: offer.test_certificate || '',
+      installation: offer.installation || '',
+      commissioning: offer.commissioning || '',
+      testing: offer.testing || '',
+      has_abb_competition: offer.has_abb_competition,
+      lost_reason: offer.lost_reason || '',
     };
   }
 
@@ -733,6 +789,7 @@
       case 'view':
         viewOffer = offer;
         showViewModal = true;
+        loadOfferNotes(offer.id);
         break;
       case 'edit':
         openEditModal(offer);
@@ -771,6 +828,76 @@
       toast.danger(`Failed to generate PDF: ${errorMsg}`);
     } finally {
       pdfLoading = false;
+    }
+  }
+
+  // Save editable header fields from view modal
+  async function handleSaveViewOffer() {
+    if (!viewOffer || viewSaving) return;
+    viewSaving = true;
+    try {
+      await UpdateOfferFull(viewOffer.id, {
+        customer_id: viewOffer.customer_id || '',
+        customer_name: viewOffer.customer_name || '',
+        project_name: viewOffer.project_name || '',
+        quotation_date: '',
+        validity_date: '',
+        payment_terms: viewOffer.payment_terms || '',
+        delivery_terms: viewOffer.delivery_terms || '',
+        discount: viewOffer.discount || 0,
+        stage: '',
+        items: [],
+      });
+      toast.success('Offer details saved');
+      await loadOffers();
+    } catch (e) {
+      const errorMsg = e?.message || String(e);
+      toast.danger(`Failed to save: ${errorMsg}`);
+    } finally {
+      viewSaving = false;
+    }
+  }
+
+  // Notes functions
+  async function loadOfferNotes(offerId: string) {
+    notesLoading = true;
+    try {
+      offerNotes = await GetOfferNotes(offerId) || [];
+    } catch {
+      offerNotes = [];
+    } finally {
+      notesLoading = false;
+    }
+  }
+
+  async function handleAddNote() {
+    if (!viewOffer || !newNoteContent.trim()) return;
+    notesLoading = true;
+    try {
+      await AddOfferNote(viewOffer.id, newNoteContent.trim());
+      newNoteContent = '';
+      await loadOfferNotes(viewOffer.id);
+      toast.success('Note added');
+    } catch (e) {
+      const errorMsg = e?.message || String(e);
+      toast.danger(`Failed to add note: ${errorMsg}`);
+    } finally {
+      notesLoading = false;
+    }
+  }
+
+  async function handleDeleteNote(noteId: string) {
+    if (!viewOffer) return;
+    notesLoading = true;
+    try {
+      await DeleteOfferNote(noteId);
+      await loadOfferNotes(viewOffer.id);
+      toast.success('Note deleted');
+    } catch (e) {
+      const errorMsg = e?.message || String(e);
+      toast.danger(`Failed to delete note: ${errorMsg}`);
+    } finally {
+      notesLoading = false;
     }
   }
 
@@ -1297,13 +1424,17 @@
 <WabiModal bind:open={showViewModal} title="Offer Details" size="xl">
   {#if viewOffer}
     <div class="view-offer-details">
-      <!-- Header Info -->
+      <!-- Header Info - Editable Fields -->
       <div class="view-header">
         <div class="view-header-main">
-          <h2 class="offer-number">{viewOffer.offer_number || 'N/A'}</h2>
+          <div class="editable-offer-number">
+            <label class="meta-label">Offer #</label>
+            <input type="text" bind:value={viewOffer.offer_number} class="input-inline input-inline-lg" placeholder="Offer number" />
+          </div>
           <StatusBadge status={viewOffer.stage || 'Quoted'} />
         </div>
         <div class="view-header-meta">
+          <!-- Row 1: Core Info (read-only) -->
           <div class="meta-item">
             <span class="meta-label">Customer</span>
             <span class="meta-value">{viewOffer.customer_name}</span>
@@ -1322,6 +1453,40 @@
           <div class="meta-item">
             <span class="meta-label">Total Value</span>
             <span class="meta-value meta-value-highlight">{(viewOffer.total_value_bhd || 0).toFixed(3)} BHD</span>
+          </div>
+          <!-- Row 2: Editable Reference & Terms -->
+          <div class="meta-item">
+            <label class="meta-label">Folder Number</label>
+            <input type="text" bind:value={viewOffer.folder_number} class="input-inline" placeholder="Folder #" />
+          </div>
+          <div class="meta-item">
+            <label class="meta-label">Customer Reference</label>
+            <input type="text" bind:value={viewOffer.customer_reference} class="input-inline" placeholder="RFQ / enquiry ref" />
+          </div>
+          <div class="meta-item">
+            <label class="meta-label">Payment Terms</label>
+            <input type="text" bind:value={viewOffer.payment_terms} class="input-inline" placeholder="e.g. Net 30" />
+          </div>
+          <div class="meta-item">
+            <label class="meta-label">Delivery Terms</label>
+            <input type="text" bind:value={viewOffer.delivery_terms} class="input-inline" placeholder="e.g. DAP Bahrain" />
+          </div>
+          <!-- Row 3: Attention Details (editable) -->
+          <div class="meta-item">
+            <label class="meta-label">Attention Person</label>
+            <input type="text" bind:value={viewOffer.attention_person} class="input-inline" placeholder="Contact name" />
+          </div>
+          <div class="meta-item">
+            <label class="meta-label">Company</label>
+            <input type="text" bind:value={viewOffer.attention_company} class="input-inline" placeholder="Company name" />
+          </div>
+          <div class="meta-item">
+            <label class="meta-label">Attention Phone</label>
+            <input type="text" bind:value={viewOffer.attention_phone} class="input-inline" placeholder="Phone" />
+          </div>
+          <div class="meta-item">
+            <label class="meta-label">Issued By</label>
+            <input type="text" bind:value={viewOffer.issued_by} class="input-inline" placeholder="Name" />
           </div>
         </div>
       </div>
@@ -1393,6 +1558,38 @@
           <div class="no-items">No line items available</div>
         {/if}
       </div>
+
+      <!-- Notes Section -->
+      <div class="notes-section">
+        <h3>Notes & Comments</h3>
+        <div class="note-add">
+          <textarea
+            bind:value={newNoteContent}
+            placeholder="Add a note about this opportunity..."
+            rows="2"
+            class="note-textarea"
+          ></textarea>
+          <button class="btn-add-note" on:click={handleAddNote} disabled={!newNoteContent.trim() || notesLoading}>
+            {notesLoading ? 'Adding...' : 'Add Note'}
+          </button>
+        </div>
+        {#if offerNotes.length > 0}
+          <div class="notes-list">
+            {#each offerNotes as note}
+              <div class="note-item">
+                <div class="note-header">
+                  <span class="note-date">{new Date(note.note_date || note.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                  <span class="note-author">{note.created_by || 'System'}</span>
+                  <button class="note-delete" on:click={() => handleDeleteNote(note.id)} title="Delete note" disabled={notesLoading}>&times;</button>
+                </div>
+                <div class="note-content">{note.content}</div>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <div class="notes-empty">No notes yet. Add one above to track this opportunity.</div>
+        {/if}
+      </div>
     </div>
   {/if}
 
@@ -1402,6 +1599,9 @@
     </Button>
     <Button variant="secondary" on:click={() => viewOffer && handleDownloadPDF(viewOffer)}>
       Download PDF
+    </Button>
+    <Button variant="primary" loading={viewSaving} on:click={handleSaveViewOffer}>
+      Save Changes
     </Button>
   </svelte:fragment>
 </WabiModal>
@@ -1917,11 +2117,48 @@
     gap: 12px;
   }
 
+  .editable-offer-number {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
   .offer-number {
     margin: 0;
     font-size: 22px;
     font-weight: 700;
     color: var(--onyx, #1D1D1F);
+  }
+
+  /* Inline editable inputs for view modal */
+  .input-inline {
+    width: 100%;
+    padding: 6px 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--onyx, #1D1D1F);
+    background: var(--canvas, #fff);
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 4px;
+    transition: border-color 0.15s;
+  }
+
+  .input-inline:focus {
+    outline: none;
+    border-color: var(--brand-indigo, #4F46E5);
+    box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.1);
+  }
+
+  .input-inline::placeholder {
+    color: var(--steel, #86868B);
+    font-weight: 400;
+    font-style: italic;
+  }
+
+  .input-inline-lg {
+    font-size: 18px;
+    font-weight: 700;
+    padding: 6px 10px;
   }
 
   .view-header-meta {
@@ -2096,6 +2333,144 @@
     font-style: italic;
     background: var(--ether, #F5F5F7);
     border-radius: 8px;
+  }
+
+  /* Notes Section */
+  .notes-section {
+    border-top: 1px solid var(--border, #E5E5E5);
+    padding-top: 16px;
+  }
+
+  .notes-section h3 {
+    margin: 0 0 12px;
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--steel, #86868B);
+  }
+
+  .note-add {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+    margin-bottom: 16px;
+  }
+
+  .note-textarea {
+    flex: 1;
+    padding: 10px 12px;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 44px;
+    color: var(--onyx, #1D1D1F);
+    background: var(--canvas, #fff);
+  }
+
+  .note-textarea:focus {
+    outline: none;
+    border-color: var(--brand-indigo, #4F46E5);
+    box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.1);
+  }
+
+  .btn-add-note {
+    padding: 10px 16px;
+    background: var(--carbon, #000);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: opacity 0.15s;
+  }
+
+  .btn-add-note:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .btn-add-note:hover:not(:disabled) {
+    opacity: 0.85;
+  }
+
+  .notes-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .note-item {
+    padding: 10px 12px;
+    background: var(--ether, #F5F5F7);
+    border-radius: 8px;
+    border: 1px solid var(--border, #E5E5E5);
+  }
+
+  .note-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+
+  .note-date {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--steel, #86868B);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .note-author {
+    font-size: 11px;
+    color: var(--brand-indigo, #4F46E5);
+    font-weight: 500;
+  }
+
+  .note-delete {
+    margin-left: auto;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    font-size: 16px;
+    color: var(--steel, #86868B);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .note-delete:hover:not(:disabled) {
+    background: rgba(220, 38, 38, 0.1);
+    color: #DC2626;
+  }
+
+  .note-delete:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .note-content {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--onyx, #1D1D1F);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .notes-empty {
+    padding: 16px;
+    text-align: center;
+    color: var(--steel, #86868B);
+    font-size: 13px;
+    font-style: italic;
   }
 
   /* Date hint styles */

@@ -3,8 +3,7 @@
    * Wabi-Sabi Tooltip
    * Elegant, paper-like tooltips that appear like whispered wisdom
    */
-  import { fade, scale } from 'svelte/transition';
-  import { quintOut } from 'svelte/easing';
+  import { fade } from 'svelte/transition';
   
   export let text: string;
   export let position: 'top' | 'bottom' | 'left' | 'right' = 'top';
@@ -38,8 +37,8 @@
   {#if visible && text}
     <div 
       class="tooltip {position}"
-      in:scale={{ duration: 150, start: 0.95, easing: quintOut }}
-      out:fade={{ duration: 100 }}
+      in:fade={{ duration: 120 }}
+      out:fade={{ duration: 80 }}
     >
       <span class="tooltip-text">{text}</span>
       <div class="tooltip-arrow"></div>

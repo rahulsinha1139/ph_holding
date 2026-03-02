@@ -25,6 +25,10 @@
     UpdateCustomerInvoice,
     GenerateInvoicePDF,
     GetAvailableDeliveryNotesForOrder,
+    ListCreditNotes,
+    CreateCreditNote,
+    ApplyCreditNote,
+    GenerateCreditNotePDF,
   } from '../../../wailsjs/go/main/App';
   import PageLayout from '$lib/components/layout/PageLayout.svelte';
   import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -128,6 +132,84 @@
   let availableDeliveryNotes: DeliveryNote[] = [];
   let selectedDeliveryNoteId = '';
   let loadingDeliveryNotes = false;
+
+  // Phase 23: Credit Notes state
+  type MainView = 'invoices' | 'credit-notes';
+  let mainView: MainView = 'invoices';
+  let creditNotes: any[] = [];
+  let loadingCreditNotes = false;
+  let showCNModal = false;
+  let cnInvoiceId = '';
+  let cnReason = '';
+  let cnItems: { description: string; quantity: number; rate: number }[] = [{ description: '', quantity: 1, rate: 0 }];
+  let cnSaving = false;
+
+  async function loadCreditNotes() {
+    loadingCreditNotes = true;
+    try {
+      const data = await ListCreditNotes(100, 0);
+      creditNotes = data || [];
+    } catch (err) {
+      console.error('Failed to load credit notes:', err);
+      creditNotes = [];
+    } finally {
+      loadingCreditNotes = false;
+    }
+  }
+
+  function openCNModal(invoiceId?: string) {
+    cnInvoiceId = invoiceId || '';
+    cnReason = '';
+    cnItems = [{ description: '', quantity: 1, rate: 0 }];
+    showCNModal = true;
+  }
+
+  function addCNItem() {
+    cnItems = [...cnItems, { description: '', quantity: 1, rate: 0 }];
+  }
+
+  function removeCNItem(index: number) {
+    if (cnItems.length <= 1) return;
+    cnItems = cnItems.filter((_, i) => i !== index);
+  }
+
+  async function handleCreateCN() {
+    if (!cnInvoiceId) { toast.warning('Select an invoice'); return; }
+    if (!cnReason.trim()) { toast.warning('Reason is required'); return; }
+    const validItems = cnItems.filter(i => i.description.trim() && i.quantity > 0 && i.rate > 0);
+    if (validItems.length === 0) { toast.warning('At least one valid item required'); return; }
+
+    cnSaving = true;
+    try {
+      await CreateCreditNote(cnInvoiceId, cnReason, validItems);
+      toast.success('Credit Note created');
+      showCNModal = false;
+      await loadCreditNotes();
+    } catch (err) {
+      toast.danger('Failed: ' + (err as Error).message);
+    } finally {
+      cnSaving = false;
+    }
+  }
+
+  async function handleApplyCN(cnId: string) {
+    try {
+      await ApplyCreditNote(cnId);
+      toast.success('Credit Note applied — invoice outstanding updated');
+      await Promise.all([loadCreditNotes(), loadInvoices()]);
+    } catch (err) {
+      toast.danger('Failed: ' + (err as Error).message);
+    }
+  }
+
+  async function handleCNPDF(cnId: string) {
+    try {
+      const path = await GenerateCreditNotePDF(cnId);
+      toast.success('Credit Note PDF saved');
+    } catch (err) {
+      toast.danger('Failed: ' + (err as Error).message);
+    }
+  }
 
   // Field visibility options (user can select what appears on the invoice)
   const defaultFieldVisibility = {
@@ -621,16 +703,33 @@
 
   onMount(() => {
     loadInvoices();
+    loadCreditNotes();
   });
 </script>
 
 <PageLayout title="Invoices" subtitle="Customer billing and receivables management" {embedded}>
   <svelte:fragment slot="header-actions">
-    <Button variant="secondary" on:click={loadInvoices}>Refresh</Button>
-    <Button variant="primary" on:click={openCreateModal}>+ Create Invoice</Button>
+    {#if mainView === 'invoices'}
+      <Button variant="secondary" on:click={loadInvoices}>Refresh</Button>
+      <Button variant="primary" on:click={openCreateModal}>+ Create Invoice</Button>
+    {:else}
+      <Button variant="secondary" on:click={loadCreditNotes}>Refresh</Button>
+      <Button variant="primary" on:click={() => openCNModal()}>+ Issue Credit Note</Button>
+    {/if}
   </svelte:fragment>
 
   <div class="invoices-container">
+    <!-- Phase 23: Main View Tabs -->
+    <div class="main-view-tabs">
+      <button class="main-tab" class:main-tab-active={mainView === 'invoices'} on:click={() => mainView = 'invoices'}>
+        Invoices <span class="main-tab-count">{invoices.length}</span>
+      </button>
+      <button class="main-tab" class:main-tab-active={mainView === 'credit-notes'} on:click={() => mainView = 'credit-notes'}>
+        Credit Notes <span class="main-tab-count">{creditNotes.length}</span>
+      </button>
+    </div>
+
+  {#if mainView === 'invoices'}
     <!-- KPI Stats -->
     <div class="kpi-grid">
       <Card padding="md" variant="elevated">
@@ -777,6 +876,62 @@
     {#if !hasMore && totalLoaded > 0 && !loading}
       <p class="all-loaded">All {totalLoaded} invoices loaded</p>
     {/if}
+
+  {:else}
+    <!-- Phase 23: Credit Notes View -->
+    <Card padding="md">
+      {#if loadingCreditNotes}
+        <div style="text-align: center; padding: 32px;">
+          <WabiSpinner size="md" />
+          <p style="margin-top: 8px; color: var(--text-secondary);">Loading credit notes...</p>
+        </div>
+      {:else if creditNotes.length === 0}
+        <div style="text-align: center; padding: 40px; color: var(--text-secondary);">
+          <p style="font-size: 14px; font-weight: 500;">No credit notes yet</p>
+          <p style="font-size: 12px;">Issue a credit note against an invoice for returns or adjustments.</p>
+          <Button variant="primary" on:click={() => openCNModal()}>+ Issue Credit Note</Button>
+        </div>
+      {:else}
+        <table class="cn-table">
+          <thead>
+            <tr>
+              <th>CN Number</th>
+              <th>Date</th>
+              <th>Invoice Ref</th>
+              <th>Customer</th>
+              <th class="right">Amount (BHD)</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each creditNotes as cn}
+              <tr>
+                <td class="mono">{cn.credit_note_number}</td>
+                <td>{formatDate(cn.credit_note_date)}</td>
+                <td class="mono">{cn.invoice_number}</td>
+                <td>{cn.customer_name}</td>
+                <td class="right mono">{(cn.grand_total_bhd || 0).toFixed(3)}</td>
+                <td>
+                  <span class="cn-status" class:cn-draft={cn.status === 'Draft'} class:cn-issued={cn.status === 'Issued'} class:cn-applied={cn.status === 'Applied'}>
+                    {cn.status}
+                  </span>
+                </td>
+                <td>
+                  <div style="display: flex; gap: 6px;">
+                    <button class="action-btn action-secondary" on:click={() => handleCNPDF(cn.id)}>PDF</button>
+                    {#if cn.status !== 'Applied'}
+                      <button class="action-btn action-primary" on:click={() => handleApplyCN(cn.id)}>Apply</button>
+                    {/if}
+                  </div>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </Card>
+  {/if}
   </div>
 </PageLayout>
 
@@ -1010,6 +1165,109 @@
       </Button>
       <Button variant="primary" on:click={saveInvoiceEdit} disabled={editLoading}>
         {editLoading ? 'Saving...' : 'Save Changes'}
+      </Button>
+    </svelte:fragment>
+  </Modal>
+{/if}
+
+<!-- Phase 23: Credit Note Creation Modal -->
+{#if showCNModal}
+  <Modal
+    title="Issue Credit Note"
+    open={showCNModal}
+    on:close={() => showCNModal = false}
+    size="md"
+  >
+    <div class="cn-form">
+      <FormGroup label="Against Invoice" required>
+        <select class="select-input" bind:value={cnInvoiceId} disabled={cnSaving}>
+          <option value="">-- Select an invoice --</option>
+          {#each invoices.filter(i => i.status !== 'Draft') as inv}
+            <option value={inv.id}>
+              {inv.invoice_number} - {inv.customer_name} ({formatBHD(inv.grand_total_bhd)} BHD)
+            </option>
+          {/each}
+        </select>
+      </FormGroup>
+
+      <FormGroup label="Reason" required>
+        <textarea
+          class="cn-textarea"
+          bind:value={cnReason}
+          placeholder="e.g. Goods returned, pricing correction, quantity adjustment..."
+          rows="3"
+          disabled={cnSaving}
+        ></textarea>
+      </FormGroup>
+
+      <div class="cn-items-section">
+        <div class="cn-items-header">
+          <h4>Credit Note Items</h4>
+          <button class="cn-add-item-btn" on:click={addCNItem} disabled={cnSaving}>+ Add Item</button>
+        </div>
+
+        {#each cnItems as item, i}
+          <div class="cn-item-row">
+            <div class="cn-item-desc">
+              <input
+                type="text"
+                class="input-field"
+                placeholder="Description"
+                bind:value={item.description}
+                disabled={cnSaving}
+              />
+            </div>
+            <div class="cn-item-qty">
+              <input
+                type="number"
+                class="input-field"
+                placeholder="Qty"
+                min="1"
+                step="1"
+                bind:value={item.quantity}
+                disabled={cnSaving}
+              />
+            </div>
+            <div class="cn-item-rate">
+              <input
+                type="number"
+                class="input-field"
+                placeholder="Rate (BHD)"
+                min="0"
+                step="0.001"
+                bind:value={item.rate}
+                disabled={cnSaving}
+              />
+            </div>
+            <div class="cn-item-total">
+              {(item.quantity * item.rate).toFixed(3)}
+            </div>
+            <button
+              class="cn-remove-btn"
+              on:click={() => removeCNItem(i)}
+              disabled={cnSaving || cnItems.length <= 1}
+              title="Remove item"
+            >
+              &times;
+            </button>
+          </div>
+        {/each}
+
+        <div class="cn-total-row">
+          <span>Subtotal:</span>
+          <span class="cn-total-value">
+            {cnItems.reduce((s, it) => s + (it.quantity * it.rate), 0).toFixed(3)} BHD
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <svelte:fragment slot="footer">
+      <Button variant="ghost" on:click={() => showCNModal = false} disabled={cnSaving}>
+        Cancel
+      </Button>
+      <Button variant="primary" on:click={handleCreateCN} disabled={cnSaving || !cnInvoiceId}>
+        {cnSaving ? 'Creating...' : 'Issue Credit Note'}
       </Button>
     </svelte:fragment>
   </Modal>
@@ -1726,6 +1984,267 @@
     color: var(--text-secondary, #a0a0a0);
     padding: 1rem;
     font-size: 13px;
+  }
+
+  /* Phase 23: Main View Tabs */
+  .main-view-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 2px solid var(--border, #e5e5e5);
+    margin-bottom: 4px;
+  }
+
+  .main-tab {
+    padding: 10px 20px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .main-tab:hover {
+    color: var(--text-primary);
+  }
+
+  .main-tab-active {
+    color: var(--brand-indigo);
+    border-bottom-color: var(--brand-indigo);
+    font-weight: 600;
+  }
+
+  .main-tab-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: 9px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--surface-elevated, #f3f4f6);
+    color: var(--text-secondary);
+  }
+
+  .main-tab-active .main-tab-count {
+    background: var(--brand-indigo);
+    color: white;
+  }
+
+  /* Phase 23: Credit Notes Table */
+  .cn-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .cn-table th {
+    text-align: left;
+    padding: 10px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    border-bottom: 2px solid var(--border, #e5e5e5);
+  }
+
+  .cn-table th.right {
+    text-align: right;
+  }
+
+  .cn-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border, #e5e5e5);
+    vertical-align: middle;
+  }
+
+  .cn-table td.right {
+    text-align: right;
+  }
+
+  .cn-table td.mono {
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .cn-table tr:hover {
+    background: var(--interactive-hover, rgba(0,0,0,0.02));
+  }
+
+  .cn-status {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .cn-draft {
+    background: #6b728015;
+    color: #6b7280;
+  }
+
+  .cn-issued {
+    background: #3b82f615;
+    color: #3b82f6;
+  }
+
+  .cn-applied {
+    background: #10b98115;
+    color: #10b981;
+  }
+
+  .action-secondary {
+    background: #ede9fe;
+    color: #5b21b6;
+  }
+
+  .action-secondary:hover {
+    background: #ddd6fe;
+  }
+
+  .action-primary {
+    background: var(--brand-indigo, #6366f1);
+    color: white;
+  }
+
+  .action-primary:hover {
+    background: var(--brand-indigo-hover, #4f46e5);
+  }
+
+  /* Phase 23: Credit Note Form */
+  .cn-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .cn-textarea {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 14px;
+    font-family: inherit;
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--border-radius-sm);
+    resize: vertical;
+  }
+
+  .cn-textarea:focus {
+    outline: none;
+    border-color: var(--brand-indigo);
+    box-shadow: 0 0 0 3px var(--brand-indigo-tint);
+  }
+
+  .cn-items-section {
+    border: 1px solid var(--border, #e5e5e5);
+    border-radius: 8px;
+    padding: 12px;
+  }
+
+  .cn-items-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+
+  .cn-items-header h4 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .cn-add-item-btn {
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--brand-indigo, #6366f1);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .cn-add-item-btn:hover {
+    background: var(--brand-indigo-hover, #4f46e5);
+  }
+
+  .cn-item-row {
+    display: grid;
+    grid-template-columns: 2fr 80px 100px 80px 32px;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+
+  .cn-item-row .input-field {
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+
+  .cn-item-total {
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .cn-remove-btn {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #fee2e2;
+    color: #991b1b;
+    border: none;
+    border-radius: 4px;
+    font-size: 16px;
+    cursor: pointer;
+  }
+
+  .cn-remove-btn:hover:not(:disabled) {
+    background: #fecaca;
+  }
+
+  .cn-remove-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .cn-total-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border, #e5e5e5);
+    margin-top: 4px;
+  }
+
+  .cn-total-row span {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .cn-total-value {
+    font-family: var(--font-mono);
+    font-weight: 600 !important;
+    color: var(--text-primary) !important;
   }
 
   /* Responsive */

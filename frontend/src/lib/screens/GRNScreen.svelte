@@ -29,6 +29,7 @@
     GetPurchaseOrders,
     GetPurchaseOrderByID,
     ReceiveAgainstPO,
+    ReceiveAgainstPOWithSerials,
   } from '../../../wailsjs/go/main/App';
 
   // Design system components
@@ -87,6 +88,10 @@
     fully_received: boolean; // True if nothing left to receive
     rejection_reason?: string;
     notes?: string;
+    // Phase 23: Serial tracking
+    requires_serial?: boolean;
+    serial_numbers?: string[];
+    serial_input?: string; // Raw textarea input
   }
 
   // State - using 'any' for flexibility with backend responses
@@ -319,7 +324,10 @@
         quantity_received: remaining, // Default to remaining qty
         quantity_rejected: 0,
         rejection_reason: '',
-        notes: ''
+        notes: '',
+        requires_serial: item.requires_serial_tracking || false,
+        serial_numbers: [],
+        serial_input: ''
       };
     });
   }
@@ -362,9 +370,29 @@
       return;
     }
 
+    // Phase 23: Parse serial numbers from textarea inputs
+    const hasSerials = itemsToReceive.some(i => i.requires_serial && i.serial_input?.trim());
+    if (hasSerials) {
+      for (const item of itemsToReceive) {
+        if (item.requires_serial && item.serial_input?.trim()) {
+          item.serial_numbers = item.serial_input.trim().split('\n').map(s => s.trim()).filter(s => s.length > 0);
+          if (item.serial_numbers.length !== item.quantity_received) {
+            toast.warning(`Serial count (${item.serial_numbers.length}) must match receiving qty (${item.quantity_received}) for ${item.product_code}`);
+            return;
+          }
+        } else {
+          item.serial_numbers = [];
+        }
+      }
+    }
+
     formLoading = true;
     try {
-      await ReceiveAgainstPO(receiveFormData.po_id, itemsToReceive as any);
+      if (hasSerials) {
+        await ReceiveAgainstPOWithSerials(receiveFormData.po_id, itemsToReceive as any);
+      } else {
+        await ReceiveAgainstPO(receiveFormData.po_id, itemsToReceive as any);
+      }
       const totalQty = itemsToReceive.reduce((sum, i) => sum + i.quantity_received, 0);
       toast.success(`GRN created: ${totalQty} units received across ${itemsToReceive.length} items`);
       showReceiveModal = false;
@@ -737,6 +765,30 @@
                     {/if}
                   </td>
                 </tr>
+                {#if item.requires_serial && !item.fully_received}
+                  <tr class="serial-row">
+                    <td colspan="7" style="padding: 4px 8px 8px 24px;">
+                      <div class="serial-input-section">
+                        <div class="serial-label">
+                          <span class="serial-badge">Serialized</span>
+                          Enter serial numbers (one per line) — {item.quantity_received} required
+                        </div>
+                        <textarea
+                          class="serial-textarea"
+                          bind:value={item.serial_input}
+                          placeholder={"SN-001\nSN-002\nSN-003"}
+                          rows={Math.min(Math.max(item.quantity_received, 2), 6)}
+                        ></textarea>
+                        {#if item.serial_input?.trim()}
+                          {@const count = item.serial_input.trim().split('\n').filter(s => s.trim()).length}
+                          <div class="serial-count" class:serial-count-ok={count === item.quantity_received} class:serial-count-err={count !== item.quantity_received}>
+                            {count} / {item.quantity_received} entered
+                          </div>
+                        {/if}
+                      </div>
+                    </td>
+                  </tr>
+                {/if}
               {/each}
             </tbody>
           </table>
@@ -1449,5 +1501,61 @@
     .items-table-wrapper {
       overflow-x: scroll;
     }
+  }
+
+  /* Phase 23: Serial number input */
+  .serial-row td {
+    background: var(--bg-tertiary, #1a1a2e) !important;
+    border-top: none !important;
+  }
+  .serial-input-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .serial-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .serial-badge {
+    background: var(--brand-indigo, #6366f1);
+    color: white;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .serial-textarea {
+    width: 100%;
+    max-width: 400px;
+    padding: 6px 8px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    background: var(--bg-primary, #0f0f1a);
+    border: 1px solid var(--border-primary, #2a2a4a);
+    border-radius: 6px;
+    color: var(--text-primary);
+    resize: vertical;
+  }
+  .serial-textarea:focus {
+    outline: none;
+    border-color: var(--brand-indigo);
+    box-shadow: 0 0 0 2px var(--brand-indigo-tint);
+  }
+  .serial-count {
+    font-size: 11px;
+    font-family: var(--font-mono);
+  }
+  .serial-count-ok {
+    color: var(--stat-success, #10b981);
+  }
+  .serial-count-err {
+    color: var(--stat-danger, #ef4444);
   }
 </style>

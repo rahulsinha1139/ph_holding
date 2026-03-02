@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, createEventDispatcher } from 'svelte';
-  import { GetCRMSupplierDashboard, CreateSupplier } from '../../../wailsjs/go/main/App';
+  import { GetCRMSupplierDashboard, GetCRMSupplierDashboardByYear, CreateSupplier } from '../../../wailsjs/go/main/App';
   import Card from '$lib/components/ui/Card.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
@@ -11,6 +11,8 @@
   let loading = true;
   let dashboard: any = null;
   let searchQuery = '';
+  let selectedYear = 2025;
+  const availableYears = [0, 2023, 2024, 2025];
   let showCreateModal = false;
   let newSupplier = {
     supplier_name: '',
@@ -29,7 +31,11 @@
   async function loadDashboard() {
     loading = true;
     try {
-      dashboard = await GetCRMSupplierDashboard();
+      if (selectedYear === 0) {
+        dashboard = await GetCRMSupplierDashboard();
+      } else {
+        dashboard = await GetCRMSupplierDashboardByYear(selectedYear);
+      }
       console.log('Supplier Dashboard loaded:', dashboard);
     } catch (err) {
       console.error('Failed to load supplier dashboard:', err);
@@ -37,6 +43,10 @@
     } finally {
       loading = false;
     }
+  }
+
+  function handleYearChange() {
+    loadDashboard();
   }
 
   function selectSupplier(supplierId: string) {
@@ -101,6 +111,18 @@
       <WabiSpinner size="lg" />
     </div>
   {:else if dashboard}
+    <!-- Year Selector -->
+    <div class="year-selector-row">
+      <div class="year-selector">
+        <label class="year-label">FINANCIAL YEAR</label>
+        <select bind:value={selectedYear} on:change={handleYearChange} class="year-select">
+          {#each availableYears as yr}
+            <option value={yr}>{yr === 0 ? 'All Years' : yr}</option>
+          {/each}
+        </select>
+      </div>
+    </div>
+
     <!-- KPI Row -->
     <div class="kpi-row">
       <Card padding="md">
@@ -308,6 +330,44 @@
     justify-content: center;
     align-items: center;
     height: 400px;
+  }
+
+  /* Year Selector */
+  .year-selector-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: -8px;
+  }
+
+  .year-selector {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .year-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    font-weight: 600;
+  }
+
+  .year-select {
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    background: var(--surface);
+    color: var(--text-primary);
+    cursor: pointer;
+    min-width: 120px;
+  }
+
+  .year-select:focus {
+    border-color: var(--brand-indigo);
+    outline: none;
   }
 
   /* KPI Row */

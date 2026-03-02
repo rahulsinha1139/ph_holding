@@ -293,7 +293,7 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 
 	// Table headers
 	pdf.CellFormat(12, 7, "Sr. No.", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(92, 7, "Item Description, Order Code*", "1", 0, "C", true, 0, "")
+	pdf.CellFormat(92, 7, "Item Description, Long Code*", "1", 0, "C", true, 0, "")
 	pdf.CellFormat(22, 7, "Unit cost", "1", 0, "C", true, 0, "")
 	pdf.CellFormat(15, 7, "Qty", "1", 0, "C", true, 0, "")
 	pdf.CellFormat(33, 7, "Amount (BHD)", "1", 0, "C", true, 0, "")
@@ -303,34 +303,70 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	pdf.SetFont("Helvetica", "", 8)
 	pdf.SetTextColor(29, 29, 31)
 
+	// Column widths (must match header widths above)
+	colSrNo := 12.0
+	colDesc := 92.0
+	colUnit := 22.0
+	colQty := 15.0
+	colAmt := 33.0
+	lineHeight := 4.0
+	minRowHeight := 6.0
+
 	subtotal := 0.0
 	for i, item := range offer.Items {
 		lineNum := i + 1
 		description := sanitizeForPDF(item.Description)
 		if item.ProductCode != "" {
-			description = description + "\n" + sanitizeForPDF(item.ProductCode)
+			productCode := sanitizeForPDF(item.ProductCode)
+			if len(productCode) > 50 {
+				productCode = productCode[:47] + "..."
+			}
+			description = description + "\n" + productCode
+		}
+		// Append order code below model/product code
+		if item.LongCode != "" {
+			orderCode := sanitizeForPDF(item.LongCode)
+			description = description + "\nLong Code: " + orderCode
 		}
 		lineTotal := item.UnitPrice * item.Quantity
 		subtotal += lineTotal
 
-		// Calculate row height based on description length
-		rowHeight := 6.0
-		if len(description) > 80 {
-			rowHeight = 12.0
+		// Pre-calculate the height needed for description text using SplitText
+		lines := pdf.SplitText(description, colDesc)
+		rowHeight := float64(len(lines)) * lineHeight
+		if rowHeight < minRowHeight {
+			rowHeight = minRowHeight
 		}
 
-		pdf.CellFormat(12, rowHeight, fmt.Sprintf("%d", lineNum), "1", 0, "C", false, 0, "")
+		// Store starting position for the row
+		startX := pdf.GetX()
+		startY := pdf.GetY()
 
-		// Description cell (multiline if needed)
-		x := pdf.GetX()
-		y := pdf.GetY()
-		pdf.MultiCell(92, 4, description, "1", "L", false)
-		pdf.SetXY(x+92, y)
+		// Render Sr. No. cell with calculated row height
+		pdf.CellFormat(colSrNo, rowHeight, fmt.Sprintf("%d", lineNum), "1", 0, "C", false, 0, "")
 
-		pdf.CellFormat(22, rowHeight, fmt.Sprintf("%.3f", item.UnitPrice), "1", 0, "R", false, 0, "")
-		pdf.CellFormat(15, rowHeight, fmt.Sprintf("%.0f", item.Quantity), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(33, rowHeight, fmt.Sprintf("%.3f", lineTotal), "1", 0, "R", false, 0, "")
-		pdf.Ln(rowHeight)
+		// Render Description cell using MultiCell (wraps text)
+		descX := pdf.GetX()
+		pdf.MultiCell(colDesc, lineHeight, description, "1", "L", false)
+		multiCellEndY := pdf.GetY()
+
+		// If MultiCell used less height than rowHeight, draw remaining border
+		if multiCellEndY-startY < rowHeight {
+			// Fill the gap with an empty bordered cell to complete the row border
+			pdf.SetXY(descX, multiCellEndY)
+			pdf.CellFormat(colDesc, rowHeight-(multiCellEndY-startY), "", "LRB", 0, "L", false, 0, "")
+		}
+
+		// Move back to startY for the remaining columns, positioned after Sr.No + Desc
+		pdf.SetXY(startX+colSrNo+colDesc, startY)
+
+		// Render remaining cells with the full calculated row height
+		pdf.CellFormat(colUnit, rowHeight, fmt.Sprintf("%.3f", item.UnitPrice), "1", 0, "R", false, 0, "")
+		pdf.CellFormat(colQty, rowHeight, fmt.Sprintf("%.0f", item.Quantity), "1", 0, "C", false, 0, "")
+		pdf.CellFormat(colAmt, rowHeight, fmt.Sprintf("%.3f", lineTotal), "1", 0, "R", false, 0, "")
+
+		// Move to next row at the correct Y position
+		pdf.SetXY(startX, startY+rowHeight)
 	}
 
 	pdf.Ln(3)
@@ -413,7 +449,7 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 		"Certificate of Origin: Additional charges applicable as per OEM terms",
 		fmt.Sprintf("Country of origin: %s", offer.CountryOfOrigin),
 		"Certificate of Conformity: Additional charges applicable as per OEM terms",
-		"Please check Annexure 1 for detailed Order Code(s)",
+		"Please check Annexure 1 for detailed Long Code(s)",
 		"This proposal is subject to general terms and conditions of delivery and sales as per OEM.",
 		"We have chosen our instruments according to the specifications given. However, we recommend that all technical details be reviewed and approved by your technical team before order placement.",
 	}
@@ -490,7 +526,7 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 
 		pdf.SetFont("Helvetica", "", 9)
 		pdf.SetTextColor(60, 60, 60)
-		pdf.Cell(0, 5, "Detailed Order Codes and Specifications")
+		pdf.Cell(0, 5, "Detailed Long Codes and Specifications")
 		pdf.Ln(8)
 
 		// Annexure table
@@ -518,6 +554,9 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 			}
 			if item.ProductCode != "" {
 				fullSpec = fullSpec + "\nModel: " + sanitizeForPDF(item.ProductCode)
+			}
+			if item.LongCode != "" {
+				fullSpec = fullSpec + "\nLong Code: " + sanitizeForPDF(item.LongCode)
 			}
 			// Add detailed description (instrumentation specs) if present
 			if item.DetailedDescription != "" {
@@ -578,10 +617,30 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	exportDir := filepath.Join(paths.ProjectRoot, "exports", "offers")
 	os.MkdirAll(exportDir, 0755)
 
-	// Clean offer number for filename (prevent path traversal)
+	// Combined filename: {SystemNumber}_{UserReference}.pdf
 	cleanOfferNum := sanitizeFilename(offer.OfferNumber)
-	filename := fmt.Sprintf("Offer_%s.pdf", cleanOfferNum)
-	filePath := filepath.Join(exportDir, filename)
+	userRef := ""
+	if offer.CustomerReference != "" {
+		userRef = sanitizeFilename(offer.CustomerReference)
+	}
+	filename := cleanOfferNum
+	if userRef != "" {
+		filename = fmt.Sprintf("%s_%s", cleanOfferNum, userRef)
+	}
+	filename = fmt.Sprintf("Offer_%s.pdf", filename)
+
+	// Save to structured folder: <exports>/<division>/Customers/<CustomerName>/RFQ/
+	customerDir := ""
+	if offer.CustomerName != "" {
+		safeCust := sanitizeFilename(offer.CustomerName)
+		customerDir = filepath.Join(exportDir, "..", "PH Trading", "Customers", safeCust, "RFQ")
+		os.MkdirAll(customerDir, 0755)
+	}
+	saveDir := exportDir
+	if customerDir != "" {
+		saveDir = customerDir
+	}
+	filePath := filepath.Join(saveDir, filename)
 
 	if err := pdf.OutputFileAndClose(filePath); err != nil {
 		return "", fmt.Errorf("failed to save offer PDF: %w", err)

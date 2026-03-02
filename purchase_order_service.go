@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // =============================================================================
@@ -15,7 +16,7 @@ import (
 
 // CreatePurchaseOrder creates a new purchase order
 func (a *App) CreatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
-	if err := a.requirePermission("purchase_orders:create"); err != nil {
+	if err := a.requirePermission("po:create"); err != nil {
 		return PurchaseOrder{}, err
 	}
 	if a.db == nil {
@@ -65,16 +66,23 @@ func (a *App) CreatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
 		}
 	}
 
-	// Set default status if not provided
-	if po.Status == "" {
-		po.Status = "Draft"
+	// Force initial status — caller cannot bypass workflow
+	po.Status = "Draft"
+
+	// P1 FIX: Set CreatedBy for segregation-of-duties check in ApprovePurchaseOrder
+	po.CreatedBy = a.getCurrentUserID()
+
+	// P3 FIX (PO-26): Default currency fallback for log messages
+	currency := po.Currency
+	if currency == "" {
+		currency = "BHD"
 	}
 
 	// P1 FIX: Check if PO requires approval based on amount threshold
 	approvalThreshold := 5000.0 // BHD - configurable threshold
 	if po.TotalBHD > approvalThreshold && po.Status == "Draft" {
 		po.Status = "Pending Approval"
-		log.Printf("⚠️ PO %s requires approval (%.2f BHD > %.2f BHD threshold)", po.PONumber, po.TotalBHD, approvalThreshold)
+		log.Printf("⚠️ PO %s requires approval (%.2f %s > %.2f %s threshold)", po.PONumber, po.TotalBHD, currency, approvalThreshold, currency)
 	}
 
 	// Create the PO with items
@@ -83,13 +91,13 @@ func (a *App) CreatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
 		return PurchaseOrder{}, newError("DB_CREATE_FAILED", "Failed to create purchase order", err.Error())
 	}
 
-	log.Printf("✅ Created Purchase Order %s for Supplier %s (%.2f BHD)", po.PONumber, po.SupplierID, po.TotalBHD)
+	log.Printf("✅ Created Purchase Order %s for Supplier %s (%.2f %s)", po.PONumber, po.SupplierID, po.TotalBHD, currency)
 	return po, nil
 }
 
 // GetPurchaseOrders retrieves all purchase orders with items preloaded and supplier names enriched
 func (a *App) GetPurchaseOrders() ([]PurchaseOrder, error) {
-	if err := a.requirePermission("purchase_orders:view"); err != nil {
+	if err := a.requirePermission("po:view"); err != nil {
 		return nil, err
 	}
 	if a.db == nil {
@@ -97,7 +105,7 @@ func (a *App) GetPurchaseOrders() ([]PurchaseOrder, error) {
 	}
 
 	var pos []PurchaseOrder
-	if err := a.db.Preload("Items").Order("po_date DESC").Find(&pos).Error; err != nil {
+	if err := a.db.Preload("Items").Order("po_date DESC").Limit(500).Find(&pos).Error; err != nil {
 		return nil, newError("DB_QUERY_FAILED", "Failed to retrieve purchase orders", err.Error())
 	}
 
@@ -153,7 +161,7 @@ func (a *App) enrichPOsWithSupplierNames(pos []PurchaseOrder) {
 
 // GetPurchaseOrderByID retrieves a single purchase order by ID with items preloaded
 func (a *App) GetPurchaseOrderByID(id string) (PurchaseOrder, error) {
-	if err := a.requirePermission("purchase_orders:view"); err != nil {
+	if err := a.requirePermission("po:view"); err != nil {
 		return PurchaseOrder{}, err
 	}
 	if a.db == nil {
@@ -178,7 +186,7 @@ func (a *App) GetPurchaseOrderByID(id string) (PurchaseOrder, error) {
 
 // GetPurchaseOrdersByOrder retrieves all purchase orders for a given customer order
 func (a *App) GetPurchaseOrdersByOrder(orderID string) ([]PurchaseOrder, error) {
-	if err := a.requirePermission("purchase_orders:view"); err != nil {
+	if err := a.requirePermission("po:view"); err != nil {
 		return nil, err
 	}
 	if a.db == nil {
@@ -198,7 +206,7 @@ func (a *App) GetPurchaseOrdersByOrder(orderID string) ([]PurchaseOrder, error) 
 
 // GetPurchaseOrdersBySupplier retrieves all purchase orders for a given supplier
 func (a *App) GetPurchaseOrdersBySupplier(supplierID string) ([]PurchaseOrder, error) {
-	if err := a.requirePermission("purchase_orders:view"); err != nil {
+	if err := a.requirePermission("po:view"); err != nil {
 		return nil, err
 	}
 	if a.db == nil {
@@ -215,7 +223,7 @@ func (a *App) GetPurchaseOrdersBySupplier(supplierID string) ([]PurchaseOrder, e
 
 // UpdatePurchaseOrder updates an existing purchase order
 func (a *App) UpdatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
-	if err := a.requirePermission("purchase_orders:update"); err != nil {
+	if err := a.requirePermission("po:update"); err != nil {
 		return PurchaseOrder{}, err
 	}
 	if a.db == nil {
@@ -228,8 +236,16 @@ func (a *App) UpdatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
 		return PurchaseOrder{}, newError("PO_NOT_FOUND", "Purchase order not found", err.Error())
 	}
 
-	// Block financial field changes on approved/sent POs
-	protectedStatuses := map[string]bool{"Approved": true, "Sent": true, "Partially Received": true, "Received": true}
+	// Block financial field changes on post-approval POs (P2 Fix: expanded to cover all post-approval statuses)
+	protectedStatuses := map[string]bool{
+		"Pending Approval":   true,
+		"Approved":           true,
+		"Sent":               true,
+		"Acknowledged":       true,
+		"Partially Received": true,
+		"Received":           true,
+		"Closed":             true,
+	}
 	if protectedStatuses[existing.Status] {
 		if po.SubtotalForeign != existing.SubtotalForeign || po.SubtotalBHD != existing.SubtotalBHD ||
 			po.TotalForeign != existing.TotalForeign || po.TotalBHD != existing.TotalBHD ||
@@ -316,7 +332,7 @@ func (a *App) UpdatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
 
 // UpdatePOStatus updates only the status of a purchase order
 func (a *App) UpdatePOStatus(id string, status string) error {
-	if err := a.requirePermission("purchase_orders:update"); err != nil {
+	if err := a.requirePermission("po:update"); err != nil {
 		return err
 	}
 	if a.db == nil {
@@ -325,50 +341,70 @@ func (a *App) UpdatePOStatus(id string, status string) error {
 
 	// Validate status transition
 	validTransitions := map[string][]string{
-		"Draft":                {"Pending Approval", "Approved", "Sent", "Cancelled"},
+		"Draft":               {"Pending Approval", "Approved", "Sent", "Cancelled"},
 		"Pending Approval":    {"Approved", "Draft", "Cancelled"},
 		"Approved":            {"Sent", "Cancelled"},
 		"Sent":                {"Acknowledged", "Partially Received", "Received", "Cancelled"},
 		"Acknowledged":        {"Partially Received", "Received", "Cancelled"},
 		"Partially Received":  {"Received", "Cancelled"},
-		"Received":            {},  // Terminal state
-		"Closed":              {},  // Terminal state
-		"Cancelled":           {},  // Terminal state
+		"Received":            {}, // Terminal state
+		"Closed":              {}, // Terminal state
+		"Cancelled":           {}, // Terminal state
 	}
 
-	// Look up the current PO status
-	var current PurchaseOrder
-	if err := a.db.Select("status").First(&current, "id = ?", id).Error; err != nil {
-		return newError("PO_NOT_FOUND", "Purchase order not found", err.Error())
-	}
-
-	allowed, knownStatus := validTransitions[current.Status]
-	if !knownStatus {
-		return fmt.Errorf("PO has unrecognized current status '%s'", current.Status)
-	}
-
-	isValid := false
-	for _, s := range allowed {
-		if s == status {
-			isValid = true
-			break
+	// P2 FIX: Wrap SELECT + validation + UPDATE in a transaction with row lock
+	return a.db.Transaction(func(tx *gorm.DB) error {
+		var current PurchaseOrder
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("status, total_bhd").First(&current, "id = ?", id).Error; err != nil {
+			return newError("PO_NOT_FOUND", "Purchase order not found", err.Error())
 		}
-	}
-	if !isValid {
-		return fmt.Errorf("invalid status transition from '%s' to '%s'", current.Status, status)
-	}
 
-	result := a.db.Model(&PurchaseOrder{}).Where("id = ?", id).Update("status", status)
-	if result.Error != nil {
-		return newError("DB_UPDATE_FAILED", "Failed to update PO status", result.Error.Error())
-	}
+		allowed, knownStatus := validTransitions[current.Status]
+		if !knownStatus {
+			return fmt.Errorf("PO has unrecognized current status '%s'", current.Status)
+		}
 
-	if result.RowsAffected == 0 {
-		return newError("PO_NOT_FOUND", "Purchase order not found", "")
-	}
+		isValid := false
+		for _, s := range allowed {
+			if s == status {
+				isValid = true
+				break
+			}
+		}
+		if !isValid {
+			return fmt.Errorf("invalid status transition from '%s' to '%s'", current.Status, status)
+		}
 
-	log.Printf("✅ Updated PO #%s status to: %s", id, status)
-	return nil
+		// P1 FIX: Block Draft→Sent transition for POs above approval threshold
+		if current.Status == "Draft" && status == "Sent" {
+			approvalThreshold := 5000.0
+			if current.TotalBHD > approvalThreshold {
+				return fmt.Errorf("cannot send PO directly from Draft: total %.3f BHD exceeds approval threshold %.3f BHD — must be approved first", current.TotalBHD, approvalThreshold)
+			}
+		}
+
+		// P1 FIX: Block Draft→Approved for POs above approval threshold
+		// Must go through Pending Approval → Approved (via ApprovePurchaseOrder)
+		if current.Status == "Draft" && status == "Approved" {
+			approvalThreshold := 5000.0
+			if current.TotalBHD > approvalThreshold {
+				return fmt.Errorf("cannot approve PO directly from Draft: total %.3f BHD exceeds approval threshold %.3f BHD — must go through Pending Approval first", current.TotalBHD, approvalThreshold)
+			}
+		}
+
+		result := tx.Model(&PurchaseOrder{}).Where("id = ?", id).Update("status", status)
+		if result.Error != nil {
+			return newError("DB_UPDATE_FAILED", "Failed to update PO status", result.Error.Error())
+		}
+
+		if result.RowsAffected == 0 {
+			return newError("PO_NOT_FOUND", "Purchase order not found", "")
+		}
+
+		log.Printf("✅ Updated PO #%s status to: %s", id, status)
+		return nil
+	})
 }
 
 // =============================================================================
@@ -377,7 +413,7 @@ func (a *App) UpdatePOStatus(id string, status string) error {
 
 // ApprovePurchaseOrder approves a purchase order requiring approval
 func (a *App) ApprovePurchaseOrder(id string, approvedBy string) error {
-	if err := a.requirePermission("purchase_orders:approve"); err != nil {
+	if err := a.requirePermission("po:approve"); err != nil {
 		return err
 	}
 	if a.db == nil {
@@ -395,6 +431,12 @@ func (a *App) ApprovePurchaseOrder(id string, approvedBy string) error {
 		return newError("INVALID_STATUS", fmt.Sprintf("Cannot approve PO with status: %s", po.Status), "")
 	}
 
+	// P2 FIX: Segregation of duties — approver must not be the creator
+	if po.CreatedBy != "" && po.CreatedBy == approvedBy {
+		return newError("SEGREGATION_VIOLATION",
+			fmt.Sprintf("Cannot approve PO %s: approver '%s' is the same as creator (segregation of duties)", po.PONumber, approvedBy), "")
+	}
+
 	// P1 FIX: Update status and approval tracking with proper fields
 	now := time.Now()
 	updates := map[string]interface{}{
@@ -408,13 +450,18 @@ func (a *App) ApprovePurchaseOrder(id string, approvedBy string) error {
 		return newError("DB_UPDATE_FAILED", "Failed to approve purchase order", err.Error())
 	}
 
-	log.Printf("✅ Approved Purchase Order %s by %s (%.2f BHD)", po.PONumber, approvedBy, po.TotalBHD)
+	// P3 FIX (PO-26): Default currency fallback for log messages
+	currency := po.Currency
+	if currency == "" {
+		currency = "BHD"
+	}
+	log.Printf("✅ Approved Purchase Order %s by %s (%.2f %s)", po.PONumber, approvedBy, po.TotalBHD, currency)
 	return nil
 }
 
 // SendPurchaseOrder sends an approved PO to supplier (blocks if not approved)
 func (a *App) SendPurchaseOrder(id string) error {
-	if err := a.requirePermission("purchase_orders:send"); err != nil {
+	if err := a.requirePermission("po:send"); err != nil {
 		return err
 	}
 	if a.db == nil {
@@ -427,12 +474,25 @@ func (a *App) SendPurchaseOrder(id string) error {
 		return newError("PO_NOT_FOUND", "Purchase order not found", err.Error())
 	}
 
-	// P1 FIX: Block sending unapproved POs
+	// Status validation: only Draft or Approved POs can be sent
+	validSendStatuses := map[string]bool{"Draft": true, "Approved": true}
+	if !validSendStatuses[po.Status] {
+		return newError("PO_INVALID_STATUS",
+			fmt.Sprintf("Cannot send PO %s: status is '%s' (only Draft or Approved POs can be sent)",
+				po.PONumber, po.Status), "")
+	}
+
+	// P1 FIX: Block sending unapproved POs above threshold
+	// P3 FIX (PO-26): Default currency fallback for error messages
+	currency := po.Currency
+	if currency == "" {
+		currency = "BHD"
+	}
 	approvalThreshold := 5000.0 // BHD
 	if po.TotalBHD > approvalThreshold && po.Status != "Approved" {
 		return newError("APPROVAL_REQUIRED",
-			fmt.Sprintf("Cannot send PO %s (%.2f BHD) - requires manager approval (threshold: %.2f BHD)",
-				po.PONumber, po.TotalBHD, approvalThreshold), "")
+			fmt.Sprintf("Cannot send PO %s (%.2f %s) - requires manager approval (threshold: %.2f %s)",
+				po.PONumber, po.TotalBHD, currency, approvalThreshold, currency), "")
 	}
 
 	// Update status to Sent
@@ -440,13 +500,13 @@ func (a *App) SendPurchaseOrder(id string) error {
 		return newError("DB_UPDATE_FAILED", "Failed to send purchase order", err.Error())
 	}
 
-	log.Printf("📧 Sent Purchase Order %s to Supplier %s (%.2f BHD)", po.PONumber, po.SupplierID, po.TotalBHD)
+	log.Printf("📧 Sent Purchase Order %s to Supplier %s (%.2f %s)", po.PONumber, po.SupplierID, po.TotalBHD, currency)
 	return nil
 }
 
 // DeletePurchaseOrder soft-deletes a purchase order
 func (a *App) DeletePurchaseOrder(id string) error {
-	if err := a.requirePermission("purchase_orders:delete"); err != nil {
+	if err := a.requirePermission("po:delete"); err != nil {
 		return err
 	}
 	if a.db == nil {
@@ -457,6 +517,13 @@ func (a *App) DeletePurchaseOrder(id string) error {
 	var po PurchaseOrder
 	if err := a.db.First(&po, "id = ?", id).Error; err != nil {
 		return newError("PO_NOT_FOUND", "Purchase order not found", err.Error())
+	}
+
+	// P2 FIX: Only Draft and Cancelled POs can be deleted
+	deletableStatuses := map[string]bool{"Draft": true, "Cancelled": true}
+	if !deletableStatuses[po.Status] {
+		return newError("PO_INVALID_STATUS",
+			fmt.Sprintf("Cannot delete PO %s: status is '%s' (only Draft or Cancelled POs can be deleted)", po.PONumber, po.Status), "")
 	}
 
 	// Soft delete (GORM handles DeletedAt automatically)
@@ -473,82 +540,69 @@ func (a *App) DeletePurchaseOrder(id string) error {
 // PURCHASE ORDER UTILITIES
 // =============================================================================
 
-// GeneratePONumber generates a sequential PO number in format PO-2026-0001
+// GeneratePONumber generates a new PO number in format PO-YYYY-NNNN
+// Uses InvoiceSequence table with row locking (same pattern as GenerateInvoiceNumber/GenerateCreditNoteNumber)
 func (a *App) GeneratePONumber() (string, error) {
 	if a.db == nil {
 		return "", newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
-	// Get current year
-	year := time.Now().Year()
-	prefix := fmt.Sprintf("PO-%d-", year)
+	now := time.Now()
+	year := now.Year()
+	prefix := "PO"
 
-	var nextNumber int
-
-	// Use a transaction with EXCLUSIVE lock to prevent race conditions
-	// SQLite's BEGIN EXCLUSIVE ensures only one process can generate a number at a time
+	var poNumber string
 	err := a.db.Transaction(func(tx *gorm.DB) error {
-		// Lock the table for exclusive access during this transaction
-		// This prevents concurrent GeneratePONumber calls from reading the same lastPO
-		if err := tx.Exec("BEGIN EXCLUSIVE").Error; err != nil {
-			return err
-		}
-
-		// Find highest existing PO number for this year within the locked transaction
-		var lastPO PurchaseOrder
-		err := tx.Where("po_number LIKE ?", prefix+"%").
-			Order("po_number DESC").
-			First(&lastPO).Error
+		var seq InvoiceSequence
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("prefix = ? AND year = ?", prefix, year).
+			First(&seq).Error
 
 		if err != nil {
-			// No POs for this year yet, start at 0001
-			nextNumber = 1
-		} else {
-			// Extract number from last PO (e.g., "PO-2026-0123" → 123)
-			parts := strings.Split(lastPO.PONumber, "-")
-			if len(parts) == 3 {
-				var num int
-				fmt.Sscanf(parts[2], "%d", &num)
-				nextNumber = num + 1
+			if err == gorm.ErrRecordNotFound {
+				// First PO of this year — initialize sequence from existing POs
+				var maxExisting int64
+				tx.Model(&PurchaseOrder{}).
+					Where("po_number LIKE ? ESCAPE '\\'", fmt.Sprintf("PO-%d-%%", year)).
+					Count(&maxExisting)
+
+				seq = InvoiceSequence{
+					Prefix:     prefix,
+					Year:       year,
+					LastNumber: int(maxExisting),
+					UpdatedAt:  now,
+				}
+				if err := tx.Create(&seq).Error; err != nil {
+					return fmt.Errorf("failed to create PO sequence: %w", err)
+				}
 			} else {
-				nextNumber = 1
+				return fmt.Errorf("failed to read PO sequence: %w", err)
 			}
 		}
 
-		// Transaction will commit automatically if no error is returned
+		// Increment and update
+		seq.LastNumber++
+		seq.UpdatedAt = now
+		if err := tx.Save(&seq).Error; err != nil {
+			return fmt.Errorf("failed to update PO sequence: %w", err)
+		}
+
+		poNumber = fmt.Sprintf("%s-%d-%04d", prefix, year, seq.LastNumber)
 		return nil
 	})
 
 	if err != nil {
-		log.Printf("⚠️ Warning: PO number generation transaction failed: %v, falling back to best-effort", err)
-		// Fallback to non-transactional read (should rarely happen)
-		var lastPO PurchaseOrder
-		fallbackErr := a.db.Where("po_number LIKE ?", prefix+"%").
-			Order("po_number DESC").
-			First(&lastPO).Error
-
-		if fallbackErr != nil {
-			nextNumber = 1
-		} else {
-			parts := strings.Split(lastPO.PONumber, "-")
-			if len(parts) == 3 {
-				var num int
-				fmt.Sscanf(parts[2], "%d", &num)
-				nextNumber = num + 1
-			} else {
-				nextNumber = 1
-			}
-		}
+		return "", fmt.Errorf("PO number generation failed: %w", err)
 	}
 
-	poNumber := fmt.Sprintf("%s%04d", prefix, nextNumber)
+	log.Printf("Generated PO Number: %s", poNumber)
 	return poNumber, nil
 }
 
 // CreatePOFromOrder creates a purchase order from a customer order for a specific supplier
 // Splits order items by supplier and creates a PO with the matching items
 func (a *App) CreatePOFromOrder(orderID string, supplierID string, itemIDs []string) (PurchaseOrder, error) {
-	if err := a.requirePermission("purchase_orders:create"); err != nil {
+	if err := a.requirePermission("po:create"); err != nil {
 		return PurchaseOrder{}, err
 	}
 	if a.db == nil {
@@ -587,6 +641,12 @@ func (a *App) CreatePOFromOrder(orderID string, supplierID string, itemIDs []str
 	// Add items
 	var subtotal float64
 	for _, orderItem := range order.Items {
+		// Skip zero or negative quantity items
+		if orderItem.Quantity <= 0 {
+			log.Printf("⚠️ Skipping item %s with invalid quantity %.0f", orderItem.ProductCode, orderItem.Quantity)
+			continue
+		}
+
 		// Check if this item should be included
 		includeItem := len(itemIDs) == 0 // If no specific items, include all
 		if !includeItem {
@@ -611,28 +671,49 @@ func (a *App) CreatePOFromOrder(orderID string, supplierID string, itemIDs []str
 			}
 		}
 
-		// Create PO item (using cost from product master as purchase price)
+		// Determine purchase price using best available source:
+		// 1. OrderItem.FOB (from costing sheet via offer — actual supplier cost)
+		// 2. ProductMaster.StandardCostBHD (catalog cost)
+		// 3. Fallback: 70% of sell price (rough estimate)
+		unitForeign := orderItem.UnitPrice * 0.7 // Fallback estimate
+		unitBHD := orderItem.UnitPrice * 0.7
+
+		if orderItem.FOB > 0 {
+			// Best source: actual FOB from costing sheet (supplier's price in their currency)
+			unitForeign = orderItem.FOB
+			if orderItem.TotalCost > 0 && orderItem.Quantity > 0 {
+				// Use calculated landed cost from costing sheet (already in BHD)
+				unitBHD = orderItem.TotalCost / orderItem.Quantity
+			} else if orderItem.Currency == "BHD" || orderItem.Currency == "" {
+				// FOB is already in BHD
+				unitBHD = orderItem.FOB
+			} else {
+				// Foreign currency FOB without TotalCost — fall back to 70% estimate
+				// rather than using unconverted foreign value as BHD
+				unitBHD = orderItem.UnitPrice * 0.7
+				log.Printf("⚠️ PO item %s: FOB in %s but no TotalCost — using 70%% estimate for BHD", orderItem.ProductCode, orderItem.Currency)
+			}
+			log.Printf("📊 PO item %s: using costing sheet FOB (%.3f %s, %.3f BHD)", orderItem.ProductCode, unitForeign, orderItem.Currency, unitBHD)
+		} else if err := a.db.First(&product, "id = ?", orderItem.ProductID).Error; err == nil && product.StandardCostBHD > 0 {
+			// Second source: product master standard cost
+			unitForeign = product.StandardCostBHD
+			unitBHD = product.StandardCostBHD
+			log.Printf("📊 PO item %s: using ProductMaster StandardCost (%.3f BHD)", orderItem.ProductCode, unitBHD)
+		} else {
+			log.Printf("⚠️ PO item %s: no costing data — using 70%% sell price estimate (%.3f BHD)", orderItem.ProductCode, unitBHD)
+		}
+
 		poItem := PurchaseOrderItem{
 			OrderItemID:      orderItem.ID,
 			ProductID:        orderItem.ProductID,
 			ProductCode:      orderItem.ProductCode,
 			Description:      orderItem.Description,
 			Quantity:         orderItem.Quantity,
-			UnitPriceForeign: orderItem.UnitPrice * 0.7, // Estimate: assume 30% margin (cost = 70% of sell price)
-			UnitPriceBHD:     orderItem.UnitPrice * 0.7,
-			TotalForeign:     orderItem.Quantity * orderItem.UnitPrice * 0.7,
-			TotalBHD:         orderItem.Quantity * orderItem.UnitPrice * 0.7,
+			UnitPriceForeign: unitForeign,
+			UnitPriceBHD:     unitBHD,
+			TotalForeign:     orderItem.Quantity * unitForeign,
+			TotalBHD:         orderItem.Quantity * unitBHD,
 			QuantityReceived: 0,
-		}
-
-		// Try to get actual cost from ProductMaster
-		if err := a.db.First(&product, "id = ?", orderItem.ProductID).Error; err == nil {
-			if product.StandardCostBHD > 0 {
-				poItem.UnitPriceForeign = product.StandardCostBHD
-				poItem.UnitPriceBHD = product.StandardCostBHD
-				poItem.TotalForeign = poItem.Quantity * product.StandardCostBHD
-				poItem.TotalBHD = poItem.Quantity * product.StandardCostBHD
-			}
 		}
 
 		po.Items = append(po.Items, poItem)
@@ -649,6 +730,9 @@ func (a *App) CreatePOFromOrder(orderID string, supplierID string, itemIDs []str
 	po.VATAmount = subtotal * 0.10
 	po.TotalForeign = subtotal + po.VATAmount
 	po.TotalBHD = subtotal + po.VATAmount
+
+	// P1 FIX: Set CreatedBy for segregation-of-duties check in ApprovePurchaseOrder
+	po.CreatedBy = a.getCurrentUserID()
 
 	// Create the PO
 	createdPO, err := a.CreatePurchaseOrder(po)
@@ -712,7 +796,7 @@ type POAmendment struct {
 
 // AmendPurchaseOrder creates an amendment record and optionally requires re-approval
 func (a *App) AmendPurchaseOrder(poID string, amendments POAmendment) error {
-	if err := a.requirePermission("purchase_orders:update"); err != nil {
+	if err := a.requirePermission("po:update"); err != nil {
 		return err
 	}
 	if a.db == nil {
@@ -725,8 +809,12 @@ func (a *App) AmendPurchaseOrder(poID string, amendments POAmendment) error {
 		return newError("PO_NOT_FOUND", "Purchase order not found", err.Error())
 	}
 
-	// Calculate value change to determine if re-approval needed
-	oldTotal := po.TotalBHD
+	// P2 FIX: Only Draft and Pending Approval POs can be amended
+	amendableStatuses := map[string]bool{"Draft": true, "Pending Approval": true}
+	if !amendableStatuses[po.Status] {
+		return newError("PO_INVALID_STATUS",
+			fmt.Sprintf("Cannot amend PO %s: status is '%s' (only Draft or Pending Approval POs can be amended)", po.PONumber, po.Status), "")
+	}
 
 	// Generate amendment number
 	var amendmentCount int64
@@ -735,36 +823,20 @@ func (a *App) AmendPurchaseOrder(poID string, amendments POAmendment) error {
 	amendments.PurchaseOrderID = poID
 	amendments.AmendedAt = time.Now()
 
-	// P2 FIX: Check if amendment requires re-approval (>10% value change)
-	// This will be set by the caller based on the new PO values
-	// For now, we'll check after update if total changed significantly
-
 	// Create amendment record (store in a dedicated table via raw SQL for now)
 	// In production, add POAmendment to database.go models
 	log.Printf("📝 PO Amendment #%d created for %s by %s: %s (Reason: %s)",
 		amendments.AmendmentNumber, po.PONumber, amendments.AmendedBy, amendments.ChangeType, amendments.Reason)
 
-	// P2 FIX: If value change > 10%, require re-approval
-	if amendments.RequiresReapproval {
-		// Reset approval status
-		updates := map[string]interface{}{
-			"status":      "Pending Approval",
-			"approved_by": nil,
-			"approved_at": nil,
-		}
-		if err := a.db.Model(&po).Updates(updates).Error; err != nil {
-			return newError("DB_UPDATE_FAILED", "Failed to reset PO approval status", err.Error())
-		}
-		log.Printf("⚠️ PO %s requires re-approval due to significant amendment (>10%% value change from %.2f BHD to new total)",
-			po.PONumber, oldTotal)
-	}
+	// NOTE: Amendment persistence deferred — po_amendments table not yet created
+	// When implemented, persist the amendment record and evaluate re-approval based on value change
 
 	return nil
 }
 
 // GetPOAmendmentHistory retrieves all amendments for a purchase order
 func (a *App) GetPOAmendmentHistory(poID string) ([]POAmendment, error) {
-	if err := a.requirePermission("purchase_orders:view"); err != nil {
+	if err := a.requirePermission("po:view"); err != nil {
 		return nil, err
 	}
 	if a.db == nil {

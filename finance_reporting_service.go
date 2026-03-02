@@ -45,6 +45,9 @@ type PaymentAgingReport struct {
 
 // GetPaymentAgingReport generates AR aging report with customer-level breakdown
 func (a *App) GetPaymentAgingReport() (PaymentAgingReport, error) {
+	if err := a.requirePermission("finance:view"); err != nil {
+		return PaymentAgingReport{}, err
+	}
 	if a.db == nil {
 		return PaymentAgingReport{}, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
@@ -54,9 +57,10 @@ func (a *App) GetPaymentAgingReport() (PaymentAgingReport, error) {
 		CustomerBuckets: []PaymentAgingBucket{},
 	}
 
-	// Get all unpaid invoices with customer details
+	// Get only collectible unpaid invoices (exclude terminal/non-collectible statuses)
 	var invoices []Invoice
-	if err := a.db.Where("status != ?", "Paid").Find(&invoices).Error; err != nil {
+	collectibleStatuses := []string{"Sent", "Overdue", "PartiallyPaid"}
+	if err := a.db.Where("status IN ?", collectibleStatuses).Find(&invoices).Error; err != nil {
 		return report, newError("DB_QUERY_FAILED", "Failed to retrieve invoices", err.Error())
 	}
 
@@ -162,8 +166,19 @@ type CashFlowProjection struct {
 
 // GetCashFlowProjection generates cash flow forecast based on due dates and payment history
 func (a *App) GetCashFlowProjection(days int) (CashFlowProjection, error) {
+	if err := a.requirePermission("finance:view"); err != nil {
+		return CashFlowProjection{}, err
+	}
 	if a.db == nil {
 		return CashFlowProjection{}, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	// Clamp days to a reasonable range to prevent memory exhaustion
+	if days < 1 {
+		days = 30
+	}
+	if days > 365 {
+		days = 365
 	}
 
 	now := time.Now()
@@ -200,8 +215,10 @@ func (a *App) GetCashFlowProjection(days int) (CashFlowProjection, error) {
 	}
 
 	// 1. Project INFLOWS from customer invoices (based on due dates + payment history)
+	// Only include collectible statuses — exclude Cancelled, Void, Proforma, Draft
+	collectibleStatuses := []string{"Sent", "Overdue", "PartiallyPaid"}
 	var unpaidInvoices []Invoice
-	if err := a.db.Where("status != ? AND due_date BETWEEN ? AND ?", "Paid", now, endDate).
+	if err := a.db.Where("status IN ? AND due_date BETWEEN ? AND ?", collectibleStatuses, now, endDate).
 		Find(&unpaidInvoices).Error; err != nil {
 		return projection, newError("DB_QUERY_FAILED", "Failed to retrieve invoices", err.Error())
 	}
@@ -291,6 +308,9 @@ type MarginAnalysisByProduct struct {
 
 // GetMarginAnalysisByCustomer returns profitability per customer
 func (a *App) GetMarginAnalysisByCustomer() ([]MarginAnalysisByCustomer, error) {
+	if err := a.requirePermission("finance:view"); err != nil {
+		return nil, err
+	}
 	if a.db == nil {
 		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
@@ -341,6 +361,9 @@ func (a *App) GetMarginAnalysisByCustomer() ([]MarginAnalysisByCustomer, error) 
 
 // GetMarginAnalysisByProduct returns profitability per product category
 func (a *App) GetMarginAnalysisByProduct() ([]MarginAnalysisByProduct, error) {
+	if err := a.requirePermission("finance:view"); err != nil {
+		return nil, err
+	}
 	if a.db == nil {
 		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
@@ -416,6 +439,9 @@ type VATReconciliation struct {
 
 // GetVATReconciliation calculates VAT payable/receivable for a date range
 func (a *App) GetVATReconciliation(startDateStr, endDateStr string) (VATReconciliation, error) {
+	if err := a.requirePermission("finance:view"); err != nil {
+		return VATReconciliation{}, err
+	}
 	if a.db == nil {
 		return VATReconciliation{}, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
@@ -437,8 +463,10 @@ func (a *App) GetVATReconciliation(startDateStr, endDateStr string) (VATReconcil
 	}
 
 	// 1. Sum OUTPUT VAT from customer invoices (VAT collected)
+	// Exclude Cancelled, Void, Proforma, Draft — only real invoices count for VAT
+	excludedStatuses := []string{"Cancelled", "Void", "Proforma", "Draft"}
 	var customerInvoices []Invoice
-	if err := a.db.Where("invoice_date BETWEEN ? AND ?", startDate, endDate).
+	if err := a.db.Where("invoice_date BETWEEN ? AND ? AND status NOT IN ?", startDate, endDate, excludedStatuses).
 		Find(&customerInvoices).Error; err != nil {
 		return reconciliation, newError("DB_QUERY_FAILED", "Failed to retrieve customer invoices", err.Error())
 	}
@@ -449,8 +477,10 @@ func (a *App) GetVATReconciliation(startDateStr, endDateStr string) (VATReconcil
 	reconciliation.CustomerInvoices = len(customerInvoices)
 
 	// 2. Sum INPUT VAT from supplier invoices (VAT paid)
+	// Exclude Rejected and Dispute statuses — only accepted supplier invoices count for VAT
+	supplierExcludedStatuses := []string{"Rejected", "Dispute"}
 	var supplierInvoices []SupplierInvoice
-	if err := a.db.Where("invoice_date BETWEEN ? AND ?", startDate, endDate).
+	if err := a.db.Where("invoice_date BETWEEN ? AND ? AND (status IS NULL OR status NOT IN ?)", startDate, endDate, supplierExcludedStatuses).
 		Find(&supplierInvoices).Error; err != nil {
 		log.Printf("⚠️ Failed to retrieve supplier invoices: %v", err)
 		// Continue with output VAT only

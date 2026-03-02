@@ -169,6 +169,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         // Core item fields (supplier removed per user request - invoices link to suppliers instead)
         equipment: string;
         model: string;
+        longCode: string;  // Long supplier order/configuration code (e.g. E+H instrumentation codes)
         specification: string;
         // NEW: Wide description field for detailed instrumentation specs (prints under line item)
         detailedDescription: string;
@@ -209,6 +210,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         return {
             equipment: '',
             model: '',
+            longCode: '',  // Long supplier order/configuration code
             specification: '',
             detailedDescription: '', // Wide field for detailed instrumentation specs
             currency: 'BHD',
@@ -293,7 +295,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
 
         // FOB and Freight in BHD
         item.fobBHD = item.fobForeign * item.exchangeRate;
-        item.freightBHD = item.freightForeign * item.exchangeRate;
+        // Freight is always entered in BHD regardless of currency selection
+        item.freightBHD = item.freightForeign;
 
         // C&F = FOB + Freight
         item.cf = item.fobBHD + item.freightBHD;
@@ -317,9 +320,10 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         // Margin Formula: SellPrice = Cost / (1 - Margin/100)
         // This ensures the profit is the desired % of the selling price
         // e.g., 20% margin means: if cost is 80, sell price is 100 (profit = 20 = 20% of 100)
-        if (item.marginPercent >= 100) {
-            // Prevent division by zero or negative
-            item.sellingPrice = item.totalCost * 10; // Cap at 10x cost if margin >= 100%
+        // Clamp margin to valid range (0-99%) to prevent division by zero or negative prices
+        item.marginPercent = Math.min(99, Math.max(0, item.marginPercent));
+        if (item.marginPercent >= 99) {
+            item.sellingPrice = item.totalCost * 100; // Cap at 100x cost if margin = 99%
         } else {
             item.sellingPrice = item.totalCost / (1 - item.marginPercent / 100);
         }
@@ -683,8 +687,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     supplier: '',
                     equipment: item.equipment,
                     model: item.model,
+                    longCode: item.longCode || '',
                     specification: item.specification || '',
-                    // NEW: detailed description for instrumentation specs (prints under line item)
                     detailedDescription: item.detailedDescription || '',
                     currency: item.currency,
                     quantity: item.quantity,
@@ -827,6 +831,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                 sl_no: i + 1,
                 equipment: item.equipment,
                 model: item.model,
+                long_code: item.longCode,
                 specification: item.specification,
                 detailed_description: item.detailedDescription,
                 unit_cost: item.fobBHD,
@@ -1036,119 +1041,79 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             <div class="main-form">
                 <!-- Header Section -->
                 <Card title="Header Information">
-                    <div class="header-grid">
-                        <div class="form-group">
-                            <label>Division</label>
-                            <select bind:value={header.division} class="input">
-                                {#each divisionOptions as div}
-                                    <option value={div}>{div}</option>
-                                {/each}
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Date</label>
-                            <input type="date" bind:value={header.date} class="input" />
-                        </div>
-                        <div class="form-group">
-                            <label>Prepared By</label>
-                            <select bind:value={header.preparedBy} class="input">
-                                <option value="">Select...</option>
-                                {#each staffList as staff}
-                                    <option value={staff.name}>{staff.name} - {staff.title}</option>
-                                {/each}
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Customer *</label>
-                            <select bind:value={header.customerId} on:change={handleCustomerChange} class="input">
-                                <option value="">Select Customer...</option>
-                                {#each customers as c}
-                                    <option value={c.id}>{c.business_name}</option>
-                                {/each}
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Contact Person</label>
-                            <input type="text" bind:value={header.contactPerson} class="input" />
-                        </div>
-                        <div class="form-group">
-                            <label>RFQ Reference</label>
-                            <input type="text" bind:value={header.rfqReference} class="input" placeholder="e.g. TAF 16 - Incinerator" />
-                        </div>
-                        <div class="form-group">
-                            <label>Folder Number</label>
-                            <input type="text" bind:value={header.folderNumber} class="input" placeholder="e.g. 46-25" />
-                        </div>
-                        <div class="form-group">
-                            <label>Costing ID</label>
-                            <input type="text" bind:value={header.costingId} class="input" placeholder="e.g. Offer 46-25 Sulb" />
-                        </div>
+                    <div class="header-grid compact">
+                        <select bind:value={header.division} class="input" title="Division">
+                            {#each divisionOptions as div}
+                                <option value={div}>{div}</option>
+                            {/each}
+                        </select>
+                        <input type="date" bind:value={header.date} class="input" title="Date" />
+                        <select bind:value={header.preparedBy} class="input" title="Prepared By">
+                            <option value="">Prepared By...</option>
+                            {#each staffList as staff}
+                                <option value={staff.name}>{staff.name} - {staff.title}</option>
+                            {/each}
+                        </select>
+                        <select bind:value={header.customerId} on:change={handleCustomerChange} class="input" title="Customer">
+                            <option value="">Customer *</option>
+                            {#each customers as c}
+                                <option value={c.id}>{c.business_name}</option>
+                            {/each}
+                        </select>
+                        <input type="text" bind:value={header.contactPerson} class="input" placeholder="Contact Person" />
+                        <input type="text" bind:value={header.rfqReference} class="input" placeholder="RFQ Reference" />
+                        <input type="text" bind:value={header.folderNumber} class="input" placeholder="Folder No." />
+                        <input type="text" bind:value={header.costingId} class="input" placeholder="Costing ID" />
                     </div>
 
-                    <div class="header-grid">
-                        <div class="form-group">
-                            <label>Est. Delivery</label>
-                            <select bind:value={header.estDelivery} class="input">
-                                {#each deliveryOptions as opt}
-                                    <option value={opt}>{opt}</option>
-                                {/each}
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Delivery Terms</label>
-                            <select bind:value={header.deliveryTerms} class="input">
-                                {#each deliveryTermsOptions as opt}
-                                    <option value={opt}>{opt}</option>
-                                {/each}
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Payment Terms</label>
-                            <select bind:value={header.paymentTerms} class="input">
-                                {#each paymentTermsOptions as opt}
-                                    <option value={opt}>{opt}</option>
-                                {/each}
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Order Type</label>
-                            <select bind:value={header.orderType} class="input">
-                                {#each orderTypeOptions as opt}
-                                    <option value={opt}>{opt}</option>
-                                {/each}
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Country of Origin</label>
-                            <select bind:value={header.countryOfOrigin} class="input">
-                                {#each countryOptions as opt}
-                                    <option value={opt.code}>{opt.code} - {opt.name}</option>
-                                {/each}
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>COC / COO</label>
-                            <select bind:value={header.cocCoo} class="input">
-                                {#each certificateOptions as opt}
-                                    <option value={opt}>{opt}</option>
-                                {/each}
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Test Certificate</label>
-                            <select bind:value={header.testCertificate} class="input">
-                                {#each certificateOptions as opt}
-                                    <option value={opt}>{opt}</option>
-                                {/each}
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Installation</label>
-                            <select bind:value={header.installation} class="input">
-                                <option value="Yes">Yes</option>
-                                <option value="No">No</option>
-                            </select>
-                        </div>
+                    <div class="header-grid compact">
+                        <select bind:value={header.estDelivery} class="input" title="Est. Delivery">
+                            <option value="" disabled>Est. Delivery</option>
+                            {#each deliveryOptions as opt}
+                                <option value={opt}>{opt}</option>
+                            {/each}
+                        </select>
+                        <select bind:value={header.deliveryTerms} class="input" title="Delivery Terms">
+                            <option value="" disabled>Delivery Terms</option>
+                            {#each deliveryTermsOptions as opt}
+                                <option value={opt}>{opt}</option>
+                            {/each}
+                        </select>
+                        <select bind:value={header.paymentTerms} class="input" title="Payment Terms">
+                            <option value="" disabled>Payment Terms</option>
+                            {#each paymentTermsOptions as opt}
+                                <option value={opt}>{opt}</option>
+                            {/each}
+                        </select>
+                        <select bind:value={header.orderType} class="input" title="Order Type">
+                            <option value="" disabled>Order Type</option>
+                            {#each orderTypeOptions as opt}
+                                <option value={opt}>{opt}</option>
+                            {/each}
+                        </select>
+                        <select bind:value={header.countryOfOrigin} class="input" title="Country of Origin">
+                            <option value="" disabled>Country of Origin</option>
+                            {#each countryOptions as opt}
+                                <option value={opt.code}>{opt.code} - {opt.name}</option>
+                            {/each}
+                        </select>
+                        <select bind:value={header.cocCoo} class="input" title="COC / COO">
+                            <option value="" disabled>COC / COO</option>
+                            {#each certificateOptions as opt}
+                                <option value={opt}>{opt}</option>
+                            {/each}
+                        </select>
+                        <select bind:value={header.testCertificate} class="input" title="Test Certificate">
+                            <option value="" disabled>Test Certificate</option>
+                            {#each certificateOptions as opt}
+                                <option value={opt}>{opt}</option>
+                            {/each}
+                        </select>
+                        <select bind:value={header.installation} class="input" title="Installation">
+                            <option value="" disabled>Installation</option>
+                            <option value="Yes">Yes</option>
+                            <option value="No">No</option>
+                        </select>
                     </div>
                 </Card>
 
@@ -1160,7 +1125,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         <span>Qty</span>
                         <span>Currency</span>
                         <span>Unit Price</span>
-                        <span>Freight</span>
+                        <span title="Always in BHD">Freight (BHD)</span>
+                        <span title="Internal bookkeeping only">Misc Cost</span>
                         <span>Sell Price</span>
                         <span>Total</span>
                         <span></span>
@@ -1178,7 +1144,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 {/each}
                             </select>
                             <input type="number" bind:value={item.fobForeign} class="input-sm money" step="0.001" on:change={calculateAll} placeholder="0.000" />
-                            <input type="number" bind:value={item.freightForeign} class="input-sm money" step="0.001" on:change={calculateAll} placeholder="0.000" />
+                            <input type="number" bind:value={item.freightForeign} class="input-sm money" step="0.001" min="0" on:change={calculateAll} placeholder="0.000" />
+                            <input type="number" bind:value={item.otherCosts} class="input-sm money" step="0.001" min="0" on:change={calculateAll} placeholder="0.000" title="Miscellaneous costs (internal bookkeeping)" />
                             <!-- User selling price (can override suggested) -->
                             <input
                                 type="number"
@@ -1194,13 +1161,24 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             <button class="btn-remove" on:click={() => removeLineItem(i)}>×</button>
                         </div>
 
+                        <!-- Order Code - full width input for long supplier order/configuration codes -->
+                        <div class="long-code-row">
+                            <span class="long-code-label">Long Code:</span>
+                            <input
+                                type="text"
+                                bind:value={item.longCode}
+                                class="long-code-input"
+                                placeholder="e.g. FMU90-R11CA131AA3A  /  71452626+Z1C5+Z1E3+Z1F1+Z1G1..."
+                            />
+                        </div>
+
                         <!-- Wide Detailed Description Field - for instrumentation specifications -->
                         <div class="detailed-description-row">
                             <textarea
                                 bind:value={item.detailedDescription}
                                 class="detailed-description-input"
-                                rows="3"
-                                placeholder="Enter detailed specifications, configuration codes, approvals, delivery info, HS codes, country of origin...&#10;(This will print under the line item in the PDF)"
+                                rows="2"
+                                placeholder="Detailed specs, approvals, HS codes, country of origin... (prints under line item in PDF)"
                             ></textarea>
                         </div>
 
@@ -1413,6 +1391,12 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         margin-bottom: 16px;
     }
 
+    .header-grid.compact {
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px 12px;
+        margin-bottom: 12px;
+    }
+
     .form-group {
         display: flex;
         flex-direction: column;
@@ -1489,8 +1473,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     /* Line Items */
     .line-items-header {
         display: grid;
-        /* Equipment | Model | Qty | Currency | Unit Price | Freight | Sell Price | Total | Remove */
-        grid-template-columns: 1.5fr 120px 55px 70px 90px 80px 100px 110px 30px;
+        /* Equipment | Model | Qty | Currency | Unit Price | Freight | Misc Cost | Sell Price | Total | Remove */
+        grid-template-columns: 2fr 130px 45px 60px 80px 70px 70px 85px 90px 28px;
         gap: 8px;
         padding: 8px 10px;
         font-size: 10px;
@@ -1505,8 +1489,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
 
     .line-item-row {
         display: grid;
-        /* Equipment | Model | Qty | Currency | Unit Price | Freight | Sell Price | Total | Remove */
-        grid-template-columns: 1.5fr 120px 55px 70px 90px 80px 100px 110px 30px;
+        /* Equipment | Model | Qty | Currency | Unit Price | Freight | Misc Cost | Sell Price | Total | Remove */
+        grid-template-columns: 2fr 130px 45px 60px 80px 70px 70px 85px 90px 28px;
         gap: 8px;
         padding: 6px 10px;
         align-items: center;
@@ -1515,9 +1499,49 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         margin-bottom: 4px;
     }
 
+    /* Order code row - full width for long supplier configuration codes */
+    .long-code-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 10px 4px 10px;
+    }
+
+    .long-code-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        white-space: nowrap;
+        min-width: 80px;
+    }
+
+    .long-code-input {
+        flex: 1;
+        padding: 5px 10px;
+        border: 1px solid var(--border);
+        border-radius: var(--border-radius-sm);
+        font-size: 12px;
+        font-family: 'SF Mono', 'Fira Code', monospace;
+        background: var(--bg-base);
+        letter-spacing: 0.02em;
+    }
+
+    .long-code-input:focus {
+        outline: none;
+        border-color: var(--brand-indigo);
+        box-shadow: 0 0 0 2px var(--brand-indigo-tint);
+    }
+
+    .long-code-input::placeholder {
+        font-family: inherit;
+        opacity: 0.4;
+    }
+
     /* Wide detailed description field for instrumentation specs */
     .detailed-description-row {
-        padding: 0 10px 12px 10px;
+        padding: 0 10px 8px 10px;
         margin-bottom: 8px;
         border-bottom: 1px solid var(--border);
     }

@@ -34,7 +34,9 @@ func (b *BatchOperations) BatchCreateInvoiceItems(items []DBInvoiceItem) error {
 	if len(items) == 0 {
 		return nil
 	}
-
+	if len(items) > maxBatchSize {
+		return fmt.Errorf("batch create size %d exceeds maximum of %d", len(items), maxBatchSize)
+	}
 	return b.db.CreateInBatches(&items, b.batchSize).Error
 }
 
@@ -43,7 +45,9 @@ func (b *BatchOperations) BatchCreateOfferItems(items []OfferItem) error {
 	if len(items) == 0 {
 		return nil
 	}
-
+	if len(items) > maxBatchSize {
+		return fmt.Errorf("batch create size %d exceeds maximum of %d", len(items), maxBatchSize)
+	}
 	return b.db.CreateInBatches(&items, b.batchSize).Error
 }
 
@@ -52,7 +56,9 @@ func (b *BatchOperations) BatchCreateOrderItems(items []OrderItem) error {
 	if len(items) == 0 {
 		return nil
 	}
-
+	if len(items) > maxBatchSize {
+		return fmt.Errorf("batch create size %d exceeds maximum of %d", len(items), maxBatchSize)
+	}
 	return b.db.CreateInBatches(&items, b.batchSize).Error
 }
 
@@ -61,7 +67,9 @@ func (b *BatchOperations) BatchCreatePOItems(items []PurchaseOrderItem) error {
 	if len(items) == 0 {
 		return nil
 	}
-
+	if len(items) > maxBatchSize {
+		return fmt.Errorf("batch create size %d exceeds maximum of %d", len(items), maxBatchSize)
+	}
 	return b.db.CreateInBatches(&items, b.batchSize).Error
 }
 
@@ -70,7 +78,9 @@ func (b *BatchOperations) BatchCreateGRNItems(items []GRNItem) error {
 	if len(items) == 0 {
 		return nil
 	}
-
+	if len(items) > maxBatchSize {
+		return fmt.Errorf("batch create size %d exceeds maximum of %d", len(items), maxBatchSize)
+	}
 	return b.db.CreateInBatches(&items, b.batchSize).Error
 }
 
@@ -79,7 +89,9 @@ func (b *BatchOperations) BatchCreateDeliveryNoteItems(items []DeliveryNoteItem)
 	if len(items) == 0 {
 		return nil
 	}
-
+	if len(items) > maxBatchSize {
+		return fmt.Errorf("batch create size %d exceeds maximum of %d", len(items), maxBatchSize)
+	}
 	return b.db.CreateInBatches(&items, b.batchSize).Error
 }
 
@@ -88,7 +100,9 @@ func (b *BatchOperations) BatchCreateCustomers(customers []CustomerMaster) error
 	if len(customers) == 0 {
 		return nil
 	}
-
+	if len(customers) > maxBatchSize {
+		return fmt.Errorf("batch create size %d exceeds maximum of %d", len(customers), maxBatchSize)
+	}
 	return b.db.CreateInBatches(&customers, b.batchSize).Error
 }
 
@@ -97,7 +111,9 @@ func (b *BatchOperations) BatchCreateSuppliers(suppliers []SupplierMaster) error
 	if len(suppliers) == 0 {
 		return nil
 	}
-
+	if len(suppliers) > maxBatchSize {
+		return fmt.Errorf("batch create size %d exceeds maximum of %d", len(suppliers), maxBatchSize)
+	}
 	return b.db.CreateInBatches(&suppliers, b.batchSize).Error
 }
 
@@ -106,9 +122,14 @@ func (b *BatchOperations) BatchCreateProducts(products []ProductMaster) error {
 	if len(products) == 0 {
 		return nil
 	}
-
+	if len(products) > maxBatchSize {
+		return fmt.Errorf("batch create size %d exceeds maximum of %d", len(products), maxBatchSize)
+	}
 	return b.db.CreateInBatches(&products, b.batchSize).Error
 }
+
+// maxBatchSize is the safety cap for batch operations to prevent unbounded mass-mutations
+const maxBatchSize = 500
 
 // --- Batch Update Operations ---
 
@@ -116,6 +137,9 @@ func (b *BatchOperations) BatchCreateProducts(products []ProductMaster) error {
 func (b *BatchOperations) BatchUpdateOrderStatus(orderIDs []string, status string) error {
 	if len(orderIDs) == 0 {
 		return nil
+	}
+	if len(orderIDs) > maxBatchSize {
+		return fmt.Errorf("batch size %d exceeds maximum of %d", len(orderIDs), maxBatchSize)
 	}
 
 	return b.db.Model(&Order{}).
@@ -128,6 +152,9 @@ func (b *BatchOperations) BatchUpdateInvoiceStatus(invoiceIDs []string, status s
 	if len(invoiceIDs) == 0 {
 		return nil
 	}
+	if len(invoiceIDs) > maxBatchSize {
+		return fmt.Errorf("batch size %d exceeds maximum of %d", len(invoiceIDs), maxBatchSize)
+	}
 
 	return b.db.Model(&Invoice{}).
 		Where("id IN ?", invoiceIDs).
@@ -139,6 +166,9 @@ func (b *BatchOperations) BatchUpdateCustomerGrade(customerIDs []string, grade s
 	if len(customerIDs) == 0 {
 		return nil
 	}
+	if len(customerIDs) > maxBatchSize {
+		return fmt.Errorf("batch size %d exceeds maximum of %d", len(customerIDs), maxBatchSize)
+	}
 
 	return b.db.Model(&CustomerMaster{}).
 		Where("id IN ?", customerIDs).
@@ -149,6 +179,9 @@ func (b *BatchOperations) BatchUpdateCustomerGrade(customerIDs []string, grade s
 func (b *BatchOperations) BatchUpdateSupplierRating(supplierIDs []string, rating int) error {
 	if len(supplierIDs) == 0 {
 		return nil
+	}
+	if len(supplierIDs) > maxBatchSize {
+		return fmt.Errorf("batch size %d exceeds maximum of %d", len(supplierIDs), maxBatchSize)
 	}
 
 	return b.db.Model(&SupplierMaster{}).
@@ -163,11 +196,9 @@ func (b *BatchOperations) BatchDeleteOrders(orderIDs []string) error {
 	if len(orderIDs) == 0 {
 		return nil
 	}
-
-	if len(orderIDs) > 500 {
-		return fmt.Errorf("batch delete size %d exceeds maximum of 500", len(orderIDs))
+	if len(orderIDs) > maxBatchSize {
+		return fmt.Errorf("batch delete size %d exceeds maximum of %d", len(orderIDs), maxBatchSize)
 	}
-
 	return b.db.Where("id IN ?", orderIDs).Delete(&Order{}).Error
 }
 
@@ -176,11 +207,9 @@ func (b *BatchOperations) BatchDeleteInvoices(invoiceIDs []string) error {
 	if len(invoiceIDs) == 0 {
 		return nil
 	}
-
-	if len(invoiceIDs) > 500 {
-		return fmt.Errorf("batch delete size %d exceeds maximum of 500", len(invoiceIDs))
+	if len(invoiceIDs) > maxBatchSize {
+		return fmt.Errorf("batch delete size %d exceeds maximum of %d", len(invoiceIDs), maxBatchSize)
 	}
-
 	return b.db.Where("id IN ?", invoiceIDs).Delete(&Invoice{}).Error
 }
 
@@ -192,8 +221,8 @@ func (a *App) BatchCreateInvoiceItems(items []DBInvoiceItem) error {
 		return err
 	}
 
-	if len(items) > 500 {
-		return fmt.Errorf("batch size %d exceeds maximum of 500 items", len(items))
+	if len(items) > maxBatchSize {
+		return fmt.Errorf("batch size %d exceeds maximum of %d items", len(items), maxBatchSize)
 	}
 
 	batch := NewBatchOperations(a.db)
@@ -215,8 +244,8 @@ func (a *App) BatchUpdateOrderStatus(orderIDs []string, status string) error {
 		return err
 	}
 
-	if len(orderIDs) > 500 {
-		return fmt.Errorf("batch size %d exceeds maximum of 500 items", len(orderIDs))
+	if len(orderIDs) > maxBatchSize {
+		return fmt.Errorf("batch size %d exceeds maximum of %d items", len(orderIDs), maxBatchSize)
 	}
 
 	batch := NewBatchOperations(a.db)
@@ -238,8 +267,8 @@ func (a *App) BatchUpdateCustomerGrade(customerIDs []string, grade string) error
 		return err
 	}
 
-	if len(customerIDs) > 500 {
-		return fmt.Errorf("batch size %d exceeds maximum of 500 items", len(customerIDs))
+	if len(customerIDs) > maxBatchSize {
+		return fmt.Errorf("batch size %d exceeds maximum of %d items", len(customerIDs), maxBatchSize)
 	}
 
 	batch := NewBatchOperations(a.db)

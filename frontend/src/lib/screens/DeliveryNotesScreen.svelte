@@ -5,14 +5,18 @@
     GetDeliveryNotes,
     GetDeliveryNoteByID,
     CreateDeliveryNote,
+    CreateDeliveryNoteWithItems,
     UpdateDeliveryNote,
     DeleteDeliveryNote,
     DispatchDeliveryNote,
     ConfirmDeliveryNote,
     GetDeliveryNotesByOrder,
+    GetOrderFulfillmentDetail,
     GenerateDNNumber,
     ListOrders,
-    ListCustomers
+    ListCustomers,
+    CreateDNWithSerials,
+    GetAvailableSerials,
   } from '../../../wailsjs/go/main/App';
   import { toast } from '$lib/stores/toasts';
   import { pendingDNCreate } from '$lib/stores/navigation';
@@ -86,6 +90,10 @@
   // Helper data
   let customers: any[] = [];
   let orders: main.Order[] = [];
+
+  // Order fulfillment items for DN creation (E1 enhancement)
+  let fulfillmentItems: any[] = []; // Items with ship_qty for the create modal
+  let loadingFulfillment = false;
 
   // Detail modal
   let showDetailModal = false;
@@ -282,7 +290,7 @@
     showModal = true;
   }
 
-  // Handle form submit
+  // Handle form submit - E1 enhanced with per-item quantities
   async function handleSubmit() {
     // Validation
     if (!formData.dnNumber.trim()) {
@@ -302,40 +310,96 @@
 
     saving = true;
     try {
-      // Use 'any' type to avoid Wails model interface requirements
-      const noteData: any = {
-        id: editingNote?.id || '',
-        dn_number: formData.dnNumber,
-        order_id: formData.orderId,
-        customer_id: formData.customerId,
-        delivery_date: new Date(formData.deliveryDate),
-        delivery_address: formData.deliveryAddress,
-        contact_person: formData.contactPerson,
-        contact_phone: formData.contactPhone,
-        driver_name: formData.driverName,
-        vehicle_number: formData.vehicleNumber,
-        transport_method: formData.transportMethod,
-        status: formData.status,
-        is_partial_delivery: formData.isPartialDelivery,
-        delivery_sequence: formData.deliverySequence,
-        total_deliveries: formData.totalDeliveries,
-        created_at: editingNote?.created_at || new Date(),
-        updated_at: new Date(),
-        version: editingNote?.version || 0,
-        created_by: editingNote?.created_by || '',
-        signed_by: editingNote?.signed_by || '',
-        signature_image: editingNote?.signature_image || ''
-      };
+      if (modalMode === 'create' && fulfillmentItems.length > 0) {
+        // E1: Use new CreateDeliveryNoteWithItems for per-item ship quantities
+        const itemsToShip = fulfillmentItems
+          .filter((item: any) => item.ship_qty > 0)
+          .map((item: any) => ({
+            order_item_id: item.order_item_id,
+            ship_qty: item.ship_qty
+          }));
 
-      if (modalMode === 'create') {
-        await CreateDeliveryNote(noteData);
-        toast.success('Delivery Note created successfully');
+        if (itemsToShip.length === 0) {
+          toast.warning('At least one item must have a ship quantity > 0');
+          saving = false;
+          return;
+        }
+
+        // Validate quantities
+        for (const item of fulfillmentItems) {
+          if (item.ship_qty > item.remaining_qty + 0.001) {
+            toast.warning(`Ship quantity for ${item.product_code} exceeds remaining (${item.remaining_qty})`);
+            saving = false;
+            return;
+          }
+        }
+
+        // Phase 23: Check if any items have serial allocations
+        const hasSerials = fulfillmentItems.some(
+          (item: any) => item.requires_serial && item.selected_serials?.length > 0
+        );
+
+        if (hasSerials) {
+          // Validate serial counts match ship qty
+          for (const item of fulfillmentItems) {
+            if (item.requires_serial && item.ship_qty > 0) {
+              if ((item.selected_serials?.length || 0) !== item.ship_qty) {
+                toast.warning(`Select ${item.ship_qty} serial(s) for ${item.product_code} (${item.selected_serials?.length || 0} selected)`);
+                saving = false;
+                return;
+              }
+            }
+          }
+
+          const serialItems = fulfillmentItems
+            .filter((item: any) => item.ship_qty > 0)
+            .map((item: any) => ({
+              order_item_id: item.order_item_id,
+              ship_qty: item.ship_qty,
+              serial_nos: item.selected_serials || []
+            }));
+          await CreateDNWithSerials(formData.orderId, serialItems);
+        } else {
+          await CreateDeliveryNoteWithItems(formData.orderId, itemsToShip);
+        }
+        toast.success('Delivery Note created with item quantities');
       } else {
-        await UpdateDeliveryNote(noteData);
-        toast.success('Delivery Note updated successfully');
+        // Fallback: Original create/edit behavior
+        const noteData: any = {
+          id: editingNote?.id || '',
+          dn_number: formData.dnNumber,
+          order_id: formData.orderId,
+          customer_id: formData.customerId,
+          delivery_date: new Date(formData.deliveryDate),
+          delivery_address: formData.deliveryAddress,
+          contact_person: formData.contactPerson,
+          contact_phone: formData.contactPhone,
+          driver_name: formData.driverName,
+          vehicle_number: formData.vehicleNumber,
+          transport_method: formData.transportMethod,
+          status: formData.status,
+          is_partial_delivery: formData.isPartialDelivery,
+          delivery_sequence: formData.deliverySequence,
+          total_deliveries: formData.totalDeliveries,
+          created_at: editingNote?.created_at || new Date(),
+          updated_at: new Date(),
+          version: editingNote?.version || 0,
+          created_by: editingNote?.created_by || '',
+          signed_by: editingNote?.signed_by || '',
+          signature_image: editingNote?.signature_image || ''
+        };
+
+        if (modalMode === 'create') {
+          await CreateDeliveryNote(noteData);
+          toast.success('Delivery Note created successfully');
+        } else {
+          await UpdateDeliveryNote(noteData);
+          toast.success('Delivery Note updated successfully');
+        }
       }
 
       showModal = false;
+      fulfillmentItems = [];
       await loadDeliveryNotes();
     } catch (err) {
       console.error('Save failed:', err);
@@ -423,9 +487,10 @@
     return 'Full';
   }
 
-  // Handle order selection
+  // Handle order selection - E1 enhanced with fulfillment detail
   async function handleOrderChange(orderId: string) {
     formData.orderId = orderId;
+    fulfillmentItems = [];
 
     const order = orders.find(o => o.id === orderId);
     if (order) {
@@ -433,11 +498,54 @@
       formData.customerId = order.customer_id || '';
       formData.customerName = order.customer_name || '';
 
+      // Load fulfillment detail for per-item ship quantities
+      loadingFulfillment = true;
+      try {
+        const fulfillment = await GetOrderFulfillmentDetail(orderId);
+        if (fulfillment && fulfillment.items) {
+          fulfillmentItems = fulfillment.items
+            .filter((item: any) => item.remaining_qty > 0.001)
+            .map((item: any) => ({
+              order_item_id: item.order_item_id,
+              product_id: item.product_id || '',
+              product_code: item.product_code,
+              description: item.description,
+              ordered_qty: item.ordered_qty,
+              shipped_qty: item.shipped_qty || 0,
+              delivered_qty: item.delivered_qty || 0,
+              remaining_qty: item.remaining_qty,
+              ship_qty: item.remaining_qty, // Default to remaining
+              // Phase 23: Serial tracking
+              requires_serial: item.requires_serial_tracking || false,
+              available_serials: [] as any[],
+              selected_serials: [] as string[],
+            }));
+          // Phase 23: Load available serials for serialized items
+          for (const item of fulfillmentItems) {
+            if (item.requires_serial && item.product_id) {
+              try {
+                const serials = await GetAvailableSerials(item.product_id);
+                item.available_serials = serials || [];
+              } catch (e) {
+                console.warn('Failed to load serials for', item.product_code, e);
+              }
+            }
+          }
+        }
+
+        if (fulfillmentItems.length === 0 && fulfillment?.items?.length > 0) {
+          toast.info('All items have been fully shipped for this order');
+        }
+      } catch (err) {
+        console.error('Failed to load fulfillment detail:', err);
+        // Fallback: still allow DN creation without item detail
+      }
+      loadingFulfillment = false;
+
       // Check if there are existing delivery notes for this order
       try {
         const existingNotes = await GetDeliveryNotesByOrder(orderId);
         if (existingNotes && existingNotes.length > 0) {
-          // This is a partial delivery
           formData.isPartialDelivery = true;
           formData.deliverySequence = existingNotes.length + 1;
           formData.totalDeliveries = existingNotes[0].total_deliveries || existingNotes.length + 1;
@@ -636,6 +744,97 @@
           {/each}
         </select>
       </FormGroup>
+
+      <!-- E1: Order Items with Ship Quantities -->
+      {#if modalMode === 'create' && formData.orderId}
+        <div class="fulfillment-section">
+          <h4 class="section-title">Items to Ship</h4>
+          {#if loadingFulfillment}
+            <div class="loading-container" style="padding: 16px;">
+              <WabiSpinner size="sm" />
+              <span style="margin-left: 8px; font-size: 13px; color: var(--text-secondary);">Loading order items...</span>
+            </div>
+          {:else if fulfillmentItems.length > 0}
+            <table class="fulfillment-table">
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th>Description</th>
+                  <th class="number-col">Ordered</th>
+                  <th class="number-col">Already Shipped</th>
+                  <th class="number-col">Remaining</th>
+                  <th class="number-col">Ship Qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each fulfillmentItems as item, i}
+                  <tr>
+                    <td class="product-code">{item.product_code || '-'}</td>
+                    <td class="description-cell">{item.description || '-'}</td>
+                    <td class="number-col">{item.ordered_qty}</td>
+                    <td class="number-col">{item.delivered_qty}</td>
+                    <td class="number-col">{item.remaining_qty}</td>
+                    <td class="number-col">
+                      <input
+                        type="number"
+                        bind:value={fulfillmentItems[i].ship_qty}
+                        min="0"
+                        max={item.remaining_qty}
+                        step="0.01"
+                        class="ship-qty-input"
+                      />
+                    </td>
+                  </tr>
+                  {#if item.requires_serial && item.ship_qty > 0}
+                    <tr class="serial-picker-row">
+                      <td colspan="6" style="padding: 4px 8px 8px 24px;">
+                        <div class="dn-serial-section">
+                          <div class="dn-serial-label">
+                            <span class="dn-serial-badge">Serialized</span>
+                            Select {item.ship_qty} serial number(s) — {item.selected_serials?.length || 0} selected
+                          </div>
+                          {#if item.available_serials && item.available_serials.length > 0}
+                            <div class="dn-serial-list">
+                              {#each item.available_serials as serial}
+                                <label class="dn-serial-option">
+                                  <input
+                                    type="checkbox"
+                                    checked={item.selected_serials?.includes(serial.serial_no)}
+                                    on:change={(e) => {
+                                      if (!item.selected_serials) item.selected_serials = [];
+                                      if (e.currentTarget.checked) {
+                                        if (item.selected_serials.length < item.ship_qty) {
+                                          item.selected_serials = [...item.selected_serials, serial.serial_no];
+                                          fulfillmentItems = fulfillmentItems;
+                                        } else {
+                                          e.currentTarget.checked = false;
+                                          toast.warning(`Max ${item.ship_qty} serials for ${item.product_code}`);
+                                        }
+                                      } else {
+                                        item.selected_serials = item.selected_serials.filter(s => s !== serial.serial_no);
+                                        fulfillmentItems = fulfillmentItems;
+                                      }
+                                    }}
+                                  />
+                                  <span class="dn-serial-no">{serial.serial_no}</span>
+                                </label>
+                              {/each}
+                            </div>
+                          {:else}
+                            <p class="dn-serial-empty">No available serials in inventory for {item.product_code}</p>
+                          {/if}
+                        </div>
+                      </td>
+                    </tr>
+                  {/if}
+                {/each}
+              </tbody>
+            </table>
+          {:else if formData.orderId}
+            <p class="empty-fulfillment">All items in this order have been fully shipped.</p>
+          {/if}
+        </div>
+      {/if}
 
       <FormGroup label="Delivery Address" required>
         <textarea
@@ -1243,5 +1442,151 @@
     gap: 8px;
     padding-top: 16px;
     border-top: 1px solid var(--border);
+  }
+
+  /* E1: Fulfillment Section in Create Modal */
+  .fulfillment-section {
+    margin: 16px 0;
+    padding: 16px;
+    background: var(--bg-subtle, #f9f9f9);
+    border-radius: var(--radius-md, 8px);
+    border: 1px solid var(--border, #e5e5e5);
+  }
+
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 12px 0;
+    color: var(--text-primary, #1d1d1f);
+  }
+
+  .fulfillment-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+
+  .fulfillment-table thead {
+    background: var(--bg-subtle, #f0f0f0);
+  }
+
+  .fulfillment-table th {
+    padding: 6px 8px;
+    text-align: left;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary, #6e6e73);
+    border-bottom: 1px solid var(--border, #e5e5e5);
+  }
+
+  .fulfillment-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-subtle, #f0f0f0);
+    vertical-align: middle;
+  }
+
+  .fulfillment-table .number-col {
+    text-align: right;
+    font-family: var(--font-mono, monospace);
+  }
+
+  .fulfillment-table .product-code {
+    font-family: var(--font-mono, monospace);
+    font-weight: 600;
+    font-size: 11px;
+  }
+
+  .fulfillment-table .description-cell {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ship-qty-input {
+    width: 70px;
+    padding: 4px 6px;
+    border: 1px solid var(--border, #e5e5e5);
+    border-radius: var(--radius-sm, 4px);
+    font-size: 12px;
+    font-family: var(--font-mono, monospace);
+    text-align: right;
+    outline: none;
+  }
+
+  .ship-qty-input:focus {
+    border-color: var(--primary, #1d1d1f);
+    box-shadow: 0 0 0 2px rgba(29, 29, 31, 0.1);
+  }
+
+  .empty-fulfillment {
+    text-align: center;
+    padding: 12px;
+    color: var(--text-secondary, #6e6e73);
+    font-size: 13px;
+    font-style: italic;
+  }
+
+  /* Phase 23: Serial picker in DN create modal */
+  .serial-picker-row td {
+    background: var(--bg-tertiary, #f5f5f7) !important;
+    border-top: none !important;
+  }
+  .dn-serial-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .dn-serial-label {
+    font-size: 11px;
+    color: var(--text-secondary, #6e6e73);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dn-serial-badge {
+    background: var(--primary, #1d1d1f);
+    color: white;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .dn-serial-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-height: 120px;
+    overflow-y: auto;
+    padding: 4px 0;
+  }
+  .dn-serial-option {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    font-family: var(--font-mono, monospace);
+    cursor: pointer;
+    padding: 2px 8px;
+    border: 1px solid var(--border, #e5e5e5);
+    border-radius: 4px;
+    background: var(--bg-primary, #fff);
+  }
+  .dn-serial-option:has(input:checked) {
+    border-color: var(--primary, #1d1d1f);
+    background: rgba(29, 29, 31, 0.05);
+  }
+  .dn-serial-no {
+    font-weight: 500;
+  }
+  .dn-serial-empty {
+    font-size: 11px;
+    color: var(--text-tertiary, #999);
+    font-style: italic;
+    padding: 4px 0;
+    margin: 0;
   }
 </style>

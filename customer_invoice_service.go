@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +16,36 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// hmacSaltWarningOnce ensures the missing salt file warning is logged only once
+var hmacSaltWarningOnce sync.Once
+
+// computeDocumentHMAC generates an HMAC-SHA256 hash for invoice integrity verification
+// Uses globalFieldCrypto.salt as the secret key (avoids disk read + path mismatch issues)
+// Falls back to plain SHA-256 if FieldCrypto is not initialized (first-run scenario)
+// I1 FIX: Missing salt warning logged only once via sync.Once
+func computeDocumentHMAC(invoiceNumber, date string, grandTotal, vat float64) string {
+	hashInput := invoiceNumber + "|" + date + "|" + fmt.Sprintf("%.3f", grandTotal) + "|" + fmt.Sprintf("%.3f", vat)
+
+	// Use globalFieldCrypto.salt directly — avoids EvalSymlinks/path mismatch issues
+	if globalFieldCrypto != nil {
+		globalFieldCrypto.mu.RLock()
+		salt := globalFieldCrypto.salt
+		globalFieldCrypto.mu.RUnlock()
+		if len(salt) > 0 {
+			mac := hmac.New(sha256.New, salt)
+			mac.Write([]byte(hashInput))
+			return hex.EncodeToString(mac.Sum(nil))
+		}
+	}
+
+	// Fallback to plain SHA-256 if FieldCrypto not available (first-run scenario)
+	hmacSaltWarningOnce.Do(func() {
+		log.Printf("WARNING: globalFieldCrypto not available — using plain SHA-256 for document hash. Document integrity verification is degraded.")
+	})
+	hash := sha256.Sum256([]byte(hashInput))
+	return hex.EncodeToString(hash[:])
+}
 
 // =============================================================================
 // CUSTOMER INVOICE CRUD - Complete Invoice Lifecycle Management
@@ -54,9 +87,101 @@ func (a *App) CreateInvoiceFromOrder(orderID string) (Invoice, error) {
 	return invoice, nil
 }
 
+// CreateProformaInvoice creates a proforma invoice from an order
+// Proforma invoices are not tax documents - they serve as reference/quotation documents
+// Status is set to "Proforma" and the invoice is NOT counted toward order fulfillment
+func (a *App) CreateProformaInvoice(orderID string) (Invoice, error) {
+	log.Printf("📋 CreateProformaInvoice: Starting for orderID=%s", orderID)
+
+	if err := a.requirePermission("invoices:create"); err != nil {
+		return Invoice{}, err
+	}
+	if a.db == nil {
+		return Invoice{}, fmt.Errorf("database not initialized")
+	}
+
+	// Load order with items
+	var order Order
+	if err := a.db.Preload("Items").Where("id = ?", orderID).First(&order).Error; err != nil {
+		return Invoice{}, fmt.Errorf("order not found: %w", err)
+	}
+
+	// Generate invoice number
+	invoiceNumber, err := a.GenerateInvoiceNumber()
+	if err != nil {
+		return Invoice{}, fmt.Errorf("failed to generate invoice number: %w", err)
+	}
+
+	// Build proforma invoice directly (skip fulfillment tracking)
+	invoice := Invoice{
+		InvoiceNumber: invoiceNumber,
+		OrderID:       order.ID,
+		CustomerID:    order.CustomerID,
+		CustomerName:  order.CustomerName,
+		InvoiceDate:   time.Now(),
+		DueDate:       time.Now().AddDate(0, 0, 30),
+		Status:        "Proforma",
+		SubtotalBHD:   order.TotalValueBHD,
+		VATPercent:    10.0,
+		VATBHD:        order.TotalValueBHD * 0.10,
+		GrandTotalBHD: order.TotalValueBHD * 1.10,
+		OutstandingBHD: 0.0, // Proforma has no outstanding balance
+		PaymentTerms:  order.PaymentTerms,
+		Division:      order.Division,
+	}
+
+	// Copy line items from order
+	for _, orderItem := range order.Items {
+		invoice.Items = append(invoice.Items, DBInvoiceItem{
+			Description: orderItem.Description,
+			Quantity:    orderItem.Quantity,
+			Rate:        orderItem.UnitPrice,
+			TotalBHD:    orderItem.TotalPrice,
+		})
+	}
+
+	if err := a.db.Create(&invoice).Error; err != nil {
+		return Invoice{}, fmt.Errorf("failed to create proforma invoice: %w", err)
+	}
+
+	// NOTE: No QuantityInvoiced update, no order status progression
+	// Proforma is a reference document only
+
+	log.Printf("✅ Created Proforma Invoice: %s (Customer: %s, Order: %s, Total: %.3f BHD)",
+		invoice.InvoiceNumber, invoice.CustomerName, orderID, invoice.GrandTotalBHD)
+
+	return invoice, nil
+}
+
 // CreateInvoiceFromOrderWithDN creates invoice with optional DN linkage
 func (a *App) CreateInvoiceFromOrderWithDN(orderID string, deliveryNoteID string) (Invoice, error) {
+	if err := a.requirePermission("invoices:create"); err != nil {
+		return Invoice{}, err
+	}
 	return a.CreateInvoiceWithOptions(orderID, deliveryNoteID, "")
+}
+
+// CreateInvoiceFromDN creates an invoice directly from a delivery note
+// Resolves the order from the DN and passes through to CreateInvoiceWithOptions
+func (a *App) CreateInvoiceFromDN(deliveryNoteID string) (Invoice, error) {
+	if err := a.requirePermission("invoices:create"); err != nil {
+		return Invoice{}, err
+	}
+	if a.db == nil {
+		return Invoice{}, fmt.Errorf("database not initialized")
+	}
+
+	// Load DN to get the order ID
+	var dn DeliveryNote
+	if err := a.db.Where("id = ?", deliveryNoteID).First(&dn).Error; err != nil {
+		return Invoice{}, fmt.Errorf("delivery note not found: %w", err)
+	}
+	if dn.OrderID == "" {
+		return Invoice{}, fmt.Errorf("delivery note %s is not linked to an order", dn.DNNumber)
+	}
+
+	log.Printf("📋 CreateInvoiceFromDN: DN=%s -> Order=%s", dn.DNNumber, dn.OrderID)
+	return a.CreateInvoiceWithOptions(dn.OrderID, deliveryNoteID, "")
 }
 
 // CreateInvoiceWithOptions creates invoice with DN linkage and field visibility settings
@@ -83,10 +208,12 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 	log.Printf("✅ CreateInvoiceWithOptions: Loaded order %s with %d items, Total: %.3f BHD", order.OrderNumber, len(order.Items), order.GrandTotalBHD)
 
 	// FIXED: Handle orders without items (e.g., Tally imports) by creating a single line item
+	// B1 FIX: Synthetic item is added to memory here but persisted inside the transaction below
+	var syntheticItem *OrderItem
 	if len(order.Items) == 0 {
 		log.Printf("⚠️ Order %s has no items - creating single line item from order total", order.OrderNumber)
-		// Create synthetic order item from order total
-		syntheticItem := OrderItem{
+		// Create synthetic order item from order total (in-memory only; DB persist inside tx)
+		item := OrderItem{
 			Base:        Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
 			OrderID:     order.ID,
 			LineNumber:  1,
@@ -95,96 +222,66 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 			UnitPrice:   order.GrandTotalBHD,
 			TotalPrice:  order.GrandTotalBHD,
 		}
-		order.Items = []OrderItem{syntheticItem}
-		// Save the synthetic item to database for future reference
-		if err := a.db.Create(&syntheticItem).Error; err != nil {
-			log.Printf("⚠️ Could not persist synthetic order item: %v", err)
-		} else {
-			log.Printf("✅ Created synthetic order item for order %s", order.OrderNumber)
-		}
+		order.Items = []OrderItem{item}
+		syntheticItem = &item
 	}
 
-	// P0-2: Enhanced duplicate invoice check with database constraint protection
-	// Application-level check provides immediate user feedback with clear error messages
-	// Database uniqueIndex on order_id provides final protection against race conditions
-	log.Printf("📋 CreateInvoiceWithOptions: Checking for duplicate invoices...")
+	// Check if order has delivery notes (determines invoicing mode)
+	var dnCount int64
+	a.db.Model(&DeliveryNote{}).Where("order_id = ?", orderID).Count(&dnCount)
+	hasDNs := dnCount > 0
+	log.Printf("📋 CreateInvoiceWithOptions: Order has %d delivery notes (DN-based=%v)", dnCount, hasDNs)
+
+	// Duplicate/invoiceable check depends on whether order uses delivery notes
+	log.Printf("📋 CreateInvoiceWithOptions: Checking invoiceability...")
 	var existingCount int64
 	if err := a.db.Model(&Invoice{}).Where("order_id = ?", orderID).Count(&existingCount).Error; err != nil {
 		log.Printf("❌ CreateInvoiceWithOptions: Failed to check existing invoices: %v", err)
 		return Invoice{}, fmt.Errorf("failed to check existing invoices: %w", err)
 	}
-	if existingCount > 0 {
-		log.Printf("❌ CreateInvoiceWithOptions: Order already has %d invoice(s)", existingCount)
-		return Invoice{}, fmt.Errorf("order already has %d invoice(s) - cannot create duplicate", existingCount)
-	}
-	log.Printf("✅ CreateInvoiceWithOptions: No duplicate invoices found")
-	// Note: If two requests slip through this check simultaneously (rare race condition),
-	// the database uniqueIndex constraint will reject the duplicate and return an error
 
-	// P0 FIX: Credit limit enforcement with row locking to prevent race conditions
-	// Lock the customer row to ensure accurate credit limit check under concurrency
-	log.Printf("📋 CreateInvoiceWithOptions: Checking customer credit limit for customer_id=%s", order.CustomerID)
-	var customer CustomerMaster
-	// Use SELECT FOR UPDATE to lock customer row during credit check
-	if err := a.db.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("customer_id = ?", order.CustomerID).First(&customer).Error; err == nil {
-		// Customer found and locked - check credit limit atomically
-		var totalOutstanding float64
-		if err := a.db.Model(&Invoice{}).
-			Where("customer_id = ? AND status != ?", order.CustomerID, "Paid").
-			Select("COALESCE(SUM(outstanding_bhd), 0)").
-			Scan(&totalOutstanding).Error; err != nil {
-			log.Printf("⚠️ Failed to calculate customer outstanding AR: %v", err)
-		} else {
-			// Check if adding this invoice would exceed credit limit
-			newTotalOutstanding := totalOutstanding + order.GrandTotalBHD
-
-			// Get credit limit from customer record (default 50,000 BHD)
-			creditLimit := customer.CreditLimitBHD
-			if creditLimit == 0 {
-				creditLimit = 50000.0 // Default if not set
-			}
-			if newTotalOutstanding > creditLimit*0.80 && newTotalOutstanding <= creditLimit {
-				log.Printf("⚠️ WARNING: Customer %s approaching credit limit (%.1f%% utilized: %.3f / %.3f BHD)",
-					customer.BusinessName,
-					(newTotalOutstanding/creditLimit)*100,
-					newTotalOutstanding,
-					creditLimit)
-			}
-
-			// Block at 100% of credit limit (hard limit)
-			// Race condition prevented: customer row is locked, so concurrent invoice
-			// creation will wait for this check to complete before proceeding
-			// SECURITY FIX: First check if customer is explicitly credit-blocked (reject unconditionally)
-			if customer.IsCreditBlocked {
-				log.Printf("BLOCKED: Customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
-				return Invoice{}, fmt.Errorf("customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
-			}
-
-			// Second check: enforce credit limit (hard limit at 100%)
-			if newTotalOutstanding > creditLimit {
-				log.Printf("BLOCKED: Customer %s exceeds credit limit (%.3f BHD > %.3f BHD)",
-					customer.BusinessName, newTotalOutstanding, creditLimit)
-				return Invoice{}, fmt.Errorf(
-					"credit limit exceeded for %s: new outstanding %.3f exceeds limit %.3f",
-					customer.BusinessName,
-					newTotalOutstanding,
-					creditLimit,
-				)
+	if hasDNs {
+		// DN-based flow: multiple invoices per order allowed (one per delivery)
+		// Check that there are delivered-but-uninvoiced quantities remaining
+		log.Printf("📦 DN-based invoicing: checking for uninvoiced delivered quantities")
+		hasInvoiceable := false
+		for _, item := range order.Items {
+			uninvoiced := item.Quantity - item.QuantityInvoiced
+			if uninvoiced > 0.001 {
+				hasInvoiceable = true
+				break
 			}
 		}
+		if !hasInvoiceable {
+			log.Printf("❌ CreateInvoiceWithOptions: All order items are fully invoiced")
+			return Invoice{}, fmt.Errorf("all items in this order are already fully invoiced")
+		}
+		log.Printf("✅ DN-based invoicing: uninvoiced quantities found, proceeding")
+	} else {
+		// Legacy flow (no DNs): only one invoice per order allowed
+		if existingCount > 0 {
+			log.Printf("❌ CreateInvoiceWithOptions: Order already has %d invoice(s) (no DNs)", existingCount)
+			return Invoice{}, fmt.Errorf("order already has %d invoice(s) - cannot create duplicate (use delivery notes for partial invoicing)", existingCount)
+		}
+		log.Printf("✅ CreateInvoiceWithOptions: No duplicate invoices found (legacy mode)")
 	}
+
+	// P0 FIX: Credit limit enforcement — check happens atomically inside the invoice creation
+	// transaction below (Fix 1: TOCTOU gap closed). Preparation: just log intent here.
+	log.Printf("📋 CreateInvoiceWithOptions: Credit check will run atomically with invoice creation for customer_id=%s", order.CustomerID)
 
 	// Load delivery note if provided
 	var deliveryNote DeliveryNote
+	var dnItems []DeliveryNoteItem
 	var dnNumber string
 	if deliveryNoteID != "" {
-		if err := a.db.Where("id = ?", deliveryNoteID).First(&deliveryNote).Error; err != nil {
+		if err := a.db.Preload("Items").Where("id = ?", deliveryNoteID).First(&deliveryNote).Error; err != nil {
 			log.Printf("⚠️ Delivery note %s not found, proceeding without DN link: %v", deliveryNoteID, err)
 			deliveryNoteID = ""
 		} else {
 			dnNumber = deliveryNote.DNNumber
-			log.Printf("📦 Linking invoice to DN: %s", dnNumber)
+			dnItems = deliveryNote.Items
+			log.Printf("📦 Linking invoice to DN: %s (%d items)", dnNumber, len(dnItems))
 		}
 	}
 
@@ -253,24 +350,65 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		Items: []DBInvoiceItem{},
 	}
 
-	// Create invoice items from order items - copy ALL costing sheet data
+	// Create invoice items - logic depends on whether order has delivery notes
+	// DN-based: use delivered quantities (from DN items or uninvoiced remainder)
+	// Legacy: use full order quantities
 	var totalSupplierCost float64
-	for i, orderItem := range order.Items {
+	var invoiceSubtotal float64
+	lineNum := 0
+
+	// Track actual invoiced quantity per order item ID for QuantityInvoiced update
+	invoicedQtyByOrderItemID := make(map[string]float64)
+
+	// Build a map of DN item quantities keyed by order_item_id for DN-based invoicing
+	dnQtyByOrderItem := make(map[string]float64)
+	if hasDNs && len(dnItems) > 0 {
+		for _, di := range dnItems {
+			dnQtyByOrderItem[di.OrderItemID] += di.QuantityDelivered
+		}
+	}
+
+	for _, orderItem := range order.Items {
+		// Determine the quantity to invoice for this item
+		var invoiceQty float64
+		if hasDNs {
+			if len(dnItems) > 0 {
+				// Specific DN provided: use that DN's delivered quantity for this item
+				invoiceQty = dnQtyByOrderItem[orderItem.ID]
+			} else {
+				// No specific DN but order has DNs: invoice remaining uninvoiced quantity
+				invoiceQty = orderItem.Quantity - orderItem.QuantityInvoiced
+			}
+			if invoiceQty <= 0.001 {
+				continue // Skip fully invoiced items
+			}
+		} else {
+			// Legacy (no DNs): invoice full order quantity
+			invoiceQty = orderItem.Quantity
+		}
+
+		// Track invoiced quantity for this order item
+		invoicedQtyByOrderItemID[orderItem.ID] = invoiceQty
+		lineNum++
+
 		// Use TotalCost from costing sheet if available, otherwise estimate
 		var supplierCost float64
 		if orderItem.TotalCost > 0 {
-			supplierCost = orderItem.TotalCost * orderItem.Quantity
+			supplierCost = orderItem.TotalCost * invoiceQty
 		} else {
 			// Fallback: try to get product cost
 			var product ProductMaster
 			if err := a.db.Where("id = ?", orderItem.ProductID).First(&product).Error; err == nil {
-				supplierCost = product.StandardCostBHD * orderItem.Quantity
+				supplierCost = product.StandardCostBHD * invoiceQty
 			} else {
 				// Estimate as 70% of selling price if no cost data
-				supplierCost = orderItem.UnitPrice * orderItem.Quantity * 0.70
+				supplierCost = orderItem.UnitPrice * invoiceQty * 0.70
 			}
 		}
 		totalSupplierCost += supplierCost
+
+		lineTotal := invoiceQty * orderItem.UnitPrice
+		invoiceSubtotal += lineTotal
 
 		// Invoice item contains FULL costing sheet data (the costing sheet becomes the invoice)
 		invoiceItem := DBInvoiceItem{
@@ -280,11 +418,11 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 				UpdatedAt: now,
 			},
 			InvoiceID:   invoice.ID,
-			LineNumber:  i + 1,
+			LineNumber:  lineNum,
 			Description: orderItem.Description,
-			Quantity:    orderItem.Quantity,
+			Quantity:    invoiceQty,
 			Rate:        orderItem.UnitPrice,
-			TotalBHD:    orderItem.Quantity * orderItem.UnitPrice,
+			TotalBHD:    lineTotal,
 			// Full costing data from OrderItem (originally from OfferItem/CostingSheet)
 			ProductID:           orderItem.ProductID,
 			ProductCode:         orderItem.ProductCode,
@@ -302,6 +440,11 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		invoice.Items = append(invoice.Items, invoiceItem)
 	}
 
+	// For partial invoices (DN-based), recalculate totals from actual invoice items
+	if hasDNs {
+		invoice.SubtotalBHD = invoiceSubtotal
+	}
+
 	// Calculate margin metrics
 	invoice.TotalSupplierCostBHD = totalSupplierCost
 	invoice.GrossMarginBHD = invoice.SubtotalBHD - totalSupplierCost
@@ -316,10 +459,15 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		// Don't block invoice creation, but log for management review
 	}
 
-	// P0-3 FIX: Calculate VAT correctly based on ORDER values (not invoice)
-	// Check if order already includes VAT by comparing GrandTotal vs TotalValue
-	if order.GrandTotalBHD > order.TotalValueBHD {
-		// Order already has VAT baked in, extract the VAT amount
+	// Calculate VAT and grand total
+	if hasDNs {
+		// Partial invoices: calculate VAT from invoice subtotal (not order total)
+		invoice.VATPercent = 10.0 // Bahrain rate
+		invoice.VATBHD = invoice.SubtotalBHD * 0.10
+		invoice.GrandTotalBHD = invoice.SubtotalBHD + invoice.VATBHD
+		invoice.OutstandingBHD = invoice.GrandTotalBHD
+	} else if order.GrandTotalBHD > order.TotalValueBHD {
+		// Legacy: order already has VAT baked in, extract the VAT amount
 		invoice.VATBHD = order.GrandTotalBHD - order.TotalValueBHD
 		if order.TotalValueBHD > 0 {
 			invoice.VATPercent = (invoice.VATBHD / order.TotalValueBHD) * 100.0
@@ -330,32 +478,113 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		invoice.GrandTotalBHD = order.GrandTotalBHD
 		invoice.OutstandingBHD = invoice.GrandTotalBHD
 	} else {
-		// Order doesn't include VAT, calculate it (10% Bahrain rate)
+		// Legacy: order doesn't include VAT, calculate it (10% Bahrain rate)
 		invoice.VATPercent = 10.0
 		invoice.VATBHD = invoice.SubtotalBHD * 0.10
 		invoice.GrandTotalBHD = invoice.SubtotalBHD + invoice.VATBHD
 		invoice.OutstandingBHD = invoice.GrandTotalBHD
 	}
 
-	// Create invoice in database (GORM will cascade create items)
-	log.Printf("📋 CreateInvoiceWithOptions: Saving invoice to database with %d items...", len(invoice.Items))
-	if err := a.db.Create(&invoice).Error; err != nil {
-		log.Printf("❌ CreateInvoiceWithOptions: Failed to create invoice in DB: %v", err)
-		return Invoice{}, fmt.Errorf("failed to create invoice: %w", err)
-	}
-	log.Printf("✅ CreateInvoiceWithOptions: Invoice saved to database: ID=%s", invoice.ID)
-
-	// Update OrderItem.QuantityInvoiced for each item
-	for i, orderItem := range order.Items {
-		newQuantityInvoiced := orderItem.QuantityInvoiced + orderItem.Quantity
-		if err := a.db.Model(&OrderItem{}).
-			Where("id = ?", orderItem.ID).
-			Update("quantity_invoiced", newQuantityInvoiced).Error; err != nil {
-			log.Printf("⚠️ Failed to update quantity_invoiced for order item %s: %v", orderItem.ID, err)
-			// Continue processing - this is not critical
-		} else {
-			log.Printf("✅ Updated OrderItem[%d]: quantity_invoiced = %.3f", i, newQuantityInvoiced)
+	// P0 FIX (TOCTOU closed): Credit check + invoice creation + QuantityInvoiced update
+	// all happen inside a SINGLE transaction. No gap between credit check and DB write.
+	log.Printf("📋 CreateInvoiceWithOptions: Beginning atomic transaction (credit check + create + qty update)...")
+	if err := a.db.Transaction(func(tx *gorm.DB) error {
+		// Step 0: Duplicate check inside transaction to prevent race conditions (Fix 6)
+		if !hasDNs {
+			var existingCount int64
+			if err := tx.Model(&Invoice{}).Where("order_id = ?", orderID).Count(&existingCount).Error; err != nil {
+				return fmt.Errorf("failed to check existing invoices: %w", err)
+			}
+			if existingCount > 0 {
+				return fmt.Errorf("order already has %d invoice(s) — cannot create duplicate", existingCount)
+			}
 		}
+
+		// Step 1: Credit limit check with row lock (SELECT FOR UPDATE)
+		var customer CustomerMaster
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("customer_id = ?", order.CustomerID).First(&customer).Error; err == nil {
+			// Customer found and locked — check credit limit atomically
+			var totalOutstanding float64
+			if err := tx.Model(&Invoice{}).
+				Where("customer_id = ? AND status NOT IN ?", order.CustomerID, []string{"Paid", "Cancelled", "Void", "Proforma"}).
+				Select("COALESCE(SUM(outstanding_bhd), 0)").
+				Scan(&totalOutstanding).Error; err != nil {
+				log.Printf("⚠️ Failed to calculate customer outstanding AR: %v", err)
+				// Don't block invoice — log warning and continue
+			} else {
+				newTotalOutstanding := totalOutstanding + invoice.GrandTotalBHD
+				creditLimit := customer.CreditLimitBHD
+				if creditLimit == 0 {
+					creditLimit = 50000.0
+				}
+				if newTotalOutstanding > creditLimit*0.80 && newTotalOutstanding <= creditLimit {
+					log.Printf("⚠️ WARNING: Customer %s approaching credit limit (%.1f%% utilized: %.3f / %.3f BHD)",
+						customer.BusinessName,
+						(newTotalOutstanding/creditLimit)*100,
+						newTotalOutstanding,
+						creditLimit)
+				}
+
+				if customer.IsCreditBlocked {
+					log.Printf("BLOCKED: Customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
+					return fmt.Errorf("customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
+				}
+				if newTotalOutstanding > creditLimit {
+					log.Printf("BLOCKED: Customer %s exceeds credit limit (%.3f BHD > %.3f BHD)",
+						customer.BusinessName, newTotalOutstanding, creditLimit)
+					return fmt.Errorf(
+						"credit limit exceeded for %s: new outstanding %.3f exceeds limit %.3f",
+						customer.BusinessName, newTotalOutstanding, creditLimit)
+				}
+			}
+		}
+		// Customer not found — skip credit check (not an error)
+
+		// B1 FIX: Persist synthetic order item inside transaction (was previously outside)
+		if syntheticItem != nil {
+			if err := tx.Create(syntheticItem).Error; err != nil {
+				log.Printf("⚠️ Could not persist synthetic order item: %v", err)
+			} else {
+				log.Printf("✅ Created synthetic order item for order %s (inside tx)", order.OrderNumber)
+			}
+		}
+
+		// Step 2: Create invoice in database (GORM will cascade create items)
+		if err := tx.Create(&invoice).Error; err != nil {
+			log.Printf("❌ CreateInvoiceWithOptions: Failed to create invoice in DB: %v", err)
+			return fmt.Errorf("failed to create invoice: %w", err)
+		}
+		log.Printf("✅ CreateInvoiceWithOptions: Invoice saved to database: ID=%s", invoice.ID)
+
+		// Step 3: Update OrderItem.QuantityInvoiced using actual invoiced quantities
+		for i, orderItem := range order.Items {
+			invoicedQty, found := invoicedQtyByOrderItemID[orderItem.ID]
+			if !found || invoicedQty <= 0.001 {
+				continue // This order item was not invoiced (skipped in DN-based flow)
+			}
+			// Use atomic SQL increment to prevent race conditions
+			if err := tx.Model(&OrderItem{}).
+				Where("id = ?", orderItem.ID).
+				Update("quantity_invoiced", gorm.Expr("quantity_invoiced + ?", invoicedQty)).Error; err != nil {
+				log.Printf("⚠️ Failed to update quantity_invoiced for order item %s: %v", orderItem.ID, err)
+				// Continue processing - this is not critical
+			} else {
+				log.Printf("✅ Updated OrderItem[%d]: quantity_invoiced += %.3f", i, invoicedQty)
+			}
+		}
+
+		// Step 4: Compute and save invoice integrity hash (HMAC-SHA256 with server secret — P1-4)
+		invoice.InvoiceHash = computeDocumentHMAC(invoice.InvoiceNumber, invoice.InvoiceDate.Format("2006-01-02"), invoice.GrandTotalBHD, invoice.VATBHD)
+		if err := tx.Model(&invoice).Update("invoice_hash", invoice.InvoiceHash).Error; err != nil {
+			log.Printf("⚠️ Failed to save invoice hash: %v", err)
+		} else {
+			log.Printf("✅ Invoice hash computed: %s...%s", invoice.InvoiceHash[:8], invoice.InvoiceHash[56:])
+		}
+
+		return nil
+	}); err != nil {
+		return Invoice{}, err
 	}
 
 	log.Printf("✅ Created Invoice: %s (Customer: %s, Order: %s, Total: %.3f BHD, Margin: %.3f BHD [%.1f%%])",
@@ -370,6 +599,13 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 			"invoice_number": invoice.InvoiceNumber,
 			"order_id":       order.ID,
 		})
+	}
+
+	// Phase 23: Link serial numbers from DN to this invoice
+	if deliveryNoteID != "" {
+		if err := a.linkSerialsToInvoice(invoice.ID, invoice.InvoiceNumber, deliveryNoteID); err != nil {
+			log.Printf("⚠️ Failed to link serials to invoice: %v (non-blocking)", err)
+		}
 	}
 
 	// Auto-progress order status to "Invoiced"
@@ -391,12 +627,18 @@ func (a *App) ListCustomerInvoices(limit, offset int) ([]Invoice, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	var invoices []Invoice
-	query := a.db.Preload("Items").Order("invoice_date DESC")
-
-	if limit > 0 {
-		query = query.Limit(limit).Offset(offset)
+	// B8 FIX: Enforce pagination bounds to prevent memory exhaustion
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 200 {
+		limit = 200
 	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var invoices []Invoice
+	query := a.db.Preload("Items").Order("invoice_date DESC").Limit(limit).Offset(offset)
 
 	if err := query.Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve invoices: %w", err)
@@ -447,19 +689,37 @@ func (a *App) UpdateCustomerInvoice(inv Invoice) (Invoice, error) {
 		return Invoice{}, fmt.Errorf("invoice not found: %w", err)
 	}
 
-	// SECURITY: If invoice is Paid, block any status regression (immutable for audit compliance)
-	if existing.Status == "Paid" && inv.Status != "Paid" {
-		return Invoice{}, fmt.Errorf("cannot change status of paid invoice (immutable for audit compliance)")
+	// SECURITY: Terminal states (Paid, Cancelled, Void) are immutable for audit compliance
+	terminalStatuses := map[string]bool{"Paid": true, "Cancelled": true, "Void": true}
+	if terminalStatuses[existing.Status] {
+		return Invoice{}, fmt.Errorf("cannot modify invoice with status '%s' (terminal state — immutable for audit compliance)", existing.Status)
 	}
 
 	// CRITICAL FIX: Preserve ALL fields that weren't sent from frontend
 	// The edit modal only sends 5 fields, so we must preserve the other 40+ fields
 
-	// Only update the fields that are editable in the modal
-	existing.InvoiceNumber = inv.InvoiceNumber
+	// Fix 3: InvoiceNumber locked once past Draft — part of the audit trail + HMAC hash
+	if inv.InvoiceNumber != "" && inv.InvoiceNumber != existing.InvoiceNumber {
+		if existing.Status != "Draft" {
+			return Invoice{}, fmt.Errorf("cannot change invoice number on %s invoice (locked for audit compliance)", existing.Status)
+		}
+		existing.InvoiceNumber = inv.InvoiceNumber
+	}
+
+	// Fix 1: Validate status allowlist before accepting (rejects empty string + adds Void/Proforma)
+	validStatuses := map[string]bool{"Draft": true, "Sent": true, "Overdue": true, "PartiallyPaid": true, "Paid": true, "Cancelled": true, "Void": true, "Proforma": true}
+	if !validStatuses[inv.Status] {
+		return Invoice{}, fmt.Errorf("invalid invoice status: '%s'", inv.Status)
+	}
 	existing.Status = inv.Status
-	existing.GrandTotalBHD = inv.GrandTotalBHD
-	existing.OutstandingBHD = inv.OutstandingBHD
+
+	// Fix 3: Prevent setting status to "Paid" when there's still outstanding balance
+	if existing.Status == "Paid" && existing.OutstandingBHD > 0.001 {
+		return Invoice{}, fmt.Errorf("cannot set status to Paid: outstanding balance is %.3f BHD (must be 0)", existing.OutstandingBHD)
+	}
+
+	// Fix 2: GrandTotalBHD is a computed field (SubtotalBHD + VATBHD) — NOT directly editable
+	// OutstandingBHD intentionally NOT editable — must change via payments/credit notes only
 	existing.CustomerPONumber = inv.CustomerPONumber
 
 	// Update timestamp
@@ -478,22 +738,27 @@ func (a *App) UpdateCustomerInvoice(inv Invoice) (Invoice, error) {
 
 	// If items were updated, handle them separately
 	if len(inv.Items) > 0 {
-		// Delete existing items
-		if err := a.db.Where("invoice_id = ?", inv.ID).Delete(&DBInvoiceItem{}).Error; err != nil {
-			log.Printf("⚠️ Failed to delete old invoice items: %v", err)
-		}
-
-		// Create new items
-		for i := range inv.Items {
-			item := &inv.Items[i]
-			item.InvoiceID = inv.ID
-			item.UpdatedAt = time.Now()
-			if item.ID == "" {
-				item.ID = uuid.New().String()
-				item.CreatedAt = time.Now()
+		// Fix 4: Block item replacement on non-Draft invoices — items are part of the financial record
+		if existing.Status != "Draft" {
+			log.Printf("⚠️ Ignoring item replacement on %s invoice %s (only Draft invoices can have items modified)", existing.Status, existing.InvoiceNumber)
+		} else {
+			// Delete existing items
+			if err := a.db.Where("invoice_id = ?", inv.ID).Delete(&DBInvoiceItem{}).Error; err != nil {
+				log.Printf("⚠️ Failed to delete old invoice items: %v", err)
 			}
-			if err := a.db.Create(item).Error; err != nil {
-				log.Printf("⚠️ Failed to create invoice item: %v", err)
+
+			// Create new items
+			for i := range inv.Items {
+				item := &inv.Items[i]
+				item.InvoiceID = inv.ID
+				item.UpdatedAt = time.Now()
+				if item.ID == "" {
+					item.ID = uuid.New().String()
+					item.CreatedAt = time.Now()
+				}
+				if err := a.db.Create(item).Error; err != nil {
+					log.Printf("⚠️ Failed to create invoice item: %v", err)
+				}
 			}
 		}
 	}
@@ -522,9 +787,10 @@ func (a *App) DeleteCustomerInvoice(id string) error {
 		return fmt.Errorf("invoice not found: %w", err)
 	}
 
-	// Check if invoice can be deleted (not paid)
-	if invoice.Status == "Paid" {
-		return fmt.Errorf("cannot delete paid invoice: %s", invoice.InvoiceNumber)
+	// Block deletion of terminal-state invoices (audit trail preservation)
+	undeletableStatuses := map[string]bool{"Paid": true, "Void": true, "Cancelled": true}
+	if undeletableStatuses[invoice.Status] {
+		return fmt.Errorf("cannot delete %s invoice: %s (terminal state — preserved for audit)", invoice.Status, invoice.InvoiceNumber)
 	}
 
 	// SECURITY: Block deletion if any payment history exists (audit requirement)
@@ -587,9 +853,9 @@ func (a *App) SendCustomerInvoice(id string) error {
 		return fmt.Errorf("invoice not found: %w", err)
 	}
 
-	// Verify invoice is in Draft status
+	// B9 FIX: Only Draft invoices can be sent — reject all other statuses
 	if invoice.Status != "Draft" {
-		log.Printf("⚠️ Invoice %s is already in status: %s", invoice.InvoiceNumber, invoice.Status)
+		return fmt.Errorf("cannot send invoice %s: status is %s (only Draft invoices can be sent)", invoice.InvoiceNumber, invoice.Status)
 	}
 
 	// Update status to Sent
@@ -621,6 +887,7 @@ func (a *App) GetInvoicesByCustomer(customerID string) ([]Invoice, error) {
 	if err := a.db.Preload("Items").
 		Where("customer_id = ?", customerID).
 		Order("invoice_date DESC").
+		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve customer invoices: %w", err)
 	}
@@ -659,7 +926,7 @@ func (a *App) GenerateInvoiceNumber() (string, error) {
 				// Initialize LastNumber based on existing invoices (for migration safety)
 				var maxExisting int64
 				tx.Model(&Invoice{}).
-					Where("invoice_number LIKE ?", fmt.Sprintf("%s-%d%%", prefix, year%100)).
+					Where("invoice_number LIKE ? ESCAPE '\\'", fmt.Sprintf("%s-%d%%", prefix, year%100)).
 					Count(&maxExisting)
 
 				seq = InvoiceSequence{
@@ -731,6 +998,13 @@ func (a *App) MarkCustomerInvoicePaid(id string, paymentDate time.Time, paymentR
 		return fmt.Errorf("invoice not found: %w", err)
 	}
 
+	// Fix 5: Block marking terminal-state invoices as paid
+	nonMarkableStatuses := map[string]bool{"Cancelled": true, "Void": true, "Proforma": true, "Paid": true}
+	if nonMarkableStatuses[invoice.Status] {
+		tx.Rollback()
+		return fmt.Errorf("cannot mark invoice as paid: current status is '%s'", invoice.Status)
+	}
+
 	// Update status and outstanding balance atomically
 	now := time.Now()
 	if err := tx.Model(&Invoice{}).
@@ -775,6 +1049,15 @@ func (a *App) MarkCustomerInvoiceOverdue(id string) error {
 		return fmt.Errorf("cannot mark paid invoice as overdue: %s", invoice.InvoiceNumber)
 	}
 
+	// Don't regress PartiallyPaid — partial payment information is more important than overdue status
+	if invoice.Status == "PartiallyPaid" {
+		return fmt.Errorf("cannot mark partially paid invoice as overdue: %s (status: PartiallyPaid)", invoice.InvoiceNumber)
+	}
+	// Block terminal states
+	if invoice.Status == "Cancelled" || invoice.Status == "Void" {
+		return fmt.Errorf("cannot mark %s invoice as overdue: %s", invoice.Status, invoice.InvoiceNumber)
+	}
+
 	// Update status to Overdue
 	now := time.Now()
 	if err := a.db.Model(&Invoice{}).
@@ -808,6 +1091,7 @@ func (a *App) GetOverdueInvoices() ([]Invoice, error) {
 	if err := a.db.Preload("Items").
 		Where("due_date < ? AND status != ?", now, "Paid").
 		Order("due_date ASC").
+		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve overdue invoices: %w", err)
 	}
@@ -830,6 +1114,7 @@ func (a *App) GetUnpaidInvoices() ([]Invoice, error) {
 	if err := a.db.Preload("Items").
 		Where("status IN ?", []string{"Draft", "Sent", "Overdue"}).
 		Order("invoice_date DESC").
+		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve unpaid invoices: %w", err)
 	}
@@ -851,6 +1136,7 @@ func (a *App) GetInvoicesByStatus(status string) ([]Invoice, error) {
 	if err := a.db.Preload("Items").
 		Where("status = ?", status).
 		Order("invoice_date DESC").
+		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve invoices by status: %w", err)
 	}
@@ -912,6 +1198,13 @@ func (a *App) RecordPartialPayment(id string, paymentAmount float64, paymentDate
 		return fmt.Errorf("invoice not found: %w", err)
 	}
 
+	// Fix 5: Reject payments on non-payable invoices
+	nonPayableStatuses := map[string]bool{"Cancelled": true, "Void": true, "Proforma": true, "Paid": true}
+	if nonPayableStatuses[invoice.Status] {
+		tx.Rollback()
+		return fmt.Errorf("cannot record payment on invoice with status '%s'", invoice.Status)
+	}
+
 	// Verify payment amount is valid
 	if paymentAmount <= 0 {
 		tx.Rollback()
@@ -920,7 +1213,7 @@ func (a *App) RecordPartialPayment(id string, paymentAmount float64, paymentDate
 
 	// CRITICAL: Validate payment against LOCKED outstanding balance
 	// This is atomic - no other payment can modify outstanding between check and update
-	if paymentAmount > invoice.OutstandingBHD {
+	if paymentAmount > invoice.OutstandingBHD+0.001 {
 		tx.Rollback()
 		return fmt.Errorf("payment amount (%.3f) exceeds outstanding balance (%.3f)",
 			paymentAmount, invoice.OutstandingBHD)
@@ -950,6 +1243,24 @@ func (a *App) RecordPartialPayment(id string, paymentAmount float64, paymentDate
 		tx.Rollback()
 		return fmt.Errorf("failed to record partial payment: %w", err)
 	}
+
+	// Create Payment record with idempotency key (I12 fix: was missing, broke idempotency check)
+	payment := Payment{
+		InvoiceID:      id,
+		InvoiceNumber:  invoice.InvoiceNumber,
+		AmountBHD:      paymentAmount,
+		PaymentDate:    paymentDate,
+		PaymentMethod:  "Bank Transfer",
+		Reference:      paymentRef,
+		IdempotencyKey: idempotencyKey,
+		DaysToPayment:  int(time.Since(invoice.InvoiceDate).Hours() / 24),
+	}
+	payment.ID = uuid.New().String()
+	if err := tx.Create(&payment).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to create payment record: %w", err)
+	}
+	log.Printf("✅ Payment record created with idempotency key: %s...", idempotencyKey[:16])
 
 	// Commit transaction - releases lock, makes changes visible
 	if err := tx.Commit().Error; err != nil {
@@ -1025,6 +1336,7 @@ func (a *App) GetInvoicesByDateRange(startDate, endDate time.Time) ([]Invoice, e
 	if err := a.db.Preload("Items").
 		Where("invoice_date BETWEEN ? AND ?", startDate, endDate).
 		Order("invoice_date DESC").
+		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve invoices by date range: %w", err)
 	}
@@ -1097,7 +1409,7 @@ func (a *App) CalculateARAgingBuckets() ([]ARAgingBucket, error) {
 
 	now := time.Now()
 	var customers []CustomerMaster
-	if err := a.db.Find(&customers).Error; err != nil {
+	if err := a.db.Limit(1000).Find(&customers).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve customers: %w", err)
 	}
 
@@ -1190,6 +1502,8 @@ func (a *App) CalculateARAgingBuckets() ([]ARAgingBucket, error) {
 
 	// Save aging buckets to database
 	for _, bucket := range agingBuckets {
+		// Clean up old aging snapshots (keep only the latest)
+		a.db.Where("customer_id = ?", bucket.CustomerID).Delete(&ARAgingBucket{})
 		if err := a.db.Create(&bucket).Error; err != nil {
 			log.Printf("⚠️ Failed to save AR aging bucket for customer %s: %v", bucket.CustomerID, err)
 		}

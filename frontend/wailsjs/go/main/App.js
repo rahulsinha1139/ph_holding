@@ -30,6 +30,10 @@ export function AddOfferFollowUp(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddOfferFollowUp'](arg1, arg2, arg3);
 }
 
+export function AddOfferNote(arg1, arg2) {
+  return window['go']['main']['App']['AddOfferNote'](arg1, arg2);
+}
+
 export function AddRFQComment(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddRFQComment'](arg1, arg2, arg3);
 }
@@ -52,6 +56,10 @@ export function AmendPurchaseOrder(arg1, arg2) {
 
 export function AnalyzeDocumentWithButler(arg1, arg2, arg3) {
   return window['go']['main']['App']['AnalyzeDocumentWithButler'](arg1, arg2, arg3);
+}
+
+export function ApplyCreditNote(arg1) {
+  return window['go']['main']['App']['ApplyCreditNote'](arg1);
 }
 
 export function ApplyReconciliation(arg1) {
@@ -80,6 +88,10 @@ export function ApproveSupplierInvoice(arg1, arg2) {
 
 export function ArchiveStatementPDF(arg1, arg2) {
   return window['go']['main']['App']['ArchiveStatementPDF'](arg1, arg2);
+}
+
+export function AttachCalibrationCert(arg1, arg2) {
+  return window['go']['main']['App']['AttachCalibrationCert'](arg1, arg2);
 }
 
 export function AutoExpireOffers() {
@@ -326,16 +338,32 @@ export function CreateCostingSheetVersion(arg1, arg2) {
   return window['go']['main']['App']['CreateCostingSheetVersion'](arg1, arg2);
 }
 
+export function CreateCreditNote(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateCreditNote'](arg1, arg2, arg3);
+}
+
 export function CreateCustomer(arg1) {
   return window['go']['main']['App']['CreateCustomer'](arg1);
+}
+
+export function CreateCustomerFolder(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateCustomerFolder'](arg1, arg2, arg3);
 }
 
 export function CreateDNFromOrder(arg1, arg2) {
   return window['go']['main']['App']['CreateDNFromOrder'](arg1, arg2);
 }
 
+export function CreateDNWithSerials(arg1, arg2) {
+  return window['go']['main']['App']['CreateDNWithSerials'](arg1, arg2);
+}
+
 export function CreateDeliveryNote(arg1) {
   return window['go']['main']['App']['CreateDeliveryNote'](arg1);
+}
+
+export function CreateDeliveryNoteWithItems(arg1, arg2) {
+  return window['go']['main']['App']['CreateDeliveryNoteWithItems'](arg1, arg2);
 }
 
 export function CreateDepositInTransit(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
@@ -360,6 +388,10 @@ export function CreateGRN(arg1) {
 
 export function CreateInventoryItem(arg1) {
   return window['go']['main']['App']['CreateInventoryItem'](arg1);
+}
+
+export function CreateInvoiceFromDN(arg1) {
+  return window['go']['main']['App']['CreateInvoiceFromDN'](arg1);
 }
 
 export function CreateInvoiceFromOrder(arg1) {
@@ -394,6 +426,10 @@ export function CreatePostSaleNote(arg1) {
   return window['go']['main']['App']['CreatePostSaleNote'](arg1);
 }
 
+export function CreateProformaInvoice(arg1) {
+  return window['go']['main']['App']['CreateProformaInvoice'](arg1);
+}
+
 export function CreatePurchaseOrder(arg1) {
   return window['go']['main']['App']['CreatePurchaseOrder'](arg1);
 }
@@ -424,6 +460,10 @@ export function CreateStockAdjustment(arg1) {
 
 export function CreateSupplier(arg1) {
   return window['go']['main']['App']['CreateSupplier'](arg1);
+}
+
+export function CreateSupplierFolder(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateSupplierFolder'](arg1, arg2, arg3);
 }
 
 export function CreateSupplierInvoice(arg1) {
@@ -492,6 +532,10 @@ export function DeleteFXRate(arg1) {
 
 export function DeleteGRN(arg1) {
   return window['go']['main']['App']['DeleteGRN'](arg1);
+}
+
+export function DeleteOfferNote(arg1) {
+  return window['go']['main']['App']['DeleteOfferNote'](arg1);
 }
 
 export function DeleteOrder(arg1) {
@@ -618,6 +662,10 @@ export function ExportReport(arg1, arg2, arg3) {
   return window['go']['main']['App']['ExportReport'](arg1, arg2, arg3);
 }
 
+export function ExportVATReturnData(arg1, arg2) {
+  return window['go']['main']['App']['ExportVATReturnData'](arg1, arg2);
+}
+
 export function ExtractInvoiceDocument(arg1) {
   return window['go']['main']['App']['ExtractInvoiceDocument'](arg1);
 }
@@ -686,6 +734,10 @@ export function GenerateContract(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['GenerateContract'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function GenerateCreditNotePDF(arg1) {
+  return window['go']['main']['App']['GenerateCreditNotePDF'](arg1);
+}
+
 export function GenerateCustomer360Report(arg1) {
   return window['go']['main']['App']['GenerateCustomer360Report'](arg1);
 }
@@ -698,6 +750,10 @@ export function GenerateDashboardReport() {
   return window['go']['main']['App']['GenerateDashboardReport']();
 }
 
+export function GenerateDataImportTemplate() {
+  return window['go']['main']['App']['GenerateDataImportTemplate']();
+}
+
 export function GenerateGRNNumber() {
   return window['go']['main']['App']['GenerateGRNNumber']();
 }
@@ -708,6 +764,10 @@ export function GenerateInvoiceNumber() {
 
 export function GenerateInvoicePDF(arg1) {
   return window['go']['main']['App']['GenerateInvoicePDF'](arg1);
+}
+
+export function GenerateEInvoiceXML(arg1) {
+  return window['go']['main']['App']['GenerateEInvoiceXML'](arg1);
 }
 
 export function GenerateLicenseKey(arg1, arg2, arg3) {
@@ -850,6 +910,10 @@ export function GetAvailableFinancialYears() {
   return window['go']['main']['App']['GetAvailableFinancialYears']();
 }
 
+export function GetAvailableSerials(arg1) {
+  return window['go']['main']['App']['GetAvailableSerials'](arg1);
+}
+
 export function GetBalanceContinuityReport(arg1) {
   return window['go']['main']['App']['GetBalanceContinuityReport'](arg1);
 }
@@ -894,8 +958,16 @@ export function GetCRMCustomerDashboard() {
   return window['go']['main']['App']['GetCRMCustomerDashboard']();
 }
 
+export function GetCRMCustomerDashboardByYear(arg1) {
+  return window['go']['main']['App']['GetCRMCustomerDashboardByYear'](arg1);
+}
+
 export function GetCRMSupplierDashboard() {
   return window['go']['main']['App']['GetCRMSupplierDashboard']();
+}
+
+export function GetCRMSupplierDashboardByYear(arg1) {
+  return window['go']['main']['App']['GetCRMSupplierDashboardByYear'](arg1);
 }
 
 export function GetCSRFToken() {
@@ -1170,6 +1242,10 @@ export function GetFinancialDashboard() {
   return window['go']['main']['App']['GetFinancialDashboard']();
 }
 
+export function GetFinancialDashboardByDivision(arg1, arg2) {
+  return window['go']['main']['App']['GetFinancialDashboardByDivision'](arg1, arg2);
+}
+
 export function GetFinancialDashboardForYear(arg1) {
   return window['go']['main']['App']['GetFinancialDashboardForYear'](arg1);
 }
@@ -1378,6 +1454,10 @@ export function GetOfferFollowUps(arg1) {
   return window['go']['main']['App']['GetOfferFollowUps'](arg1);
 }
 
+export function GetOfferNotes(arg1) {
+  return window['go']['main']['App']['GetOfferNotes'](arg1);
+}
+
 export function GetOfferRevisionHistory(arg1) {
   return window['go']['main']['App']['GetOfferRevisionHistory'](arg1);
 }
@@ -1392,6 +1472,10 @@ export function GetOrder(arg1) {
 
 export function GetOrderDeliveryStatus(arg1) {
   return window['go']['main']['App']['GetOrderDeliveryStatus'](arg1);
+}
+
+export function GetOrderFulfillmentDetail(arg1) {
+  return window['go']['main']['App']['GetOrderFulfillmentDetail'](arg1);
 }
 
 export function GetOrderFulfillmentStatus(arg1) {
@@ -1496,6 +1580,22 @@ export function GetQuickCaptures(arg1) {
 
 export function GetRFQ(arg1) {
   return window['go']['main']['App']['GetRFQ'](arg1);
+}
+
+export function GetSerialByNumber(arg1) {
+  return window['go']['main']['App']['GetSerialByNumber'](arg1);
+}
+
+export function GetSerialsByCustomer(arg1) {
+  return window['go']['main']['App']['GetSerialsByCustomer'](arg1);
+}
+
+export function GetSerialsByProduct(arg1) {
+  return window['go']['main']['App']['GetSerialsByProduct'](arg1);
+}
+
+export function GetSerialsForInvoiceItem(arg1, arg2) {
+  return window['go']['main']['App']['GetSerialsForInvoiceItem'](arg1, arg2);
 }
 
 export function GetRFQComments(arg1) {
@@ -1686,10 +1786,6 @@ export function GetUserPermissions(arg1) {
   return window['go']['main']['App']['GetUserPermissions'](arg1);
 }
 
-export function GetVATReconciliation(arg1, arg2) {
-  return window['go']['main']['App']['GetVATReconciliation'](arg1, arg2);
-}
-
 export function GetVATReturns(arg1, arg2) {
   return window['go']['main']['App']['GetVATReturns'](arg1, arg2);
 }
@@ -1790,6 +1886,10 @@ export function IsPeriodClosed(arg1) {
   return window['go']['main']['App']['IsPeriodClosed'](arg1);
 }
 
+export function IssueCreditNote(arg1) {
+  return window['go']['main']['App']['IssueCreditNote'](arg1);
+}
+
 export function IssueCheque(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['IssueCheque'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
@@ -1812,6 +1912,10 @@ export function ListAssets() {
 
 export function ListConversations() {
   return window['go']['main']['App']['ListConversations']();
+}
+
+export function ListCreditNotes(arg1, arg2) {
+  return window['go']['main']['App']['ListCreditNotes'](arg1, arg2);
 }
 
 export function ListCustomerContacts(arg1) {
@@ -2134,6 +2238,10 @@ export function ReceiveAgainstPO(arg1, arg2) {
   return window['go']['main']['App']['ReceiveAgainstPO'](arg1, arg2);
 }
 
+export function ReceiveAgainstPOWithSerials(arg1, arg2) {
+  return window['go']['main']['App']['ReceiveAgainstPOWithSerials'](arg1, arg2);
+}
+
 export function ReconcileOfferData(arg1) {
   return window['go']['main']['App']['ReconcileOfferData'](arg1);
 }
@@ -2176,6 +2284,10 @@ export function RegisterDevice() {
 
 export function RegisterReportHandlers() {
   return window['go']['main']['App']['RegisterReportHandlers']();
+}
+
+export function RegisterSerials(arg1, arg2) {
+  return window['go']['main']['App']['RegisterSerials'](arg1, arg2);
 }
 
 export function ReissueCheque(arg1, arg2) {
@@ -2292,6 +2404,10 @@ export function SearchOrders(arg1) {
 
 export function SearchProducts(arg1) {
   return window['go']['main']['App']['SearchProducts'](arg1);
+}
+
+export function SearchSerials(arg1, arg2) {
+  return window['go']['main']['App']['SearchSerials'](arg1, arg2);
 }
 
 export function SeedAdditionalBankAccounts() {
@@ -2604,6 +2720,10 @@ export function UpdateSupplierInvoice(arg1) {
 
 export function UpdateSupplierPayment(arg1, arg2) {
   return window['go']['main']['App']['UpdateSupplierPayment'](arg1, arg2);
+}
+
+export function UpdateSerialWarranty(arg1, arg2) {
+  return window['go']['main']['App']['UpdateSerialWarranty'](arg1, arg2);
 }
 
 export function UpdateUser(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {

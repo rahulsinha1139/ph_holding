@@ -1,6 +1,12 @@
 package main
 
 import (
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -200,6 +206,9 @@ type ProductMaster struct {
 	// Technical Section (NEW)
 	DatasheetURL   string `gorm:"type:varchar(2000)" json:"datasheet_url"`
 	Specifications string `gorm:"type:varchar(5000)" json:"specifications"` // JSON
+
+	// Serial Tracking (Phase 23)
+	RequiresSerialTracking bool `gorm:"default:false" json:"requires_serial_tracking"`
 }
 
 func (ProductMaster) TableName() string { return "products" }
@@ -276,6 +285,7 @@ type OfferItem struct {
 	UnitPrice   float64 `json:"unit_price_bhd"`
 
 	// Extended fields for full costing data visibility (Fix #5)
+	LongCode            string  `gorm:"type:varchar(500)" json:"long_code"`                  // Long supplier code (e.g. E+H instrumentation codes)
 	Equipment           string  `gorm:"size:255" json:"equipment"`                           // Equipment/Product name
 	Specification       string  `gorm:"type:varchar(2000)" json:"specification"`             // Short specification
 	DetailedDescription string  `gorm:"type:varchar(5000)" json:"detailed_description"`      // Full instrumentation specs
@@ -421,6 +431,9 @@ type Order struct {
 	IssuedBy          string `gorm:"size:100" json:"issued_by"`
 	ContactPhone      string `gorm:"size:50" json:"contact_phone"`
 	DiscountPercent   float64 `json:"discount_percent"`
+
+	// E2: Division field - 'PH Trading' or 'AHS Trading' (sister companies)
+	Division string `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	Items []OrderItem `gorm:"foreignKey:OrderID" json:"items,omitempty"`
 }
@@ -649,7 +662,7 @@ type Invoice struct {
 	// Status indexed for invoice filtering: WHERE status = 'Paid', status IN ('Sent', 'Overdue')
 	// Used by: Dashboard KPIs, AR tracking, collection workflows
 	// P2 Fix: Part of covering index idx_invoice_ar_aging
-	Status         string    `gorm:"index:idx_invoice_ar_aging,priority:2;size:50;default:'Sent';check:status IN ('Draft','Sent','Paid','PartiallyPaid','Overdue','Cancelled','Void')" json:"status"` // P1 Fix: added PartiallyPaid
+	Status         string    `gorm:"index:idx_invoice_ar_aging,priority:2;size:50;default:'Sent';check:status IN ('Draft','Sent','Paid','PartiallyPaid','Overdue','Cancelled','Void','Proforma')" json:"status"` // P1 Fix: added PartiallyPaid, Proforma
 	OutstandingBHD float64   `gorm:"type:decimal(15,3);not null;default:0;check:outstanding_bhd >= 0" json:"outstanding_bhd"` // P1 Fix: BHD precision
 	SubtotalBHD    float64   `gorm:"type:decimal(15,3);not null;default:0;check:subtotal_bhd >= 0" json:"subtotal_bhd"`       // P1 Fix: BHD precision
 	// DueDate indexed for overdue tracking: WHERE due_date < NOW()
@@ -687,6 +700,9 @@ type Invoice struct {
 	PaymentTerms      string  `gorm:"type:varchar(500)" json:"payment_terms"`
 	DeliveryTerms     string  `gorm:"type:varchar(500)" json:"delivery_terms"`
 
+	// E2: Division field - 'PH Trading' or 'AHS Trading' (sister companies)
+	Division string `gorm:"size:100;default:'PH Trading'" json:"division"`
+
 	// Field Visibility Settings (JSON - user can toggle which fields appear on invoice PDF)
 	// Example: {"show_fob": false, "show_freight": false, "show_margin": false, "show_cost": false, "show_contact": true}
 	FieldVisibility string `gorm:"type:varchar(1000)" json:"field_visibility"`
@@ -710,6 +726,9 @@ type Invoice struct {
 	VATBHD         float64 `gorm:"column:vatbhd;type:decimal(15,3);not null;default:0;check:vatbhd >= 0" json:"vat_bhd"` // P1 Fix: BHD precision
 	VATPercent     float64 `gorm:"not null;default:0;check:vat_percent >= 0" json:"vat_percent"`                         // VAT rate applied (default 10)
 	JournalEntryID string  `gorm:"index;size:36" json:"journal_entry_id"`                                                 // Link to auto-generated GL entry
+
+	// E-Invoicing (Phase 23)
+	InvoiceHash string `gorm:"size:64" json:"invoice_hash"` // SHA-256 hash for integrity verification
 
 	Items []DBInvoiceItem `gorm:"foreignKey:InvoiceID" json:"items"`
 }
@@ -757,6 +776,91 @@ type InvoiceSequence struct {
 }
 
 func (InvoiceSequence) TableName() string { return "invoice_sequences" }
+
+// =============================================================================
+// MODULE: CREDIT NOTES (Phase 23 - E-Invoicing)
+// =============================================================================
+
+// CreditNote represents a credit note issued against a customer invoice
+// for returns, pricing corrections, or other adjustments.
+type CreditNote struct {
+	Base
+	CreditNoteNumber string     `gorm:"uniqueIndex;size:50" json:"credit_note_number"`
+	CreditNoteDate   time.Time  `gorm:"index" json:"credit_note_date"`
+	InvoiceID        string     `gorm:"index;size:36" json:"invoice_id"`
+	InvoiceNumber    string     `gorm:"size:50" json:"invoice_number"`
+	CustomerID       string     `gorm:"index;size:36" json:"customer_id"`
+	CustomerName     string     `gorm:"size:255" json:"customer_name"`
+	Reason           string     `gorm:"type:varchar(2000)" json:"reason"`
+	SubtotalBHD      float64    `gorm:"type:decimal(15,3)" json:"subtotal_bhd"`
+	VATBHD           float64    `gorm:"type:decimal(15,3)" json:"vat_bhd"`
+	VATPercent       float64    `json:"vat_percent"`
+	GrandTotalBHD    float64    `gorm:"type:decimal(15,3)" json:"grand_total_bhd"`
+	Status           string     `gorm:"index;size:50;default:'Draft'" json:"status"` // Draft, Issued, Applied
+	AppliedAt        *time.Time `json:"applied_at"`
+	CreditNoteHash   string     `gorm:"size:64" json:"credit_note_hash"`
+	Items            []CreditNoteItem `gorm:"foreignKey:CreditNoteID" json:"items"`
+}
+
+func (CreditNote) TableName() string { return "credit_notes" }
+
+// CreditNoteItem represents a line item in a credit note.
+type CreditNoteItem struct {
+	Base
+	CreditNoteID string  `gorm:"index;size:36" json:"credit_note_id"`
+	LineNumber   int     `json:"line_number"`
+	Description  string  `gorm:"type:varchar(2000)" json:"description"`
+	Quantity     float64 `json:"quantity"`
+	Rate         float64 `json:"rate"`
+	TotalBHD     float64 `gorm:"type:decimal(15,3)" json:"total_bhd"`
+}
+
+func (CreditNoteItem) TableName() string { return "credit_note_items" }
+
+// =============================================================================
+// MODULE: SERIAL NUMBER TRACKING (Phase 23)
+// =============================================================================
+
+// SerialNumber tracks individual serialized items through the full lifecycle:
+// PO receipt (GRN) → inventory → dispatch (DN) → delivery → customer invoicing.
+type SerialNumber struct {
+	Base
+	ProductID   string `gorm:"index;size:36" json:"product_id"`
+	ProductCode string `gorm:"index;size:100" json:"product_code"`
+	SerialNo    string `gorm:"uniqueIndex;size:255" json:"serial_no"`
+	LotNumber   string `gorm:"index;size:100" json:"lot_number"`
+	Status      string `gorm:"index;size:50;default:'Available'" json:"status"` // Available, Reserved, Shipped, Delivered
+
+	// Traceability chain
+	POID          string `gorm:"index;size:36" json:"po_id"`
+	PONumber      string `gorm:"size:50" json:"po_number"`
+	GRNItemID     string `gorm:"index;size:36" json:"grn_item_id"`
+	GRNNumber     string `gorm:"size:50" json:"grn_number"`
+	DNItemID      string `gorm:"index;size:36" json:"dn_item_id"`
+	DNNumber      string `gorm:"size:50" json:"dn_number"`
+	InvoiceID     string `gorm:"index;size:36" json:"invoice_id"`
+	InvoiceNumber string `gorm:"size:50" json:"invoice_number"`
+	CustomerID    string `gorm:"index;size:36" json:"customer_id"`
+	CustomerName  string `gorm:"size:255" json:"customer_name"`
+
+	// Dates
+	ReceivedDate *time.Time `json:"received_date"`
+	ShippedDate  *time.Time `json:"shipped_date"`
+
+	// Warranty
+	WarrantyStartDate *time.Time `json:"warranty_start_date"`
+	WarrantyEndDate   *time.Time `json:"warranty_end_date"`
+	WarrantyMonths    int        `json:"warranty_months"`
+
+	// Calibration
+	CalibrationDate     *time.Time `json:"calibration_date"`
+	CalibrationDueDate  *time.Time `json:"calibration_due_date"`
+	CalibrationCertPath string     `gorm:"size:500" json:"calibration_cert_path"`
+
+	Notes string `gorm:"type:varchar(2000)" json:"notes"`
+}
+
+func (SerialNumber) TableName() string { return "serial_numbers" }
 
 // ChartOfAccount represents a GL account in the accounting system with hierarchy,
 // VAT tracking, and balance management for Tally Killer integration.
@@ -1279,7 +1383,7 @@ type PurchaseOrder struct {
 	PaymentTerms   string    `gorm:"type:varchar(500)" json:"payment_terms"`
 	PaymentDueDate time.Time `json:"payment_due_date"`
 
-	// Status Flow: Draft → Pending Approval → Approved → Sent → Acknowledged → PartiallyReceived → FullyReceived → Closed
+	// Status Flow: Draft → Pending Approval → Approved → Sent → Acknowledged → Partially Received → Received → Closed
 	Status string `gorm:"index;size:50;default:'Draft';check:status IN ('Draft','Pending Approval','Approved','Sent','Acknowledged','Partially Received','Received','Cancelled','Closed')" json:"status"` // P1 Fix: default status
 
 	// P1 Fix: Approval workflow fields
@@ -1532,6 +1636,17 @@ type OfferFollowUp struct {
 }
 
 func (OfferFollowUp) TableName() string { return "offer_follow_ups" }
+
+// OfferNote stores freeform notes/comments on offers
+type OfferNote struct {
+	Base
+	OfferID   string    `gorm:"index;size:36" json:"offer_id"`
+	NoteDate  time.Time `gorm:"index" json:"note_date"`
+	Content   string    `gorm:"type:text" json:"content"`
+	CreatedBy string    `gorm:"size:255" json:"created_by"`
+}
+
+func (OfferNote) TableName() string { return "offer_notes" }
 
 // =============================================================================
 // MODULE: SYNC INFRASTRUCTURE
@@ -1935,3 +2050,215 @@ type BankReconciliationAuditLog struct {
 }
 
 func (BankReconciliationAuditLog) TableName() string { return "bank_reconciliation_audit_logs" }
+
+// =============================================================================
+// DATABASE BACKUP & INTEGRITY
+// =============================================================================
+
+const maxBackups = 7
+
+// BackupDatabase creates an atomic backup of the SQLite database using VACUUM INTO.
+// Backups are stored in a "backups/" directory next to the database file.
+// Keeps the last 7 backups and deletes older ones.
+func (a *App) BackupDatabase() (string, error) {
+	if a.db == nil {
+		return "", fmt.Errorf("database not initialized")
+	}
+
+	// Determine database file path
+	sqlDB, err := a.db.DB()
+	if err != nil {
+		return "", fmt.Errorf("cannot access database connection: %w", err)
+	}
+
+	// Get the database file path from the DSN
+	dbPath := "ph_holdings.db" // default
+	var dbName string
+	row := sqlDB.QueryRow("PRAGMA database_list")
+	var seq int
+	if err := row.Scan(&seq, &dbName, &dbPath); err != nil {
+		// Fallback to default
+		dbPath = "ph_holdings.db"
+	}
+
+	// Create backups directory next to the database
+	backupDir := filepath.Join(filepath.Dir(dbPath), "backups")
+	if err := os.MkdirAll(backupDir, 0700); err != nil {
+		return "", fmt.Errorf("cannot create backup directory: %w", err)
+	}
+
+	// Generate backup filename with timestamp
+	timestamp := time.Now().Format("20060102_150405")
+	backupPath := filepath.Join(backupDir, fmt.Sprintf("ph_holdings_%s.db", timestamp))
+
+	// Use VACUUM INTO for an atomic, consistent backup
+	// Escape single quotes in path to prevent malformed SQL (e.g. /Users/O'Brien/...)
+	escapedPath := strings.ReplaceAll(backupPath, "'", "''")
+	if _, err := sqlDB.Exec(fmt.Sprintf("VACUUM INTO '%s'", escapedPath)); err != nil {
+		return "", fmt.Errorf("backup failed: %w", err)
+	}
+
+	// Restrict backup file permissions (owner read/write only)
+	if err := os.Chmod(backupPath, 0600); err != nil {
+		log.Printf("Warning: could not set backup file permissions: %v", err)
+	}
+
+	log.Printf("Database backup created: %s", backupPath)
+
+	// Prune old backups (keep last maxBackups)
+	a.pruneOldBackups(backupDir)
+
+	return backupPath, nil
+}
+
+// pruneOldBackups keeps the most recent maxBackups files and deletes older ones.
+func (a *App) pruneOldBackups(backupDir string) {
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		log.Printf("Warning: cannot read backup directory: %v", err)
+		return
+	}
+
+	// Filter to only backup .db files matching expected naming pattern
+	var backups []os.DirEntry
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		matched, _ := filepath.Match("ph_holdings_*_*.db", e.Name())
+		if matched {
+			backups = append(backups, e)
+		}
+	}
+
+	if len(backups) <= maxBackups {
+		return
+	}
+
+	// Sort by name (timestamp-based names sort chronologically)
+	sort.Slice(backups, func(i, j int) bool {
+		return backups[i].Name() < backups[j].Name()
+	})
+
+	// Delete oldest backups
+	for i := 0; i < len(backups)-maxBackups; i++ {
+		path := filepath.Join(backupDir, backups[i].Name())
+		if err := os.Remove(path); err != nil {
+			log.Printf("Warning: cannot delete old backup %s: %v", path, err)
+		} else {
+			log.Printf("Pruned old backup: %s", backups[i].Name())
+		}
+	}
+}
+
+// runIntegrityCheck is the internal implementation (used at startup, no RBAC).
+func (a *App) runIntegrityCheck() string {
+	if a.db == nil {
+		return "error: database not initialized"
+	}
+
+	sqlDB, err := a.db.DB()
+	if err != nil {
+		return fmt.Sprintf("error: %v", err)
+	}
+
+	var result string
+	if err := sqlDB.QueryRow("PRAGMA integrity_check").Scan(&result); err != nil {
+		log.Printf("CRITICAL: Database integrity check failed: %v", err)
+		return fmt.Sprintf("error: %v", err)
+	}
+
+	if result != "ok" {
+		log.Printf("WARNING: Database integrity issues detected: %s", result)
+	} else {
+		log.Println("Database integrity check: OK")
+	}
+
+	return result
+}
+
+// RunIntegrityCheck is the exported version with RBAC guard (expensive PRAGMA).
+func (a *App) RunIntegrityCheck() string {
+	if err := a.requirePermission("settings:view"); err != nil {
+		return "error: permission denied"
+	}
+	return a.runIntegrityCheck()
+}
+
+// TriggerBackup is an exported function callable from the UI to create a manual backup.
+func (a *App) TriggerBackup() map[string]interface{} {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Permission denied: admin access required",
+		}
+	}
+
+	path, err := a.BackupDatabase()
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		}
+	}
+
+	return map[string]interface{}{
+		"success":     true,
+		"backup_path": path,
+		"timestamp":   time.Now().Format(time.RFC3339),
+	}
+}
+
+// GetBackupInfo returns information about existing backups.
+func (a *App) GetBackupInfo() map[string]interface{} {
+	if err := a.requirePermission("settings:view"); err != nil {
+		return map[string]interface{}{
+			"count":       0,
+			"last_backup": "",
+			"error":       "permission denied",
+		}
+	}
+	// Compute backup dir the same way as BackupDatabase — next to the DB file
+	backupDir := filepath.Join(".", "backups") // default
+	if a.db != nil {
+		if sqlDB, err := a.db.DB(); err == nil {
+			var seq int
+			var dbName, dbPath string
+			if err := sqlDB.QueryRow("PRAGMA database_list").Scan(&seq, &dbName, &dbPath); err == nil && dbPath != "" {
+				backupDir = filepath.Join(filepath.Dir(dbPath), "backups")
+			}
+		}
+	}
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		return map[string]interface{}{
+			"count":       0,
+			"last_backup": "",
+		}
+	}
+
+	var backups []string
+	var totalSize int64
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".db" {
+			backups = append(backups, e.Name())
+			if info, err := e.Info(); err == nil {
+				totalSize += info.Size()
+			}
+		}
+	}
+
+	sort.Strings(backups)
+
+	lastBackup := ""
+	if len(backups) > 0 {
+		lastBackup = backups[len(backups)-1]
+	}
+
+	return map[string]interface{}{
+		"count":          len(backups),
+		"last_backup":    lastBackup,
+		"total_size_mb":  float64(totalSize) / (1024 * 1024),
+		"backup_dir":     backupDir,
+	}
+}

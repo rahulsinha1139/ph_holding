@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	"gorm.io/gorm"
 )
 
@@ -32,8 +34,8 @@ func NewPaginationParams(page, pageSize int) PaginationParams {
 	if pageSize < 1 {
 		pageSize = 50 // Default page size
 	}
-	if pageSize > 1000 {
-		pageSize = 1000 // Max page size
+	if pageSize > 200 {
+		pageSize = 200 // Max page size (consistent with other listing functions)
 	}
 
 	offset := (page - 1) * pageSize
@@ -75,6 +77,12 @@ func BuildPaginationResult(data interface{}, total int64, params PaginationParam
 
 // ListCustomersPaginated returns paginated customer list
 func (a *App) ListCustomersPaginated(page, pageSize int) (PaginationResult, error) {
+	if err := a.requirePermission("customers:view"); err != nil {
+		return PaginationResult{}, err
+	}
+	if a.db == nil {
+		return PaginationResult{}, fmt.Errorf("database not initialized")
+	}
 	params := NewPaginationParams(page, pageSize)
 
 	var customers []CustomerMaster
@@ -97,6 +105,12 @@ func (a *App) ListCustomersPaginated(page, pageSize int) (PaginationResult, erro
 
 // ListSuppliersPaginated returns paginated supplier list
 func (a *App) ListSuppliersPaginated(page, pageSize int) (PaginationResult, error) {
+	if err := a.requirePermission("suppliers:view"); err != nil {
+		return PaginationResult{}, err
+	}
+	if a.db == nil {
+		return PaginationResult{}, fmt.Errorf("database not initialized")
+	}
 	params := NewPaginationParams(page, pageSize)
 
 	var suppliers []SupplierMaster
@@ -119,6 +133,12 @@ func (a *App) ListSuppliersPaginated(page, pageSize int) (PaginationResult, erro
 
 // ListOrdersPaginated returns paginated order list
 func (a *App) ListOrdersPaginated(page, pageSize int, status string) (PaginationResult, error) {
+	if err := a.requirePermission("orders:view"); err != nil {
+		return PaginationResult{}, err
+	}
+	if a.db == nil {
+		return PaginationResult{}, fmt.Errorf("database not initialized")
+	}
 	params := NewPaginationParams(page, pageSize)
 
 	var orders []Order
@@ -147,6 +167,12 @@ func (a *App) ListOrdersPaginated(page, pageSize int, status string) (Pagination
 
 // ListInvoicesPaginated returns paginated invoice list
 func (a *App) ListInvoicesPaginated(page, pageSize int, status string) (PaginationResult, error) {
+	if err := a.requirePermission("finance:view"); err != nil {
+		return PaginationResult{}, err
+	}
+	if a.db == nil {
+		return PaginationResult{}, fmt.Errorf("database not initialized")
+	}
 	params := NewPaginationParams(page, pageSize)
 
 	var invoices []Invoice
@@ -174,6 +200,12 @@ func (a *App) ListInvoicesPaginated(page, pageSize int, status string) (Paginati
 
 // ListPurchaseOrdersPaginated returns paginated purchase order list
 func (a *App) ListPurchaseOrdersPaginated(page, pageSize int, status string) (PaginationResult, error) {
+	if err := a.requirePermission("po:view"); err != nil {
+		return PaginationResult{}, err
+	}
+	if a.db == nil {
+		return PaginationResult{}, fmt.Errorf("database not initialized")
+	}
 	params := NewPaginationParams(page, pageSize)
 
 	var pos []PurchaseOrder
@@ -202,6 +234,12 @@ func (a *App) ListPurchaseOrdersPaginated(page, pageSize int, status string) (Pa
 
 // ListOffersPaginated returns paginated offer list
 func (a *App) ListOffersPaginated(page, pageSize int, stage string) (PaginationResult, error) {
+	if err := a.requirePermission("offers:view"); err != nil {
+		return PaginationResult{}, err
+	}
+	if a.db == nil {
+		return PaginationResult{}, fmt.Errorf("database not initialized")
+	}
 	params := NewPaginationParams(page, pageSize)
 
 	var offers []Offer
@@ -229,6 +267,12 @@ func (a *App) ListOffersPaginated(page, pageSize int, stage string) (PaginationR
 
 // ListProductsPaginated returns paginated product list
 func (a *App) ListProductsPaginated(page, pageSize int, category string, activeOnly bool) (PaginationResult, error) {
+	if err := a.requirePermission("products:view"); err != nil {
+		return PaginationResult{}, err
+	}
+	if a.db == nil {
+		return PaginationResult{}, fmt.Errorf("database not initialized")
+	}
 	params := NewPaginationParams(page, pageSize)
 
 	var products []ProductMaster

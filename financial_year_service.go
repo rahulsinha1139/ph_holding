@@ -684,3 +684,97 @@ func (a *App) GetAvailableFinancialYears() ([]int, error) {
 	log.Printf("📅 Available financial years: %v", years)
 	return years, nil
 }
+
+// =============================================================================
+// E2: DIVISION-FILTERED FINANCIAL DASHBOARD (AHS Trading Support)
+// =============================================================================
+
+// DivisionFinancialSummary represents financial summary for a specific division
+type DivisionFinancialSummary struct {
+	Division       string  `json:"division"`
+	Year           int     `json:"year"`
+	Revenue        float64 `json:"revenue"`
+	InvoiceCount   int     `json:"invoice_count"`
+	OrderCount     int     `json:"order_count"`
+	OutstandingAR  float64 `json:"outstanding_ar"`
+	PaidAmount     float64 `json:"paid_amount"`
+	OverdueAmount  float64 `json:"overdue_amount"`
+	OverdueCount   int     `json:"overdue_count"`
+	AvgInvoiceSize float64 `json:"avg_invoice_size"`
+	HasData        bool    `json:"has_data"`
+}
+
+// GetFinancialDashboardByDivision returns financial metrics filtered by division (PH Trading or AHS Trading)
+func (a *App) GetFinancialDashboardByDivision(year int, division string) (DivisionFinancialSummary, error) {
+	if err := a.requirePermission("finance:view"); err != nil {
+		return DivisionFinancialSummary{}, err
+	}
+	if a.db == nil {
+		return DivisionFinancialSummary{}, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+	// Validate division
+	validDivisions := map[string]bool{"PH Trading": true, "AHS Trading": true}
+	if !validDivisions[division] {
+		return DivisionFinancialSummary{}, fmt.Errorf("invalid division: %s", division)
+	}
+	// Validate year bounds
+	if year < 2020 || year > time.Now().Year()+1 {
+		return DivisionFinancialSummary{}, fmt.Errorf("year must be between 2020 and %d", time.Now().Year()+1)
+	}
+
+	summary := DivisionFinancialSummary{
+		Division: division,
+		Year:     year,
+	}
+
+	yearStr := fmt.Sprintf("%d", year)
+
+	// Get invoices for this division and year
+	var invoices []Invoice
+	err := a.db.Where("division = ? AND strftime('%Y', invoice_date) = ? AND status != 'Cancelled'", division, yearStr).
+		Find(&invoices).Error
+	if err != nil {
+		log.Printf("Warning: Error fetching invoices for division %s, year %d: %v", division, year, err)
+		return summary, nil
+	}
+
+	// Calculate revenue metrics from invoices
+	for _, inv := range invoices {
+		summary.Revenue += inv.GrandTotalBHD
+		summary.InvoiceCount++
+		summary.OutstandingAR += inv.OutstandingBHD
+		summary.PaidAmount += (inv.GrandTotalBHD - inv.OutstandingBHD)
+
+		if inv.Status == "Overdue" {
+			summary.OverdueAmount += inv.OutstandingBHD
+			summary.OverdueCount++
+		}
+	}
+
+	if summary.InvoiceCount > 0 {
+		summary.AvgInvoiceSize = summary.Revenue / float64(summary.InvoiceCount)
+		summary.HasData = true
+	}
+
+	// Get order count for this division and year
+	var orderCount int64
+	a.db.Model(&Order{}).Where("division = ? AND strftime('%Y', order_date) = ? AND status != 'Cancelled'", division, yearStr).
+		Count(&orderCount)
+	summary.OrderCount = int(orderCount)
+
+	if summary.OrderCount > 0 {
+		summary.HasData = true
+	}
+
+	// Round to 3 decimal places (BHD)
+	round3 := func(v float64) float64 { return math.Round(v*1000) / 1000 }
+	summary.Revenue = round3(summary.Revenue)
+	summary.OutstandingAR = round3(summary.OutstandingAR)
+	summary.PaidAmount = round3(summary.PaidAmount)
+	summary.OverdueAmount = round3(summary.OverdueAmount)
+	summary.AvgInvoiceSize = round3(summary.AvgInvoiceSize)
+
+	log.Printf("Division %s FY%d: Revenue=%.3f, Invoices=%d, Orders=%d, Outstanding=%.3f",
+		division, year, summary.Revenue, summary.InvoiceCount, summary.OrderCount, summary.OutstandingAR)
+	return summary, nil
+}

@@ -72,6 +72,8 @@ var dbSyncTables = []string{
 	"order_items",
 	"invoices",
 	"invoice_items",
+	"credit_notes",
+	"credit_note_items",
 	"payments",
 	"supplier_invoices",
 	"supplier_invoice_items",
@@ -80,15 +82,17 @@ var dbSyncTables = []string{
 	"purchase_order_items",
 	"goods_received_notes",
 	"grn_items",
+	"serial_numbers",
 	"delivery_notes",
 	"delivery_note_items",
 	"entity_notes",
+	"invoice_sequences",
 	"license_keys",
 	"bank_accounts",
 	"bank_statements",
 	"bank_statement_lines",
 	"costing_sheets",
-	"costing_line_items",
+	"costing_items",
 }
 
 // emitDBSyncProgress sends a sync progress event to the frontend
@@ -150,8 +154,16 @@ func (a *App) UpdateDBSyncSettings(autoEnabled bool, frequencyMin int) error {
 
 // saveSetting helper to save a setting
 func (a *App) saveSetting(key, value string) {
-	a.db.Where("key = ?", key).Delete(&Setting{})
-	a.db.Create(&Setting{Key: key, Value: value})
+	// Upsert: update if exists, insert if not (avoids accumulating soft-deleted rows)
+	var existing Setting
+	if err := a.db.Unscoped().Where("key = ?", key).First(&existing).Error; err == nil {
+		a.db.Unscoped().Model(&existing).Updates(map[string]interface{}{
+			"value":      value,
+			"deleted_at": nil,
+		})
+	} else {
+		a.db.Create(&Setting{Key: key, Value: value})
+	}
 }
 
 // SyncNowWithProgress performs a manual sync with real-time progress updates
@@ -657,50 +669,82 @@ func (a *App) downloadTableSafe(table string) (int, error) {
 	return downloaded, nil
 }
 
-// StartBackgroundDBSync starts the background database sync with configurable frequency
+// StartBackgroundDBSync starts the background database sync with configurable frequency.
+// Only callable once — subsequent calls are no-ops to prevent goroutine leaks.
 func (a *App) StartBackgroundDBSync() {
-	settings := a.GetDBSyncSettings()
+	// Guard against double-start (bgSyncStop non-nil means already started)
+	if a.bgSyncStop != nil {
+		log.Println("Background DB sync already started, ignoring duplicate call")
+		return
+	}
+	// Read settings without RBAC (this is a background startup call)
+	var autoEnabled bool
+	var freqMin int
+	var setting Setting
+	if err := a.db.Where("key = ?", "db_sync_auto_enabled").First(&setting).Error; err == nil {
+		autoEnabled = setting.Value == "true"
+	} else {
+		autoEnabled = true // default
+	}
+	if err := a.db.Where("key = ?", "db_sync_frequency_min").First(&setting).Error; err == nil {
+		fmt.Sscanf(setting.Value, "%d", &freqMin)
+	}
+	if freqMin < 5 {
+		freqMin = 30 // default
+	}
 
-	if !settings.AutoSyncEnabled {
+	if !autoEnabled {
 		log.Println("Background DB sync disabled by user settings")
 		return
 	}
 
-	frequency := time.Duration(settings.SyncFrequencyMin) * time.Minute
-	if frequency < 5*time.Minute {
-		frequency = 5 * time.Minute
-	}
+	frequency := time.Duration(freqMin) * time.Minute
 
+	a.bgSyncStop = make(chan struct{})
+	a.bgSyncWG.Add(1)
 	go func() {
+		defer a.bgSyncWG.Done()
+
 		// Initial delay to let app fully start
-		time.Sleep(60 * time.Second)
+		select {
+		case <-time.After(60 * time.Second):
+		case <-a.bgSyncStop:
+			return
+		}
 
 		ticker := time.NewTicker(frequency)
 		defer ticker.Stop()
 
 		log.Printf("Background DB sync started (interval: %v)", frequency)
 
-		for range ticker.C {
-			// Check settings again (might have changed)
-			currentSettings := a.GetDBSyncSettings()
-			if !currentSettings.AutoSyncEnabled {
-				log.Println("Background DB sync disabled, stopping...")
-				return
-			}
+		for {
+			select {
+			case <-ticker.C:
+				// Silent sync in background (no progress events to avoid UI noise)
+				if a.dbManager != nil && a.dbManager.IsOnline() {
+					lastSync := a.dbManager.getLastSyncTime()
 
-			// Silent sync in background (no progress events to avoid UI noise)
-			if a.dbManager != nil && a.dbManager.IsOnline() {
-				lastSync := a.dbManager.getLastSyncTime()
+					pushed, _ := a.dbManager.SyncToRemote(lastSync)
+					pulled, _ := a.dbManager.SyncFromRemote(lastSync)
 
-				pushed, _ := a.dbManager.SyncToRemote(lastSync)
-				pulled, _ := a.dbManager.SyncFromRemote(lastSync)
-
-				if pushed > 0 || pulled > 0 {
-					log.Printf("Background DB sync: pushed=%d, pulled=%d", pushed, pulled)
-					a.saveSetting("db_sync_last_at", time.Now().Format(time.RFC3339))
-					a.saveSetting("db_sync_last_status", "success")
+					if pushed > 0 || pulled > 0 {
+						log.Printf("Background DB sync: pushed=%d, pulled=%d", pushed, pulled)
+						a.saveSetting("db_sync_last_at", time.Now().Format(time.RFC3339))
+						a.saveSetting("db_sync_last_status", "success")
+					}
 				}
+			case <-a.bgSyncStop:
+				log.Println("Background DB sync stopped (shutdown)")
+				return
 			}
 		}
 	}()
+}
+
+// StopBackgroundDBSync stops the background DB sync goroutine and waits for it to finish.
+func (a *App) StopBackgroundDBSync() {
+	if a.bgSyncStop != nil {
+		a.bgSyncStopOnce.Do(func() { close(a.bgSyncStop) })
+		a.bgSyncWG.Wait()
+	}
 }

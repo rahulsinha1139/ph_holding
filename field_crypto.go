@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"golang.org/x/crypto/hkdf"
@@ -68,12 +69,10 @@ func NewFieldCrypto() (*FieldCrypto, error) {
 	}
 
 	// Load or generate random salt (stored in .field_crypto_salt file)
+	// No deterministic fallback — salt MUST be random for cryptographic security
 	salt, err := loadOrCreateSalt()
 	if err != nil {
-		// Fallback to deterministic salt if file system fails
-		log.Printf("field_crypto: salt file unavailable, using deterministic fallback: %v", err)
-		saltHash := sha256.Sum256([]byte("ph-holdings-field-crypto-salt-v1:" + secret))
-		salt = saltHash[:]
+		return nil, fmt.Errorf("field_crypto: salt initialization failed (CRITICAL — cannot use deterministic fallback): %w", err)
 	}
 
 	// Derive master key: if secret is long enough hex, use directly; else PBKDF2
@@ -334,8 +333,19 @@ func hexByte(hi, lo byte) (byte, error) {
 }
 
 // loadOrCreateSalt reads salt from .field_crypto_salt file, or creates one with random bytes.
+// Uses absolute path relative to the executable directory (not CWD).
+// Uses atomic write (write-then-rename) to prevent partial-write corruption.
 func loadOrCreateSalt() ([]byte, error) {
-	saltFile := ".field_crypto_salt"
+	exePath, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve executable path: %w", err)
+	}
+	// Resolve symlinks so salt file location is stable regardless of how binary is launched
+	exePath, err = filepath.EvalSymlinks(exePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve symlinks: %w", err)
+	}
+	saltFile := filepath.Join(filepath.Dir(exePath), ".field_crypto_salt")
 
 	// Try to read existing salt
 	data, err := os.ReadFile(saltFile)
@@ -349,12 +359,17 @@ func loadOrCreateSalt() ([]byte, error) {
 		return nil, fmt.Errorf("failed to generate random salt: %w", err)
 	}
 
-	// Save to file (0600 permissions - owner only)
-	if err := os.WriteFile(saltFile, salt, 0600); err != nil {
-		return nil, fmt.Errorf("failed to save salt file: %w", err)
+	// Atomic write: write to temp file, then rename (prevents partial-write corruption)
+	tmpFile := saltFile + ".tmp"
+	if err := os.WriteFile(tmpFile, salt, 0600); err != nil {
+		return nil, fmt.Errorf("failed to write temp salt file: %w", err)
+	}
+	if err := os.Rename(tmpFile, saltFile); err != nil {
+		os.Remove(tmpFile) // cleanup on failure
+		return nil, fmt.Errorf("failed to rename salt file: %w", err)
 	}
 
-	log.Printf("field_crypto: generated new random salt file")
+	log.Printf("field_crypto: generated new random salt file at %s", saltFile)
 	return salt, nil
 }
 

@@ -467,9 +467,9 @@ func (a *App) updatePOStatus(tx *gorm.DB, poID string) error {
 	// Update PO status
 	var newStatus string
 	if fullyReceived && len(po.Items) > 0 {
-		newStatus = "FullyReceived"
+		newStatus = "Received"
 	} else if partiallyReceived {
-		newStatus = "PartiallyReceived"
+		newStatus = "Partially Received"
 	} else {
 		newStatus = po.Status // Keep existing status
 	}
@@ -587,6 +587,98 @@ func (a *App) ReceiveAgainstPO(poID string, items []GRNItem) (GoodsReceivedNote,
 	}
 
 	log.Printf("✅ Created GRN %s from PO %s with %d items", grn.GRNNumber, po.PONumber, len(items))
+	return grn, nil
+}
+
+// =============================================================================
+// RECEIVE AGAINST PO WITH SERIAL NUMBERS (Phase 23)
+// =============================================================================
+
+// GRNItemWithSerials wraps a GRN item with serial number entries for serialized products
+type GRNItemWithSerials struct {
+	GRNItem
+	SerialNumbers []string `json:"serial_numbers"`
+}
+
+// ReceiveAgainstPOWithSerials creates a GRN with serial number tracking
+func (a *App) ReceiveAgainstPOWithSerials(poID string, items []GRNItemWithSerials) (GoodsReceivedNote, error) {
+	if err := a.requirePermission("grn:create"); err != nil {
+		return GoodsReceivedNote{}, err
+	}
+	if a.db == nil {
+		return GoodsReceivedNote{}, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	// Verify PO exists
+	var po PurchaseOrder
+	if err := a.db.Preload("Items").First(&po, "id = ?", poID).Error; err != nil {
+		return GoodsReceivedNote{}, newError("PO_NOT_FOUND", "Purchase Order not found", err.Error())
+	}
+
+	// Build PO item map for validation
+	poItemMap := make(map[string]PurchaseOrderItem)
+	for _, poItem := range po.Items {
+		poItemMap[poItem.ID] = poItem
+	}
+
+	// Pre-validate serial numbers
+	for _, item := range items {
+		if len(item.SerialNumbers) > 0 {
+			// Validate serial count matches received quantity
+			if float64(len(item.SerialNumbers)) != item.QuantityReceived {
+				poItem := poItemMap[item.POItemID]
+				return GoodsReceivedNote{}, newError("SERIAL_COUNT_MISMATCH",
+					fmt.Sprintf("Serial count (%d) must match received quantity (%.0f) for %s",
+						len(item.SerialNumbers), item.QuantityReceived, poItem.ProductCode), "")
+			}
+			// Validate no duplicate serials in DB
+			for _, sn := range item.SerialNumbers {
+				var existing SerialNumber
+				if err := a.db.Where("serial_no = ?", sn).First(&existing).Error; err == nil {
+					return GoodsReceivedNote{}, newError("DUPLICATE_SERIAL",
+						fmt.Sprintf("Serial number %s already exists (product: %s)", sn, existing.ProductCode), "")
+				}
+			}
+		}
+	}
+
+	// Extract plain GRN items for existing ReceiveAgainstPO logic
+	var grnItems []GRNItem
+	for _, item := range items {
+		grnItems = append(grnItems, item.GRNItem)
+	}
+
+	// Create GRN using existing logic
+	grn, err := a.ReceiveAgainstPO(poID, grnItems)
+	if err != nil {
+		return GoodsReceivedNote{}, err
+	}
+
+	// Now assign serial numbers to the created GRN items
+	for i, item := range items {
+		if len(item.SerialNumbers) == 0 {
+			continue
+		}
+		// Find the matching created GRN item
+		if i >= len(grn.Items) {
+			break
+		}
+		grnItem := grn.Items[i]
+		poItem := poItemMap[item.POItemID]
+
+		if err := a.assignSerialsToGRN(
+			grnItem.ID, grn.GRNNumber,
+			poID, po.PONumber,
+			poItem.ProductID, poItem.ProductCode,
+			item.SerialNumbers,
+			grn.ReceivedDate,
+		); err != nil {
+			log.Printf("⚠️ Failed to assign serials to GRN item %s: %v", grnItem.ID, err)
+			// Don't fail the GRN - serials can be added later
+		}
+	}
+
+	log.Printf("✅ Created GRN %s with serial tracking from PO %s", grn.GRNNumber, po.PONumber)
 	return grn, nil
 }
 

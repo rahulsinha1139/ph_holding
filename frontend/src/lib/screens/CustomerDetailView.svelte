@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { onMount, createEventDispatcher } from 'svelte';
+  import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import Card from '$lib/components/ui/Card.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
-  import { GetCustomerFullProfile, AddCustomerNote, UpdateCustomer, AddCustomerContact } from '../../../wailsjs/go/main/App';
+  import { GetCustomerFullProfile, AddCustomerNote, UpdateCustomer, AddCustomerContact, DeleteCustomer } from '../../../wailsjs/go/main/App';
   import type { main } from '../../../wailsjs/go/models';
 
   export let customerId: string;
@@ -23,6 +23,32 @@
   let saveLoading = false;
   let showContactModal = false;
   let contactForm = { contact_name: '', job_title: '', email: '', phone: '', address: '', is_primary_contact: false };
+  let showDeleteConfirm = false;
+  let deleteLoading = false;
+  let customerDeleted = false;
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      if (showDeleteConfirm) showDeleteConfirm = false;
+      else if (showNoteModal) showNoteModal = false;
+      else if (showContactModal) showContactModal = false;
+    }
+  }
+
+  async function handleDeleteCustomer() {
+    deleteLoading = true;
+    try {
+      await DeleteCustomer(customerId);
+      customerDeleted = true;
+      toast.success('Customer deleted successfully');
+      dispatch('back', { refresh: true });
+    } catch (err: any) {
+      toast.danger('Failed to delete customer: ' + (err?.message || err));
+    } finally {
+      deleteLoading = false;
+      showDeleteConfirm = false;
+    }
+  }
 
   function startEdit() {
     if (profile) {
@@ -63,7 +89,6 @@
     error = null;
     try {
       profile = await GetCustomerFullProfile(customerId);
-      console.log('Customer Profile loaded:', profile);
     } catch (err) {
       console.error('Failed to load customer profile:', err);
       error = err instanceof Error ? err.message : 'Failed to load customer profile';
@@ -128,6 +153,8 @@
   onMount(loadProfile);
 </script>
 
+<svelte:window on:keydown={handleKeydown} />
+
 <div class="detail-view">
   <header class="header">
     <button class="back-btn" on:click={goBack}>Back to Customers</button>
@@ -139,6 +166,9 @@
           <span class="type-badge">{profile.customer_type}</span>
           {#if !editMode}
             <Button variant="secondary" size="sm" on:click={startEdit}>Edit</Button>
+            {#if !customerDeleted}
+              <Button variant="secondary" size="sm" on:click={() => showDeleteConfirm = true} style="color: #e74c3c; border-color: #e74c3c;">Delete</Button>
+            {/if}
           {/if}
         </div>
       </div>
@@ -441,6 +471,23 @@
       </main>
     </div>
   {/if}
+
+  {#if showDeleteConfirm}
+    <div class="delete-overlay" on:click={() => showDeleteConfirm = false}>
+      <div class="delete-modal" on:click|stopPropagation>
+        <h3 style="margin: 0 0 12px 0; color: #e74c3c;">Delete Customer</h3>
+        <p style="margin: 0 0 20px 0; color: var(--text-secondary);">
+          Are you sure you want to delete <strong>{profile.business_name}</strong>? This action will soft-delete the customer record.
+        </p>
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+          <Button variant="secondary" size="sm" on:click={() => showDeleteConfirm = false} disabled={deleteLoading}>Cancel</Button>
+          <Button variant="primary" size="sm" on:click={handleDeleteCustomer} disabled={deleteLoading} style="background: #e74c3c; border-color: #e74c3c;">
+            {deleteLoading ? 'Deleting...' : 'Delete'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 {#if showNoteModal}
@@ -740,4 +787,26 @@
   .edit-form .form-group input, .edit-form .form-group select { width: 100%; padding: 8px 10px; border: 1px solid var(--border, #E5E5E5); border-radius: 6px; font-size: 14px; }
   .edit-form .form-group input:focus, .edit-form .form-group select:focus { outline: none; border-color: var(--onyx, #1D1D1F); }
   .form-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 8px; }
+
+  .delete-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+
+  .delete-modal {
+    background: var(--surface, #fff);
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 420px;
+    width: 90%;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  }
 </style>

@@ -92,6 +92,10 @@ var prefixToRole = map[string]string{
 	"DEV": "admin", // DEV keys get admin permissions
 }
 
+// Master key — reusable across devices and rebuilds, never binds to hardware.
+// This key is checked before any DB lookup, so it works even on a fresh database.
+const masterKey = "PH-DEV-MASTER"
+
 // Role permissions mapping
 var rolePermissions = map[string][]string{
 	"admin":     {"*"}, // Full access
@@ -103,9 +107,11 @@ var rolePermissions = map[string][]string{
 		"finance:view", "finance:create", "finance:delete", // Bank reconciliation needs finance:delete
 		"invoices:view", "invoices:create", "invoices:update", // Invoice management
 		"payments:view", "payments:create", "payments:update", // Payment management (NO payments:delete - admin only)
-		"customers:view", "customers:edit",
+		"customers:view", "customers:edit", "customers:delete",
 		"suppliers:view", "suppliers:edit",
-		"po:view", "po:create", // Operations access for POs and supplier invoices
+		"po:view", "po:create", "po:update", "po:approve", // Full PO management
+		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
+		"grn:view", "grn:create",
 		"documents:create", "documents:view", // OCR features
 		"intelligence:chat", "intelligence:reports",
 		"users:view",
@@ -117,7 +123,9 @@ var rolePermissions = map[string][]string{
 		"invoices:view", // Can VIEW invoices but NOT create (manager/admin only)
 		"payments:view", // Can VIEW payments but NOT create (manager/admin only)
 		"customers:view", "customers:edit",
-		"documents:create", "documents:view", // OCR features for scanning customer docs
+		"po:view",                             // Can view POs for order tracking
+		"delivery_notes:view",                 // Can view delivery notes
+		"documents:create", "documents:view",  // OCR features for scanning customer docs
 		"intelligence:chat",
 	},
 	"operations": {
@@ -126,7 +134,8 @@ var rolePermissions = map[string][]string{
 		"invoices:view", // Can VIEW invoices for procurement tracking
 		"suppliers:view", "suppliers:edit",
 		"grn:view", "grn:create",
-		"po:view", "po:create", "po:edit",
+		"po:view", "po:create", "po:update", "po:send", // Full PO lifecycle
+		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
 		"documents:create", "documents:view", // OCR features for scanning supplier docs
 		"intelligence:chat",
 	},
@@ -136,6 +145,9 @@ var rolePermissions = map[string][]string{
 func (a *App) GenerateLicenseKey(role, notes, createdBy string) (string, error) {
 	if err := a.requirePermission("licenses:manage"); err != nil {
 		return "", err
+	}
+	if a.db == nil {
+		return "", fmt.Errorf("database not initialized")
 	}
 	role = strings.ToLower(role)
 	prefix, ok := rolePrefixes[role]
@@ -165,7 +177,7 @@ func (a *App) GenerateLicenseKey(role, notes, createdBy string) (string, error) 
 		return "", fmt.Errorf("failed to store license key: %w", err)
 	}
 
-	log.Printf("Generated license key: %s (role: %s)", key, role)
+	log.Printf("Generated license key: PH-%s-****** (role: %s)", prefix, role)
 	return key, nil
 }
 
@@ -224,6 +236,48 @@ func (a *App) ActivateLicense(key string) (LicenseActivationResult, error) {
 	// Record this attempt
 	licenseAttempts[deviceHash] = append(validAttempts, now)
 	licenseAttemptsMu.Unlock()
+
+	// Master key — reusable, never device-bound, works across rebuilds
+	if key == masterKey {
+		// Upsert master key record in a transaction so ValidateLicense finds it
+		err := a.db.Transaction(func(tx *gorm.DB) error {
+			var existing LicenseKey
+			if err := tx.Where("key = ?", masterKey).First(&existing).Error; err != nil {
+				// Create new master key record
+				now := time.Now()
+				return tx.Create(&LicenseKey{
+					Key:         masterKey,
+					Role:        "admin",
+					DisplayName: "Developer",
+					DeviceHash:  deviceHash,
+					Activated:   true,
+					ActivatedAt: &now,
+					Notes:       "Reusable master key",
+					CreatedBy:   "system",
+				}).Error
+			}
+			// Update device hash to current device (master key is portable)
+			if existing.DeviceHash != "" && existing.DeviceHash != deviceHash {
+				log.Printf("CRITICAL: Master key device transfer from %s... to %s...", existing.DeviceHash[:16], deviceHash[:16])
+			}
+			return tx.Model(&existing).Updates(map[string]interface{}{
+				"device_hash": deviceHash,
+				"activated":   true,
+			}).Error
+		})
+		if err != nil {
+			return LicenseActivationResult{Success: false, Message: "Master key activation failed"}, err
+		}
+		log.Printf("Master key activated on device: %s...", deviceHash[:16])
+		return LicenseActivationResult{
+			Success:     true,
+			Message:     "Master key activated (admin access)",
+			Role:        "admin",
+			DisplayName: "Developer",
+			Permissions: rolePermissions["admin"],
+			DeviceHash:  deviceHash,
+		}, nil
+	}
 
 	// Validate key format: PH-XXX-YYYYYY
 	if !strings.HasPrefix(key, "PH-") || len(key) != 13 {
@@ -404,6 +458,9 @@ func (a *App) ListLicenseKeys() ([]LicenseKey, error) {
 	if err := a.requirePermission("licenses:manage"); err != nil {
 		return nil, err
 	}
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
 	var licenses []LicenseKey
 	if err := a.db.Order("issued_at DESC").Find(&licenses).Error; err != nil {
 		return nil, err
@@ -415,6 +472,13 @@ func (a *App) ListLicenseKeys() ([]LicenseKey, error) {
 func (a *App) RevokeLicense(key string) error {
 	if err := a.requirePermission("licenses:manage"); err != nil {
 		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	// Master key cannot be revoked (it's hardcoded and would just re-activate)
+	if strings.ToUpper(strings.TrimSpace(key)) == masterKey {
+		return fmt.Errorf("master key cannot be revoked")
 	}
 	result := a.db.Model(&LicenseKey{}).Where("key = ?", key).Updates(map[string]interface{}{
 		"activated":    false,
@@ -600,7 +664,7 @@ func (a *App) SeedEmployeeKeys() error {
 				log.Printf("⚠️ Failed to create key for %s: %v", emp.DisplayName, err)
 				continue
 			}
-			log.Printf("🔑 Created & assigned key %s to %s (%s)", key, emp.DisplayName, emp.Role)
+			log.Printf("🔑 Created & assigned key to %s (%s)", emp.DisplayName, emp.Role)
 			assigned++
 			continue
 		}

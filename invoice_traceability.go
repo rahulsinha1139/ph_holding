@@ -27,6 +27,12 @@ type InvoiceAuditTrail struct {
 
 // GetInvoiceAuditTrail retrieves complete audit trail for an invoice
 func (a *App) GetInvoiceAuditTrail(invoiceID string) (InvoiceAuditTrail, error) {
+	if err := a.requirePermission("finance:view"); err != nil {
+		return InvoiceAuditTrail{}, err
+	}
+	if a.db == nil {
+		return InvoiceAuditTrail{}, fmt.Errorf("database not initialized")
+	}
 	ctx := context.Background()
 	trail := InvoiceAuditTrail{
 		PurchaseOrders:   []PurchaseOrder{},
@@ -92,6 +98,12 @@ func (a *App) GetInvoiceAuditTrail(invoiceID string) (InvoiceAuditTrail, error) 
 
 // CalculateInvoiceMargin calculates and updates gross margin for an invoice
 func (a *App) CalculateInvoiceMargin(invoiceID string) error {
+	if err := a.requirePermission("invoices:update"); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
 	ctx := context.Background()
 
 	// 1. Load invoice
@@ -145,6 +157,12 @@ func (a *App) CalculateInvoiceMargin(invoiceID string) error {
 
 // LinkInvoiceToOrder links an invoice to an order
 func (a *App) LinkInvoiceToOrder(invoiceID string, orderID string) error {
+	if err := a.requirePermission("invoices:update"); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
 	ctx := context.Background()
 
 	// 1. Verify order exists
@@ -169,6 +187,12 @@ func (a *App) LinkInvoiceToOrder(invoiceID string, orderID string) error {
 
 // LinkInvoiceToRFQ links an invoice to an RFQ/Offer
 func (a *App) LinkInvoiceToRFQ(invoiceID string, rfqID string) error {
+	if err := a.requirePermission("invoices:update"); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
 	ctx := context.Background()
 
 	// 1. Verify RFQ exists
@@ -196,6 +220,12 @@ func (a *App) LinkInvoiceToRFQ(invoiceID string, rfqID string) error {
 
 // GetInvoicesByOrder retrieves all invoices for an order
 func (a *App) GetInvoicesByOrder(orderID string) ([]Invoice, error) {
+	if err := a.requirePermission("invoices:view"); err != nil {
+		return nil, err
+	}
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
 	ctx := context.Background()
 	var invoices []Invoice
 
@@ -203,6 +233,7 @@ func (a *App) GetInvoicesByOrder(orderID string) ([]Invoice, error) {
 		Preload("Items").
 		Where("order_id = ?", orderID).
 		Order("invoice_date DESC").
+		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve invoices: %w", err)
 	}
@@ -212,6 +243,12 @@ func (a *App) GetInvoicesByOrder(orderID string) ([]Invoice, error) {
 
 // GetInvoicesByRFQ retrieves all invoices linked to an RFQ
 func (a *App) GetInvoicesByRFQ(rfqID string) ([]Invoice, error) {
+	if err := a.requirePermission("invoices:view"); err != nil {
+		return nil, err
+	}
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
 	ctx := context.Background()
 	var invoices []Invoice
 
@@ -219,6 +256,7 @@ func (a *App) GetInvoicesByRFQ(rfqID string) ([]Invoice, error) {
 		Preload("Items").
 		Where("rfq_id = ?", rfqID).
 		Order("invoice_date DESC").
+		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve invoices: %w", err)
 	}
@@ -229,6 +267,12 @@ func (a *App) GetInvoicesByRFQ(rfqID string) ([]Invoice, error) {
 // RecalculateAllInvoiceMargins recalculates margins for all invoices
 // Useful after bulk supplier invoice imports
 func (a *App) RecalculateAllInvoiceMargins() (int, error) {
+	if err := a.requirePermission("finance:view"); err != nil {
+		return 0, err
+	}
+	if a.db == nil {
+		return 0, fmt.Errorf("database not initialized")
+	}
 	ctx := context.Background()
 
 	var invoices []Invoice

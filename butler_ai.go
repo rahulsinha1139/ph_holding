@@ -433,16 +433,19 @@ func (a *App) buildIntentContext(intent Intent) map[string]interface{} {
 	case "operations":
 		context["operations_data"] = a.getOperationsContext()
 		context["po_summary"] = a.getPurchaseOrderSummary()
+		context["risk_data"] = a.getRiskContext() // Include risk for operations awareness
 
 	case "risk":
 		context["risk_data"] = a.getRiskContext()
 		context["ar_summary"] = a.getARSummary()
+		context["operations_data"] = a.getOperationsContext() // Include ops for delivery risk context
 
 	default:
 		// General query - provide comprehensive overview
 		context["customer_data"] = a.getCustomerContext(intent.EntityName)
 		context["ar_summary"] = a.getARSummary()
 		context["operations_data"] = a.getOperationsContext()
+		context["risk_data"] = a.getRiskContext()
 		if hasFinanceAccess {
 			context["financial_data"] = a.getFinancialContext()
 		}
@@ -617,6 +620,98 @@ func (a *App) getCustomerContext(entityName string) map[string]interface{} {
 				})
 			}
 			result["recent_payments"] = paySummary
+
+			// Customer contacts (decision makers)
+			var contacts []CustomerContact
+			a.db.Where("customer_id = ?", customer.ID).Find(&contacts)
+			contactList := make([]map[string]interface{}, 0)
+			for _, c := range contacts {
+				contactList = append(contactList, map[string]interface{}{
+					"name":       c.ContactName,
+					"job_title":  c.JobTitle,
+					"email":      c.Email,
+					"phone":      c.Phone,
+					"is_primary": c.IsPrimaryContact,
+				})
+			}
+			result["contacts"] = contactList
+
+			// Recent orders with line item details
+			var orders []Order
+			a.db.Where("customer_id = ?", customer.CustomerID).
+				Order("order_date DESC").Limit(5).Find(&orders)
+			orderSummary := make([]map[string]interface{}, 0)
+			for _, o := range orders {
+				orderEntry := map[string]interface{}{
+					"number":   o.OrderNumber,
+					"date":     o.OrderDate.Format("2006-01-02"),
+					"total":    o.GrandTotalBHD,
+					"status":   o.Status,
+					"division": o.Division,
+				}
+				// Get line items for product mix insight
+				var items []OrderItem
+				a.db.Where("order_id = ?", o.ID).Find(&items)
+				itemList := make([]map[string]interface{}, 0)
+				for _, item := range items {
+					itemList = append(itemList, map[string]interface{}{
+						"equipment":   item.Equipment,
+						"model":       item.Model,
+						"qty":         item.Quantity,
+						"unit_price":  item.UnitPrice,
+						"margin_pct":  item.MarginPercent,
+					})
+				}
+				orderEntry["items"] = itemList
+				orderSummary = append(orderSummary, orderEntry)
+			}
+			result["recent_orders_detail"] = orderSummary
+
+			// Entity notes (CRM notes)
+			var notes []EntityNote
+			a.db.Where("entity_type = ? AND entity_id = ?", "customer", customer.ID).
+				Order("created_at DESC").Limit(10).Find(&notes)
+			noteList := make([]map[string]interface{}, 0)
+			for _, n := range notes {
+				noteList = append(noteList, map[string]interface{}{
+					"type":    n.NoteType,
+					"content": n.Content,
+					"date":    n.CreatedAt.Format("2006-01-02"),
+				})
+			}
+			result["notes"] = noteList
+
+			// Pending follow-up tasks
+			var tasks []FollowUpTask
+			a.db.Where("customer_id = ? AND status IN ?", customer.ID, []string{"pending", "in_progress", "overdue"}).
+				Order("due_date ASC").Limit(5).Find(&tasks)
+			taskList := make([]map[string]interface{}, 0)
+			for _, t := range tasks {
+				taskList = append(taskList, map[string]interface{}{
+					"title":    t.Title,
+					"due_date": t.DueDate.Format("2006-01-02"),
+					"status":   t.Status,
+					"priority": t.Priority,
+				})
+			}
+			result["pending_tasks"] = taskList
+
+			// Active offers for this customer (pipeline)
+			var offers []Offer
+			a.db.Where("customer_id = ? AND stage NOT IN ?", customer.CustomerID, []string{"Lost", "Expired"}).
+				Order("quotation_date DESC").Limit(5).Find(&offers)
+			offerList := make([]map[string]interface{}, 0)
+			for _, o := range offers {
+				offerList = append(offerList, map[string]interface{}{
+					"number":   o.OfferNumber,
+					"stage":    o.Stage,
+					"value":    o.TotalValueBHD,
+					"margin":   o.EstimatedMargin,
+					"date":     o.QuotationDate.Format("2006-01-02"),
+					"validity": o.ValidityDate.Format("2006-01-02"),
+				})
+			}
+			result["active_offers"] = offerList
 		}
 	}
 
@@ -735,6 +830,80 @@ func (a *App) getSupplierContext(entityName string) map[string]interface{} {
 			}
 			result["recent_supplier_invoices"] = supInvSummary
 			result["total_supplier_invoice_value"] = totalSupInvValue
+
+			// Supplier contacts
+			var contacts []SupplierContact
+			a.db.Where("supplier_id = ?", supplier.ID).Find(&contacts)
+			contactList := make([]map[string]interface{}, 0)
+			for _, c := range contacts {
+				contactList = append(contactList, map[string]interface{}{
+					"name":       c.ContactName,
+					"job_title":  c.JobTitle,
+					"email":      c.Email,
+					"phone":      c.Phone,
+					"is_primary": c.IsPrimaryContact,
+				})
+			}
+			result["contacts"] = contactList
+
+			// Entity notes (CRM notes for supplier)
+			var notes []EntityNote
+			a.db.Where("entity_type = ? AND entity_id = ?", "supplier", supplier.ID).
+				Order("created_at DESC").Limit(10).Find(&notes)
+			noteList := make([]map[string]interface{}, 0)
+			for _, n := range notes {
+				noteList = append(noteList, map[string]interface{}{
+					"type":    n.NoteType,
+					"content": n.Content,
+					"date":    n.CreatedAt.Format("2006-01-02"),
+				})
+			}
+			result["notes"] = noteList
+
+			// Supplier issues (quality/delivery problems)
+			var issues []SupplierIssue
+			a.db.Where("supplier_id = ?", supplier.ID).
+				Order("created_at DESC").Limit(5).Find(&issues)
+			issueList := make([]map[string]interface{}, 0)
+			for _, iss := range issues {
+				issueList = append(issueList, map[string]interface{}{
+					"order_ref":   iss.OrderRef,
+					"description": iss.Description,
+					"status":      iss.Status,
+					"cost_bhd":    iss.CostBHD,
+				})
+			}
+			result["issues"] = issueList
+
+			// Supplier payments summary
+			var supPayments []SupplierPayment
+			a.db.Where("supplier_id = ?", supplier.ID).
+				Order("payment_date DESC").Limit(10).Find(&supPayments)
+			supPayList := make([]map[string]interface{}, 0)
+			for _, sp := range supPayments {
+				supPayList = append(supPayList, map[string]interface{}{
+					"amount":   sp.AmountBHD,
+					"date":     sp.PaymentDate.Format("2006-01-02"),
+					"method":   sp.PaymentMethod,
+					"currency": sp.Currency,
+				})
+			}
+			result["recent_payments"] = supPayList
+
+			// GRN quality stats for this supplier
+			var grnCount int64
+			var grnPassedCount int64
+			a.db.Model(&GoodsReceivedNote{}).Joins("JOIN purchase_orders ON purchase_orders.id = goods_received_notes.purchase_order_id").
+				Where("purchase_orders.supplier_id = ?", supplier.ID).Count(&grnCount)
+			a.db.Model(&GoodsReceivedNote{}).Joins("JOIN purchase_orders ON purchase_orders.id = goods_received_notes.purchase_order_id").
+				Where("purchase_orders.supplier_id = ? AND goods_received_notes.qc_status = ?", supplier.ID, "Passed").Count(&grnPassedCount)
+			if grnCount > 0 {
+				result["grn_quality"] = map[string]interface{}{
+					"total_grns":  grnCount,
+					"passed":      grnPassedCount,
+					"pass_rate":   fmt.Sprintf("%.1f%%", float64(grnPassedCount)/float64(grnCount)*100),
+				}
+			}
 		}
 	}
 
@@ -843,6 +1012,56 @@ func (a *App) getFinancialContext() map[string]interface{} {
 	a.db.Model(&SupplierPayment{}).Select("COALESCE(SUM(amount_bhd), 0)").Scan(&totalSupplierPayments)
 	result["total_supplier_payments_bhd"] = totalSupplierPayments
 
+	// Bank accounts (cash position)
+	var bankAccounts []BankAccount
+	a.db.Where("is_active = ?", true).Find(&bankAccounts)
+	bankList := make([]map[string]interface{}, 0)
+	var totalBankBalance float64
+	for _, ba := range bankAccounts {
+		totalBankBalance += ba.CurrentBalance
+		bankList = append(bankList, map[string]interface{}{
+			"bank":     ba.BankName,
+			"account":  ba.AccountName,
+			"currency": ba.Currency,
+			"balance":  ba.CurrentBalance,
+		})
+	}
+	result["bank_accounts"] = bankList
+	result["total_bank_balance_bhd"] = totalBankBalance
+
+	// Current FX rates
+	var fxRates []CurrencyExchangeRate
+	a.db.Where("effective_to IS NULL").Find(&fxRates)
+	rateList := make([]map[string]interface{}, 0)
+	for _, fx := range fxRates {
+		rateList = append(rateList, map[string]interface{}{
+			"currency": fx.CurrencyCode,
+			"rate":     fx.Rate,
+			"since":    fx.EffectiveFrom.Format("2006-01-02"),
+		})
+	}
+	result["current_fx_rates"] = rateList
+
+	// Accounts payable summary (unpaid supplier invoices)
+	var totalAP float64
+	var apCount int64
+	a.db.Model(&SupplierInvoice{}).Where("status NOT IN ?", []string{"Paid", "Rejected"}).
+		Select("COALESCE(SUM(total_bhd), 0)").Scan(&totalAP)
+	a.db.Model(&SupplierInvoice{}).Where("status NOT IN ?", []string{"Paid", "Rejected"}).Count(&apCount)
+	result["total_payables_bhd"] = totalAP
+	result["unpaid_supplier_invoices"] = apCount
+
+	// Division-wise revenue breakdown (PH Trading vs AHS Trading)
+	var phRevenue, ahsRevenue float64
+	a.db.Model(&Invoice{}).Where("division = ?", "PH Trading").
+		Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&phRevenue)
+	a.db.Model(&Invoice{}).Where("division = ?", "AHS Trading").
+		Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&ahsRevenue)
+	result["division_revenue"] = map[string]interface{}{
+		"ph_trading":  phRevenue,
+		"ahs_trading": ahsRevenue,
+	}
+
 	return result
 }
 
@@ -919,6 +1138,105 @@ func (a *App) getOperationsContext() map[string]interface{} {
 		Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&totalOfferValue)
 	result["active_offer_pipeline_bhd"] = totalOfferValue
 
+	// Recent offers with item-level detail (product mix in pipeline)
+	var recentOffers []Offer
+	a.db.Where("stage NOT IN ?", []string{"Lost", "Expired"}).
+		Order("quotation_date DESC").Limit(5).Find(&recentOffers)
+	offerDetailList := make([]map[string]interface{}, 0)
+	for _, o := range recentOffers {
+		offerEntry := map[string]interface{}{
+			"number":   o.OfferNumber,
+			"customer": o.CustomerName,
+			"stage":    o.Stage,
+			"value":    o.TotalValueBHD,
+			"margin":   o.EstimatedMargin,
+			"date":     o.QuotationDate.Format("2006-01-02"),
+		}
+		var items []OfferItem
+		a.db.Where("offer_id = ?", o.ID).Find(&items)
+		itemList := make([]map[string]interface{}, 0)
+		for _, item := range items {
+			itemList = append(itemList, map[string]interface{}{
+				"equipment":   item.Equipment,
+				"model":       item.Model,
+				"qty":         item.Quantity,
+				"unit_price":  item.UnitPrice,
+				"margin_pct":  item.MarginPercent,
+				"currency":    item.Currency,
+			})
+		}
+		offerEntry["items"] = itemList
+		offerDetailList = append(offerDetailList, offerEntry)
+	}
+	result["recent_offers_detail"] = offerDetailList
+
+	// Delivery fulfillment status
+	var totalDN, deliveredDN, partialDN int64
+	a.db.Model(&DeliveryNote{}).Count(&totalDN)
+	a.db.Model(&DeliveryNote{}).Where("status = ?", "Delivered").Count(&deliveredDN)
+	a.db.Model(&DeliveryNote{}).Where("is_partial_delivery = ?", true).Count(&partialDN)
+	result["delivery_stats"] = map[string]interface{}{
+		"total":     totalDN,
+		"delivered": deliveredDN,
+		"partial":   partialDN,
+	}
+
+	// GRN quality overview
+	var totalGRNItems int64
+	var rejectedItems float64
+	a.db.Model(&GRNItem{}).Count(&totalGRNItems)
+	a.db.Model(&GRNItem{}).Select("COALESCE(SUM(quantity_rejected), 0)").Scan(&rejectedItems)
+	result["grn_quality"] = map[string]interface{}{
+		"total_items":      totalGRNItems,
+		"total_rejected":   rejectedItems,
+	}
+
+	// Pending offer follow-ups (upcoming pipeline actions)
+	var pendingFollowUps []OfferFollowUp
+	a.db.Where("status = ?", "pending").Order("follow_up_date ASC").Limit(5).Find(&pendingFollowUps)
+	followUpList := make([]map[string]interface{}, 0)
+	for _, fu := range pendingFollowUps {
+		// Get offer number for context
+		var offer Offer
+		offerNum := ""
+		if err := a.db.Select("offer_number, customer_name").Where("id = ?", fu.OfferID).First(&offer).Error; err == nil {
+			offerNum = offer.OfferNumber
+		}
+		followUpList = append(followUpList, map[string]interface{}{
+			"offer":     offerNum,
+			"customer":  offer.CustomerName,
+			"date":      fu.FollowUpDate.Format("2006-01-02"),
+			"notes":     fu.Notes,
+		})
+	}
+	result["pending_follow_ups"] = followUpList
+
+	// Product catalog summary
+	var totalProducts, activeProducts int64
+	a.db.Model(&ProductMaster{}).Count(&totalProducts)
+	a.db.Model(&ProductMaster{}).Where("is_active = ?", true).Count(&activeProducts)
+	result["product_catalog"] = map[string]interface{}{
+		"total":  totalProducts,
+		"active": activeProducts,
+	}
+
+	// Opportunity pipeline (Three-Regime dynamics)
+	var opportunities []Opportunity
+	a.db.Where("stage NOT IN ?", []string{"Won", "Lost", "Expired"}).
+		Order("confidence DESC").Limit(10).Find(&opportunities)
+	oppList := make([]map[string]interface{}, 0)
+	for _, opp := range opportunities {
+		oppList = append(oppList, map[string]interface{}{
+			"folder":     opp.FolderNumber,
+			"customer":   opp.CustomerName,
+			"stage":      opp.Stage,
+			"revenue":    opp.RevenueBHD,
+			"confidence": opp.Confidence,
+			"regime":     opp.Regime,
+		})
+	}
+	result["active_opportunities"] = oppList
+
 	return result
 }
 
@@ -963,6 +1281,72 @@ func (a *App) getRiskContext() map[string]interface{} {
 	a.db.Model(&CustomerMaster{}).Where("ar_risk_tier = ?", "High").Count(&highCount)
 	result["critical_risk_customers"] = criticalCount
 	result["high_risk_customers"] = highCount
+
+	// Active alerts
+	var alerts []Alert
+	a.db.Where("is_active = ? AND is_acknowledged = ?", true, false).
+		Order("CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END").
+		Limit(10).Find(&alerts)
+	alertList := make([]map[string]interface{}, 0)
+	for _, al := range alerts {
+		alertList = append(alertList, map[string]interface{}{
+			"type":     al.AlertType,
+			"severity": al.Severity,
+			"title":    al.Title,
+			"message":  al.Message,
+		})
+	}
+	result["active_alerts"] = alertList
+
+	// Overdue supplier invoices (AP risk)
+	var overdueSupInv []SupplierInvoice
+	a.db.Where("status NOT IN ? AND due_date < ?", []string{"Paid", "Rejected"}, time.Now()).
+		Order("total_bhd DESC").Limit(10).Find(&overdueSupInv)
+	overdueAPList := make([]map[string]interface{}, 0)
+	var totalOverdueAP float64
+	for _, si := range overdueSupInv {
+		daysOverdue := int(time.Since(si.DueDate).Hours() / 24)
+		totalOverdueAP += si.TotalBHD
+		overdueAPList = append(overdueAPList, map[string]interface{}{
+			"supplier":     si.SupplierName,
+			"invoice":      si.InvoiceNumber,
+			"amount":       si.TotalBHD,
+			"days_overdue": daysOverdue,
+		})
+	}
+	result["overdue_supplier_invoices"] = overdueAPList
+	result["total_overdue_ap_bhd"] = totalOverdueAP
+
+	// Expiring offers (validity ending soon - opportunity risk)
+	var expiringOffers []Offer
+	a.db.Where("stage = ? AND validity_date BETWEEN ? AND ?", "Quoted",
+		time.Now(), time.Now().AddDate(0, 0, 14)).
+		Order("validity_date ASC").Limit(5).Find(&expiringOffers)
+	expiringList := make([]map[string]interface{}, 0)
+	for _, o := range expiringOffers {
+		expiringList = append(expiringList, map[string]interface{}{
+			"number":   o.OfferNumber,
+			"customer": o.CustomerName,
+			"value":    o.TotalValueBHD,
+			"expires":  o.ValidityDate.Format("2006-01-02"),
+		})
+	}
+	result["expiring_offers"] = expiringList
+
+	// Overdue follow-up tasks
+	var overdueTasks []FollowUpTask
+	a.db.Where("status IN ? AND due_date < ?", []string{"pending", "overdue"}, time.Now()).
+		Order("due_date ASC").Limit(10).Find(&overdueTasks)
+	taskList := make([]map[string]interface{}, 0)
+	for _, t := range overdueTasks {
+		taskList = append(taskList, map[string]interface{}{
+			"title":    t.Title,
+			"due_date": t.DueDate.Format("2006-01-02"),
+			"priority": t.Priority,
+			"type":     t.Type,
+		})
+	}
+	result["overdue_tasks"] = taskList
 
 	return result
 }
@@ -1221,13 +1605,15 @@ func buildMistralSystemPrompt(context map[string]interface{}, regime map[string]
 	// Serialize context to JSON for injection
 	contextJSON, _ := json.MarshalIndent(context, "", "  ")
 
-	// Sanitize context data to prevent prompt injection
-	contextStr := string(contextJSON)
-	contextStr = strings.ReplaceAll(contextStr, "[ACTIONS]", "")
-	contextStr = strings.ReplaceAll(contextStr, "[/ACTIONS]", "")
-	contextStr = strings.ReplaceAll(contextStr, "SYSTEM:", "")
-	contextStr = strings.ReplaceAll(contextStr, "system:", "")
-	contextStr = strings.ReplaceAll(contextStr, "INSTRUCTIONS:", "")
+	// Sanitize context data to prevent prompt injection from database-sourced values
+	contextStr := sanitizeForPrompt(string(contextJSON))
+	// Case-insensitive removal of action/system/instruction markers
+	contextStr = contextCleanupPatterns.ReplaceAllString(contextStr, "")
+	// Cap context size to prevent unbounded API payloads (Mistral max ~32K tokens ≈ 128K chars)
+	const maxContextChars = 100000
+	if len(contextStr) > maxContextChars {
+		contextStr = contextStr[:maxContextChars] + "\n... [context truncated at 100K chars]"
+	}
 
 	// Build regime guidance
 	regimeGuidance := buildRegimeGuidance(regime)
@@ -1244,6 +1630,15 @@ YOUR ROLE:
 - Provide actionable insights and recommendations
 - Surface risks and opportunities proactively
 - Use ONLY the provided context data (do not hallucinate figures)
+
+DATA AVAILABLE:
+- Customer profiles with contacts, grades, AR tracking, credit limits, and CRM notes
+- Supplier profiles with contacts, issues, quality stats, and payment history
+- Order and invoice line items with product details, margins, and fulfillment tracking
+- Offer pipeline with item-level costing and follow-up schedules
+- Financial data: bank balances, FX rates, AR/AP, division-wise revenue (PH Trading vs AHS Trading)
+- Operations: delivery notes, GRN quality, product catalog, opportunities
+- Risk: alerts, overdue invoices (AR + AP), expiring offers, overdue tasks
 
 CONTEXT DATA:
 %s
@@ -1397,6 +1792,21 @@ func parseActionBlocks(text string) []ButlerAction {
 // ============================================================================
 // UTILITY
 // ============================================================================
+
+// promptInjectionPatterns matches known Mistral/Llama prompt injection markers (case-insensitive)
+var promptInjectionPatterns = regexp.MustCompile(`(?i)(\[/?INST\]|<</?SYS>>|<\||(\|>)|</?s>)`)
+
+// contextCleanupPatterns matches action/system/instruction markers that could hijack responses (case-insensitive)
+var contextCleanupPatterns = regexp.MustCompile(`(?i)(\[/?ACTIONS\]|SYSTEM:|INSTRUCTIONS:)`)
+
+// sanitizeForPrompt removes potential prompt injection markers from user-supplied data
+// before it is interpolated into Mistral API prompts.
+// Does NOT truncate — callers are responsible for their own size limits.
+func sanitizeForPrompt(input string) string {
+	sanitized := strings.ReplaceAll(input, "```", "")
+	sanitized = promptInjectionPatterns.ReplaceAllString(sanitized, "")
+	return sanitized
+}
 
 // settingsBasedMistralKey is set by the App during startup to provide settings-based key lookup
 var settingsBasedMistralKey func() string
@@ -1610,8 +2020,9 @@ IMPORTANT:
 - Be conservative with quantities - only extract if clearly stated
 - For bank statements: DEBIT = money LEAVING the account (outgoing payments, transfers out, charges). CREDIT = money ENTERING the account (incoming payments, transfers in, deposits). Incoming transfers from customers (Fawri, INWD, deposit, TRF-IN, receipts) should be CREDITS. Outgoing payments (DGC, ONUS, Fawri-out, TRF-OUT, withdrawals, fees, charges) should be DEBITS. Use the running balance to validate: if the balance increases after a transaction it is a credit; if it decreases it is a debit. Consolidate related charges into their parent transaction. Bank fees (EFTS Charges, SWIFT FEES, Corr Bnk Chg), VAT on fees, and similar service charges that reference the same transaction should be MERGED into the parent transaction by adding the amounts together. Use the parent description. Do NOT list fee/VAT lines as separate transactions. Use date format YYYY-MM-DD (e.g. 2026-01-15).`
 
+	// Sanitize user-supplied data before injection into prompt
 	userPrompt := fmt.Sprintf("Analyze this %s document and extract structured information:\n\n%s%s",
-		docType, contextInfo, text)
+		docType, sanitizeForPrompt(contextInfo), sanitizeForPrompt(text))
 
 	// Call Mistral API
 	response, err := callMistral(mistralModelLarge, systemPrompt, userPrompt)

@@ -13,9 +13,14 @@
     // import BookBankReconciliationScreen from "./BookBankReconciliationScreen.svelte";
     // import FXRevaluationScreen from "./FXRevaluationScreen.svelte";
     // import AuditTrailViewer from "./AuditTrailViewer.svelte";
+    import AHSDashboard from "./AHSDashboard.svelte";
     import ErrorBoundary from "../components/ErrorBoundary.svelte";
 
     let activeTab = "dashboard";
+
+    // E2: Company selector - 'PH Trading' is the default, 'AHS Trading' is the sister company
+    let selectedCompany = "PH Trading";
+    const companies = ["PH Trading", "AHS Trading"];
 
     const tabs = [
         { id: "dashboard", label: "Dashboard" },
@@ -35,23 +40,44 @@
 <ErrorBoundary name="Finance Hub">
     <div class="hub" in:fade={{ duration: 200 }}>
         <header class="header">
-            <h1>Finance Hub</h1>
+            <div class="header-top">
+                <h1>Finance Hub</h1>
+                <!-- E2: Company Selector -->
+                <div class="company-selector">
+                    {#each companies as company}
+                        <button
+                            class="company-btn"
+                            class:active={selectedCompany === company}
+                            on:click={() => selectedCompany = company}
+                        >
+                            {company}
+                        </button>
+                    {/each}
+                </div>
+            </div>
 
             <nav class="tabs">
-                {#each tabs as tab}
-                    <button
-                        class="tab"
-                        class:active={activeTab === tab.id}
-                        on:click={() => (activeTab = tab.id)}
-                    >
-                        {tab.label}
-                    </button>
-                {/each}
+                {#if selectedCompany === 'PH Trading'}
+                    {#each tabs as tab}
+                        <button
+                            class="tab"
+                            class:active={activeTab === tab.id}
+                            on:click={() => (activeTab = tab.id)}
+                        >
+                            {tab.label}
+                        </button>
+                    {/each}
+                {:else}
+                    <button class="tab active">AHS Trading Dashboard</button>
+                {/if}
             </nav>
         </header>
 
         <main class="content">
-            {#if activeTab === "dashboard"}
+            {#if selectedCompany === 'AHS Trading'}
+                <!-- E2: AHS Trading Dashboard -->
+                <AHSDashboard embedded={true} />
+            {:else if activeTab === "dashboard"}
                 <FinancialDashboard embedded={true} />
             {:else if activeTab === "invoices"}
                 <InvoicesScreen embedded={true} />
@@ -89,13 +115,56 @@
         border-bottom: 1px solid #e5e5e5;
     }
 
+    .header-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+    }
+
     .header h1 {
         font-family: "Arvo", "Georgia", serif;
         font-size: 24px;
         font-weight: 400;
         color: #1d1d1f;
-        margin: 0 0 20px 0;
+        margin: 0;
         letter-spacing: -0.02em;
+    }
+
+    /* E2: Company Selector */
+    .company-selector {
+        display: flex;
+        gap: 0;
+        border: 1px solid #e5e5e5;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+
+    .company-btn {
+        padding: 8px 16px;
+        background: transparent;
+        border: none;
+        border-right: 1px solid #e5e5e5;
+        font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-size: 13px;
+        font-weight: 500;
+        color: #6e6e73;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    .company-btn:last-child {
+        border-right: none;
+    }
+
+    .company-btn:hover {
+        background: #f5f5f7;
+        color: #1d1d1f;
+    }
+
+    .company-btn.active {
+        background: #1d1d1f;
+        color: #ffffff;
     }
 
     .tabs {

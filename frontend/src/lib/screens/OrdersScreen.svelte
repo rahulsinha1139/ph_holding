@@ -11,6 +11,7 @@
     GetOrderDeliveryStatus,
     GetOrderFulfillmentStatus,
     CreateInvoiceFromOrder,
+    CreateProformaInvoice,
     CreatePOFromOrder,
     QuickMarkOrderDelivered
   } from '../../../wailsjs/go/main/App';
@@ -405,6 +406,25 @@
       await loadOrders();
     } catch (err) {
       toast.danger('Failed to create invoice: ' + (err as Error).message);
+    } finally {
+      isProcessingAction = false;
+    }
+  }
+
+  async function handleCreateProforma(order: main.Order) {
+    if (isProcessingAction) return;
+
+    if (!confirm(`Create proforma invoice for order ${order.order_number}?\nThis is a reference document, not a tax invoice.`)) {
+      return;
+    }
+
+    isProcessingAction = true;
+    try {
+      const invoice = await CreateProformaInvoice(order.id);
+      toast.success(`Proforma Invoice ${invoice.invoice_number} created`);
+      await loadOrders();
+    } catch (err) {
+      toast.danger('Failed to create proforma: ' + (err as Error).message);
     } finally {
       isProcessingAction = false;
     }
@@ -933,6 +953,9 @@
         {#if selectedOrder.status !== 'Cancelled' && (!fulfillmentStatus || fulfillmentStatus?.invoicing_pct < 1.0)}
           <Button variant="secondary" on:click={() => handleCreateInvoice(selectedOrder)} disabled={isProcessingAction}>
             Create Invoice
+          </Button>
+          <Button variant="ghost" on:click={() => handleCreateProforma(selectedOrder)} disabled={isProcessingAction}>
+            Proforma
           </Button>
         {/if}
         <Button variant="ghost" on:click={() => openEditModal(selectedOrder)} disabled={isProcessingAction || isDeleting}>

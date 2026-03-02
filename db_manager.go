@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -23,8 +24,11 @@ type DBManager struct {
 	lastCheck      time.Time
 	checkInterval  time.Duration
 	syncEnabled    bool
-	syncInProgress bool      // Prevents concurrent first-run syncs
+	syncInProgress bool       // Prevents concurrent first-run syncs
 	syncMu         sync.Mutex // Lock for sync operations
+	stopChan       chan struct{}
+	stopOnce       sync.Once
+	wg             sync.WaitGroup
 }
 
 // NewDBManager creates a new dual-database manager
@@ -35,6 +39,7 @@ func NewDBManager(localDB *gorm.DB, cfg SupabaseConfig) *DBManager {
 		isOnline:      false,
 		checkInterval: 30 * time.Second,
 		syncEnabled:   cfg.Enabled,
+		stopChan:      make(chan struct{}),
 	}
 }
 
@@ -128,13 +133,14 @@ func (m *DBManager) ConnectRemote() error {
 // CheckConnectivity verifies the Supabase connection is alive
 func (m *DBManager) CheckConnectivity() bool {
 	m.mu.RLock()
-	if m.remote == nil {
-		m.mu.RUnlock()
-		return false
-	}
+	remote := m.remote
 	m.mu.RUnlock()
 
-	sqlDB, err := m.remote.DB()
+	if remote == nil {
+		return false
+	}
+
+	sqlDB, err := remote.DB()
 	if err != nil {
 		m.setOffline()
 		return false
@@ -178,6 +184,8 @@ func (m *DBManager) MigrateRemote() error {
 		// Finance
 		&Invoice{},
 		&DBInvoiceItem{},
+		&CreditNote{},
+		&CreditNoteItem{},
 		&Payment{},
 		&SupplierPayment{},
 		// Operations
@@ -185,6 +193,7 @@ func (m *DBManager) MigrateRemote() error {
 		&PurchaseOrderItem{},
 		&GoodsReceivedNote{},
 		&GRNItem{},
+		&SerialNumber{},
 		&SupplierInvoice{},
 		&SupplierInvoiceItem{},
 		&DeliveryNote{},
@@ -193,6 +202,14 @@ func (m *DBManager) MigrateRemote() error {
 		&Conversation{},
 		&ChatMessage{},
 		&OfferFollowUp{},
+		// Sequence Numbers
+		&InvoiceSequence{},
+		// Finance — Banking & Costing
+		&BankAccount{},
+		&BankStatement{},
+		&BankStatementLine{},
+		&DBCostingSheet{},
+		&DBCostingItem{},
 		// System
 		&SyncRecord{},
 		&Role{},
@@ -201,6 +218,7 @@ func (m *DBManager) MigrateRemote() error {
 		&Setting{},
 		&Device{},
 		&DeviceUser{},
+		&LicenseKey{},
 	)
 
 	if err != nil {
@@ -219,17 +237,8 @@ func (m *DBManager) SyncToRemote(since time.Time) (int, error) {
 	}
 
 	pushed := 0
-	tables := []string{
-		"customers", "suppliers", "products",
-		"orders", "order_items", "invoices", "invoice_items", "payments",
-		"purchase_orders", "purchase_order_items",
-		"supplier_invoices", "supplier_payments",
-		"delivery_notes", "goods_received_notes",
-		"offers", "offer_items",
-		"roles", "users",
-	}
-
-	for _, table := range tables {
+	// Use the canonical dbSyncTables list so push and pull always cover the same tables
+	for _, table := range dbSyncTables {
 		count, err := m.syncTable(table, since, "push")
 		if err != nil {
 			log.Printf("Sync push error for %s: %v", table, err)
@@ -248,14 +257,9 @@ func (m *DBManager) SyncFromRemote(since time.Time) (int, error) {
 	}
 
 	pulled := 0
-	tables := []string{
-		"customers", "suppliers", "products",
-		"orders", "invoices", "payments",
-		"purchase_orders", "supplier_invoices",
-		"roles", "users",
-	}
-
-	for _, table := range tables {
+	// Use the canonical dbSyncTables list — must match push to ensure all
+	// computers receive the full dataset (orders+items, invoices+items, etc.)
+	for _, table := range dbSyncTables {
 		count, err := m.syncTable(table, since, "pull")
 		if err != nil {
 			log.Printf("Sync pull error for %s: %v", table, err)
@@ -274,38 +278,60 @@ func (m *DBManager) StartPeriodicSync(interval time.Duration) {
 		return
 	}
 
+	m.wg.Add(1)
 	go func() {
+		defer m.wg.Done()
+
 		// Initial delay to let app start
-		time.Sleep(10 * time.Second)
+		select {
+		case <-time.After(10 * time.Second):
+		case <-m.stopChan:
+			return
+		}
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
 		log.Printf("Background sync started (interval: %v)", interval)
 
-		for range ticker.C {
-			// Try to connect if not online
-			if !m.IsOnline() {
-				if err := m.ConnectRemote(); err != nil {
-					continue // Will retry next interval
+		for {
+			select {
+			case <-ticker.C:
+				// Try to connect if not online
+				if !m.IsOnline() {
+					if err := m.ConnectRemote(); err != nil {
+						continue // Will retry next interval
+					}
 				}
-			}
 
-			// Check connectivity
-			if !m.CheckConnectivity() {
-				continue
-			}
+				// Check connectivity
+				if !m.CheckConnectivity() {
+					continue
+				}
 
-			// Perform sync
-			lastSync := m.getLastSyncTime()
-			if pushed, err := m.SyncToRemote(lastSync); err == nil && pushed > 0 {
-				log.Printf("Sync: pushed %d records to Supabase", pushed)
-			}
-			if pulled, err := m.SyncFromRemote(lastSync); err == nil && pulled > 0 {
-				log.Printf("Sync: pulled %d records from Supabase", pulled)
+				// Perform sync
+				lastSync := m.getLastSyncTime()
+				if pushed, err := m.SyncToRemote(lastSync); err == nil && pushed > 0 {
+					log.Printf("Sync: pushed %d records to Supabase", pushed)
+				}
+				if pulled, err := m.SyncFromRemote(lastSync); err == nil && pulled > 0 {
+					log.Printf("Sync: pulled %d records from Supabase", pulled)
+				}
+			case <-m.stopChan:
+				log.Println("Background sync stopped (shutdown)")
+				return
 			}
 		}
 	}()
+}
+
+// StopPeriodicSync stops the background sync goroutine and waits for it to finish.
+func (m *DBManager) StopPeriodicSync() {
+	m.stopOnce.Do(func() {
+		close(m.stopChan)
+		log.Println("DBManager periodic sync stop signal sent")
+	})
+	m.wg.Wait() // Wait for goroutine to finish before returning
 }
 
 // TriggerSync manually triggers a sync (for UI "Sync Now" button)
@@ -410,7 +436,10 @@ func (m *DBManager) syncTable(table string, since time.Time, direction string) (
 				id := record["id"]
 				result := dest.Table(table).Where("id = ?", id).Updates(record)
 				if result.RowsAffected == 0 {
-					dest.Table(table).Create(record)
+					if err := dest.Table(table).Create(record).Error; err != nil {
+						log.Printf("Individual sync error for %s/%v: %v", table, id, err)
+						continue
+					}
 				}
 				synced++
 			}
@@ -475,6 +504,9 @@ func LoadSupabaseConfig() SupabaseConfig {
 
 // GetDBSyncStatus returns the current sync status for the frontend
 func (a *App) GetDBSyncStatus() map[string]interface{} {
+	if err := a.requirePermission("settings:view"); err != nil {
+		return map[string]interface{}{"error": "permission denied"}
+	}
 	status := map[string]interface{}{
 		"configured":  false,
 		"online":      false,
@@ -498,8 +530,74 @@ func (a *App) GetDBSyncStatus() map[string]interface{} {
 	return status
 }
 
+// SyncHealth provides comprehensive health status for the sync system.
+type SyncHealth struct {
+	IsOnline       bool      `json:"is_online"`
+	LastSyncAt     string    `json:"last_sync_at"`
+	LastSyncStatus string    `json:"last_sync_status"`
+	TablesInSync   int       `json:"tables_in_sync"`
+	DBSizeBytes    int64     `json:"db_size_bytes"`
+	BackupCount    int       `json:"backup_count"`
+	LastBackupAt   string    `json:"last_backup_at"`
+	UptimeSeconds  int64     `json:"uptime_seconds"`
+}
+
+// GetSyncHealth returns comprehensive health information about the sync system.
+func (a *App) GetSyncHealth() SyncHealth {
+	if err := a.requirePermission("settings:view"); err != nil {
+		return SyncHealth{}
+	}
+	if a.db == nil {
+		return SyncHealth{}
+	}
+	health := SyncHealth{
+		UptimeSeconds: int64(time.Since(a.appStartTime).Seconds()),
+	}
+
+	// Sync status
+	if a.dbManager != nil {
+		health.IsOnline = a.dbManager.IsOnline()
+		lastSync := a.dbManager.getLastSyncTime()
+		if !lastSync.IsZero() {
+			health.LastSyncAt = lastSync.Format(time.RFC3339)
+			health.LastSyncStatus = "success"
+		}
+		health.TablesInSync = len(dbSyncTables)
+	}
+
+	// Database file size — resolve path from PRAGMA database_list
+	var dbPath string
+	row := a.db.Raw("PRAGMA database_list").Row()
+	if row != nil {
+		var seq int
+		var name, file string
+		if err := row.Scan(&seq, &name, &file); err == nil && file != "" {
+			dbPath = file
+		}
+	}
+	if dbPath != "" {
+		if info, err := os.Stat(dbPath); err == nil {
+			health.DBSizeBytes = info.Size()
+		}
+	}
+
+	// Backup info
+	backupInfo := a.GetBackupInfo()
+	if count, ok := backupInfo["count"].(int); ok {
+		health.BackupCount = count
+	}
+	if lastBackup, ok := backupInfo["last_backup"].(string); ok {
+		health.LastBackupAt = lastBackup
+	}
+
+	return health
+}
+
 // TriggerManualSync allows the frontend to trigger a sync
 func (a *App) TriggerManualSync() (map[string]interface{}, error) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return nil, err
+	}
 	if a.dbManager == nil {
 		return nil, fmt.Errorf("sync not initialized")
 	}
@@ -530,49 +628,16 @@ func (m *DBManager) DownloadFullDatabase() (int, error) {
 	log.Println("   Downloading from Supabase...")
 	log.Println("========================================")
 
-	// Tables to download (in dependency order)
-	tables := []string{
-		// System assets first (letterhead, logos - needed immediately)
-		"assets",
-		// Master data (no dependencies)
-		"roles",
-		"customers",
-		"suppliers",
-		"products",
-		"devices",
-		"users",
-		"device_users",
-		"settings",
-		// Then dependent tables
-		"customer_contacts",
-		"supplier_contacts",
-		"offers",
-		"offer_items",
-		"orders",
-		"order_items",
-		"invoices",
-		"invoice_items",
-		"payments",
-		"supplier_invoices",
-		"supplier_invoice_items",
-		"supplier_payments",
-		"purchase_orders",
-		"purchase_order_items",
-		"goods_received_notes",
-		"grn_items",
-		"delivery_notes",
-		"delivery_note_items",
-		"conversations",
-		"chat_messages",
-		"entity_notes",
-		"offer_follow_ups",
-		"supplier_issues",
-		"quick_captures",
-		"opportunities",
-		"followup_tasks",
-		"prediction_records",
-		"warehouses",
+	// Use dbSyncTables as the canonical list, supplemented by system-only tables
+	// that aren't in the periodic sync but are needed for first-run bootstrap
+	systemTables := []string{
+		"assets",        // Letterhead, logos — needed immediately
+		"devices",       // Device registration
+		"users",         // User accounts
+		"device_users",  // Device-user bindings
+		"settings",      // App settings
 	}
+	tables := append(systemTables, dbSyncTables...)
 
 	totalDownloaded := 0
 
@@ -760,6 +825,9 @@ func (m *DBManager) FirstRunSync() (bool, int, error) {
 
 // TestSupabaseConnection tests connection with provided credentials
 func (a *App) TestSupabaseConnection(host, port, user, password, dbname, sslmode string) (bool, error) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return false, err
+	}
 	dsn := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
 		host, port, user, password, dbname, sslmode,
@@ -769,17 +837,18 @@ func (a *App) TestSupabaseConnection(host, port, user, password, dbname, sslmode
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
-		return false, fmt.Errorf("connection failed: %w", err)
+		// Strip DSN from error to prevent password leak to frontend
+		return false, fmt.Errorf("connection failed: could not connect to %s:%s", host, port)
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
-		return false, fmt.Errorf("failed to get connection: %w", err)
+		return false, fmt.Errorf("failed to get connection pool")
 	}
 	defer sqlDB.Close()
 
 	if err := sqlDB.Ping(); err != nil {
-		return false, fmt.Errorf("ping failed: %w", err)
+		return false, fmt.Errorf("ping failed: could not reach %s:%s", host, port)
 	}
 
 	return true, nil
@@ -788,6 +857,9 @@ func (a *App) TestSupabaseConnection(host, port, user, password, dbname, sslmode
 // PerformFirstRunSync downloads the full database from Supabase if local is empty
 // This is called after successful license activation on a new device
 func (a *App) PerformFirstRunSync() (map[string]interface{}, error) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return nil, err
+	}
 	result := map[string]interface{}{
 		"performed":  false,
 		"downloaded": 0,
@@ -822,6 +894,9 @@ func (a *App) PerformFirstRunSync() (map[string]interface{}, error) {
 
 // GetFirstRunSyncStatus checks if first-run sync is needed
 func (a *App) GetFirstRunSyncStatus() map[string]interface{} {
+	if err := a.requirePermission("settings:view"); err != nil {
+		return map[string]interface{}{"error": "permission denied"}
+	}
 	status := map[string]interface{}{
 		"local_empty":      false,
 		"cloud_available":  false,

@@ -1,7 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import { fade, scale } from 'svelte/transition';
-  import { easeSabi } from '$lib/design-system/asymmetrica';
+  import { fade } from 'svelte/transition';
 
   export let open: boolean = false;
   export let title: string = '';
@@ -53,8 +52,8 @@
     <div 
       class="modal-container"
       style="max-width: {sizes[size]}"
-      in:scale={{ duration: 262, start: 0.95 }}
-      out:scale={{ duration: 150, start: 0.95 }}
+      in:fade={{ duration: 150 }}
+      out:fade={{ duration: 100 }}
     >
       {#if title || showClose}
         <header class="modal-header">

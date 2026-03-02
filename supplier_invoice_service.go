@@ -797,7 +797,7 @@ func (a *App) CalculateSupplierLeadTime(supplierID string) (SupplierLeadTimeMetr
 	// Get all POs for this supplier with GRNs
 	var purchaseOrders []PurchaseOrder
 	if err := a.db.Where("supplier_id = ?", supplierID).
-		Where("status IN (?)", []string{"PartiallyReceived", "FullyReceived"}).
+		Where("status IN (?)", []string{"Partially Received", "Received"}).
 		Find(&purchaseOrders).Error; err != nil {
 		return SupplierLeadTimeMetrics{}, newError("DB_QUERY_FAILED", "Failed to retrieve POs", err.Error())
 	}

@@ -15,6 +15,7 @@ type DBSyncService struct {
 	app               *App
 	syncMutex         sync.Mutex
 	stopChan          chan struct{}
+	wg                sync.WaitGroup
 	syncInterval      time.Duration
 	lastSyncTimes     map[string]time.Time // table name -> last sync time
 	isRunning         bool
@@ -33,8 +34,8 @@ type syncableModel struct {
 // getSyncableModels returns the list of models that should be synced
 func (s *DBSyncService) getSyncableModels() []syncableModel {
 	return []syncableModel{
-		{"customer_masters", &CustomerMaster{}, &[]CustomerMaster{}},
-		{"supplier_masters", &SupplierMaster{}, &[]SupplierMaster{}},
+		{"customers", &CustomerMaster{}, &[]CustomerMaster{}},
+		{"suppliers", &SupplierMaster{}, &[]SupplierMaster{}},
 		{"invoices", &Invoice{}, &[]Invoice{}},
 		{"supplier_invoices", &SupplierInvoice{}, &[]SupplierInvoice{}},
 		{"purchase_orders", &PurchaseOrder{}, &[]PurchaseOrder{}},
@@ -63,24 +64,23 @@ func newDBSyncService(app *App) *DBSyncService {
 
 // PullChanges queries remote DB for records updated after 'since' and merges into local
 func (a *App) PullChanges(since time.Time) error {
-	if err := a.requirePermission("settings:manage"); err != nil {
+	if err := a.requirePermission("settings:update"); err != nil {
 		return err
 	}
+	return a.pullChangesInternal(since)
+}
 
-	// Try to acquire lock with timeout to prevent indefinite blocking
-	done := make(chan struct{})
-	go func() {
-		a.dbSyncService.syncMutex.Lock()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		defer a.dbSyncService.syncMutex.Unlock()
-	case <-time.After(30 * time.Second):
-		log.Println("[SYNC] ⚠️ Could not acquire sync lock within 30s for pull, skipping")
-		return fmt.Errorf("sync lock timeout")
+// pullChangesInternal is the RBAC-free version for background goroutines.
+func (a *App) pullChangesInternal(since time.Time) error {
+	if a.dbSyncService == nil {
+		return fmt.Errorf("sync service not initialized")
 	}
+	// Use TryLock to avoid goroutine leak from timeout-based lock acquisition
+	if !a.dbSyncService.syncMutex.TryLock() {
+		log.Println("[SYNC] Could not acquire sync lock for pull, skipping")
+		return fmt.Errorf("sync lock busy")
+	}
+	defer a.dbSyncService.syncMutex.Unlock()
 
 	log.Printf("[SYNC] Starting pull from remote (since: %v)", since)
 
@@ -209,24 +209,23 @@ func (s *DBSyncService) pullTableChanges(localDB, remoteDB *gorm.DB, sm syncable
 
 // PushChanges pushes local changes not yet synced to remote
 func (a *App) PushChanges() error {
-	if err := a.requirePermission("settings:manage"); err != nil {
+	if err := a.requirePermission("settings:update"); err != nil {
 		return err
 	}
+	return a.pushChangesInternal()
+}
 
-	// Try to acquire lock with timeout to prevent indefinite blocking
-	done := make(chan struct{})
-	go func() {
-		a.dbSyncService.syncMutex.Lock()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		defer a.dbSyncService.syncMutex.Unlock()
-	case <-time.After(30 * time.Second):
-		log.Println("[SYNC] ⚠️ Could not acquire sync lock within 30s for push, skipping")
-		return fmt.Errorf("sync lock timeout")
+// pushChangesInternal is the RBAC-free version for background goroutines.
+func (a *App) pushChangesInternal() error {
+	if a.dbSyncService == nil {
+		return fmt.Errorf("sync service not initialized")
 	}
+	// Use TryLock to avoid goroutine leak from timeout-based lock acquisition
+	if !a.dbSyncService.syncMutex.TryLock() {
+		log.Println("[SYNC] Could not acquire sync lock for push, skipping")
+		return fmt.Errorf("sync lock busy")
+	}
+	defer a.dbSyncService.syncMutex.Unlock()
 
 	log.Println("[SYNC] Starting push to remote")
 
@@ -356,6 +355,14 @@ func (s *DBSyncService) pushTableChanges(localDB, remoteDB *gorm.DB, sm syncable
 
 // StartPeriodicSync starts background sync with specified interval (default 5min)
 func (a *App) StartPeriodicSync(interval time.Duration) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		log.Printf("[SYNC] Permission denied for StartPeriodicSync")
+		return
+	}
+	// Enforce minimum interval to prevent DoS
+	if interval > 0 && interval < time.Minute {
+		interval = time.Minute
+	}
 	a.dbSyncService.syncMutex.Lock()
 	if a.dbSyncService.isRunning {
 		a.dbSyncService.syncMutex.Unlock()
@@ -373,7 +380,10 @@ func (a *App) StartPeriodicSync(interval time.Duration) {
 
 	log.Printf("[SYNC] Starting periodic sync (interval: %v)", a.dbSyncService.syncInterval)
 
+	a.dbSyncService.wg.Add(1)
 	go func() {
+		defer a.dbSyncService.wg.Done()
+
 		ticker := time.NewTicker(a.dbSyncService.syncInterval)
 		defer ticker.Stop()
 
@@ -392,30 +402,34 @@ func (a *App) StartPeriodicSync(interval time.Duration) {
 	}()
 }
 
-// StopPeriodicSync stops the background sync goroutine
+// StopPeriodicSync stops the background sync goroutine and waits for it to finish.
+// Called from shutdown() — no RBAC check needed for internal shutdown path.
 func (a *App) StopPeriodicSync() {
-	a.dbSyncService.syncMutex.Lock()
-	defer a.dbSyncService.syncMutex.Unlock()
-
-	if !a.dbSyncService.isRunning {
-		log.Println("[SYNC] Periodic sync not running")
+	if a.dbSyncService == nil {
 		return
 	}
-
+	a.dbSyncService.syncMutex.Lock()
+	if !a.dbSyncService.isRunning {
+		a.dbSyncService.syncMutex.Unlock()
+		return
+	}
 	log.Println("[SYNC] Stopping periodic sync...")
 	close(a.dbSyncService.stopChan)
 	a.dbSyncService.isRunning = false
+	a.dbSyncService.syncMutex.Unlock()
+
+	a.dbSyncService.wg.Wait() // Wait for goroutine to finish
 }
 
 // performBidirectionalSync executes both pull and push operations
 func (a *App) performBidirectionalSync() {
-	// Circuit breaker check
+	// Read circuit breaker and lastSyncTimes under lock to prevent data races
+	a.dbSyncService.syncMutex.Lock()
 	if a.dbSyncService.circuitOpen {
-		log.Println("[SYNC] ⚠️ Circuit breaker OPEN, skipping sync")
+		a.dbSyncService.syncMutex.Unlock()
+		log.Println("[SYNC] Circuit breaker OPEN, skipping sync")
 		return
 	}
-
-	log.Println("[SYNC] === Starting bidirectional sync ===")
 
 	// Determine the earliest last sync time across all tables
 	var oldestSync time.Time
@@ -424,42 +438,46 @@ func (a *App) performBidirectionalSync() {
 			oldestSync = t
 		}
 	}
+	a.dbSyncService.syncMutex.Unlock()
 
 	// If never synced, use a reasonable lookback (e.g., 1 week)
 	if oldestSync.IsZero() {
 		oldestSync = time.Now().Add(-7 * 24 * time.Hour)
 	}
 
+	log.Println("[SYNC] === Starting bidirectional sync ===")
+
 	// Track if sync succeeded
 	syncFailed := false
 
-	// Pull changes first (remote → local)
-	if err := a.PullChanges(oldestSync); err != nil {
+	// Pull changes first (remote → local) — use internal (no RBAC) for background goroutine
+	if err := a.pullChangesInternal(oldestSync); err != nil {
 		log.Printf("[SYNC] Pull failed: %v", err)
 		syncFailed = true
 	}
 
 	// Then push changes (local → remote)
-	if err := a.PushChanges(); err != nil {
+	if err := a.pushChangesInternal(); err != nil {
 		log.Printf("[SYNC] Push failed: %v", err)
 		syncFailed = true
 	}
 
-	// Update circuit breaker state
+	// Update circuit breaker state under lock
+	a.dbSyncService.syncMutex.Lock()
 	if syncFailed {
 		a.dbSyncService.consecutiveErrors++
 		if a.dbSyncService.consecutiveErrors >= a.dbSyncService.maxErrors {
 			a.dbSyncService.circuitOpen = true
-			log.Printf("[SYNC] ⚠️ Circuit breaker OPEN after %d consecutive errors", a.dbSyncService.consecutiveErrors)
+			log.Printf("[SYNC] Circuit breaker OPEN after %d consecutive errors", a.dbSyncService.consecutiveErrors)
 		}
 	} else {
-		// Success - reset circuit breaker
 		a.dbSyncService.consecutiveErrors = 0
 		if a.dbSyncService.circuitOpen {
-			log.Println("[SYNC] ✓ Circuit breaker CLOSED (sync recovered)")
+			log.Println("[SYNC] Circuit breaker CLOSED (sync recovered)")
 		}
 		a.dbSyncService.circuitOpen = false
 	}
+	a.dbSyncService.syncMutex.Unlock()
 
 	log.Println("[SYNC] === Bidirectional sync complete ===")
 }

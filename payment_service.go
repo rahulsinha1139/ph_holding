@@ -72,6 +72,13 @@ func (a *App) RecordPayment(invoiceID string, amount float64, method string, dat
 		return nil, newError("INVOICE_NOT_FOUND", "Invoice not found", err.Error())
 	}
 
+	// P1 FIX: Reject payments on non-payable invoices
+	nonPayableStatuses := map[string]bool{"Cancelled": true, "Void": true, "Proforma": true, "Paid": true}
+	if nonPayableStatuses[invoice.Status] {
+		tx.Rollback()
+		return nil, fmt.Errorf("cannot record payment on invoice with status '%s'", invoice.Status)
+	}
+
 	// Validate payment doesn't exceed outstanding balance (within locked transaction)
 	if amount > invoice.OutstandingBHD {
 		tx.Rollback()
@@ -547,6 +554,7 @@ func (a *App) GetPayment(id string) (Payment, error) {
 // UpdatePayment updates an existing payment
 // P3 FIX: Added missing CRUD operation for consistency
 // SECURITY FIX: Added validation for amount, invoice bounds, and invoice change prevention
+// P2 FIX: Wrapped invoice read + balance update + payment update in transaction with row locking
 func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 	if err := a.requirePermission("payments:update"); err != nil {
 		return nil, err
@@ -556,7 +564,7 @@ func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
-	// Check if payment exists
+	// Check if payment exists (outside tx — just existence check)
 	var existing Payment
 	if err := a.db.First(&existing, "id = ?", id).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -575,22 +583,6 @@ func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 		return nil, newError("INVALID_UPDATE", "Cannot change the invoice linked to a payment - delete and recreate instead", "")
 	}
 
-	// SECURITY FIX: Validate amount against invoice outstanding balance
-	var invoice Invoice
-	if err := a.db.First(&invoice, "id = ?", existing.InvoiceID).Error; err != nil {
-		return nil, newError("INVOICE_NOT_FOUND", "Linked invoice not found", err.Error())
-	}
-
-	// The allowed amount is the current outstanding + the existing payment amount (since we're replacing it)
-	maxAllowedAmount := invoice.OutstandingBHD + existing.AmountBHD
-	maxAllowedAmount = math.Round(maxAllowedAmount*BHDPrecisionMultiplier) / BHDPrecisionMultiplier
-	if payment.AmountBHD > maxAllowedAmount {
-		return nil, newError("INVALID_AMOUNT",
-			fmt.Sprintf("Payment amount %.3f BHD exceeds available balance %.3f BHD (outstanding %.3f + current payment %.3f)",
-				payment.AmountBHD, maxAllowedAmount, invoice.OutstandingBHD, existing.AmountBHD),
-			"")
-	}
-
 	// Round to BHD precision
 	payment.AmountBHD = math.Round(payment.AmountBHD*BHDPrecisionMultiplier) / BHDPrecisionMultiplier
 
@@ -602,6 +594,48 @@ func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 	payment.CreatedAt = existing.CreatedAt
 	payment.InvoiceID = existing.InvoiceID
 	payment.InvoiceNumber = existing.InvoiceNumber
+
+	// P2 FIX: Begin transaction for invoice read + balance update + payment update
+	tx := a.db.Begin()
+	if tx.Error != nil {
+		return nil, newError("DB_TRANSACTION_FAILED", "Failed to begin transaction", tx.Error.Error())
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			log.Printf("PANIC in UpdatePayment: %v", r)
+		}
+	}()
+
+	// Load invoice with row locking (falls back for SQLite)
+	var invoice Invoice
+	lockingQuery := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&invoice, "id = ?", existing.InvoiceID)
+	if lockingQuery.Error != nil {
+		// SQLite doesn't support SELECT FOR UPDATE - retry without locking
+		lockingQuery = tx.First(&invoice, "id = ?", existing.InvoiceID)
+	}
+	if err := lockingQuery.Error; err != nil {
+		tx.Rollback()
+		return nil, newError("INVOICE_NOT_FOUND", "Linked invoice not found", err.Error())
+	}
+
+	// P2 FIX: Reject payments on non-payable invoices (same as RecordPayment)
+	nonPayableStatuses := map[string]bool{"Cancelled": true, "Void": true, "Proforma": true}
+	if nonPayableStatuses[invoice.Status] {
+		tx.Rollback()
+		return nil, fmt.Errorf("cannot update payment on invoice with status '%s'", invoice.Status)
+	}
+
+	// The allowed amount is the current outstanding + the existing payment amount (since we're replacing it)
+	maxAllowedAmount := invoice.OutstandingBHD + existing.AmountBHD
+	maxAllowedAmount = math.Round(maxAllowedAmount*BHDPrecisionMultiplier) / BHDPrecisionMultiplier
+	if payment.AmountBHD > maxAllowedAmount {
+		tx.Rollback()
+		return nil, newError("INVALID_AMOUNT",
+			fmt.Sprintf("Payment amount %.3f BHD exceeds available balance %.3f BHD (outstanding %.3f + current payment %.3f)",
+				payment.AmountBHD, maxAllowedAmount, invoice.OutstandingBHD, existing.AmountBHD),
+			"")
+	}
 
 	// Recalculate invoice outstanding balance if amount changed
 	if payment.AmountBHD != existing.AmountBHD {
@@ -623,10 +657,11 @@ func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 			newStatus = invoice.Status
 		}
 
-		if err := a.db.Model(&invoice).Updates(map[string]interface{}{
+		if err := tx.Model(&invoice).Updates(map[string]interface{}{
 			"outstanding_bhd": newOutstanding,
 			"status":          newStatus,
 		}).Error; err != nil {
+			tx.Rollback()
 			return nil, newError("DB_UPDATE_FAILED", "Failed to update invoice balance", err.Error())
 		}
 
@@ -634,12 +669,18 @@ func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 			invoice.InvoiceNumber, invoice.OutstandingBHD, newOutstanding, invoice.Status, newStatus)
 	}
 
-	// Update payment
-	if err := a.db.Model(&existing).Updates(payment).Error; err != nil {
+	// Update payment inside transaction
+	if err := tx.Model(&existing).Updates(payment).Error; err != nil {
+		tx.Rollback()
 		return nil, newError("DB_UPDATE_FAILED", "Failed to update payment", err.Error())
 	}
 
-	// Reload
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		return nil, newError("DB_COMMIT_FAILED", "Failed to commit payment update transaction", err.Error())
+	}
+
+	// Reload (outside tx — read-only)
 	if err := a.db.First(&existing, "id = ?", id).Error; err != nil {
 		return nil, newError("DB_QUERY_FAILED", "Failed to reload payment", err.Error())
 	}

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"math"
 	"os"
@@ -60,8 +61,12 @@ type App struct {
 	dbSyncService    *DBSyncService              // Supabase bidirectional sync service
 	msgParser       *MSGParserService           // MSG parser service for Outlook .msg files
 	fieldCrypto      *FieldCrypto                // Field-level encryption (HKDF + AES-256-GCM)
-	logFile               *os.File  // Log file handle for cleanup (FIX: resource leak)
-	startupImporting      bool      // Bypass RBAC during startup data import
+	logFile               *os.File    // Log file handle for cleanup (FIX: resource leak)
+	appStartTime          time.Time  // App start time for uptime tracking
+	bgSyncStop            chan struct{}  // Stop channel for StartBackgroundDBSync goroutine
+	bgSyncWG              sync.WaitGroup // WaitGroup for StartBackgroundDBSync goroutine
+	bgSyncStopOnce        sync.Once     // Ensures bgSyncStop is closed exactly once
+	startupImporting      bool       // Bypass RBAC during startup data import
 	startupImportStartTime time.Time // Timestamp when startup import began (for timeout enforcement)
 	currentUser           *User     // Current logged-in user
 	currentUserID         string    // Current user ID for quick access
@@ -214,12 +219,38 @@ func NewApp() *App {
 	return &App{}
 }
 
+// rotateLogFile checks if the log file exceeds maxSize bytes and rotates it.
+// Keeps up to keepCount rotated files (app_debug.log.1 through .N).
+func rotateLogFile(logPath string, maxSize int64, keepCount int) {
+	info, err := os.Lstat(logPath) // Lstat: don't follow symlinks
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || info.Size() < maxSize {
+		return // File doesn't exist or is within size limit
+	}
+
+	// Delete the oldest rotated log
+	oldest := fmt.Sprintf("%s.%d", logPath, keepCount)
+	os.Remove(oldest)
+
+	// Shift existing rotated logs: .4 → .5, .3 → .4, etc.
+	for i := keepCount - 1; i >= 1; i-- {
+		src := fmt.Sprintf("%s.%d", logPath, i)
+		dst := fmt.Sprintf("%s.%d", logPath, i+1)
+		os.Rename(src, dst)
+	}
+
+	// Rotate current log to .1
+	os.Rename(logPath, logPath+".1")
+	log.Printf("Log file rotated (was %d MB)", info.Size()/(1024*1024))
+}
+
 // startup is called when the app starts. The context is saved
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.appStartTime = time.Now()
 
-	// 1. Setup File Logging (FIX: Handle error, store file handle for cleanup)
+	// 1. Setup File Logging with rotation (FIX: Handle error, store file handle for cleanup)
+	rotateLogFile("app_debug.log", 50*1024*1024, 5) // 50MB max, keep 5 rotated logs
 	logFile, err := os.OpenFile("app_debug.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	if err != nil {
 		log.Printf(" Failed to open log file: %v, logging to stderr", err)
@@ -345,7 +376,7 @@ func (a *App) startup(ctx context.Context) {
 	// Configure connection pool for SQLite (limited settings)
 	sqlDB, poolErr := a.db.DB()
 	if poolErr == nil {
-		sqlDB.SetMaxOpenConns(1) // SQLite works best with single connection
+		sqlDB.SetMaxOpenConns(1) // Single connection ensures PRAGMAs apply consistently
 		sqlDB.SetMaxIdleConns(1)
 		sqlDB.SetConnMaxLifetime(time.Hour)
 
@@ -358,6 +389,25 @@ func (a *App) startup(ctx context.Context) {
 		} else {
 			AppLogger.Info("Foreign key constraints enabled", nil)
 		}
+
+		// Production SQLite performance PRAGMAs
+		pragmas := []struct {
+			sql  string
+			desc string
+		}{
+			{"PRAGMA journal_mode = WAL", "WAL mode (concurrent reads during writes)"},
+			{"PRAGMA busy_timeout = 5000", "Busy timeout 5s (wait on lock instead of failing)"},
+			{"PRAGMA synchronous = NORMAL", "Synchronous NORMAL (safe with WAL, faster than FULL)"},
+			{"PRAGMA cache_size = -20000", "Cache size 20MB"},
+			{"PRAGMA temp_store = MEMORY", "Temp tables in RAM"},
+			{"PRAGMA mmap_size = 268435456", "Memory-mapped I/O 256MB"},
+		}
+		for _, p := range pragmas {
+			if _, err := sqlDB.Exec(p.sql); err != nil {
+				log.Printf("PRAGMA warning (%s): %v", p.desc, err)
+			}
+		}
+		log.Println("SQLite performance PRAGMAs applied (WAL mode, 20MB cache, 256MB mmap)")
 	}
 
 	// P2 FIX: Initialize in-memory cache for performance
@@ -373,7 +423,8 @@ func (a *App) startup(ctx context.Context) {
 	// FieldCrypto only needs env vars / hardware ID, not the database.
 	fc, fcErr := NewFieldCrypto()
 	if fcErr != nil {
-		AppLogger.Error("FieldCrypto initialization failed", fcErr, nil)
+		AppLogger.Error("CRITICAL: FieldCrypto initialization failed — field-level encryption and document HMAC integrity are DISABLED. Encrypted fields will not be readable/writable.", fcErr, nil)
+		log.Printf("CRITICAL: FieldCrypto initialization failed: %v — ALL field encryption disabled", fcErr)
 	} else {
 		a.fieldCrypto = fc
 		globalFieldCrypto = fc
@@ -490,6 +541,7 @@ func (a *App) startup(ctx context.Context) {
 
 			// Offer Follow-Ups
 			&OfferFollowUp{},
+			&OfferNote{},
 
 			// Sync Infrastructure
 			&SyncRecord{},
@@ -497,6 +549,11 @@ func (a *App) startup(ctx context.Context) {
 			// Tally Data Imports
 			&TallyInvoiceImport{},
 			&TallyPurchaseImport{},
+
+			// Phase 23: E-Invoicing & Serial Tracking
+			&CreditNote{},
+			&CreditNoteItem{},
+			&SerialNumber{},
 		}
 
 		// Migrate each model individually - skip on error for existing tables
@@ -559,6 +616,21 @@ func (a *App) startup(ctx context.Context) {
 
 		// Run custom migrations for schema fixes that SQLite ALTER TABLE can't handle
 		a.runCustomMigrations()
+
+		// Run database integrity check on startup
+		integrityResult := a.runIntegrityCheck()
+		if integrityResult != "ok" {
+			AppLogger.Warn("Database integrity issue detected on startup", map[string]interface{}{
+				"result": integrityResult,
+			})
+		}
+
+		// Create automated backup after successful migration
+		if backupPath, err := a.BackupDatabase(); err != nil {
+			log.Printf("Startup backup warning: %v", err)
+		} else {
+			log.Printf("Startup backup created: %s", backupPath)
+		}
 	}
 
 	AppLogger.Info("PH Holdings App started successfully", map[string]interface{}{
@@ -907,7 +979,7 @@ func (a *App) shutdown(ctx context.Context) {
 		if err := a.fileWatcher.Stop(); err != nil {
 			log.Printf("Warning: Failed to stop file watcher: %v", err)
 		} else {
-			log.Println("✓ File Watcher stopped")
+			log.Println("File Watcher stopped")
 		}
 	}
 
@@ -918,18 +990,29 @@ func (a *App) shutdown(ctx context.Context) {
 		}
 	}
 
-	// FIX: Close log file handle to prevent resource leak
-	log.Println("PH Holdings App shut down complete")
+	// Stop all background sync goroutines (wait for each to finish before closing connections)
+	a.StopBackgroundDBSync() // StartBackgroundDBSync goroutine
+	if a.dbSyncService != nil {
+		a.StopPeriodicSync() // sync_service_impl goroutine (now waits)
+	}
+	if a.dbManager != nil {
+		a.dbManager.StopPeriodicSync() // DBManager goroutine (waits)
+		a.dbManager.Disconnect()       // Properly closes + nils remote
+	}
+
+	// Close database connection BEFORE log file (so close errors can be logged)
+	if a.db != nil {
+		if sqlDB, err := a.db.DB(); err == nil {
+			if closeErr := sqlDB.Close(); closeErr != nil {
+				log.Printf("WARNING: Database close error: %v", closeErr)
+			}
+		}
+	}
+
+	log.Println("AsymmFlow shut down complete")
 	if a.logFile != nil {
 		a.logFile.Sync()  // Flush buffers to disk before closing
 		a.logFile.Close() // Close after final log message
-	}
-
-	// Close database connection (prevents resource leak)
-	if a.db != nil {
-		if sqlDB, err := a.db.DB(); err == nil {
-			sqlDB.Close()
-		}
 	}
 }
 
@@ -3425,7 +3508,7 @@ func (a *App) CreateCostingSheet(rfqID uint, itemsJSON string, createdBy string)
 	for _, item := range items {
 		if cost, ok := item["unit_cost"].(float64); ok {
 			if qty, ok := item["quantity"].(float64); ok {
-				if markup, ok := item["markup_percent"].(float64); ok {
+				if markup, ok := item["margin_percent"].(float64); ok {
 					lineSubtotal := cost * qty
 					lineMarkup := lineSubtotal * markup
 					subtotal += lineSubtotal
@@ -3694,6 +3777,50 @@ func (a *App) ApproveCostingSheet(id uint, approvedBy string) error {
 	if err := a.requirePermission("offers:update"); err != nil {
 		return err
 	}
+
+	// Load costing sheet to validate business invariants before approval
+	var costing CostingSheetData
+	if err := a.db.First(&costing, id).Error; err != nil {
+		return fmt.Errorf("costing sheet #%d not found: %w", id, err)
+	}
+
+	// Look up customer grade via RFQ linkage for business rule validation
+	var customerGrade string
+	var hasABB bool
+	if costing.RFQID > 0 {
+		var rfq RFQData
+		if err := a.db.First(&rfq, costing.RFQID).Error; err != nil {
+			log.Printf("WARNING: ApproveCostingSheet — RFQ #%d not found: %v (grade checks will use empty grade)", costing.RFQID, err)
+		} else if rfq.Client != "" {
+			// Try exact match first, then case-insensitive LIKE fallback
+			var customer CustomerMaster
+			if err := a.db.Where("business_name = ?", rfq.Client).First(&customer).Error; err != nil {
+				// Case-insensitive fallback for name mismatches
+				if err2 := a.db.Where("UPPER(business_name) = UPPER(?)", rfq.Client).First(&customer).Error; err2 != nil {
+					log.Printf("WARNING: ApproveCostingSheet — customer '%s' not found for RFQ #%d (grade rules will be skipped for this customer)", rfq.Client, costing.RFQID)
+				} else {
+					customerGrade = customer.PaymentGrade
+					hasABB = customer.HasABBCompetition
+				}
+			} else {
+				customerGrade = customer.PaymentGrade
+				hasABB = customer.HasABBCompetition
+			}
+		}
+	}
+
+	// Validate business rules: minimum margin, grade-based advance requirements, ABB competition
+	// Note: advance is not tracked on costing sheets; Grade C/D advance rules are enforced
+	// at order/payment stage. The margin check (8% minimum, 15% for ABB) is always enforced here.
+	if err := ValidateCostingApproval(
+		customerGrade,
+		costing.MarginPercent/100.0, // stored as percentage, function expects decimal
+		0,    // advance not tracked on costing sheet — enforced at order/payment stage
+		hasABB,
+	); err != nil {
+		return fmt.Errorf("business rule violation — cannot approve: %w", err)
+	}
+
 	result := a.db.Model(&CostingSheetData{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
@@ -4146,6 +4273,8 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 			OfferID:     offer.ID,
 			LineNumber:  i + 1,
 			ProductCode: item.Model,
+			Model:       item.Model,
+			LongCode:    item.LongCode,
 			Description: fmt.Sprintf("%s - %s", item.Equipment, item.Model),
 			Quantity:    float64(item.Quantity),
 			UnitPrice:   item.SuggestedPrice,
@@ -4361,6 +4490,74 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 
 	log.Printf("✅ Updated Offer %s (Rev %d, %.3f BHD)", offer.OfferNumber, offer.RevisionNumber, offer.TotalValueBHD)
 	return &offer, nil
+}
+
+// =============================================================================
+// OFFER NOTES CRUD
+// =============================================================================
+
+// AddOfferNote adds a freeform note to an offer
+func (a *App) AddOfferNote(offerID string, content string) (OfferNote, error) {
+	if err := a.requirePermission("offers:edit"); err != nil {
+		return OfferNote{}, err
+	}
+	if a.db == nil {
+		return OfferNote{}, fmt.Errorf("database not initialized")
+	}
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return OfferNote{}, fmt.Errorf("note content cannot be empty")
+	}
+	if len(trimmed) > 5000 {
+		return OfferNote{}, fmt.Errorf("note content too long (max 5000 characters)")
+	}
+	// Sanitize HTML to prevent stored XSS
+	trimmed = html.EscapeString(trimmed)
+	note := OfferNote{
+		OfferID:   offerID,
+		NoteDate:  time.Now(),
+		Content:   trimmed,
+		CreatedBy: "System",
+	}
+	if err := a.db.Create(&note).Error; err != nil {
+		return OfferNote{}, fmt.Errorf("failed to create note: %w", err)
+	}
+	return note, nil
+}
+
+// GetOfferNotes returns all notes for an offer, newest first (capped at 200)
+func (a *App) GetOfferNotes(offerID string) ([]OfferNote, error) {
+	if err := a.requirePermission("offers:view"); err != nil {
+		return nil, err
+	}
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	var notes []OfferNote
+	if err := a.db.Where("offer_id = ?", offerID).Order("note_date desc").Limit(200).Find(&notes).Error; err != nil {
+		return nil, fmt.Errorf("failed to get notes: %w", err)
+	}
+	return notes, nil
+}
+
+// DeleteOfferNote deletes a specific note by ID, scoped to the given offer
+func (a *App) DeleteOfferNote(noteID string) error {
+	if err := a.requirePermission("offers:edit"); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	// Verify note exists before deleting
+	var note OfferNote
+	if err := a.db.Where("id = ?", noteID).First(&note).Error; err != nil {
+		return fmt.Errorf("note not found")
+	}
+	result := a.db.Where("id = ?", noteID).Delete(&OfferNote{})
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete note: %w", result.Error)
+	}
+	return nil
 }
 
 // MarkOfferWon marks an offer as Won and creates an Order with line items
@@ -6330,7 +6527,7 @@ func (a *App) GetCRMSupplierDashboard() CRMSupplierDashboard {
 
 	// Count active POs per supplier
 	for _, po := range pos {
-		if po.Status != "Closed" && po.Status != "FullyReceived" {
+		if po.Status != "Closed" && po.Status != "Received" {
 			supplierActivePOs[po.SupplierID]++
 		}
 	}
@@ -6402,6 +6599,137 @@ func (a *App) GetCRMSupplierDashboard() CRMSupplierDashboard {
 
 	log.Printf("📦 CRM Supplier Dashboard: %d suppliers, %.0f BHD purchases, %.0f BHD payables",
 		dashboard.TotalSuppliers, dashboard.TotalPurchases, dashboard.OutstandingPayables)
+
+	return dashboard
+}
+
+// GetCRMSupplierDashboardByYear returns the supplier CRM dashboard filtered to a specific year
+// When year is 0, falls back to GetCRMSupplierDashboard (auto-detect latest year)
+func (a *App) GetCRMSupplierDashboardByYear(year int) CRMSupplierDashboard {
+	if year == 0 {
+		return a.GetCRMSupplierDashboard()
+	}
+	if err := a.requirePermission("suppliers:view"); err != nil {
+		return CRMSupplierDashboard{}
+	}
+	// Validate year bounds
+	if year < 2020 || year > time.Now().Year()+1 {
+		return CRMSupplierDashboard{}
+	}
+	dashboard := CRMSupplierDashboard{}
+
+	if a.db == nil {
+		log.Printf("⚠️ GetCRMSupplierDashboardByYear: Database not initialized")
+		return dashboard
+	}
+
+	// 1. Get all suppliers
+	var suppliers []SupplierMaster
+	a.db.Find(&suppliers)
+	dashboard.TotalSuppliers = len(suppliers)
+
+	log.Printf("📦 CRM Supplier Dashboard (year=%d)", year)
+
+	ytdStart := time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
+	ytdEnd := time.Date(year+1, 1, 1, 0, 0, 0, 0, time.UTC)
+	activeStart := time.Date(year-1, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// 3. Get supplier invoices for specified year
+	var allSupplierInvoices []SupplierInvoice
+	a.db.Where("invoice_date >= ? AND invoice_date < ? AND deleted_at IS NULL", ytdStart, ytdEnd).Find(&allSupplierInvoices)
+
+	// Also get purchase orders for active PO count
+	var pos []PurchaseOrder
+	a.db.Where("po_date >= ? AND po_date < ? AND deleted_at IS NULL", ytdStart, ytdEnd).Find(&pos)
+
+	// Build supplier metrics maps
+	supplierPurchasesByName := make(map[string]float64)
+	supplierPurchasesByID := make(map[string]float64)
+	supplierActivePOs := make(map[string]int)
+	var totalPurchases float64
+
+	for _, inv := range allSupplierInvoices {
+		if inv.SupplierName != "" {
+			supplierPurchasesByName[inv.SupplierName] += inv.TotalBHD
+		}
+		if inv.SupplierID != "" {
+			supplierPurchasesByID[inv.SupplierID] += inv.TotalBHD
+		}
+		totalPurchases += inv.TotalBHD
+	}
+
+	for _, po := range pos {
+		if po.Status != "Closed" && po.Status != "Received" {
+			supplierActivePOs[po.SupplierID]++
+		}
+	}
+	dashboard.TotalPurchases = totalPurchases
+
+	// 4. Get supplier invoices for outstanding within the year
+	var supplierInvoices []SupplierInvoice
+	a.db.Where("invoice_date >= ? AND invoice_date < ? AND payment_status NOT IN ('Paid', 'Cancelled')", ytdStart, ytdEnd).Find(&supplierInvoices)
+
+	supplierOutstanding := make(map[string]float64)
+	supplierOverdue := make(map[string]float64)
+	var totalOutstanding, totalOverdue float64
+
+	for _, inv := range supplierInvoices {
+		supplierOutstanding[inv.SupplierID] += inv.TotalBHD
+		totalOutstanding += inv.TotalBHD
+
+		if time.Since(inv.DueDate).Hours()/24 > 30 {
+			supplierOverdue[inv.SupplierID] += inv.TotalBHD
+			totalOverdue += inv.TotalBHD
+		}
+	}
+	dashboard.OutstandingPayables = totalOutstanding
+	dashboard.OverduePayables = totalOverdue
+
+	// 5. Calculate active suppliers (had POs in the year range)
+	var recentPOs []PurchaseOrder
+	a.db.Where("po_date >= ? AND po_date < ?", activeStart, ytdEnd).Select("DISTINCT supplier_id").Find(&recentPOs)
+	activeSupplierSet := make(map[string]bool)
+	for _, po := range recentPOs {
+		activeSupplierSet[po.SupplierID] = true
+	}
+	dashboard.ActiveSuppliers = len(activeSupplierSet)
+
+	// 6. Build supplier cards
+	cards := make([]SupplierMetricCard, 0, len(suppliers))
+	for _, s := range suppliers {
+		purchases := supplierPurchasesByID[s.ID]
+		if purchases == 0 {
+			purchases = supplierPurchasesByName[s.SupplierName]
+		}
+		cards = append(cards, SupplierMetricCard{
+			ID:             s.ID,
+			SupplierName:   s.SupplierName,
+			SupplierType:   s.SupplierType,
+			Rating:         s.Rating,
+			TotalPurchases: purchases,
+			ActivePOs:      supplierActivePOs[s.ID],
+			OutstandingBHD: supplierOutstanding[s.ID],
+			OverdueBHD:     supplierOverdue[s.ID],
+			BrandsHandled:  s.BrandsHandled,
+			Country:        s.Country,
+		})
+	}
+
+	// 7. Sort by total purchases descending
+	sort.Slice(cards, func(i, j int) bool {
+		return cards[i].TotalPurchases > cards[j].TotalPurchases
+	})
+	dashboard.Suppliers = cards
+
+	// 8. Top suppliers
+	if len(cards) > 10 {
+		dashboard.TopSuppliers = cards[:10]
+	} else {
+		dashboard.TopSuppliers = cards
+	}
+
+	log.Printf("📦 CRM Supplier Dashboard (year=%d): %d suppliers, %.0f BHD purchases, %.0f BHD payables",
+		year, dashboard.TotalSuppliers, dashboard.TotalPurchases, dashboard.OutstandingPayables)
 
 	return dashboard
 }
@@ -8486,7 +8814,8 @@ func extractBasicFields(text string, docType string) map[string]interface{} {
 	return fields
 }
 
-// CreateFolderStructure creates the PH Holdings folder structure
+// CreateFolderStructure creates the hierarchical company folder structure
+// Supports PH Trading and AHS Trading with Customer and Supplier subdirectories
 func (a *App) CreateFolderStructure(basePath string, companyName string) (FolderStructureResult, error) {
 	if err := a.requirePermission("settings:update"); err != nil {
 		return FolderStructureResult{}, err
@@ -8504,44 +8833,135 @@ func (a *App) CreateFolderStructure(basePath string, companyName string) (Folder
 		}
 	}
 
-	if companyName == "" {
-		companyName = "PH Trading"
+	// Create structure for specified company, or both if empty
+	companies := []string{}
+	if companyName != "" {
+		companies = append(companies, companyName)
+	} else {
+		companies = []string{"PH Trading", "AHS Trading"}
 	}
 
-	hubName := fmt.Sprintf("%s Hub", companyName)
-	hubPath := filepath.Join(basePath, hubName)
+	for _, company := range companies {
+		companyPath := filepath.Join(basePath, company)
 
-	folders := []string{
-		"Inbox",
-		"Quotations",
-		"Customers",
-		"Orders",
-		"Archive",
-	}
+		// Create Customer and Supplier root dirs with subfolders
+		customerRoot := filepath.Join(companyPath, "Customers")
+		supplierRoot := filepath.Join(companyPath, "Suppliers")
 
-	log.Printf("📁 Creating folder structure at: %s", hubPath)
-
-	for _, folder := range folders {
-		folderPath := filepath.Join(hubPath, folder)
-		if err := os.MkdirAll(folderPath, 0755); err != nil {
-			return result, newError("FOLDER_CREATE_FAILED", fmt.Sprintf("Failed to create %s", folder), err.Error())
+		for _, dir := range []string{customerRoot, supplierRoot} {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return result, newError("FOLDER_CREATE_FAILED", fmt.Sprintf("Failed to create %s", dir), err.Error())
+			}
+			result.Created = append(result.Created, dir)
+			log.Printf("  ✓ Created: %s", dir)
 		}
-		result.Created = append(result.Created, folderPath)
-		log.Printf("  ✓ Created: %s", folderPath)
+
+		// Also create shared operational folders under the company
+		sharedFolders := []string{"Inbox", "Quotations", "Archive"}
+		for _, folder := range sharedFolders {
+			folderPath := filepath.Join(companyPath, folder)
+			if err := os.MkdirAll(folderPath, 0755); err != nil {
+				return result, newError("FOLDER_CREATE_FAILED", fmt.Sprintf("Failed to create %s", folder), err.Error())
+			}
+			result.Created = append(result.Created, folderPath)
+			log.Printf("  ✓ Created: %s", folderPath)
+		}
 	}
 
 	result.Success = true
-	result.InboxPath = filepath.Join(hubPath, "Inbox")
-
-	// Update config with new paths
-	if a.config != nil {
-		a.config.OneDrive.RFQPath = result.InboxPath
-		a.config.OneDrive.OffersPath = filepath.Join(hubPath, "Quotations")
-		a.config.OneDrive.InvoicesPath = filepath.Join(hubPath, "Orders")
+	// Set inbox path for the first company
+	if len(companies) > 0 {
+		result.InboxPath = filepath.Join(basePath, companies[0], "Inbox")
 	}
 
-	log.Printf("✅ Folder structure created: %d folders", len(result.Created))
+	// Update config with new paths
+	if a.config != nil && len(companies) > 0 {
+		firstCompany := companies[0]
+		a.config.OneDrive.RFQPath = filepath.Join(basePath, firstCompany, "Inbox")
+		a.config.OneDrive.OffersPath = filepath.Join(basePath, firstCompany, "Quotations")
+		a.config.OneDrive.InvoicesPath = filepath.Join(basePath, firstCompany, "Customers")
+	}
+
+	log.Printf("✅ Folder structure created: %d folders for %d companies", len(result.Created), len(companies))
 	return result, nil
+}
+
+// CreateCustomerFolder creates the per-customer folder structure under the company hierarchy
+// Structure: basePath/company/Customers/CustomerName/{RFQ, Costing Sheets, Invoices, Reports}
+func (a *App) CreateCustomerFolder(basePath string, company string, customerName string) (string, error) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return "", err
+	}
+	if basePath == "" || company == "" || customerName == "" {
+		return "", fmt.Errorf("basePath, company, and customerName are all required")
+	}
+	// Validate company is an allowed value
+	if company != "PH Trading" && company != "AHS Trading" {
+		return "", fmt.Errorf("invalid company: must be 'PH Trading' or 'AHS Trading'")
+	}
+	// Validate basePath doesn't contain traversal
+	absBase, err := filepath.Abs(basePath)
+	if err != nil {
+		return "", fmt.Errorf("invalid base path")
+	}
+
+	// Sanitize customer name for filesystem
+	safeName := sanitizeFileName(customerName)
+	customerPath := filepath.Join(absBase, company, "Customers", safeName)
+	// Verify final path is still within the base
+	absCustomer, _ := filepath.Abs(customerPath)
+	if !strings.HasPrefix(absCustomer, absBase) {
+		return "", fmt.Errorf("invalid path: traversal detected")
+	}
+
+	subfolders := []string{"RFQ", "Costing Sheets", "Invoices", "Reports"}
+	for _, sub := range subfolders {
+		if err := os.MkdirAll(filepath.Join(customerPath, sub), 0755); err != nil {
+			return "", fmt.Errorf("failed to create %s folder: %w", sub, err)
+		}
+	}
+
+	log.Printf("📁 Created customer folder: %s (%d subfolders)", customerPath, len(subfolders))
+	return customerPath, nil
+}
+
+// CreateSupplierFolder creates the per-supplier folder structure under the company hierarchy
+// Structure: basePath/company/Suppliers/SupplierName/{PO, Invoices}
+func (a *App) CreateSupplierFolder(basePath string, company string, supplierName string) (string, error) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return "", err
+	}
+	if basePath == "" || company == "" || supplierName == "" {
+		return "", fmt.Errorf("basePath, company, and supplierName are all required")
+	}
+	// Validate company is an allowed value
+	if company != "PH Trading" && company != "AHS Trading" {
+		return "", fmt.Errorf("invalid company: must be 'PH Trading' or 'AHS Trading'")
+	}
+	// Validate basePath doesn't contain traversal
+	absBase, err := filepath.Abs(basePath)
+	if err != nil {
+		return "", fmt.Errorf("invalid base path")
+	}
+
+	// Sanitize supplier name for filesystem
+	safeName := sanitizeFileName(supplierName)
+	supplierPath := filepath.Join(absBase, company, "Suppliers", safeName)
+	// Verify final path is still within the base
+	absSupplier, _ := filepath.Abs(supplierPath)
+	if !strings.HasPrefix(absSupplier, absBase) {
+		return "", fmt.Errorf("invalid path: traversal detected")
+	}
+
+	subfolders := []string{"PO", "Invoices"}
+	for _, sub := range subfolders {
+		if err := os.MkdirAll(filepath.Join(supplierPath, sub), 0755); err != nil {
+			return "", fmt.Errorf("failed to create %s folder: %w", sub, err)
+		}
+	}
+
+	log.Printf("📁 Created supplier folder: %s (%d subfolders)", supplierPath, len(subfolders))
+	return supplierPath, nil
 }
 
 // RunInitialScan scans configured folders for existing documents
@@ -12160,6 +12580,7 @@ type CostingExportLineItem struct {
 	Supplier            string  `json:"supplier"` // Kept for backwards compatibility but not used in UI
 	Equipment           string  `json:"equipment"`
 	Model               string  `json:"model"`
+	LongCode            string  `json:"longCode"`
 	Specification       string  `json:"specification"`
 	DetailedDescription string  `json:"detailedDescription"` // NEW: Wide field for instrumentation specs
 	Currency            string  `json:"currency"`
@@ -12194,13 +12615,30 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	// Get letterhead path (shared helper finds it in DB cache, project root, or exe dir)
 	letterheadPath := a.letterheadImagePath()
 
-	// Output path
-	outputDir := filepath.Join(os.TempDir(), "ph_quotations")
-	os.MkdirAll(outputDir, 0755)
+	// Combined filename: {CostingId}_{CustomerName}.pdf
+	cleanCostingId := sanitizeFileName(data.CostingId)
+	cleanCustomer := sanitizeFileName(data.CustomerName)
+	userRef := ""
+	if data.RfqReference != "" {
+		userRef = sanitizeFileName(data.RfqReference)
+	}
+	fileName := cleanCostingId
+	if fileName == "" {
+		fileName = cleanCustomer
+	}
+	if userRef != "" {
+		fileName = fmt.Sprintf("%s_%s", fileName, userRef)
+	}
+	fileName = fmt.Sprintf("Quotation_%s.pdf", fileName)
 
-	fileName := fmt.Sprintf("Quotation_%s_%s.pdf",
-		sanitizeFileName(data.CustomerName),
-		time.Now().Format("2006-01-02_150405"))
+	// Save to structured folder: <exports>/<division>/Customers/<CustomerName>/Costing Sheets/
+	paths := a.GetApplicationPaths()
+	division := data.Division
+	if division == "" {
+		division = "PH Trading"
+	}
+	outputDir := filepath.Join(paths.ProjectRoot, "exports", sanitizeFileName(division), "Customers", cleanCustomer, "Costing Sheets")
+	os.MkdirAll(outputDir, 0755)
 	outputPath := filepath.Join(outputDir, fileName)
 
 	// Create PDF directly with gopdf for clean quotation layout
@@ -12396,10 +12834,27 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 		pdf.Cell(nil, item.Equipment)
 
 		// Model on next line
+		descY := rowY + 10
 		if item.Model != "" {
 			pdf.SetFont("main", "", 7)
-			pdf.SetXY(colX[1]+2, rowY+10)
+			pdf.SetXY(colX[1]+2, descY)
 			pdf.Cell(nil, "Model: "+item.Model)
+			descY += 9
+		}
+
+		// Order Code on next line (long supplier order/configuration code)
+		if item.LongCode != "" {
+			pdf.SetFont("main", "", 6.5)
+			codeLines := wrapText(item.LongCode, 75)
+			for j, codeLine := range codeLines {
+				pdf.SetXY(colX[1]+2, descY)
+				if j == 0 {
+					pdf.Cell(nil, "Long Code: "+codeLine)
+				} else {
+					pdf.Cell(nil, "  "+codeLine)
+				}
+				descY += 8
+			}
 		}
 		pdf.SetFont("main", "", 8)
 
@@ -12415,7 +12870,13 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 		pdf.SetXY(colX[4]+2, rowY)
 		pdf.Cell(nil, fmt.Sprintf("%.3f", item.TotalPrice))
 
-		currentY += 24 // Row height
+		// Dynamic row height based on content
+		minRowY := descY + 4
+		if minRowY > rowY+24 {
+			currentY = minRowY
+		} else {
+			currentY += 24
+		}
 
 		// Print detailed description if present (instrumentation specs)
 		if item.DetailedDescription != "" {
@@ -12600,14 +13061,31 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 	if err := a.requirePermission("offers:create"); err != nil {
 		return "", err
 	}
-	// Create output directory
-	outputDir := filepath.Join(os.TempDir(), "ph_quotations")
-	os.MkdirAll(outputDir, 0755)
+	// Combined filename: {CostingId}_{CustomerName}.csv
+	cleanCostingId := sanitizeFileName(data.CostingId)
+	cleanCustomer := sanitizeFileName(data.CustomerName)
+	userRef := ""
+	if data.RfqReference != "" {
+		userRef = sanitizeFileName(data.RfqReference)
+	}
+	csvFileName := cleanCostingId
+	if csvFileName == "" {
+		csvFileName = cleanCustomer
+	}
+	if userRef != "" {
+		csvFileName = fmt.Sprintf("%s_%s", csvFileName, userRef)
+	}
+	csvFileName = fmt.Sprintf("Costing_%s.csv", csvFileName)
 
-	// Create CSV file (Excel can open CSV files)
-	csvPath := filepath.Join(outputDir, fmt.Sprintf("Costing_%s_%s.csv",
-		sanitizeFileName(data.CustomerName),
-		time.Now().Format("2006-01-02_150405")))
+	// Save to structured folder: <exports>/<division>/Customers/<CustomerName>/Costing Sheets/
+	paths := a.GetApplicationPaths()
+	division := data.Division
+	if division == "" {
+		division = "PH Trading"
+	}
+	outputDir := filepath.Join(paths.ProjectRoot, "exports", sanitizeFileName(division), "Customers", cleanCustomer, "Costing Sheets")
+	os.MkdirAll(outputDir, 0755)
+	csvPath := filepath.Join(outputDir, csvFileName)
 
 	file, err := os.Create(csvPath)
 	if err != nil {
@@ -12674,15 +13152,21 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 
 // sanitizeFileName removes invalid characters from filename
 func sanitizeFileName(name string) string {
+	// Strip path traversal sequences first
+	result := strings.ReplaceAll(name, "..", "")
 	// Replace invalid characters with underscore
 	invalid := []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|", " "}
-	result := name
 	for _, char := range invalid {
 		result = strings.ReplaceAll(result, char, "_")
 	}
+	// Remove leading/trailing dots and underscores
+	result = strings.Trim(result, "._")
 	// Limit length
 	if len(result) > 50 {
 		result = result[:50]
+	}
+	if result == "" {
+		result = "unnamed"
 	}
 	return result
 }
@@ -14738,6 +15222,160 @@ func (a *App) GetCRMCustomerDashboard() CRMCustomerDashboard {
 
 	log.Printf("📊 CRM Customer Dashboard: %d customers, %.0f BHD revenue, %.0f BHD outstanding",
 		dashboard.TotalCustomers, dashboard.TotalRevenue, dashboard.TotalOutstanding)
+
+	return dashboard
+}
+
+// GetCRMCustomerDashboardByYear returns the customer CRM dashboard filtered to a specific year
+// When year is 0, falls back to GetCRMCustomerDashboard (auto-detect latest year)
+func (a *App) GetCRMCustomerDashboardByYear(year int) CRMCustomerDashboard {
+	if year == 0 {
+		return a.GetCRMCustomerDashboard()
+	}
+	if err := a.requirePermission("customers:view"); err != nil {
+		return CRMCustomerDashboard{}
+	}
+	// Validate year bounds
+	if year < 2020 || year > time.Now().Year()+1 {
+		return CRMCustomerDashboard{}
+	}
+
+	dashboard := CRMCustomerDashboard{}
+	if a.db == nil {
+		log.Printf("⚠️ GetCRMCustomerDashboardByYear: Database not initialized")
+		return dashboard
+	}
+
+	// 1. Get all customers
+	var customers []CustomerMaster
+	a.db.Find(&customers)
+	dashboard.TotalCustomers = len(customers)
+
+	log.Printf("📊 CRM Customer Dashboard (year=%d)", year)
+
+	ytdStart := time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
+	ytdEnd := time.Date(year+1, 1, 1, 0, 0, 0, 0, time.UTC)
+	activeStart := time.Date(year-1, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// 3. Get invoices for specified year
+	var invoices []Invoice
+	a.db.Where("invoice_date >= ? AND invoice_date < ?", ytdStart, ytdEnd).Find(&invoices)
+
+	// Build customer revenue map
+	customerRevenue := make(map[string]float64)
+	customerActiveInvoices := make(map[string]int)
+	customerOutstanding := make(map[string]float64)
+	customerOverdue := make(map[string]float64)
+	var totalRevenue float64
+
+	for _, inv := range invoices {
+		customerRevenue[inv.CustomerID] += inv.GrandTotalBHD
+		totalRevenue += inv.GrandTotalBHD
+
+		if inv.Status != "Paid" {
+			customerActiveInvoices[inv.CustomerID]++
+			customerOutstanding[inv.CustomerID] += inv.OutstandingBHD
+
+			if time.Since(inv.DueDate).Hours()/24 > 30 {
+				customerOverdue[inv.CustomerID] += inv.OutstandingBHD
+			}
+		}
+	}
+	dashboard.TotalRevenue = totalRevenue
+
+	// 4. Calculate active customers (ordered within the year range)
+	var orders []Order
+	a.db.Where("order_date >= ? AND order_date < ?", activeStart, ytdEnd).Select("DISTINCT customer_id").Find(&orders)
+	activeCustomerSet := make(map[string]bool)
+	for _, o := range orders {
+		activeCustomerSet[o.CustomerID] = true
+	}
+	dashboard.ActiveCustomers = len(activeCustomerSet)
+
+	// 5. Calculate total outstanding and overdue
+	var totalOutstanding, totalOverdue float64
+	for _, amount := range customerOutstanding {
+		totalOutstanding += amount
+	}
+	for _, amount := range customerOverdue {
+		totalOverdue += amount
+	}
+	dashboard.TotalOutstanding = totalOutstanding
+	dashboard.OverdueAmount = totalOverdue
+	if totalOutstanding > 0 {
+		dashboard.OverduePct = (totalOverdue / totalOutstanding) * 100
+	}
+
+	// 6. Build customer cards
+	cards := make([]CustomerMetricCard, 0, len(customers))
+	for _, c := range customers {
+		cards = append(cards, CustomerMetricCard{
+			ID:             c.ID,
+			BusinessName:   c.BusinessName,
+			CustomerType:   c.CustomerType,
+			PaymentGrade:   c.PaymentGrade,
+			TotalRevenue:   customerRevenue[c.ID],
+			ActiveInvoices: customerActiveInvoices[c.ID],
+			OutstandingBHD: customerOutstanding[c.ID],
+			OverdueBHD:     customerOverdue[c.ID],
+			LastOrderDate:  c.LastOrderDate,
+			City:           c.City,
+		})
+	}
+
+	// 7. Sort by revenue descending
+	sort.Slice(cards, func(i, j int) bool {
+		return cards[i].TotalRevenue > cards[j].TotalRevenue
+	})
+	dashboard.Customers = cards
+
+	// 8. Top 10 customers
+	if len(cards) > 10 {
+		dashboard.TopCustomers = cards[:10]
+	} else {
+		dashboard.TopCustomers = cards
+	}
+
+	// 9. Concentration risk
+	if totalRevenue > 0 {
+		var top3, top5, top10 float64
+		for i, card := range cards {
+			if i < 3 {
+				top3 += card.TotalRevenue
+			}
+			if i < 5 {
+				top5 += card.TotalRevenue
+			}
+			if i < 10 {
+				top10 += card.TotalRevenue
+			}
+		}
+		dashboard.Top3RevenuePct = (top3 / totalRevenue) * 100
+		dashboard.Top5RevenuePct = (top5 / totalRevenue) * 100
+		dashboard.Top10RevenuePct = (top10 / totalRevenue) * 100
+	}
+
+	// 10. Grade distribution
+	for _, c := range customers {
+		rev := customerRevenue[c.ID]
+		switch c.PaymentGrade {
+		case "A":
+			dashboard.GradeACount++
+			dashboard.GradeARevenue += rev
+		case "B":
+			dashboard.GradeBCount++
+			dashboard.GradeBRevenue += rev
+		case "C":
+			dashboard.GradeCCount++
+			dashboard.GradeCRevenue += rev
+		case "D":
+			dashboard.GradeDCount++
+			dashboard.GradeDRevenue += rev
+		}
+	}
+
+	log.Printf("📊 CRM Customer Dashboard (year=%d): %d customers, %.0f BHD revenue, %.0f BHD outstanding",
+		year, dashboard.TotalCustomers, dashboard.TotalRevenue, dashboard.TotalOutstanding)
 
 	return dashboard
 }

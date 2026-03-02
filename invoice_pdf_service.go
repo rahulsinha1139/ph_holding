@@ -142,12 +142,16 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 	pdf.AddPage()
 
 	// ========================================================================
-	// SECTION 1: TAX INVOICE TITLE
+	// SECTION 1: INVOICE TITLE (Proforma or Tax Invoice)
 	// ========================================================================
 	pdf.SetY(50)
 	pdf.SetFont("Helvetica", "B", 14)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.CellFormat(0, 8, "TAX INVOICE", "", 0, "C", false, 0, "")
+	invoiceTitle := "TAX INVOICE"
+	if invoice.Status == "Proforma" {
+		invoiceTitle = "PROFORMA INVOICE"
+	}
+	pdf.CellFormat(0, 8, invoiceTitle, "", 0, "C", false, 0, "")
 	pdf.Ln(10)
 
 	// ========================================================================
@@ -447,6 +451,28 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 		pdf.CellFormat(colTaxVal, 5, fmt.Sprintf("%.3f", taxableVal), "1", 0, "R", false, 0, "")
 		pdf.CellFormat(colVat, 5, fmt.Sprintf("%.3f", vatAmt), "1", 0, "R", false, 0, "")
 		pdf.Ln(5)
+
+		// Phase 23: Render serial numbers below item description (if any)
+		if item.ProductID != "" {
+			serials, _ := a.GetSerialsForInvoiceItem(invoiceID, item.ProductID)
+			if len(serials) > 0 {
+				serialNos := make([]string, 0, len(serials))
+				for _, s := range serials {
+					serialNos = append(serialNos, s.SerialNo)
+				}
+				pdf.SetX(10 + colSl)
+				pdf.SetFont("Helvetica", "I", 6)
+				pdf.SetTextColor(100, 100, 100)
+				serialLine := "S/N: " + strings.Join(serialNos, ", ")
+				if len(serialLine) > 90 {
+					serialLine = serialLine[:87] + "..."
+				}
+				pdf.CellFormat(colDesc+colQty+colRate+colPer+colDisc+colAmtExcl+colVatPct+colTaxVal+colVat, 4, serialLine, "", 0, "L", false, 0, "")
+				pdf.Ln(4)
+				pdf.SetFont("Helvetica", "", 7)
+				pdf.SetTextColor(29, 29, 31)
+			}
+		}
 	}
 
 	// P1 FIX: Use stored grand total from database to ensure exact match
@@ -552,6 +578,18 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 	pdf.CellFormat(20, 5, fmt.Sprintf("%.3f", totalVAT), "1", 0, "R", false, 0, "")
 
 	// ========================================================================
+	// SECTION 7.5: PROFORMA DISCLAIMER (if applicable)
+	// ========================================================================
+	if invoice.Status == "Proforma" {
+		pdf.SetY(pdf.GetY() + 4)
+		pdf.SetX(10)
+		pdf.SetFont("Helvetica", "BI", 8)
+		pdf.SetTextColor(180, 60, 60)
+		pdf.MultiCell(190, 4, "This is a Proforma Invoice and is not a tax document. It is issued for reference purposes only and does not constitute a demand for payment.", "", "C", false)
+		pdf.Ln(2)
+	}
+
+	// ========================================================================
 	// SECTION 8: DECLARATION + SIGNATURE
 	// ========================================================================
 	pdf.SetY(pdf.GetY() + 10)
@@ -626,14 +664,49 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 	cleanInvoiceNum := filepath.Base(strings.ReplaceAll(invoice.InvoiceNumber, "..", ""))
 	cleanInvoiceNum = strings.ReplaceAll(cleanInvoiceNum, "/", "_")
 	cleanInvoiceNum = strings.ReplaceAll(cleanInvoiceNum, "\\", "_")
-	filename := fmt.Sprintf("Invoice_%s.pdf", cleanInvoiceNum)
-	filePath := filepath.Join(exportDir, filename)
+	// Combined filename: {SystemNumber}_{UserReference}.pdf
+	userRef := ""
+	if invoice.CustomerPONumber != "" {
+		userRef = sanitizeFilename(invoice.CustomerPONumber)
+	} else if invoice.CustomerReference != "" {
+		userRef = sanitizeFilename(invoice.CustomerReference)
+	}
+	filename := cleanInvoiceNum
+	if userRef != "" {
+		filename = fmt.Sprintf("%s_%s", cleanInvoiceNum, userRef)
+	}
+	filename = fmt.Sprintf("Invoice_%s.pdf", filename)
+
+	// Save to structured folder: <exports>/<division>/Customers/<CustomerName>/Invoices/
+	division := invoice.Division
+	if division == "" {
+		division = "PH Trading"
+	}
+	customerDir := ""
+	if invoice.CustomerName != "" {
+		safeCust := sanitizeFilename(invoice.CustomerName)
+		customerDir = filepath.Join(exportDir, "..", division, "Customers", safeCust, "Invoices")
+		os.MkdirAll(customerDir, 0755)
+	}
+	saveDir := exportDir
+	if customerDir != "" {
+		saveDir = customerDir
+	}
+	filePath := filepath.Join(saveDir, filename)
 
 	if err := pdf.OutputFileAndClose(filePath); err != nil {
 		return "", fmt.Errorf("failed to save customer invoice PDF: %w", err)
 	}
 
 	log.Printf("✅ Customer invoice PDF generated: %s", filePath)
+
+	// Phase 23: Generate e-invoice XML alongside the PDF
+	if xmlPath, err := a.GenerateEInvoiceXML(invoiceID); err != nil {
+		log.Printf("⚠️ E-Invoice XML generation failed (non-blocking): %v", err)
+	} else {
+		log.Printf("✅ E-Invoice XML generated alongside PDF: %s", xmlPath)
+	}
+
 	return filePath, nil
 }
 
@@ -869,12 +942,32 @@ func (a *App) GenerateSupplierInvoicePDF(invoiceID string) (string, error) {
 	exportDir := filepath.Join(paths.ProjectRoot, "exports", "invoices")
 	os.MkdirAll(exportDir, 0755)
 
-	// Clean invoice number for filename (prevent path traversal)
+	// Combined filename: {SystemNumber}_{UserReference}.pdf
 	cleanInvoiceNum := filepath.Base(strings.ReplaceAll(invoice.InvoiceNumber, "..", ""))
 	cleanInvoiceNum = strings.ReplaceAll(cleanInvoiceNum, "/", "_")
 	cleanInvoiceNum = strings.ReplaceAll(cleanInvoiceNum, "\\", "_")
-	filename := fmt.Sprintf("SupplierInv_%s.pdf", cleanInvoiceNum)
-	filePath := filepath.Join(exportDir, filename)
+	userRef := ""
+	if invoice.PONumber != "" {
+		userRef = sanitizeFilename(invoice.PONumber)
+	}
+	filename := cleanInvoiceNum
+	if userRef != "" {
+		filename = fmt.Sprintf("%s_%s", cleanInvoiceNum, userRef)
+	}
+	filename = fmt.Sprintf("SupplierInv_%s.pdf", filename)
+
+	// Save to structured folder: <exports>/PH Trading/Suppliers/<SupplierName>/Invoices/
+	supplierDir := ""
+	if invoice.SupplierName != "" {
+		safeSupp := sanitizeFilename(invoice.SupplierName)
+		supplierDir = filepath.Join(exportDir, "..", "PH Trading", "Suppliers", safeSupp, "Invoices")
+		os.MkdirAll(supplierDir, 0755)
+	}
+	saveDir := exportDir
+	if supplierDir != "" {
+		saveDir = supplierDir
+	}
+	filePath := filepath.Join(saveDir, filename)
 
 	if err := pdf.OutputFileAndClose(filePath); err != nil {
 		return "", fmt.Errorf("failed to save supplier invoice PDF: %w", err)

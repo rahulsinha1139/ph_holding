@@ -45,7 +45,7 @@ import (
 
 // GeneratePurchaseOrderPDF creates a professional purchase order on PH Trading letterhead
 func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
-	if err := a.requirePermission("purchase_orders:view"); err != nil {
+	if err := a.requirePermission("po:view"); err != nil {
 		return "", err
 	}
 
@@ -537,10 +537,30 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	exportDir := filepath.Join(paths.ProjectRoot, "exports", "purchase_orders")
 	os.MkdirAll(exportDir, 0755)
 
-	// Clean PO number for filename (prevent path traversal)
+	// Combined filename: {SystemNumber}_{UserReference}.pdf
 	cleanPONum := sanitizeFilename(po.PONumber)
-	filename := fmt.Sprintf("PO_%s.pdf", cleanPONum)
-	filePath := filepath.Join(exportDir, filename)
+	userRef := ""
+	if po.RfqID != "" {
+		userRef = sanitizeFilename(po.RfqID)
+	}
+	filename := cleanPONum
+	if userRef != "" {
+		filename = fmt.Sprintf("%s_%s", cleanPONum, userRef)
+	}
+	filename = fmt.Sprintf("PO_%s.pdf", filename)
+
+	// Save to structured folder: <exports>/PH Trading/Suppliers/<SupplierName>/PO/
+	supplierDir := ""
+	if po.SupplierName != "" {
+		safeSupp := sanitizeFilename(po.SupplierName)
+		supplierDir = filepath.Join(exportDir, "..", "PH Trading", "Suppliers", safeSupp, "PO")
+		os.MkdirAll(supplierDir, 0755)
+	}
+	saveDir := exportDir
+	if supplierDir != "" {
+		saveDir = supplierDir
+	}
+	filePath := filepath.Join(saveDir, filename)
 
 	if err := pdf.OutputFileAndClose(filePath); err != nil {
 		return "", fmt.Errorf("failed to save purchase order PDF: %w", err)
