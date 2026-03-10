@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
@@ -95,15 +96,15 @@ const (
 // ============================================================================
 
 var (
-	customerKeywords   = []string{"customer", "client", "buyer", "account", "bapco", "alba", "ewa", "gpic", "noga", "aluminium bahrain", "bahrain petroleum", "electricity water", "gulf petrochemical", "tatweer", "banagas", "business with", "total business", "how much", "who is our", "top customer", "biggest customer", "best customer", "worst customer"}
-	supplierKeywords   = []string{"supplier", "vendor", "source", "endress", "hauser", "servomex", "landis", "gyr", "e+h", "bought from", "purchased from", "procurement", "supply chain", "top supplier", "lead time"}
-	financialKeywords  = []string{"cash", "payment", "invoice", "receivable", "payable", "balance", "revenue", "profit", "margin", "ar", "aging", "dso", "outstanding", "collection", "money", "owe", "owes", "paid", "unpaid", "earned", "income", "expense", "cashflow", "cash flow", "how much did we", "total sales", "turnover", "gross", "net", "bhd", "fiscal", "financial year"}
-	operationsKeywords = []string{"quote", "rfq", "order", "pipeline", "delivery", "purchase", "costing", "offer", "grn", "shipment", "po", "purchase order", "win rate", "conversion", "open orders", "pending", "active orders", "quotation"}
-	riskKeywords       = []string{"overdue", "late", "risk", "aging", "collection", "blocked", "dispute", "critical", "warning", "defaulter", "slow payer", "bad debt", "credit block"}
+	customerKeywords   = []string{"customer", "client", "buyer", "account", "bapco", "alba", "ewa", "gpic", "noga", "aluminium bahrain", "bahrain petroleum", "electricity water", "gulf petrochemical", "tatweer", "banagas", "business with", "total business", "how much", "who is our", "top customer", "biggest customer", "best customer", "worst customer", "most profitable", "profitab", "dormant", "inactive", "haven't ordered", "not ordered", "lapsed", "churn", "retention", "new customer", "acquisition", "which customer"}
+	supplierKeywords   = []string{"supplier", "vendor", "source", "endress", "hauser", "servomex", "landis", "gyr", "e+h", "bought from", "purchased from", "procurement", "supply chain", "top supplier", "lead time", "delivery time", "reliable", "on time", "supplier performance", "qc rate", "quality"}
+	financialKeywords  = []string{"cash", "payment", "invoice", "receivable", "payable", "balance", "revenue", "profit", "margin", "ar", "aging", "dso", "outstanding", "collection", "money", "owe", "owes", "paid", "unpaid", "earned", "income", "expense", "cashflow", "cash flow", "how much did we", "total sales", "turnover", "gross", "net", "bhd", "fiscal", "financial year", "days to pay", "payment speed", "slow payer", "fast payer", "days sales outstanding", "margin by", "profit by"}
+	operationsKeywords = []string{"quote", "rfq", "order", "pipeline", "delivery", "purchase", "costing", "offer", "grn", "shipment", "po", "purchase order", "win rate", "conversion", "open orders", "pending", "active orders", "quotation", "expir", "validity", "expire", "lapsing", "about to expire", "win loss", "lost reason", "competition", "competitor", "abb", "won", "lost deals"}
+	riskKeywords       = []string{"overdue", "late", "risk", "aging", "collection", "blocked", "dispute", "critical", "warning", "defaulter", "slow payer", "bad debt", "credit block", "action item", "what should", "what do i", "today", "urgent", "priorit", "focus", "stuck", "follow up", "pending approval", "awaiting"}
 	marketKeywords     = []string{"price", "market", "competitor", "trend", "industry", "steel", "instrumentation"}
 
 	// Patterns that indicate complex queries needing mistral-large
-	complexPatterns = []string{"compare", "analyze", "recommend", "strategy", "forecast", "predict", "trend", "correlat", "multiple", "relationship"}
+	complexPatterns = []string{"compare", "analyze", "recommend", "strategy", "forecast", "predict", "trend", "correlat", "multiple", "relationship", "which", "most", "least", "highest", "lowest", "best", "worst", "over time", "by month", "by quarter", "by year", "profitab", "dormant", "churn", "performance"}
 
 	// Action regex for parsing [ACTIONS]...[/ACTIONS] blocks
 	actionBlockRegex = regexp.MustCompile(`(?s)\[ACTIONS\](.*?)\[/ACTIONS\]`)
@@ -583,6 +584,31 @@ func (a *App) buildFullContext(intent Intent) map[string]interface{} {
 
 	// Serial number overview (inventory status and traceability)
 	context["serial_inventory"] = a.getSerialContext()
+
+	// DSO — Days Sales Outstanding per customer (who pays slow/fast)
+	if hasFinanceAccess {
+		context["dso_analysis"] = a.getDSOContext()
+	}
+
+	// Offer expiry — active quotes approaching their ValidityDate
+	context["offer_expiry"] = a.getOfferExpiryContext()
+
+	// Customer profitability — revenue and margin rankings (finance-gated)
+	if hasFinanceAccess {
+		context["customer_profitability"] = a.getCustomerProfitabilityContext()
+	}
+
+	// Supplier delivery performance — lead times and QC pass rates
+	context["supplier_performance"] = a.getSupplierPerformanceContext()
+
+	// Customer activity — dormant, new, and lapsed customers
+	context["customer_activity"] = a.getCustomerActivityContext()
+
+	// Action items — prioritized list of things needing attention today
+	context["action_items"] = a.getActionItemsContext()
+
+	// Competition — win/loss analysis, ABB flag, lost reasons, win rate by product
+	context["competition_analysis"] = a.getCompetitionContext()
 
 	return context
 }
@@ -1947,6 +1973,547 @@ func (a *App) getSerialContext() map[string]interface{} {
 	return result
 }
 
+// getDSOContext computes Days Sales Outstanding — overall and per-customer.
+// Uses payments.days_to_payment which is pre-calculated at payment recording time.
+func (a *App) getDSOContext() map[string]interface{} {
+	ctx := make(map[string]interface{})
+	if a.db == nil {
+		return ctx
+	}
+
+	// Overall DSO
+	var overallDSO float64
+	a.db.Model(&Payment{}).
+		Select("COALESCE(AVG(days_to_payment), 0)").
+		Where("days_to_payment > 0").
+		Scan(&overallDSO)
+	ctx["overall_dso_days"] = math.Round(overallDSO*10) / 10
+
+	// Per-customer DSO — slowest 10 and fastest 10
+	type CustomerDSO struct {
+		CustomerName string  `gorm:"column:customer_name"`
+		AvgDays      float64 `gorm:"column:avg_days"`
+		PaymentCount int     `gorm:"column:payment_count"`
+	}
+	var customerDSOs []CustomerDSO
+	a.db.Raw(`
+		SELECT i.customer_name,
+		       ROUND(AVG(p.days_to_payment), 1) as avg_days,
+		       COUNT(p.id) as payment_count
+		FROM payments p
+		JOIN invoices i ON p.invoice_id = i.id
+		WHERE p.days_to_payment > 0 AND i.deleted_at IS NULL
+		GROUP BY i.customer_id, i.customer_name
+		HAVING payment_count >= 2
+		ORDER BY avg_days DESC
+		LIMIT 20
+	`).Scan(&customerDSOs)
+
+	slowest, fastest := []map[string]interface{}{}, []map[string]interface{}{}
+	for _, c := range customerDSOs {
+		if len(slowest) < 10 {
+			slowest = append(slowest, map[string]interface{}{
+				"customer": c.CustomerName, "avg_days": c.AvgDays, "payments": c.PaymentCount,
+			})
+		}
+	}
+	for i := len(customerDSOs) - 1; i >= 0 && len(fastest) < 10; i-- {
+		c := customerDSOs[i]
+		fastest = append(fastest, map[string]interface{}{
+			"customer": c.CustomerName, "avg_days": c.AvgDays, "payments": c.PaymentCount,
+		})
+	}
+	ctx["slowest_payers"] = slowest
+	ctx["fastest_payers"] = fastest
+
+	return ctx
+}
+
+// getOfferExpiryContext fetches active offers approaching their ValidityDate.
+// Groups by urgency: this week / this month / next 60 days.
+func (a *App) getOfferExpiryContext() map[string]interface{} {
+	ctx := make(map[string]interface{})
+	if a.db == nil {
+		return ctx
+	}
+
+	now := time.Now()
+	in7 := now.AddDate(0, 0, 7)
+	in30 := now.AddDate(0, 0, 30)
+	in60 := now.AddDate(0, 0, 60)
+
+	type ExpiringOffer struct {
+		OfferNumber   string    `gorm:"column:offer_number"`
+		CustomerName  string    `gorm:"column:customer_name"`
+		TotalValueBHD float64   `gorm:"column:total_value_bhd"`
+		ValidityDate  time.Time `gorm:"column:validity_date"`
+		Stage         string    `gorm:"column:stage"`
+	}
+	var expiring []ExpiringOffer
+	a.db.Raw(`
+		SELECT offer_number, customer_name, total_value_bhd, validity_date, stage
+		FROM offers
+		WHERE validity_date BETWEEN ? AND ?
+		  AND stage IN ('RFQ', 'Quoted')
+		  AND deleted_at IS NULL
+		ORDER BY validity_date ASC
+		LIMIT 50
+	`, now, in60).Scan(&expiring)
+
+	week, month, later := []map[string]interface{}{}, []map[string]interface{}{}, []map[string]interface{}{}
+	var totalAtRisk float64
+	for _, o := range expiring {
+		entry := map[string]interface{}{
+			"offer": o.OfferNumber, "customer": o.CustomerName,
+			"value_bhd": o.TotalValueBHD, "expires": o.ValidityDate.Format("2006-01-02"), "stage": o.Stage,
+		}
+		totalAtRisk += o.TotalValueBHD
+		if o.ValidityDate.Before(in7) {
+			week = append(week, entry)
+		} else if o.ValidityDate.Before(in30) {
+			month = append(month, entry)
+		} else {
+			later = append(later, entry)
+		}
+	}
+	ctx["expiring_this_week"] = week
+	ctx["expiring_this_month"] = month
+	ctx["expiring_30_to_60_days"] = later
+	ctx["total_value_at_risk_bhd"] = math.Round(totalAtRisk*1000) / 1000
+	ctx["count_expiring_60_days"] = len(expiring)
+
+	return ctx
+}
+
+// getCustomerProfitabilityContext ranks customers by revenue and margin.
+func (a *App) getCustomerProfitabilityContext() map[string]interface{} {
+	ctx := make(map[string]interface{})
+	if a.db == nil {
+		return ctx
+	}
+
+	type CustomerProfit struct {
+		CustomerName    string  `gorm:"column:customer_name"`
+		TotalRevenueBHD float64 `gorm:"column:total_revenue"`
+		TotalMarginBHD  float64 `gorm:"column:total_margin"`
+		AvgMarginPct    float64 `gorm:"column:avg_margin_pct"`
+		InvoiceCount    int     `gorm:"column:invoice_count"`
+	}
+
+	var topRevenue []CustomerProfit
+	a.db.Raw(`
+		SELECT customer_name,
+		       SUM(grand_total_bhd) as total_revenue,
+		       SUM(gross_margin_bhd) as total_margin,
+		       ROUND(AVG(gross_margin_percent), 2) as avg_margin_pct,
+		       COUNT(*) as invoice_count
+		FROM invoices
+		WHERE status NOT IN ('Cancelled', 'Void', 'Proforma', 'Draft')
+		  AND deleted_at IS NULL
+		GROUP BY customer_id, customer_name
+		ORDER BY total_revenue DESC
+		LIMIT 15
+	`).Scan(&topRevenue)
+
+	revenueResult := []map[string]interface{}{}
+	for _, p := range topRevenue {
+		revenueResult = append(revenueResult, map[string]interface{}{
+			"customer": p.CustomerName, "revenue_bhd": p.TotalRevenueBHD,
+			"margin_bhd": p.TotalMarginBHD, "avg_margin_pct": p.AvgMarginPct,
+			"invoice_count": p.InvoiceCount,
+		})
+	}
+	ctx["top_customers_by_revenue"] = revenueResult
+
+	// Lowest margin customers (pricing opportunities)
+	var lowMargin []CustomerProfit
+	a.db.Raw(`
+		SELECT customer_name,
+		       SUM(grand_total_bhd) as total_revenue,
+		       SUM(gross_margin_bhd) as total_margin,
+		       ROUND(AVG(gross_margin_percent), 2) as avg_margin_pct,
+		       COUNT(*) as invoice_count
+		FROM invoices
+		WHERE status NOT IN ('Cancelled', 'Void', 'Proforma', 'Draft')
+		  AND deleted_at IS NULL AND gross_margin_percent > 0
+		GROUP BY customer_id, customer_name
+		HAVING invoice_count >= 2
+		ORDER BY avg_margin_pct ASC
+		LIMIT 10
+	`).Scan(&lowMargin)
+
+	lowResult := []map[string]interface{}{}
+	for _, p := range lowMargin {
+		lowResult = append(lowResult, map[string]interface{}{
+			"customer": p.CustomerName, "revenue_bhd": p.TotalRevenueBHD,
+			"avg_margin_pct": p.AvgMarginPct, "invoice_count": p.InvoiceCount,
+		})
+	}
+	ctx["lowest_margin_customers"] = lowResult
+
+	return ctx
+}
+
+// getSupplierPerformanceContext calculates delivery lead times and QC pass rates per supplier.
+func (a *App) getSupplierPerformanceContext() map[string]interface{} {
+	ctx := make(map[string]interface{})
+	if a.db == nil {
+		return ctx
+	}
+
+	type SupplierPerf struct {
+		SupplierName string  `gorm:"column:supplier_name"`
+		AvgLeadDays  float64 `gorm:"column:avg_lead_days"`
+		GRNCount     int     `gorm:"column:grn_count"`
+		QCPassRate   float64 `gorm:"column:qc_pass_rate"`
+	}
+	var perfs []SupplierPerf
+	a.db.Raw(`
+		SELECT po.supplier_name,
+		       ROUND(AVG(CAST((julianday(grn.received_date) - julianday(po.po_date)) AS REAL)), 1) as avg_lead_days,
+		       COUNT(grn.id) as grn_count,
+		       ROUND(SUM(CASE WHEN grn.qc_status = 'Passed' THEN 1 ELSE 0 END) * 100.0 / COUNT(grn.id), 1) as qc_pass_rate
+		FROM goods_received_notes grn
+		JOIN purchase_orders po ON grn.purchase_order_id = po.id
+		WHERE po.deleted_at IS NULL AND grn.deleted_at IS NULL
+		  AND grn.received_date IS NOT NULL AND po.po_date IS NOT NULL
+		GROUP BY po.supplier_id, po.supplier_name
+		HAVING grn_count >= 1
+		ORDER BY avg_lead_days ASC
+	`).Scan(&perfs)
+
+	result := []map[string]interface{}{}
+	for _, p := range perfs {
+		result = append(result, map[string]interface{}{
+			"supplier": p.SupplierName, "avg_lead_days": p.AvgLeadDays,
+			"deliveries": p.GRNCount, "qc_pass_rate_pct": p.QCPassRate,
+		})
+	}
+	ctx["supplier_delivery_performance"] = result
+
+	return ctx
+}
+
+// getCustomerActivityContext identifies dormant customers, new customers this year,
+// and customers who ordered last year but not this year.
+func (a *App) getCustomerActivityContext() map[string]interface{} {
+	ctx := make(map[string]interface{})
+	if a.db == nil {
+		return ctx
+	}
+
+	now := time.Now()
+	sixMonthsAgo := now.AddDate(0, -6, 0)
+	oneYearAgo := now.AddDate(-1, 0, 0)
+	thisYearStart := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+
+	type CustomerActivity struct {
+		CustomerName    string    `gorm:"column:customer_name"`
+		LastOrderDate   time.Time `gorm:"column:last_order_date"`
+		TotalOrders     int       `gorm:"column:total_orders"`
+		TotalRevenueBHD float64   `gorm:"column:total_revenue"`
+	}
+
+	// Dormant: had invoices historically but nothing in last 6 months
+	var dormant []CustomerActivity
+	a.db.Raw(`
+		SELECT customer_name,
+		       MAX(invoice_date) as last_order_date,
+		       COUNT(*) as total_orders,
+		       SUM(grand_total_bhd) as total_revenue
+		FROM invoices
+		WHERE status NOT IN ('Cancelled', 'Void', 'Proforma', 'Draft') AND deleted_at IS NULL
+		GROUP BY customer_id, customer_name
+		HAVING last_order_date < ?
+		ORDER BY total_revenue DESC
+		LIMIT 15
+	`, sixMonthsAgo).Scan(&dormant)
+
+	dormantResult := []map[string]interface{}{}
+	for _, c := range dormant {
+		dormantResult = append(dormantResult, map[string]interface{}{
+			"customer": c.CustomerName, "last_order": c.LastOrderDate.Format("2006-01-02"),
+			"days_silent":     int(now.Sub(c.LastOrderDate).Hours() / 24),
+			"historical_revenue_bhd": c.TotalRevenueBHD,
+		})
+	}
+	ctx["dormant_customers"] = dormantResult
+
+	// New customers who placed their first-ever order this year
+	type NewCust struct {
+		CustomerName  string    `gorm:"column:customer_name"`
+		FirstOrder    time.Time `gorm:"column:first_order"`
+		OrderCount    int       `gorm:"column:order_count"`
+		RevenueBHD    float64   `gorm:"column:revenue_bhd"`
+	}
+	var newCustomers []NewCust
+	a.db.Raw(`
+		SELECT customer_name,
+		       MIN(invoice_date) as first_order,
+		       COUNT(*) as order_count,
+		       SUM(grand_total_bhd) as revenue_bhd
+		FROM invoices
+		WHERE status NOT IN ('Cancelled', 'Void', 'Proforma', 'Draft') AND deleted_at IS NULL
+		GROUP BY customer_id, customer_name
+		HAVING first_order >= ?
+		ORDER BY revenue_bhd DESC
+		LIMIT 10
+	`, thisYearStart).Scan(&newCustomers)
+
+	newResult := []map[string]interface{}{}
+	for _, c := range newCustomers {
+		newResult = append(newResult, map[string]interface{}{
+			"customer":      c.CustomerName, "first_order": c.FirstOrder.Format("2006-01-02"),
+			"orders":        c.OrderCount,   "revenue_bhd":  c.RevenueBHD,
+		})
+	}
+	ctx["new_customers_this_year"] = newResult
+
+	// Lapsed: ordered last year but not placed anything yet this year
+	var lapsed []CustomerActivity
+	a.db.Raw(`
+		SELECT customer_name,
+		       MAX(invoice_date) as last_order_date,
+		       COUNT(*) as total_orders,
+		       SUM(grand_total_bhd) as total_revenue
+		FROM invoices
+		WHERE invoice_date BETWEEN ? AND ?
+		  AND status NOT IN ('Cancelled', 'Void', 'Proforma', 'Draft') AND deleted_at IS NULL
+		  AND customer_id NOT IN (
+		      SELECT DISTINCT customer_id FROM invoices
+		      WHERE invoice_date >= ?
+		        AND status NOT IN ('Cancelled', 'Void', 'Proforma', 'Draft')
+		        AND deleted_at IS NULL
+		  )
+		GROUP BY customer_id, customer_name
+		ORDER BY total_revenue DESC
+		LIMIT 10
+	`, oneYearAgo, thisYearStart, thisYearStart).Scan(&lapsed)
+
+	lapsedResult := []map[string]interface{}{}
+	for _, c := range lapsed {
+		lapsedResult = append(lapsedResult, map[string]interface{}{
+			"customer":              c.CustomerName,
+			"last_order":            c.LastOrderDate.Format("2006-01-02"),
+			"prev_year_revenue_bhd": c.TotalRevenueBHD,
+		})
+	}
+	ctx["lapsed_this_year"] = lapsedResult
+
+	return ctx
+}
+
+// getActionItemsContext builds a prioritized list of items requiring attention right now.
+func (a *App) getActionItemsContext() map[string]interface{} {
+	ctx := make(map[string]interface{})
+	if a.db == nil {
+		return ctx
+	}
+
+	now := time.Now()
+	in7Days := now.AddDate(0, 0, 7)
+	sevenDaysAgo := now.AddDate(0, 0, -7)
+	fourteenDaysAgo := now.AddDate(0, 0, -14)
+
+	// 1. Overdue invoices to chase (top 10 by amount)
+	type OverdueInv struct {
+		CustomerName  string    `gorm:"column:customer_name"`
+		InvoiceNumber string    `gorm:"column:invoice_number"`
+		OutstandingBHD float64  `gorm:"column:outstanding_bhd"`
+		DueDate       time.Time `gorm:"column:due_date"`
+	}
+	var overdueInvoices []OverdueInv
+	a.db.Raw(`
+		SELECT customer_name, invoice_number, outstanding_bhd, due_date
+		FROM invoices
+		WHERE status IN ('Overdue', 'Sent', 'PartiallyPaid')
+		  AND due_date < ? AND outstanding_bhd > 0 AND deleted_at IS NULL
+		ORDER BY outstanding_bhd DESC LIMIT 10
+	`, now).Scan(&overdueInvoices)
+
+	overdueResult := []map[string]interface{}{}
+	for _, inv := range overdueInvoices {
+		overdueResult = append(overdueResult, map[string]interface{}{
+			"customer": inv.CustomerName, "invoice": inv.InvoiceNumber,
+			"outstanding_bhd": inv.OutstandingBHD,
+			"days_overdue":    int(now.Sub(inv.DueDate).Hours() / 24),
+		})
+	}
+	ctx["overdue_invoices_to_chase"] = overdueResult
+
+	// 2. Offers expiring this week
+	type ExpiryItem struct {
+		OfferNumber  string    `gorm:"column:offer_number"`
+		CustomerName string    `gorm:"column:customer_name"`
+		TotalValueBHD float64  `gorm:"column:total_value_bhd"`
+		ValidityDate time.Time `gorm:"column:validity_date"`
+	}
+	var expiringOffers []ExpiryItem
+	a.db.Raw(`
+		SELECT offer_number, customer_name, total_value_bhd, validity_date
+		FROM offers
+		WHERE validity_date BETWEEN ? AND ? AND stage IN ('RFQ', 'Quoted') AND deleted_at IS NULL
+		ORDER BY validity_date ASC LIMIT 10
+	`, now, in7Days).Scan(&expiringOffers)
+
+	expiryResult := []map[string]interface{}{}
+	for _, o := range expiringOffers {
+		expiryResult = append(expiryResult, map[string]interface{}{
+			"offer": o.OfferNumber, "customer": o.CustomerName,
+			"value_bhd": o.TotalValueBHD, "expires": o.ValidityDate.Format("2006-01-02"),
+		})
+	}
+	ctx["offers_expiring_this_week"] = expiryResult
+
+	// 3. Delivery notes stuck as Prepared for >7 days
+	type StuckDN struct {
+		DNNumber  string    `gorm:"column:dn_number"`
+		CreatedAt time.Time `gorm:"column:created_at"`
+	}
+	var stuckDNs []StuckDN
+	a.db.Raw(`
+		SELECT dn_number, created_at FROM delivery_notes
+		WHERE status = 'Prepared' AND created_at < ? AND deleted_at IS NULL
+		ORDER BY created_at ASC LIMIT 10
+	`, sevenDaysAgo).Scan(&stuckDNs)
+
+	stuckResult := []map[string]interface{}{}
+	for _, dn := range stuckDNs {
+		stuckResult = append(stuckResult, map[string]interface{}{
+			"dn": dn.DNNumber, "days_pending": int(now.Sub(dn.CreatedAt).Hours() / 24),
+		})
+	}
+	ctx["stuck_delivery_notes"] = stuckResult
+
+	// 4. POs sent but not acknowledged for >14 days
+	type SentPO struct {
+		PONumber     string    `gorm:"column:po_number"`
+		SupplierName string    `gorm:"column:supplier_name"`
+		TotalBHD     float64   `gorm:"column:total_bhd"`
+		UpdatedAt    time.Time `gorm:"column:updated_at"`
+	}
+	var sentPOs []SentPO
+	a.db.Raw(`
+		SELECT po_number, supplier_name, total_bhd, updated_at
+		FROM purchase_orders
+		WHERE status = 'Sent' AND updated_at < ? AND deleted_at IS NULL
+		ORDER BY total_bhd DESC LIMIT 10
+	`, fourteenDaysAgo).Scan(&sentPOs)
+
+	sentPOResult := []map[string]interface{}{}
+	for _, po := range sentPOs {
+		sentPOResult = append(sentPOResult, map[string]interface{}{
+			"po": po.PONumber, "supplier": po.SupplierName,
+			"value_bhd": po.TotalBHD, "days_waiting": int(now.Sub(po.UpdatedAt).Hours() / 24),
+		})
+	}
+	ctx["pos_awaiting_acknowledgment"] = sentPOResult
+
+	// 5. Supplier invoices pending approval for >7 days
+	type PendingSupInv struct {
+		InvoiceNumber string    `gorm:"column:invoice_number"`
+		SupplierName  string    `gorm:"column:supplier_name"`
+		TotalBHD      float64   `gorm:"column:total_bhd"`
+		InvoiceDate   time.Time `gorm:"column:invoice_date"`
+	}
+	var pendingSI []PendingSupInv
+	a.db.Raw(`
+		SELECT invoice_number, supplier_name, total_bhd, invoice_date
+		FROM supplier_invoices
+		WHERE status = 'Pending' AND invoice_date < ? AND deleted_at IS NULL
+		ORDER BY total_bhd DESC LIMIT 10
+	`, sevenDaysAgo).Scan(&pendingSI)
+
+	pendingSIResult := []map[string]interface{}{}
+	for _, si := range pendingSI {
+		pendingSIResult = append(pendingSIResult, map[string]interface{}{
+			"invoice": si.InvoiceNumber, "supplier": si.SupplierName,
+			"value_bhd": si.TotalBHD, "days_pending": int(now.Sub(si.InvoiceDate).Hours() / 24),
+		})
+	}
+	ctx["supplier_invoices_pending_approval"] = pendingSIResult
+
+	return ctx
+}
+
+// getCompetitionContext analyzes win/loss patterns, ABB competition, and lost deal reasons.
+func (a *App) getCompetitionContext() map[string]interface{} {
+	ctx := make(map[string]interface{})
+	if a.db == nil {
+		return ctx
+	}
+
+	var totalOffers, abbOffers, abbWins, totalWins int64
+	a.db.Model(&Offer{}).Where("deleted_at IS NULL").Count(&totalOffers)
+	a.db.Model(&Offer{}).Where("has_abb_competition = ? AND deleted_at IS NULL", true).Count(&abbOffers)
+	a.db.Model(&Offer{}).Where("has_abb_competition = ? AND stage = ? AND deleted_at IS NULL", true, "Won").Count(&abbWins)
+	a.db.Model(&Offer{}).Where("stage = ? AND deleted_at IS NULL", "Won").Count(&totalWins)
+
+	var abbWinRate, overallWinRate float64
+	if abbOffers > 0 {
+		abbWinRate = math.Round(float64(abbWins)/float64(abbOffers)*1000) / 10
+	}
+	if totalOffers > 0 {
+		overallWinRate = math.Round(float64(totalWins)/float64(totalOffers)*1000) / 10
+	}
+	ctx["total_offers"] = totalOffers
+	ctx["abb_competitive_offers"] = abbOffers
+	ctx["win_rate_vs_abb_pct"] = abbWinRate
+	ctx["overall_win_rate_pct"] = overallWinRate
+
+	// Top lost reasons
+	type LostReason struct {
+		Reason string `gorm:"column:lost_reason"`
+		Count  int    `gorm:"column:cnt"`
+	}
+	var lostReasons []LostReason
+	a.db.Raw(`
+		SELECT lost_reason, COUNT(*) as cnt
+		FROM offers
+		WHERE stage = 'Lost' AND lost_reason != '' AND lost_reason IS NOT NULL AND deleted_at IS NULL
+		GROUP BY lost_reason ORDER BY cnt DESC LIMIT 10
+	`).Scan(&lostReasons)
+
+	reasonResult := []map[string]interface{}{}
+	for _, r := range lostReasons {
+		reasonResult = append(reasonResult, map[string]interface{}{"reason": r.Reason, "count": r.Count})
+	}
+	ctx["top_lost_reasons"] = reasonResult
+
+	// Win rate by product code (requires joining offer_items → offers)
+	type ProductWinRate struct {
+		ProductCode string `gorm:"column:product_code"`
+		TotalOffers int    `gorm:"column:total_offers"`
+		WonOffers   int    `gorm:"column:won_offers"`
+	}
+	var productWinRates []ProductWinRate
+	a.db.Raw(`
+		SELECT oi.product_code,
+		       COUNT(DISTINCT o.id) as total_offers,
+		       SUM(CASE WHEN o.stage = 'Won' THEN 1 ELSE 0 END) as won_offers
+		FROM offer_items oi
+		JOIN offers o ON oi.offer_id = o.id
+		WHERE o.deleted_at IS NULL AND oi.deleted_at IS NULL AND oi.product_code != ''
+		GROUP BY oi.product_code HAVING total_offers >= 3
+		ORDER BY won_offers * 1.0 / total_offers DESC LIMIT 10
+	`).Scan(&productWinRates)
+
+	productResult := []map[string]interface{}{}
+	for _, p := range productWinRates {
+		winRate := 0.0
+		if p.TotalOffers > 0 {
+			winRate = math.Round(float64(p.WonOffers)/float64(p.TotalOffers)*1000) / 10
+		}
+		productResult = append(productResult, map[string]interface{}{
+			"product": p.ProductCode, "win_rate_pct": winRate,
+			"total_offers": p.TotalOffers, "won": p.WonOffers,
+		})
+	}
+	ctx["win_rate_by_product"] = productResult
+
+	return ctx
+}
+
 // getPurchaseOrderSummary provides PO overview
 func (a *App) getPurchaseOrderSummary() map[string]interface{} {
 	result := make(map[string]interface{})
@@ -2297,17 +2864,24 @@ COMPANY PROFILE:
 
 FULL DATA ACCESS — you have live data on:
 • CUSTOMERS: 286 active accounts — profiles, grades (A/B/C/D), payment behavior, credit limits, outstanding AR, invoices, orders, contacts, CRM notes, follow-up tasks, active offers, AR risk tiers
-• SUPPLIERS: 34 suppliers — profiles, PO history, invoice matching, payment history, GRN quality stats, supplier issues
-• SALES PIPELINE: Offers (RFQ → Quotation → Won/Lost), costing sheets, win rates, opportunities by stage/salesperson, ABB competition flags
+• CUSTOMER ACTIVITY: Dormant customers (no orders 6+ months), new customers this year, lapsed customers (ordered last year but not this year), customer retention signals
+• CUSTOMER PROFITABILITY: Revenue and gross margin by customer — top earners, lowest margin accounts (pricing opportunities)
+• SUPPLIERS: 34 suppliers — profiles, PO history, invoice matching, payment history, GRN quality stats
+• SUPPLIER PERFORMANCE: Average delivery lead times (PO date → GRN date), QC pass/fail rates by supplier — who is reliable, who isn't
+• SALES PIPELINE: Offers (RFQ → Quotation → Won/Lost/Expired), costing sheets, win rates, opportunities by stage, ABB competition flags
+• OFFER EXPIRY: Active quotes approaching ValidityDate — this week / this month / next 60 days, total value at risk
+• COMPETITION: Win rate vs ABB, overall win rate, top lost-deal reasons, win rate by product type
 • ORDERS & INVOICES: 175 orders, 468 customer invoices (2023-2025), invoice status, line items, margins
 • PROCUREMENT: 45 POs (multi-currency EUR/USD/BHD), 3-way matching (PO/GRN/Invoice), GRN quality
 • DELIVERY: 155 delivery notes — Prepared/Dispatched/Delivered, serial traceability
 • FINANCE: AR/AP, bank balances (multiple accounts), FX rates, monthly revenue trends, payment predictions
+• DSO ANALYSIS: Days Sales Outstanding per customer — who pays in 15 days vs 90 days, overall DSO trend
 • BANKING: Bank statements, reconciliation status, outstanding/stale/bounced cheques
 • CREDIT NOTES: Draft/Issued/Applied pipeline, outstanding credits
 • PRODUCTS: 19 active products — catalog, pricing, margins, order frequency, serial tracking
 • FORECASTING: Weighted pipeline by stage, opportunities closing in 60 days, payment day predictions, win rates by product type, salesperson performance
 • RISK: Overdue AR/AP, credit-blocked customers, expiring offers, system alerts
+• ACTION ITEMS: Prioritized list — overdue invoices to chase, offers expiring this week, stuck delivery notes, POs awaiting supplier acknowledgment, supplier invoices pending approval
 • INTELLIGENCE: Three-Regime dynamics (R1=Exploration/R2=Optimization/R3=Stabilization), payment behavior models
 
 COMPLETE BUSINESS DATA:
@@ -2323,6 +2897,11 @@ YOUR CAPABILITIES:
 5. MARKET INTELLIGENCE — use your knowledge of the instrumentation industry to add context to data
 6. WHAT-IF SCENARIOS — reason about hypothetical situations ("what if EWA delays payment?", "what margin do we need to break even on this order?")
 7. RELATIONSHIP ANALYSIS — cross-reference customers, orders, offers, and payments to find patterns
+8. DAILY PRIORITIZATION — tell the team what to focus on today: overdue collections, expiring offers, stuck deliveries, pending approvals
+9. CUSTOMER HEALTH — identify dormant accounts, churn risk, and new customer opportunities worth nurturing
+10. COMPETITIVE INTELLIGENCE — analyze win/loss patterns, ABB competition win rate, pricing vs margin trade-offs
+11. SUPPLIER BENCHMARKING — compare lead times and QC reliability across E+H, Servomex, Landis+Gyr, and others
+12. PAYMENT BEHAVIOR — DSO by customer, predict who will pay late, recommend collection priority
 
 RESPONSE GUIDELINES:
 - Always cite specific numbers from the context data when available
