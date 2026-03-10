@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // =============================================================================
@@ -26,11 +28,17 @@ func (a *App) CreateFXRate(fromCurrency, toCurrency string, rate float64, rateDa
 		return nil, fmt.Errorf("database not initialized")
 	}
 
+	// Absolute bounds: realistic FX rate range regardless of history
+	const minFXRate = 0.001  // e.g. very weak currencies vs BHD
+	const maxFXRate = 1000.0 // hard ceiling to catch typos / injected values
 	if rate <= 0 {
 		return nil, fmt.Errorf("rate must be positive")
 	}
+	if rate < minFXRate || rate > maxFXRate {
+		return nil, fmt.Errorf("rate %.6f is outside absolute bounds [%.3f, %.1f]", rate, minFXRate, maxFXRate)
+	}
 
-	// Bounds validation: rate must be within ±20% of last known rate
+	// Relative bounds: rate must be within ±20% of last known rate (prevents large sudden jumps)
 	var lastRate FXRate
 	lastErr := a.db.Where("from_currency = ? AND to_currency = ?", fromCurrency, toCurrency).
 		Order("rate_date DESC").First(&lastRate).Error
@@ -182,81 +190,101 @@ func (a *App) CalculateFXRevaluation(bankAccountID string, revaluationDate time.
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	// Get bank account details
-	var account CompanyBankAccount
-	if err := a.db.First(&account, "id = ?", bankAccountID).Error; err != nil {
-		return nil, fmt.Errorf("bank account not found: %w", err)
-	}
+	// Wrap the entire calculation in a transaction so the account's BookingRate cannot
+	// be modified between the account read and the revaluation insert.
+	var reval *FXRevaluation
+	txErr := a.db.Transaction(func(tx *gorm.DB) error {
+		// Get bank account details (inside transaction — consistent snapshot)
+		var account CompanyBankAccount
+		if err := tx.First(&account, "id = ?", bankAccountID).Error; err != nil {
+			return fmt.Errorf("bank account not found: %w", err)
+		}
 
-	if account.Currency == "BHD" {
-		return nil, fmt.Errorf("BHD accounts do not require FX revaluation")
-	}
+		if account.Currency == "BHD" {
+			return fmt.Errorf("BHD accounts do not require FX revaluation")
+		}
 
-	// Get current balance from latest statement
-	var latestStatement BankStatement
-	err := a.db.Where("bank_account_id = ?", bankAccountID).
-		Order("period_end DESC").
-		First(&latestStatement).Error
-	if err != nil {
-		return nil, fmt.Errorf("no bank statement found for account")
-	}
+		// Get current balance from latest statement
+		var latestStatement BankStatement
+		if err := tx.Where("bank_account_id = ?", bankAccountID).
+			Order("period_end DESC").
+			First(&latestStatement).Error; err != nil {
+			return fmt.Errorf("no bank statement found for account")
+		}
 
-	foreignBalance := latestStatement.ClosingBalance
+		foreignBalance := latestStatement.ClosingBalance
 
-	// Get previous revaluation (if any)
-	var prevReval FXRevaluation
-	var previousRate float64 = 0.0
-	var previousBHD float64 = 0.0
+		// Get previous revaluation (if any)
+		var prevReval FXRevaluation
+		var previousRate float64 = 0.0
+		var previousBHD float64 = 0.0
 
-	err = a.db.Where("bank_account_id = ?", bankAccountID).
-		Order("revaluation_date DESC").
-		First(&prevReval).Error
-	if err == nil {
-		previousRate = prevReval.CurrentRate
-		previousBHD = prevReval.CurrentBHD
-	} else {
-		// First revaluation - use booking rate (assume 1.0 for initial)
-		previousRate = 1.0
-		previousBHD = foreignBalance
-	}
+		if err := tx.Where("bank_account_id = ?", bankAccountID).
+			Order("revaluation_date DESC").
+			First(&prevReval).Error; err == nil {
+			previousRate = prevReval.CurrentRate
+			previousBHD = prevReval.CurrentBHD
+		} else {
+			// First revaluation: use the account's booking rate (set when account was opened).
+			// Assuming 1.0 produced wildly incorrect gain/loss figures for foreign accounts.
+			if account.BookingRate > 0 {
+				previousRate = account.BookingRate
+				previousBHD = foreignBalance * account.BookingRate
+			} else {
+				// No prior revaluation and booking rate not recorded.
+				// Fall back to current rate as baseline so gain/loss = 0 on first run (safe).
+				// Users should set BookingRate on the account for accurate historical comparison.
+				log.Printf("⚠️ WARNING: No booking_rate set for %s account %s — using current rate as baseline (first revaluation will show zero gain/loss)",
+					account.Currency, account.AccountNumber)
+				currentFXRateForBaseline, baseErr := a.GetFXRate(account.Currency, "BHD", revaluationDate)
+				if baseErr != nil {
+					return fmt.Errorf("cannot revalue %s account %s: no prior revaluation, no booking rate, and no current FX rate: %w",
+						account.Currency, account.AccountNumber, baseErr)
+				}
+				previousRate = currentFXRateForBaseline.Rate
+				previousBHD = foreignBalance * previousRate
+			}
+		}
 
-	// Get current FX rate
-	currentFXRate, err := a.GetFXRate(account.Currency, "BHD", revaluationDate)
-	if err != nil {
-		return nil, fmt.Errorf("no FX rate available for %s/BHD: %w", account.Currency, err)
-	}
+		// Get current FX rate
+		currentFXRate, err := a.GetFXRate(account.Currency, "BHD", revaluationDate)
+		if err != nil {
+			return fmt.Errorf("no FX rate available for %s/BHD: %w", account.Currency, err)
+		}
 
-	// Calculate current BHD value
-	currentBHD := foreignBalance * currentFXRate.Rate
+		// Calculate current BHD value and gain/loss
+		currentBHD := foreignBalance * currentFXRate.Rate
+		gainLoss := currentBHD - previousBHD
 
-	// Calculate gain/loss
-	gainLoss := currentBHD - previousBHD
+		r := &FXRevaluation{
+			BankAccountID:   bankAccountID,
+			RevaluationDate: revaluationDate,
+			ForeignCurrency: account.Currency,
+			ForeignBalance:  foreignBalance,
+			PreviousRate:    previousRate,
+			PreviousBHD:     previousBHD,
+			CurrentRate:     currentFXRate.Rate,
+			CurrentBHD:      currentBHD,
+			GainLossBHD:     gainLoss,
+			IsPosted:        false,
+		}
 
-	reval := &FXRevaluation{
-		BankAccountID:   bankAccountID,
-		RevaluationDate: revaluationDate,
-		ForeignCurrency: account.Currency,
-		ForeignBalance:  foreignBalance,
-		PreviousRate:    previousRate,
-		PreviousBHD:     previousBHD,
-		CurrentRate:     currentFXRate.Rate,
-		CurrentBHD:      currentBHD,
-		GainLossBHD:     gainLoss,
-		IsPosted:        false,
-	}
+		if err := tx.Create(r).Error; err != nil {
+			return fmt.Errorf("failed to create revaluation: %w", err)
+		}
 
-	if err := a.db.Create(reval).Error; err != nil {
-		return nil, fmt.Errorf("failed to create revaluation: %w", err)
-	}
+		gainLossType := "GAIN"
+		if gainLoss < 0 {
+			gainLossType = "LOSS"
+		}
+		log.Printf("💱 FX revaluation: %s %.3f %s → %.3f BHD (%s: %.3f BHD)",
+			account.AccountNumber, foreignBalance, account.Currency, currentBHD, gainLossType, gainLoss)
 
-	gainLossType := "GAIN"
-	if gainLoss < 0 {
-		gainLossType = "LOSS"
-	}
-	log.Printf("💱 FX revaluation: %s %.3f %s → %.3f BHD (%s: %.3f BHD)",
-		account.AccountNumber, foreignBalance, account.Currency, currentBHD, gainLossType, gainLoss)
+		reval = r
+		return nil
+	})
 
-	return reval, nil
+	return reval, txErr
 }
 
 // GetFXRevaluations retrieves revaluation history for an account

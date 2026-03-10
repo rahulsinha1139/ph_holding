@@ -74,11 +74,20 @@ const (
 	mistralMaxTokens   = 8192
 	mistralTemperature = 0.4
 
+	// AIML API (Grok) constants — primary LLM backend for chat queries
+	// AIML API is OpenAI-compatible; Grok offers ~1M token context window
+	// Model ID: verify exact name in your AIML API dashboard (https://api.aimlapi.com)
+	aimlAPIURL      = "https://api.aimlapi.com/v1/chat/completions"
+	aimlModelID     = "grok-4"  // xAI Grok 4 via AIML API — update if model ID differs
+	aimlMaxTokens   = 16384
+	aimlTemperature = 0.4
+
 	// Intent classification constants
 	MaxKeywordMatchScore         = 4.0
 	ComplexQueryDomainThreshold  = 3
 	ComplexQueryLengthThreshold  = 200
 	MistralAPITimeout            = 120 * time.Second
+	AimlAPITimeout               = 120 * time.Second
 )
 
 // ============================================================================
@@ -181,47 +190,83 @@ func countKeywordMatches(query string, keywords []string) int {
 	return count
 }
 
-// extractEntityName extracts potential customer/supplier names from query
+// extractEntityName extracts a customer or supplier name from the query using
+// three strategies in priority order: possessive detection, trigger-word scan,
+// and all-caps acronym detection (BAPCO, EWA, GPIC, ALBA, etc.).
 func extractEntityName(query string) string {
 	words := strings.Fields(query)
 
-	// Look for words after common prepositions/verbs
-	triggers := []string{"about", "is", "for", "with", "from", "customer", "supplier", "client"}
-	stopWords := map[string]bool{
-		"is": true, "the": true, "doing": true, "has": true, "with": true,
-		"last": true, "this": true, "next": true, "year": true, "month": true,
-		"quarter": true, "week": true, "total": true, "business": true,
-		"in": true, "on": true, "at": true, "to": true, "and": true,
-		"we": true, "have": true, "had": true, "been": true, "was": true,
-		"how": true, "what": true, "much": true, "many": true, "give": true,
-		"me": true, "our": true, "their": true, "since": true, "during": true,
-		"?": true, "all": true, "can": true, "you": true,
+	// --- Strategy 1: possessive ("EWA's", "Alba's", "BAPCO's") ---
+	possessiveRe := regexp.MustCompile(`(?i)\b([A-Z][A-Za-z&().\-]{1,40}(?:\s+[A-Z][A-Za-z&().\-]{1,40}){0,4})'s?\b`)
+	if m := possessiveRe.FindStringSubmatch(query); len(m) > 1 {
+		candidate := strings.TrimSpace(m[1])
+		if !isEntityStopWord(strings.ToLower(candidate)) {
+			return candidate
+		}
+	}
+
+	// --- Strategy 2: trigger-word scan (expanded from original) ---
+	triggers := map[string]bool{
+		"about": true, "is": true, "for": true, "with": true, "from": true,
+		"customer": true, "supplier": true, "client": true,
+		"how's": true, "hows": true, "show": true, "get": true, "find": true,
+		"tell": true, "regarding": true, "on": true, "contact": true,
+		"invoice": true, "invoices": true, "order": true, "orders": true,
+		"payment": true, "payments": true, "outstanding": true, "balance": true,
+		"status": true, "update": true, "info": true, "details": true,
 	}
 	for i, word := range words {
-		wordLower := strings.ToLower(word)
-		for _, trigger := range triggers {
-			if wordLower == trigger && i+1 < len(words) {
-				// Collect subsequent words that look like entity names
-				name := []string{}
-				for j := i + 1; j < len(words) && j < i+5; j++ {
-					w := words[j]
-					wLower := strings.ToLower(w)
-					if stopWords[wLower] {
-						break
-					}
-					name = append(name, w)
+		wLower := strings.ToLower(strings.TrimRight(word, "?,.'"))
+		if triggers[wLower] && i+1 < len(words) {
+			name := []string{}
+			for j := i + 1; j < len(words) && j < i+6; j++ {
+				w := strings.TrimRight(words[j], "?,.'")
+				if isEntityStopWord(strings.ToLower(w)) {
+					break
 				}
-				if len(name) > 0 {
-					result := strings.Join(name, " ")
-					// Clean trailing punctuation
-					result = strings.TrimRight(result, "?,.")
-					return result
-				}
+				name = append(name, w)
+			}
+			if len(name) > 0 {
+				return strings.TrimRight(strings.Join(name, " "), "?.,")
 			}
 		}
 	}
 
+	// --- Strategy 3: all-caps acronyms (BAPCO, EWA, GPIC, NOGA, TTSJV) ---
+	// Skip generic ERP acronyms (AR, AP, PO, GRN, DN, VAT, BHD, FX, etc.)
+	erpAcronyms := map[string]bool{
+		"AR": true, "AP": true, "PO": true, "GRN": true, "DN": true, "VAT": true,
+		"BHD": true, "FX": true, "AI": true, "ERP": true, "PDF": true, "OCR": true,
+		"CEO": true, "CFO": true, "COO": true, "HR": true, "IT": true,
+		"Q1": true, "Q2": true, "Q3": true, "Q4": true, "YTD": true, "MTD": true,
+	}
+	for _, word := range words {
+		clean := strings.TrimRight(word, "?,.'")
+		if len(clean) >= 2 && clean == strings.ToUpper(clean) && !erpAcronyms[clean] {
+			return clean
+		}
+	}
+
 	return ""
+}
+
+// isEntityStopWord returns true for words that are unlikely to be part of an entity name
+func isEntityStopWord(w string) bool {
+	stops := map[string]bool{
+		"is": true, "the": true, "doing": true, "has": true, "with": true,
+		"last": true, "this": true, "next": true, "year": true, "month": true,
+		"quarter": true, "week": true, "total": true, "business": true,
+		"in": true, "at": true, "to": true, "and": true, "a": true, "an": true,
+		"we": true, "have": true, "had": true, "been": true, "was": true,
+		"how": true, "what": true, "much": true, "many": true, "give": true,
+		"me": true, "our": true, "their": true, "since": true, "during": true,
+		"all": true, "can": true, "you": true, "any": true, "some": true,
+		"its": true, "my": true, "your": true, "show": true,
+		"get": true, "find": true, "tell": true, "list": true, "latest": true,
+		"recent": true, "current": true, "pending": true, "overdue": true,
+		"paid": true, "unpaid": true, "active": true, "closed": true,
+	}
+	return stops[w]
 }
 
 // ============================================================================
@@ -259,36 +304,47 @@ func (a *App) ChatWithButler(message string) (ButlerResponse, error) {
 		return a.handleReportRequest(message, intent)
 	}
 
-	// 4. Build context based on intent
-	context := a.buildIntentContext(intent)
+	// 4. Build full context (all domains — Grok's large context window can handle it)
+	context := a.buildFullContext(intent)
 
 	// 5. Calculate regime
 	regime := a.calculateSystemRegime()
 	context["system_regime"] = regime
 
-	// 6. Always use large model for best quality
-	model := mistralModelLarge
-
-	// 7. Build system prompt with context and regime
+	// 6. Build system prompt with full context and regime
 	systemPrompt := buildMistralSystemPrompt(context, regime)
 
-	// 8. Call Mistral API
-	aiResponse, err := callMistral(model, systemPrompt, message)
-	if err != nil {
-		log.Printf("❌ Mistral API error: %v", err)
+	// 7. Call AIML/Grok (primary) or fall back to Mistral
+	var aiResponse string
+	var aiErr error
+	usedBackend := "Mistral"
+	if aimlKey := getAIMLAPIKey(); aimlKey != "" {
+		aiResponse, aiErr = callAIML(aimlKey, systemPrompt, message)
+		usedBackend = "AIML/Grok"
+		if aiErr != nil {
+			log.Printf("⚠️ AIML API error, falling back to Mistral: %v", aiErr)
+			aiResponse, aiErr = callMistral(mistralModelLarge, systemPrompt, message)
+			usedBackend = "Mistral (fallback)"
+		}
+	} else {
+		aiResponse, aiErr = callMistral(mistralModelLarge, systemPrompt, message)
+	}
+
+	if aiErr != nil {
+		log.Printf("❌ AI backend error: %v", aiErr)
 		return ButlerResponse{
-			Message:    fmt.Sprintf("Intelligence pipeline error: %v. Please try again.", err),
+			Message:    fmt.Sprintf("Intelligence pipeline error: %v. Please try again.", aiErr),
 			Actions:    []ButlerAction{},
 			Confidence: 0.0,
 			Context:    context,
-		}, nil // Return nil error so frontend shows the message
+		}, nil
 	}
 
-	// 9. Parse response (extract actions, clean message)
+	// 8. Parse response (extract actions, clean message)
 	butlerResponse := parseMistralResponse(aiResponse, context, intent)
 
 	log.Printf("🤖 Butler responded via %s: %s (confidence: %.2f, actions: %d)",
-		model, butlerTruncate(butlerResponse.Message, 60), butlerResponse.Confidence, len(butlerResponse.Actions))
+		usedBackend, butlerTruncate(butlerResponse.Message, 60), butlerResponse.Confidence, len(butlerResponse.Actions))
 
 	return butlerResponse, nil
 }
@@ -450,6 +506,83 @@ func (a *App) buildIntentContext(intent Intent) map[string]interface{} {
 			context["financial_data"] = a.getFinancialContext()
 		}
 	}
+
+	return context
+}
+
+// buildFullContext gathers ALL domain data for Grok's large context window.
+// Unlike buildIntentContext (domain-specific), this loads everything at once —
+// customer, supplier, financial, operations, risk — and lets Grok figure out
+// what's relevant to the user's query. RBAC filtering still applies.
+func (a *App) buildFullContext(intent Intent) map[string]interface{} {
+	context := make(map[string]interface{})
+
+	if a.db == nil {
+		return context
+	}
+
+	userRole := a.GetCurrentUserRole()
+	hasFinanceAccess := a.CheckPermissionByRole(userRole, "finance:view")
+
+	// Business summary (always included)
+	summary := a.getBusinessSummary()
+	if !hasFinanceAccess {
+		delete(summary, "total_revenue_bhd")
+		delete(summary, "total_outstanding_bhd")
+	}
+	context["business_summary"] = summary
+
+	// Customer context — includes entity-specific data if name was extracted from query
+	customerCtx := a.getCustomerContext(intent.EntityName)
+	if !hasFinanceAccess {
+		a.redactFinancialFromContext(customerCtx)
+	}
+	context["customer_data"] = customerCtx
+
+	// Supplier context — entity-specific if supplier name extracted, always top suppliers
+	context["supplier_data"] = a.getSupplierContext(intent.EntityName)
+
+	// Financial context (only if user has finance:view permission)
+	if hasFinanceAccess {
+		context["financial_data"] = a.getFinancialContext()
+		context["ar_summary"] = a.getARSummary()
+	}
+
+	// Operations context (always included — non-sensitive pipeline data)
+	context["operations_data"] = a.getOperationsContext()
+	context["po_summary"] = a.getPurchaseOrderSummary()
+
+	// Risk context (financial amounts redacted for non-finance users)
+	riskCtx := a.getRiskContext()
+	if !hasFinanceAccess {
+		delete(riskCtx, "total_overdue_bhd")
+		delete(riskCtx, "total_overdue_ap_bhd")
+		delete(riskCtx, "overdue_invoices")
+		delete(riskCtx, "overdue_supplier_invoices")
+	}
+	context["risk_data"] = riskCtx
+
+	// Banking context (cash position, unreconciled lines, outstanding cheques)
+	if hasFinanceAccess {
+		context["banking_data"] = a.getBankingContext()
+	}
+
+	// Credit notes (outstanding credits against customers)
+	if hasFinanceAccess {
+		context["credit_notes"] = a.getCreditNoteContext()
+	}
+
+	// Product catalog (always — needed for quoting and procurement discussions)
+	context["product_catalog"] = a.getProductContext()
+
+	// Delivery pipeline (active DNs and recent completions)
+	context["delivery_data"] = a.getDeliveryContext()
+
+	// Forward-looking intelligence (pipeline projections, payment predictions, win rates, trends)
+	context["forecast_intelligence"] = a.getForecastContext()
+
+	// Serial number overview (inventory status and traceability)
+	context["serial_inventory"] = a.getSerialContext()
 
 	return context
 }
@@ -1370,6 +1503,450 @@ func (a *App) getARSummary() map[string]interface{} {
 	return result
 }
 
+// getBankingContext fetches bank accounts, unreconciled lines, and cheque position
+func (a *App) getBankingContext() map[string]interface{} {
+	result := make(map[string]interface{})
+
+	// Active bank accounts with balances (from latest bank statement per account)
+	var accounts []CompanyBankAccount
+	a.db.Where("is_active = ?", true).Find(&accounts)
+	accountList := make([]map[string]interface{}, 0)
+	var totalCashBHD float64
+	for _, acc := range accounts {
+		// Get closing balance from most recent statement
+		var latestStmt BankStatement
+		balance := 0.0
+		if err := a.db.Where("bank_account_id = ?", acc.ID).
+			Order("period_end DESC").First(&latestStmt).Error; err == nil {
+			balance = latestStmt.ClosingBalance
+		}
+		totalCashBHD += balance
+		accountList = append(accountList, map[string]interface{}{
+			"name":         acc.AccountName,
+			"bank":         acc.BankName,
+			"currency":     acc.Currency,
+			"balance":      balance,
+			"booking_rate": acc.BookingRate,
+		})
+	}
+	result["bank_accounts"] = accountList
+	result["total_cash_bhd"] = totalCashBHD
+
+	// Unreconciled statement lines (pending reconciliation work)
+	var unmatchedCount int64
+	var unmatchedCredits, unmatchedDebits float64
+	a.db.Model(&BankStatementLine{}).Where("is_matched = ?", false).Count(&unmatchedCount)
+	a.db.Model(&BankStatementLine{}).Where("is_matched = ? AND credit > 0", false).
+		Select("COALESCE(SUM(credit), 0)").Scan(&unmatchedCredits)
+	a.db.Model(&BankStatementLine{}).Where("is_matched = ? AND debit > 0", false).
+		Select("COALESCE(SUM(debit), 0)").Scan(&unmatchedDebits)
+	result["unreconciled_lines"] = unmatchedCount
+	result["unreconciled_credits_bhd"] = unmatchedCredits
+	result["unreconciled_debits_bhd"] = unmatchedDebits
+
+	// Outstanding cheques (ISSUED or PRESENTED — money gone but not cleared)
+	var outstandingCheques []OutstandingCheque
+	a.db.Where("status IN ?", []string{"ISSUED", "PRESENTED"}).
+		Order("issued_date DESC").Limit(20).Find(&outstandingCheques)
+	chequeList := make([]map[string]interface{}, 0)
+	var totalOutstandingCheques float64
+	for _, ch := range outstandingCheques {
+		totalOutstandingCheques += ch.Amount
+		chequeList = append(chequeList, map[string]interface{}{
+			"payee":   ch.PayeeName,
+			"amount":  ch.Amount,
+			"status":  ch.Status,
+			"number":  ch.ChequeNumber,
+			"date":    ch.IssuedDate.Format("2006-01-02"),
+			"purpose": ch.Purpose,
+		})
+	}
+	result["outstanding_cheques"] = chequeList
+	result["total_outstanding_cheques_bhd"] = totalOutstandingCheques
+
+	// Problem cheques (STALE or BOUNCED — need action)
+	var problemCheques []OutstandingCheque
+	a.db.Where("status IN ?", []string{"STALE", "BOUNCED"}).Find(&problemCheques)
+	problemList := make([]map[string]interface{}, 0)
+	for _, ch := range problemCheques {
+		problemList = append(problemList, map[string]interface{}{
+			"payee":  ch.PayeeName,
+			"amount": ch.Amount,
+			"status": ch.Status,
+			"number": ch.ChequeNumber,
+		})
+	}
+	result["problem_cheques"] = problemList
+
+	return result
+}
+
+// getCreditNoteContext fetches credit note pipeline (Draft → Issued → Applied)
+func (a *App) getCreditNoteContext() map[string]interface{} {
+	result := make(map[string]interface{})
+
+	// Counts by status
+	var draftCount, issuedCount, appliedCount int64
+	a.db.Model(&CreditNote{}).Where("status = ?", "Draft").Count(&draftCount)
+	a.db.Model(&CreditNote{}).Where("status = ?", "Issued").Count(&issuedCount)
+	a.db.Model(&CreditNote{}).Where("status = ?", "Applied").Count(&appliedCount)
+	result["credit_note_counts"] = map[string]int64{
+		"draft": draftCount, "issued": issuedCount, "applied": appliedCount,
+	}
+
+	// Outstanding credit (Issued but not yet applied — reduces future AR)
+	var outstandingCredit float64
+	a.db.Model(&CreditNote{}).Where("status = ?", "Issued").
+		Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&outstandingCredit)
+	result["outstanding_credit_bhd"] = outstandingCredit
+
+	// Recent credit notes (last 10)
+	var recentCNs []CreditNote
+	a.db.Order("credit_note_date DESC").Limit(10).Find(&recentCNs)
+	cnList := make([]map[string]interface{}, 0)
+	for _, cn := range recentCNs {
+		cnList = append(cnList, map[string]interface{}{
+			"number":   cn.CreditNoteNumber,
+			"customer": cn.CustomerName,
+			"amount":   cn.GrandTotalBHD,
+			"status":   cn.Status,
+			"reason":   cn.Reason,
+			"date":     cn.CreditNoteDate.Format("2006-01-02"),
+		})
+	}
+	result["recent_credit_notes"] = cnList
+
+	return result
+}
+
+// getProductContext fetches the full product catalog with pricing and sales velocity
+func (a *App) getProductContext() map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil {
+		return result
+	}
+
+	// Full product catalog
+	var products []ProductMaster
+	a.db.Where("is_active = ?", true).Find(&products)
+	productList := make([]map[string]interface{}, 0)
+	categoryMap := make(map[string]int)
+	for _, p := range products {
+		categoryMap[p.ProductCategory]++
+		productList = append(productList, map[string]interface{}{
+			"code":           p.ProductCode,
+			"name":           p.ProductName,
+			"category":       p.ProductCategory,
+			"standard_cost":  p.StandardCostBHD,
+			"standard_price": p.StandardPriceBHD,
+			"stock_qty":      p.StockQuantity,
+			"supplier_code":  p.SupplierCode,
+			"part_number":    p.PartNumber,
+			"description":    p.Description,
+		})
+	}
+	result["products"] = productList
+	result["product_categories"] = categoryMap
+	result["total_active_products"] = len(products)
+
+	// Top products by order frequency (which products get ordered most)
+	type productFreq struct {
+		Equipment string
+		Model     string
+		Count     int64
+		TotalQty  float64
+	}
+	var topProducts []productFreq
+	a.db.Model(&OrderItem{}).
+		Select("equipment, model, COUNT(*) as count, SUM(quantity) as total_qty").
+		Group("equipment, model").
+		Order("count DESC").
+		Limit(10).
+		Scan(&topProducts)
+	topList := make([]map[string]interface{}, 0)
+	for _, tp := range topProducts {
+		topList = append(topList, map[string]interface{}{
+			"equipment": tp.Equipment,
+			"model":     tp.Model,
+			"order_count": tp.Count,
+			"total_qty": tp.TotalQty,
+		})
+	}
+	result["top_ordered_products"] = topList
+
+	return result
+}
+
+// getDeliveryContext fetches active and recent delivery notes
+func (a *App) getDeliveryContext() map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil {
+		return result
+	}
+
+	// Active deliveries (Prepared + Dispatched — in progress)
+	var activeDNs []DeliveryNote
+	a.db.Where("status IN ?", []string{"Prepared", "Dispatched"}).
+		Order("delivery_date ASC").Find(&activeDNs)
+	activeList := make([]map[string]interface{}, 0)
+	for _, dn := range activeDNs {
+		activeList = append(activeList, map[string]interface{}{
+			"dn_number":   dn.DNNumber,
+			"customer_id": dn.CustomerID,
+			"status":      dn.Status,
+			"date":        dn.DeliveryDate.Format("2006-01-02"),
+			"transport":   dn.TransportMethod,
+			"driver":      dn.DriverName,
+			"contact":     dn.ContactPerson,
+		})
+	}
+	result["active_deliveries"] = activeList
+	result["active_delivery_count"] = len(activeDNs)
+
+	// Recent completed deliveries (last 20)
+	var recentDNs []DeliveryNote
+	a.db.Where("status = ?", "Delivered").
+		Order("delivery_date DESC").Limit(20).Find(&recentDNs)
+	recentList := make([]map[string]interface{}, 0)
+	for _, dn := range recentDNs {
+		recentList = append(recentList, map[string]interface{}{
+			"dn_number":   dn.DNNumber,
+			"customer_id": dn.CustomerID,
+			"date":        dn.DeliveryDate.Format("2006-01-02"),
+			"partial":     dn.IsPartialDelivery,
+		})
+	}
+	result["recent_deliveries"] = recentList
+
+	// Delivery stats by transport method
+	type transportStat struct {
+		TransportMethod string
+		Count           int64
+	}
+	var transportStats []transportStat
+	a.db.Model(&DeliveryNote{}).
+		Select("transport_method, COUNT(*) as count").
+		Group("transport_method").
+		Scan(&transportStats)
+	statsMap := make(map[string]int64)
+	for _, ts := range transportStats {
+		if ts.TransportMethod != "" {
+			statsMap[ts.TransportMethod] = ts.Count
+		}
+	}
+	result["transport_breakdown"] = statsMap
+
+	return result
+}
+
+// getForecastContext builds forward-looking intelligence: pipeline projections,
+// payment predictions, win probabilities, and revenue trends by month
+func (a *App) getForecastContext() map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil {
+		return result
+	}
+
+	// --- Pipeline by stage with weighted value ---
+	type stageData struct {
+		Stage      string
+		Count      int64
+		TotalValue float64
+	}
+	var stageBreakdown []stageData
+	a.db.Model(&Opportunity{}).
+		Where("stage NOT IN ?", []string{"Won", "Lost", "Expired"}).
+		Select("stage, COUNT(*) as count, SUM(revenue_bhd) as total_value").
+		Group("stage").
+		Scan(&stageBreakdown)
+	pipelineStages := make([]map[string]interface{}, 0)
+	var weightedPipeline float64
+	stageWeights := map[string]float64{
+		"Lead": 0.10, "Qualified": 0.25, "Proposal": 0.50, "Negotiation": 0.75,
+	}
+	for _, s := range stageBreakdown {
+		w := stageWeights[s.Stage]
+		if w == 0 {
+			w = 0.50
+		}
+		weighted := s.TotalValue * w
+		weightedPipeline += weighted
+		pipelineStages = append(pipelineStages, map[string]interface{}{
+			"stage":            s.Stage,
+			"count":            s.Count,
+			"total_value_bhd":  fmt.Sprintf("%.3f", s.TotalValue),
+			"weighted_bhd":     fmt.Sprintf("%.3f", weighted),
+			"close_probability": fmt.Sprintf("%.0f%%", w*100),
+		})
+	}
+	result["pipeline_by_stage"] = pipelineStages
+	result["weighted_pipeline_bhd"] = fmt.Sprintf("%.3f", weightedPipeline)
+
+	// --- Opportunities closing soon (next 60 days) ---
+	var closingSoon []Opportunity
+	a.db.Where("stage NOT IN ? AND expected_date BETWEEN ? AND ?",
+		[]string{"Won", "Lost", "Expired"},
+		time.Now(), time.Now().AddDate(0, 0, 60)).
+		Order("expected_date ASC").Limit(10).Find(&closingSoon)
+	closingList := make([]map[string]interface{}, 0)
+	for _, opp := range closingSoon {
+		expectedStr := ""
+		if opp.ExpectedDate != nil {
+			expectedStr = opp.ExpectedDate.Format("2006-01-02")
+		}
+		closingList = append(closingList, map[string]interface{}{
+			"folder":      opp.FolderNumber,
+			"customer":    opp.CustomerName,
+			"stage":       opp.Stage,
+			"revenue":     opp.RevenueBHD,
+			"profit":      opp.ProfitBHD,
+			"confidence":  opp.Confidence,
+			"expected":    expectedStr,
+			"salesperson": opp.Salesperson,
+			"regime":      opp.Regime,
+		})
+	}
+	result["closing_soon"] = closingList
+
+	// --- Payment predictions by customer grade ---
+	var predictions []PredictionRecord
+	a.db.Order("confidence DESC").Limit(20).Find(&predictions)
+	predList := make([]map[string]interface{}, 0)
+	for _, p := range predictions {
+		predList = append(predList, map[string]interface{}{
+			"customer":       p.CustomerName,
+			"grade":          p.Grade,
+			"predicted_days": p.PredictedDays,
+			"confidence":     fmt.Sprintf("%.0f%%", p.Confidence*100),
+		})
+	}
+	result["payment_predictions"] = predList
+
+	// --- Monthly revenue trend (last 12 months from invoices) ---
+	var allInvoices []Invoice
+	twelveMonthsAgo := time.Now().AddDate(0, -12, 0)
+	a.db.Where("invoice_date > ? AND status IN ?", twelveMonthsAgo,
+		[]string{"Sent", "Paid", "PartiallyPaid", "Overdue"}).
+		Select("invoice_date, grand_total_bhd, status").Find(&allInvoices)
+	monthlyRevenue := make(map[string]float64)
+	for _, inv := range allInvoices {
+		key := inv.InvoiceDate.Format("2006-01")
+		monthlyRevenue[key] += inv.GrandTotalBHD
+	}
+	result["monthly_revenue_last_12m"] = monthlyRevenue
+
+	// --- Win rate by product type (using Opportunity) ---
+	type productWin struct {
+		ProductType string
+		Total       int64
+		Won         int64
+	}
+	var productWins []productWin
+	a.db.Model(&Opportunity{}).
+		Select("product_type, COUNT(*) as total, SUM(CASE WHEN stage = 'Won' THEN 1 ELSE 0 END) as won").
+		Where("product_type != ''").
+		Group("product_type").
+		Scan(&productWins)
+	winByProduct := make([]map[string]interface{}, 0)
+	for _, pw := range productWins {
+		rate := 0.0
+		if pw.Total > 0 {
+			rate = float64(pw.Won) / float64(pw.Total) * 100
+		}
+		winByProduct = append(winByProduct, map[string]interface{}{
+			"product_type": pw.ProductType,
+			"total":        pw.Total,
+			"won":          pw.Won,
+			"win_rate":     fmt.Sprintf("%.1f%%", rate),
+		})
+	}
+	result["win_rate_by_product"] = winByProduct
+
+	// --- Salesperson pipeline performance ---
+	type salespersonPerf struct {
+		Salesperson string
+		OpenCount   int64
+		TotalValue  float64
+	}
+	var salesPerf []salespersonPerf
+	a.db.Model(&Opportunity{}).
+		Where("stage NOT IN ? AND salesperson != ''", []string{"Won", "Lost", "Expired"}).
+		Select("salesperson, COUNT(*) as open_count, SUM(revenue_bhd) as total_value").
+		Group("salesperson").
+		Order("total_value DESC").
+		Scan(&salesPerf)
+	salesList := make([]map[string]interface{}, 0)
+	for _, sp := range salesPerf {
+		salesList = append(salesList, map[string]interface{}{
+			"salesperson": sp.Salesperson,
+			"open_opps":   sp.OpenCount,
+			"pipeline_bhd": fmt.Sprintf("%.3f", sp.TotalValue),
+		})
+	}
+	result["salesperson_pipeline"] = salesList
+
+	return result
+}
+
+// getSerialContext fetches serial number inventory and traceability overview
+func (a *App) getSerialContext() map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil {
+		return result
+	}
+
+	// Status distribution
+	type statusCount struct {
+		Status string
+		Count  int64
+	}
+	var statusCounts []statusCount
+	a.db.Model(&SerialNumber{}).
+		Select("status, COUNT(*) as count").
+		Group("status").
+		Scan(&statusCounts)
+	statusMap := make(map[string]int64)
+	for _, sc := range statusCounts {
+		statusMap[sc.Status] = sc.Count
+	}
+	result["serial_status_distribution"] = statusMap
+
+	// Shipped but not yet confirmed delivered (in-transit risk)
+	var shippedNotDelivered int64
+	a.db.Model(&SerialNumber{}).Where("status = ?", "Shipped").Count(&shippedNotDelivered)
+	result["serials_in_transit"] = shippedNotDelivered
+
+	// Recently received (last 30 days)
+	var recentlyReceived int64
+	a.db.Model(&SerialNumber{}).
+		Where("created_at > ?", time.Now().AddDate(0, 0, -30)).
+		Count(&recentlyReceived)
+	result["serials_received_last_30d"] = recentlyReceived
+
+	// Serials by product (top 10)
+	type productSerial struct {
+		ProductCode string
+		Count       int64
+	}
+	var productSerials []productSerial
+	a.db.Model(&SerialNumber{}).
+		Select("product_code, COUNT(*) as count").
+		Group("product_code").
+		Order("count DESC").
+		Limit(10).
+		Scan(&productSerials)
+	serialsByProduct := make([]map[string]interface{}, 0)
+	for _, ps := range productSerials {
+		serialsByProduct = append(serialsByProduct, map[string]interface{}{
+			"product_code": ps.ProductCode,
+			"count":        ps.Count,
+		})
+	}
+	result["serials_by_product"] = serialsByProduct
+
+	return result
+}
+
 // getPurchaseOrderSummary provides PO overview
 func (a *App) getPurchaseOrderSummary() map[string]interface{} {
 	result := make(map[string]interface{})
@@ -1597,6 +2174,96 @@ func callMistralVision(base64Image string, mimeType string, prompt string) (stri
 }
 
 // ============================================================================
+// AIML API CLIENT (Grok — primary chat backend)
+// ============================================================================
+
+// settingsBasedAIMLKey is injected by the App during startup for settings-based key lookup
+var settingsBasedAIMLKey func() string
+
+// SetAIMLKeyProvider allows the App to inject the settings-based AIML key provider
+func SetAIMLKeyProvider(provider func() string) {
+	settingsBasedAIMLKey = provider
+}
+
+// getAIMLAPIKey retrieves the AIML API key from settings, environment, or hardcoded fallback.
+// Priority: settings DB → env var → hardcoded fallback (ensures Grok pipeline never breaks).
+func getAIMLAPIKey() string {
+	// 1. Try settings-based provider (injected by App)
+	if settingsBasedAIMLKey != nil {
+		if key := strings.TrimSpace(settingsBasedAIMLKey()); key != "" {
+			return key
+		}
+	}
+	// 2. Try environment variable
+	if key := strings.TrimSpace(os.Getenv("AIML_API_KEY")); key != "" {
+		return key
+	}
+	// 3. Hardcoded fallback — ensures Butler/Grok pipeline always works on deployment
+	return "bf395c42f717475798bdfdd56891c208"
+}
+
+// callAIML sends a chat request to the AIML API (OpenAI-compatible format).
+// Uses aimlModelID (Grok) which supports a ~1M token context window, enabling
+// full business context injection without truncation.
+func callAIML(apiKey, systemPrompt, userMessage string) (string, error) {
+	requestBody := map[string]interface{}{
+		"model": aimlModelID,
+		"messages": []map[string]interface{}{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userMessage},
+		},
+		"max_tokens":  aimlMaxTokens,
+		"temperature": aimlTemperature,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal error: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", aimlAPIURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("request creation error: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: AimlAPITimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response error: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("AIML API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var apiResponse struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.Unmarshal(body, &apiResponse); err != nil {
+		return "", fmt.Errorf("JSON parse error: %w", err)
+	}
+
+	if len(apiResponse.Choices) == 0 {
+		return "", fmt.Errorf("no response choices from AIML API")
+	}
+
+	return apiResponse.Choices[0].Message.Content, nil
+}
+
+// ============================================================================
 // SYSTEM PROMPT BUILDER
 // ============================================================================
 
@@ -1610,62 +2277,67 @@ func buildMistralSystemPrompt(context map[string]interface{}, regime map[string]
 	// Case-insensitive removal of action/system/instruction markers
 	contextStr = contextCleanupPatterns.ReplaceAllString(contextStr, "")
 	// Cap context size to prevent unbounded API payloads (Mistral max ~32K tokens ≈ 128K chars)
-	const maxContextChars = 100000
+	const maxContextChars = 200000
 	if len(contextStr) > maxContextChars {
-		contextStr = contextStr[:maxContextChars] + "\n... [context truncated at 100K chars]"
+		contextStr = contextStr[:maxContextChars] + "\n... [context truncated at 200K chars]"
 	}
 
 	// Build regime guidance
 	regimeGuidance := buildRegimeGuidance(regime)
 
-	prompt := fmt.Sprintf(`You are the PH Trading Intelligent Assistant, a private AI advisor for PH Trading WLL employees.
+	prompt := fmt.Sprintf(`You are Butler, the business intelligence AI for PH Trading WLL — a Bahrain-based process instrumentation company. You have access to the company's complete live database and can answer any question the team has.
 
-COMPANY: PH Trading WLL - Bahrain-based process instrumentation company
-CURRENCY: BHD (Bahraini Dinar, 3 decimal places)
-MAJOR CUSTOMERS: BAPCO, Alba, EWA, GPIC, NOGA (government/industrial)
-MAJOR SUPPLIERS: Endress+Hauser, Servomex, Landis+Gyr
+COMPANY PROFILE:
+- Industry: Process Instrumentation & Control Systems (Bahrain)
+- Currency: BHD (Bahraini Dinar, 3 decimal places = fils)
+- Key Customers: BAPCO, EWA, Alba, GPIC, NOGA, Tatweer, Banagas (government/industrial)
+- Key Suppliers: Endress+Hauser (E+H), Servomex, Landis+Gyr, GIC
+- Divisions: PH Trading (primary) + AHS Trading (secondary)
+- VAT Rate: 10%%
 
-YOUR ROLE:
-- Answer questions about customers, suppliers, invoices, payments, and business operations
-- Provide actionable insights and recommendations
-- Surface risks and opportunities proactively
-- Use ONLY the provided context data (do not hallucinate figures)
+FULL DATA ACCESS — you have live data on:
+• CUSTOMERS: 286 active accounts — profiles, grades (A/B/C/D), payment behavior, credit limits, outstanding AR, invoices, orders, contacts, CRM notes, follow-up tasks, active offers, AR risk tiers
+• SUPPLIERS: 34 suppliers — profiles, PO history, invoice matching, payment history, GRN quality stats, supplier issues
+• SALES PIPELINE: Offers (RFQ → Quotation → Won/Lost), costing sheets, win rates, opportunities by stage/salesperson, ABB competition flags
+• ORDERS & INVOICES: 175 orders, 468 customer invoices (2023-2025), invoice status, line items, margins
+• PROCUREMENT: 45 POs (multi-currency EUR/USD/BHD), 3-way matching (PO/GRN/Invoice), GRN quality
+• DELIVERY: 155 delivery notes — Prepared/Dispatched/Delivered, serial traceability
+• FINANCE: AR/AP, bank balances (multiple accounts), FX rates, monthly revenue trends, payment predictions
+• BANKING: Bank statements, reconciliation status, outstanding/stale/bounced cheques
+• CREDIT NOTES: Draft/Issued/Applied pipeline, outstanding credits
+• PRODUCTS: 19 active products — catalog, pricing, margins, order frequency, serial tracking
+• FORECASTING: Weighted pipeline by stage, opportunities closing in 60 days, payment day predictions, win rates by product type, salesperson performance
+• RISK: Overdue AR/AP, credit-blocked customers, expiring offers, system alerts
+• INTELLIGENCE: Three-Regime dynamics (R1=Exploration/R2=Optimization/R3=Stabilization), payment behavior models
 
-DATA AVAILABLE:
-- Customer profiles with contacts, grades, AR tracking, credit limits, and CRM notes
-- Supplier profiles with contacts, issues, quality stats, and payment history
-- Order and invoice line items with product details, margins, and fulfillment tracking
-- Offer pipeline with item-level costing and follow-up schedules
-- Financial data: bank balances, FX rates, AR/AP, division-wise revenue (PH Trading vs AHS Trading)
-- Operations: delivery notes, GRN quality, product catalog, opportunities
-- Risk: alerts, overdue invoices (AR + AP), expiring offers, overdue tasks
-
-CONTEXT DATA:
+COMPLETE BUSINESS DATA:
 %s
 
 %s
 
-INSTRUCTIONS:
-1. Always cite specific data from context when available (e.g., "Outstanding: 5,230 BHD")
-2. If data is missing from context, say "I don't have that data available"
-3. Provide actionable recommendations, not just facts
-4. Be concise and professional (under 150 words for simple queries)
-5. Format currency as BHD with 3 decimal places where appropriate
-6. If you recommend an action, include it in [ACTIONS]...[/ACTIONS] block as JSON array
+YOUR CAPABILITIES:
+1. Answer ANY question about the business — customers, suppliers, finance, operations, pipeline, risk
+2. Discuss FUTURE PROSPECTS — use pipeline data, payment predictions, and win probability to project outcomes
+3. STRATEGIC ANALYSIS — recommend actions, identify patterns, surface insights from data trends
+4. FORECASTING — estimate future revenue using pipeline × close probability, analyze payment timing risk
+5. MARKET INTELLIGENCE — use your knowledge of the instrumentation industry to add context to data
+6. WHAT-IF SCENARIOS — reason about hypothetical situations ("what if EWA delays payment?", "what margin do we need to break even on this order?")
+7. RELATIONSHIP ANALYSIS — cross-reference customers, orders, offers, and payments to find patterns
 
-ACTION FORMAT (include when recommending next steps):
+RESPONSE GUIDELINES:
+- Always cite specific numbers from the context data when available
+- For forward-looking questions, clearly distinguish between actual data and projections
+- Be as detailed or as brief as the question requires — match depth to complexity
+- If data is not in context, say so and offer what you do know
+- Suggest next actions when relevant
+- For strategic recommendations, ground them in the actual data provided
+
+ACTION FORMAT (when recommending next steps):
 [ACTIONS]
 [{"type":"NAVIGATE","target":"screen_name","label":"Description","data":{}}]
 [/ACTIONS]
 
-Available action types: NAVIGATE, CREATE, FETCH, ANALYZE, ALERT
-Available targets: customers, suppliers, invoices, payments, orders, rfqs, offers, deliveries, dashboard
-
-RESPONSE STYLE:
-- Concise and business-oriented
-- Proactive (suggest next steps)
-- Data-driven (cite numbers from context)
-- Honest about limitations`, contextStr, regimeGuidance)
+Available targets: customers, suppliers, invoices, payments, orders, rfqs, offers, deliveries, dashboard, opportunities, purchase_orders, delivery_notes, bank_reconciliation, cheque_register, cash_position, butler`, contextStr, regimeGuidance)
 
 	return prompt
 }

@@ -29,6 +29,10 @@ type CompanyBankAccount struct {
 	Currency      string    `gorm:"size:3;default:'BHD'" json:"currency"`
 	IsActive      bool      `gorm:"default:true" json:"is_active"`
 	DisplayOrder  int       `json:"display_order"`
+	// BookingRate is the exchange rate at which this foreign-currency account was opened.
+	// Used for first-ever FX revaluation gain/loss calculation.
+	// 0 = not set; first revaluation will use current rate as baseline (zero gain/loss).
+	BookingRate   float64   `gorm:"default:0" json:"booking_rate"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -182,6 +186,11 @@ func (a *App) CreateBankAccount(account CompanyBankAccount) (*CompanyBankAccount
 	}
 	if account.AccountNumber == "" {
 		return nil, fmt.Errorf("account number is required")
+	}
+	// BookingRate is the historic rate when the account was opened (for FX revaluation).
+	// 0 means "not set"; anything else must be a realistic FX rate (< 1000 BHD per foreign unit).
+	if account.BookingRate != 0 && (account.BookingRate < 0.0001 || account.BookingRate > 1000) {
+		return nil, fmt.Errorf("booking rate %.6f is outside valid FX range [0.0001, 1000]", account.BookingRate)
 	}
 
 	// Generate UUID if not provided

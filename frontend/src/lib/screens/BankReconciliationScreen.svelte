@@ -137,7 +137,8 @@
     account_number: '',
     iban: '',
     swift_bic: '',
-    currency: 'BHD'
+    currency: 'BHD',
+    booking_rate: 0
   };
   let savingAccount = false;
 
@@ -475,7 +476,8 @@
       account_number: '',
       iban: '',
       swift_bic: '',
-      currency: 'BHD'
+      currency: 'BHD',
+      booking_rate: 0
     };
   }
 
@@ -487,7 +489,8 @@
       account_number: account.account_number,
       iban: account.iban || '',
       swift_bic: account.swift_bic || '',
-      currency: account.currency || 'BHD'
+      currency: account.currency || 'BHD',
+      booking_rate: (account as any).booking_rate || 0
     };
   }
 
@@ -1058,7 +1061,10 @@
             <div class="account-item" class:inactive={!account.is_active}>
               <div class="account-info">
                 <div class="account-main">
-                  <strong>{account.bank_name}</strong>
+                  <strong>{account.account_name || account.bank_name}</strong>
+                  {#if account.account_name}
+                    <span style="color: var(--text-secondary); font-size: 12px; margin-left: 6px;">{account.bank_name}</span>
+                  {/if}
                   {#if !account.is_active}
                     <span class="inactive-badge">Inactive</span>
                   {/if}
@@ -1097,8 +1103,8 @@
           </FormGroup>
         </div>
         <div class="form-row">
-          <FormGroup label="Account Name">
-            <Input bind:value={accountFormData.account_name} placeholder="e.g., P H TRADING WLL" />
+          <FormGroup label="Display Name (your friendly label for this account)">
+            <Input bind:value={accountFormData.account_name} placeholder="e.g., NBB - BHD Operating, NBB Euro Call Deposit" />
           </FormGroup>
         </div>
         <div class="form-row">
@@ -1125,6 +1131,13 @@
             </select>
           </FormGroup>
         </div>
+        {#if accountFormData.currency !== 'BHD'}
+        <div class="form-row">
+          <FormGroup label="Opening/Booking Rate (rate when account was opened, used for FX revaluation)">
+            <Input type="number" bind:value={accountFormData.booking_rate} placeholder="e.g., 1.4523" step="0.0001" min="0" />
+          </FormGroup>
+        </div>
+        {/if}
         <div class="form-actions">
           {#if editingAccount}
             <Button variant="secondary" on:click={resetAccountForm}>Cancel Edit</Button>

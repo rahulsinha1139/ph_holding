@@ -360,13 +360,37 @@ func (m *DataMasker) SanitizeForLog(fields map[string]interface{}) map[string]in
 			} else {
 				sanitized[k] = v
 			}
-		case strings.Contains(lowerKey, "api_key") || strings.Contains(lowerKey, "apikey"):
+		case strings.Contains(lowerKey, "api_key") || strings.Contains(lowerKey, "apikey") || strings.Contains(lowerKey, "api-key"):
 			sanitized[k] = "***REDACTED***"
 		case strings.Contains(lowerKey, "token"):
 			sanitized[k] = "***REDACTED***"
 		case strings.Contains(lowerKey, "secret"):
 			sanitized[k] = "***REDACTED***"
-		case strings.Contains(lowerKey, "authorization"):
+		case strings.Contains(lowerKey, "authorization") || strings.Contains(lowerKey, "bearer"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "private_key") || strings.Contains(lowerKey, "privatekey"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "client_secret") || strings.Contains(lowerKey, "clientsecret"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "db_password") || strings.Contains(lowerKey, "database_password") || strings.Contains(lowerKey, "dbpassword"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "conn_string") || strings.Contains(lowerKey, "connection_string") || strings.Contains(lowerKey, "connstring"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "signing_key") || strings.Contains(lowerKey, "signingkey"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "encryption_key") || strings.Contains(lowerKey, "encryptionkey"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "access_key") || strings.Contains(lowerKey, "accesskey"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "supabase_key") || strings.Contains(lowerKey, "supabasekey"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "master_key") || strings.Contains(lowerKey, "masterkey"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "jwt_secret") || strings.Contains(lowerKey, "jwtsecret"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "webhook_secret") || strings.Contains(lowerKey, "webhooksecret"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "aiml_key") || strings.Contains(lowerKey, "aimlkey"):
 			sanitized[k] = "***REDACTED***"
 		default:
 			sanitized[k] = v

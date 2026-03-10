@@ -717,6 +717,32 @@ func (a *App) startup(ctx context.Context) {
 	})
 	AppLogger.Info("Mistral API key provider registered (encrypted DB priority)", nil)
 
+	// Register AIML API key provider (for Grok — primary Butler chat backend)
+	// Uses same "apiKeys.aimlapi_key" setting key as the existing AI connectivity test
+	SetAIMLKeyProvider(func() string {
+		// 1. Try encrypted settings DB first
+		if a.settingsService != nil && a.fieldCrypto != nil {
+			if encVal, err := a.settingsService.GetSetting("apiKeys.aimlapi_key"); err == nil && encVal != "" {
+				if a.fieldCrypto.IsEncrypted(encVal) {
+					if decrypted, err := a.fieldCrypto.Decrypt(encVal); err == nil && decrypted != "" {
+						return decrypted
+					}
+				} else if encVal != "" {
+					return encVal
+				}
+			}
+		}
+		// 2. Try settings.json file
+		userSettings, err := a.loadUserSettings()
+		if err == nil {
+			if key := getSettingOrDefault(userSettings, "apiKeys.aimlapi_key", "").(string); key != "" {
+				return key
+			}
+		}
+		return ""
+	})
+	AppLogger.Info("AIML API key provider registered (Grok primary backend)", nil)
+
 	// Initialize dual-database manager (local + Supabase)
 	a.InitDBManager()
 	a.dbSyncService = newDBSyncService(a)
@@ -7653,9 +7679,10 @@ func (a *App) SetAPIKeys(apiKeys map[string]string) error {
 		}
 	}
 
-	// Update AIMLAPI key
+	// Update AIMLAPI key (also used as primary Butler/Grok backend)
 	if key, ok := apiKeys["aimlapi_key"]; ok && key != "" && key != "****" {
 		a.config.AI.APIKey = key
+		os.Setenv("AIML_API_KEY", key)
 		persistKey("apiKeys.aimlapi_key", key)
 		log.Println("AI configuration updated")
 	}

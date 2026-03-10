@@ -224,6 +224,11 @@ func (a *App) GetCashFlowProjection(days int) (CashFlowProjection, error) {
 	}
 
 	for _, inv := range unpaidInvoices {
+		// Skip if already fully collected (status may lag a payment update)
+		if inv.OutstandingBHD <= 0 {
+			continue
+		}
+
 		// Get customer's average payment delay
 		var customer CustomerMaster
 		a.db.First(&customer, "id = ?", inv.CustomerID)
@@ -245,8 +250,11 @@ func (a *App) GetCashFlowProjection(days int) (CashFlowProjection, error) {
 	}
 
 	// 2. Project OUTFLOWS from supplier invoices (based on due dates)
+	// Exclude Pending invoices — they are unverified and may be rejected, so they
+	// should not inflate the projected outflow commitment.
 	var unpaidSupplierInvoices []SupplierInvoice
-	if err := a.db.Where("payment_status != ? AND due_date BETWEEN ? AND ?", "Paid", now, endDate).
+	if err := a.db.Where("payment_status != ? AND (status IS NULL OR status NOT IN ?) AND due_date BETWEEN ? AND ?",
+		"Paid", []string{"Pending", "Rejected", "Dispute"}, now, endDate).
 		Find(&unpaidSupplierInvoices).Error; err != nil {
 		log.Printf("⚠️ Failed to retrieve supplier invoices: %v", err)
 		// Continue with customer inflows only
@@ -315,8 +323,11 @@ func (a *App) GetMarginAnalysisByCustomer() ([]MarginAnalysisByCustomer, error) 
 		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
+	// Only include finalized invoices — Cancelled and Void invoices never generated real margin.
+	// Including them inflates per-customer revenue and distorts profitability rankings.
+	finalizedStatuses := []string{"Sent", "Overdue", "PartiallyPaid", "Paid"}
 	var invoices []Invoice
-	if err := a.db.Preload("Items").Find(&invoices).Error; err != nil {
+	if err := a.db.Preload("Items").Where("status IN ?", finalizedStatuses).Find(&invoices).Error; err != nil {
 		return nil, newError("DB_QUERY_FAILED", "Failed to retrieve invoices", err.Error())
 	}
 
@@ -477,8 +488,8 @@ func (a *App) GetVATReconciliation(startDateStr, endDateStr string) (VATReconcil
 	reconciliation.CustomerInvoices = len(customerInvoices)
 
 	// 2. Sum INPUT VAT from supplier invoices (VAT paid)
-	// Exclude Rejected and Dispute statuses — only accepted supplier invoices count for VAT
-	supplierExcludedStatuses := []string{"Rejected", "Dispute"}
+	// Exclude Rejected, Dispute, and Pending — Pending invoices are unverified and VAT is not yet claimable.
+	supplierExcludedStatuses := []string{"Rejected", "Dispute", "Pending"}
 	var supplierInvoices []SupplierInvoice
 	if err := a.db.Where("invoice_date BETWEEN ? AND ? AND (status IS NULL OR status NOT IN ?)", startDate, endDate, supplierExcludedStatuses).
 		Find(&supplierInvoices).Error; err != nil {

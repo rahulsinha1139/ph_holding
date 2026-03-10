@@ -448,16 +448,21 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 			entityAmount = sinv.TotalBHD
 		}
 	}
-	if entityAmount > 0 {
-		lineAmt := line.Credit
-		if lineAmt == 0 {
-			lineAmt = line.Debit
-		}
-		if lineAmt > 0 {
-			ratio := lineAmt / entityAmount
-			if ratio < 0.5 || ratio > 2.0 {
-				return fmt.Errorf("amount mismatch: bank line %.3f BHD vs entity %.3f BHD (ratio %.2f outside 0.5-2.0 range)", lineAmt, entityAmount, ratio)
-			}
+	// Reject zero-amount entities — a zero-value invoice skips all ratio checks,
+	// allowing any bank line to reconcile against a phantom or draft invoice.
+	if entityAmount <= 0 {
+		return fmt.Errorf("cannot match: entity amount is %.3f BHD — only positive-value invoices can be reconciled", entityAmount)
+	}
+	lineAmt := line.Credit
+	if lineAmt == 0 {
+		lineAmt = line.Debit
+	}
+	if lineAmt > 0 {
+		// Tightened from 0.5-2.0 to ±5% to prevent matching wildly different amounts.
+		// A 2x tolerance allowed reconciling a 10,000 BHD receipt to a 5,000 BHD invoice.
+		ratio := lineAmt / entityAmount
+		if ratio < 0.95 || ratio > 1.05 {
+			return fmt.Errorf("amount mismatch: bank line %.3f BHD vs entity %.3f BHD (%.1f%% difference, tolerance ±5%%)", lineAmt, entityAmount, (ratio-1)*100)
 		}
 	}
 
@@ -566,9 +571,16 @@ func (a *App) CreateSplitAllocation(lineID string, allocations []AllocationInput
 		totalAllocated += alloc.AllocatedAmount
 	}
 
-	if totalAllocated != lineAmount {
-		return fmt.Errorf("allocation total (%.3f) does not match line amount (%.3f)",
-			totalAllocated, lineAmount)
+	// Use tolerance of 1 fils (0.001 BHD) to handle IEEE 754 floating-point rounding.
+	// Exact equality fails on sums like 100.001 + 100.002 due to binary representation.
+	const bhdRoundingTolerance = 0.001
+	diff := totalAllocated - lineAmount
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > bhdRoundingTolerance {
+		return fmt.Errorf("allocation total (%.3f) does not match line amount (%.3f) — difference %.3f exceeds 1 fils tolerance",
+			totalAllocated, lineAmount, diff)
 	}
 
 	// Create allocation records

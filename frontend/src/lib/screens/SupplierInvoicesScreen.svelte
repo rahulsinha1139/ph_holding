@@ -42,6 +42,9 @@
   import Input from '$lib/components/ui/Input.svelte';
   import FormGroup from '$lib/components/ui/FormGroup.svelte';
   import { toast } from '$lib/stores/toasts';
+  import { permissions } from '$lib/stores/authContext';
+
+  $: canView = $permissions.includes('*') || $permissions.includes('po:view') || $permissions.includes('po:*');
 
   // Props
   export let embedded = false;
@@ -793,6 +796,7 @@
   }
 
   onMount(() => {
+    if (!canView) return;
     loadInvoices();
 
     // Listen for create supplier invoice events from OperationsHub header button

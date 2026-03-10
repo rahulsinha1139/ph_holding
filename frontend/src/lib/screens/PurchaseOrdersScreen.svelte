@@ -42,6 +42,9 @@
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
   import { escapeHtml } from '$lib/utils/escapeHtml';
+  import { permissions } from '$lib/stores/authContext';
+
+  $: canView = $permissions.includes('*') || $permissions.includes('po:view') || $permissions.includes('po:*');
 
   // Props
   export let embedded = false;
@@ -691,6 +694,7 @@
   }
 
   onMount(() => {
+    if (!canView) return;
     loadPurchaseOrders();
 
     // Listen for create PO events from OperationsHub header button

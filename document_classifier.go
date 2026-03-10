@@ -708,16 +708,21 @@ func (a *App) ClassifyFilesystemDocuments(basePath string) (*FilesystemClassific
 		return nil, err
 	}
 
-	// Validate basePath to prevent filesystem traversal
+	// Validate basePath to prevent filesystem traversal.
+	// Resolve symlinks before prefix check — a symlink to /etc/ would otherwise bypass the home dir guard.
 	absPath, err := filepath.Abs(basePath)
 	if err != nil {
 		return nil, fmt.Errorf("invalid base path: %w", err)
 	}
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot resolve base path (symlink check failed): %w", err)
+	}
 	homeDir, _ := os.UserHomeDir()
-	if homeDir != "" && !strings.HasPrefix(absPath, homeDir) {
+	if homeDir != "" && !strings.HasPrefix(realPath, homeDir) {
 		return nil, fmt.Errorf("base path must be within user's home directory")
 	}
-	basePath = absPath
+	basePath = realPath
 
 	startTime := time.Now()
 
@@ -746,6 +751,14 @@ func (a *App) ClassifyFilesystemDocuments(basePath string) (*FilesystemClassific
 		// Skip system files
 		if strings.HasPrefix(info.Name(), "~$") || strings.HasSuffix(info.Name(), ".tmp") {
 			return nil
+		}
+
+		// Guard against symlinks that escape basePath (e.g. /home/user/docs → /etc/)
+		if info.Mode()&os.ModeSymlink != 0 {
+			realFilePath, resolveErr := filepath.EvalSymlinks(path)
+			if resolveErr != nil || !strings.HasPrefix(realFilePath, basePath) {
+				return nil // Skip symlinks escaping the scanned directory
+			}
 		}
 
 		// Classify the document

@@ -486,37 +486,64 @@
         <div class="section" in:fade>
           <h3>Artificial Intelligence</h3>
 
-          <!-- Mistral API key removed - hardcoded in backend -->
-          <!-- AIML API key commented out - not in use
           <div class="form-group">
-            <label>AIML API Key</label>
+            <label>AIML API Key <span style="font-size:0.8em; color: var(--accent);">(Butler primary — Grok 4)</span></label>
+            <p style="font-size:0.8em; color: var(--text-muted); margin: 2px 0 6px;">Powers Butler AI chat with Grok's large context window. Get key at api.aimlapi.com</p>
             <div class="input-group">
               {#if showKeyInput}
                 <input
                   type="text"
                   bind:value={settings.apiKeys.aimlapi_key}
                   class="input-clean"
+                  placeholder="Enter AIML API key..."
                 />
               {:else}
                 <input
                   type="password"
                   bind:value={settings.apiKeys.aimlapi_key}
                   class="input-clean"
+                  placeholder="••••••••••••••••"
                 />
               {/if}
               <button
                 class="btn-icon"
-                on:click={() => (showKeyInput = !showKeyInput)}>Show</button
+                on:click={() => (showKeyInput = !showKeyInput)}>{showKeyInput ? 'Hide' : 'Show'}</button
               >
             </div>
           </div>
 
-          <div class="action-row">
-            <button class="btn-secondary" on:click={testAI}
-              >Test AIML Connectivity</button
-            >
+          <div class="form-group" style="margin-top: 16px;">
+            <label>Mistral API Key <span style="font-size:0.8em; color: var(--text-muted);">(OCR/document analysis + fallback chat)</span></label>
+            <p style="font-size:0.8em; color: var(--text-muted); margin: 2px 0 6px;">Used for "Analyze with Butler" document OCR. Falls back to this if AIML key not set.</p>
+            <div class="input-group">
+              {#if showMistralKey}
+                <input
+                  type="text"
+                  bind:value={settings.apiKeys.mistral_key}
+                  class="input-clean"
+                  placeholder="Enter Mistral API key..."
+                />
+              {:else}
+                <input
+                  type="password"
+                  bind:value={settings.apiKeys.mistral_key}
+                  class="input-clean"
+                  placeholder="••••••••••••••••"
+                />
+              {/if}
+              <button
+                class="btn-icon"
+                on:click={() => (showMistralKey = !showMistralKey)}>{showMistralKey ? 'Hide' : 'Show'}</button
+              >
+            </div>
           </div>
-          -->
+
+          <div class="action-row" style="gap: 8px;">
+            <button class="btn-secondary" on:click={testAI}>Test AIML Connectivity</button>
+            <button class="btn-secondary" on:click={testMistral} disabled={testingMistral}>
+              {testingMistral ? 'Testing...' : 'Test Mistral Connection'}
+            </button>
+          </div>
 
           <h3>Hardware Acceleration</h3>
           <div class="gpu-card">

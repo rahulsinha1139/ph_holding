@@ -40,6 +40,9 @@
   import Input from '$lib/components/ui/Input.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
+  import { permissions } from '$lib/stores/authContext';
+
+  $: canView = $permissions.includes('*') || $permissions.includes('finance:view') || $permissions.includes('finance:*');
 
   // Props
   export let embedded = false;
@@ -434,6 +437,7 @@
   }
 
   onMount(() => {
+    if (!canView) return;
     loadData();
   });
 </script>

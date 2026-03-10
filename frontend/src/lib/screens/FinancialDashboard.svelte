@@ -6,7 +6,10 @@
     import { onMount } from 'svelte';
     import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
     import { toast } from '$lib/stores/toasts';
+    import { permissions } from '$lib/stores/authContext';
     import { GetFinancialDashboardForYear, GetFinancialReportYears, GetCashPosition } from '../../../wailsjs/go/main/App';
+
+    $: canView = $permissions.includes('*') || $permissions.includes('finance:view') || $permissions.includes('finance:*');
 
     export let embedded = false;
 
@@ -154,7 +157,11 @@
 </script>
 
 <div class="dashboard" class:embedded>
-    {#if loading}
+    {#if !canView}
+        <div class="loading-state">
+            <p style="color: var(--text-secondary); font-size: 14px;">You don't have permission to view financial data.</p>
+        </div>
+    {:else if loading}
         <div class="loading-state">
             <WabiSpinner size="lg" tempo="calm" />
             <p>Loading financial data...</p>

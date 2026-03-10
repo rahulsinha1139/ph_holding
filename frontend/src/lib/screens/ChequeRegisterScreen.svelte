@@ -128,7 +128,7 @@
       key: 'payee_name',
       label: 'Payee',
       sortable: true,
-      render: (row: OutstandingCheque) => `<span style="font-weight: 500;">${row.payee_name}</span>`
+      render: (row: OutstandingCheque) => `<span style="font-weight: 500;">${escapeHtml(row.payee_name)}</span>`
     },
     {
       key: 'amount',
@@ -177,19 +177,19 @@
       label: 'Book #',
       sortable: true,
       width: '120px',
-      render: (row: ChequeRegister) => `<span style="font-family: var(--font-mono); font-weight: 600;">${row.cheque_book_no}</span>`
+      render: (row: ChequeRegister) => `<span style="font-family: var(--font-mono); font-weight: 600;">${escapeHtml(String(row.cheque_book_no))}</span>`
     },
     {
       key: 'start_number',
       label: 'Range',
       width: '140px',
-      render: (row: ChequeRegister) => `<span style="font-family: var(--font-mono); font-size: 12px;">${row.start_number} - ${row.end_number}</span>`
+      render: (row: ChequeRegister) => `<span style="font-family: var(--font-mono); font-size: 12px;">${escapeHtml(String(row.start_number))} - ${escapeHtml(String(row.end_number))}</span>`
     },
     {
       key: 'current_number',
       label: 'Next',
       width: '100px',
-      render: (row: ChequeRegister) => `<span style="font-family: var(--font-mono); color: var(--brand-indigo);">${row.current_number}</span>`
+      render: (row: ChequeRegister) => `<span style="font-family: var(--font-mono); color: var(--brand-indigo);">${escapeHtml(String(row.current_number))}</span>`
     },
     {
       key: 'status',

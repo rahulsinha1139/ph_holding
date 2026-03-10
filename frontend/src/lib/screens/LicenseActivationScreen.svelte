@@ -118,7 +118,7 @@
             <label for="license-key">License Key</label>
             <input
                 id="license-key"
-                type="text"
+                type="password"
                 value={licenseKey}
                 on:input={formatKey}
                 on:keypress={handleKeyPress}

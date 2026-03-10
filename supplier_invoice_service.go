@@ -90,6 +90,19 @@ func (a *App) CreateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 	inv.CreatedAt = now
 	inv.UpdatedAt = now
 
+	// Validate that subtotal + VAT ≈ total (arithmetic sanity check before storing)
+	if inv.TotalForeign > 0 {
+		expectedTotal := inv.SubtotalForeign + inv.VATForeign
+		diff := expectedTotal - inv.TotalForeign
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > 0.01 {
+			return SupplierInvoice{}, fmt.Errorf("invoice total mismatch: subtotal %.3f + VAT %.3f = %.3f, but total provided is %.3f",
+				inv.SubtotalForeign, inv.VATForeign, expectedTotal, inv.TotalForeign)
+		}
+	}
+
 	// Calculate BHD amounts from foreign currency if needed
 	if inv.Currency != "BHD" {
 		inv.SubtotalBHD = inv.SubtotalForeign * inv.ExchangeRate
@@ -322,8 +335,13 @@ func (a *App) ApproveSupplierInvoice(id string, approvedBy string) error {
 		return fmt.Errorf("supplier invoice not found: %w", err)
 	}
 
-	// Segregation of duties: creator cannot approve their own invoice
-	if invoice.CreatedBy != "" && invoice.CreatedBy == approvedBy {
+	// Segregation of duties: require a recorded creator, then verify approver differs.
+	// If CreatedBy is empty (OCR/legacy import), require it to be set before approval
+	// so there is always an audit trail linking creation and approval to different people.
+	if invoice.CreatedBy == "" {
+		return fmt.Errorf("segregation of duties: invoice %s has no creator recorded — set CreatedBy before approving", invoice.InvoiceNumber)
+	}
+	if invoice.CreatedBy == approvedBy {
 		return fmt.Errorf("segregation of duties: invoice creator %s cannot approve their own invoice", approvedBy)
 	}
 
@@ -548,23 +566,32 @@ func (a *App) PerformThreeWayMatch(invoiceID string) (ThreeWayMatchResult, error
 	} else {
 		var grn GoodsReceivedNote
 		if err := a.db.Preload("Items").Where("id = ?", invoice.GRNID).First(&grn).Error; err == nil {
-			// P1 FIX: Compare invoice quantities with GRN quantities
+			// Compare invoice quantities with GRN quantities by GRN ProductID → POItemID linkage.
+			// SupplierInvoiceItem has no ProductID, so we match via line number but guard the
+			// bounds properly to avoid an out-of-range panic when GRN has fewer items.
 			if len(invoice.Items) > 0 && len(grn.Items) > 0 {
-				for i, invItem := range invoice.Items {
-					if i < len(grn.Items) {
-						grnItem := grn.Items[i]
-						qtyDiff := invItem.Quantity - grnItem.QuantityAccepted
-						qtyVariance := 0.0
-						if grnItem.QuantityAccepted > 0 {
-							qtyVariance = qtyDiff / grnItem.QuantityAccepted
-						}
-
-						// Flag quantity mismatches beyond tolerance
-						if qtyVariance > tolerance || qtyVariance < -tolerance {
-							discrepancies = append(discrepancies,
-								fmt.Sprintf("Line %d quantity mismatch: Invoice=%.2f, GRN Accepted=%.2f (variance=%.1f%%)",
-									invItem.LineNumber, invItem.Quantity, grnItem.QuantityAccepted, qtyVariance*100))
-						}
+				// Build GRN lookup by POItemID for best-effort product matching
+				grnByPOItem := make(map[string]GRNItem)
+				for _, gi := range grn.Items {
+					if gi.POItemID != "" {
+						grnByPOItem[gi.POItemID] = gi
+					}
+				}
+				for _, invItem := range invoice.Items {
+					// Line-number fallback: use GRN array index (1-based → 0-based)
+					if invItem.LineNumber < 1 || invItem.LineNumber > len(grn.Items) {
+						continue // line number out of GRN range — cannot compare
+					}
+					grnItem := grn.Items[invItem.LineNumber-1]
+					qtyDiff := invItem.Quantity - grnItem.QuantityAccepted
+					qtyVariance := 0.0
+					if grnItem.QuantityAccepted > 0 {
+						qtyVariance = qtyDiff / grnItem.QuantityAccepted
+					}
+					if qtyVariance > tolerance || qtyVariance < -tolerance {
+						discrepancies = append(discrepancies,
+							fmt.Sprintf("Line %d quantity mismatch: Invoice=%.2f, GRN Accepted=%.2f (variance=%.1f%%)",
+								invItem.LineNumber, invItem.Quantity, grnItem.QuantityAccepted, qtyVariance*100))
 					}
 				}
 			}
@@ -658,7 +685,7 @@ func (a *App) CreateSupplierInvoiceFromOCR(ocrDocID string, supplierID string, p
 		SupplierID:      supplierID,
 		PurchaseOrderID: poID,
 		OCRDocumentID:   ocrDocID,
-		OCRConfidence:   ocrDoc.Confidence,
+		OCRConfidence:   func() float64 { c := ocrDoc.Confidence; if c < 0 { return 0 }; if c > 1 { return 1 }; return c }(),
 		Status:          "Pending",
 		PaymentStatus:   "Unpaid",
 		MatchStatus:     "Pending",

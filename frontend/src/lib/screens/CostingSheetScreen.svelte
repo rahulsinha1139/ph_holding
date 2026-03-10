@@ -1,7 +1,10 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { toast } from "$lib/stores/toasts";
+    import { permissions } from '$lib/stores/authContext';
     import { fade } from "svelte/transition";
+
+    $: canView = $permissions.includes('*') || $permissions.includes('costing:read') || $permissions.includes('costing:*');
     import WabiSpinner from "../components/ui/WabiSpinner.svelte";
     import Button from "../components/ui/Button.svelte";
     import Card from "../components/ui/Card.svelte";
@@ -871,7 +874,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         }
     }
 
-    onMount(loadData);
+    onMount(() => { if (canView) loadData(); });
 </script>
 
 <div class="costing-page" class:embedded>
