@@ -1390,3 +1390,11 @@ export function ValidateStatementBalance(arg1:string):Promise<boolean>;
 export function ValidateStatementContinuity(arg1:string,arg2:main.BankStatement):Promise<void>;
 
 export function WatchInboxForTestFile(arg1:string):Promise<void>;
+
+export function ValidateOneDrivePath(arg1:string):Promise<{[key: string]: any}>;
+
+export function ScanOneDrivePaths(arg1:string[]):Promise<main.OneDriveScanResult>;
+
+export function ConfirmOneDriveDeal(arg1:string,arg2:string):Promise<{[key: string]: any}>;
+
+export function ImportOneDriveDeals(arg1:main.DiscoveredDeal[]):Promise<main.OneDriveImportResult[]>;

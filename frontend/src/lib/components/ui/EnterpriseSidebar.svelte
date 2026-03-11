@@ -86,6 +86,7 @@
         { id: "finance", label: "Finance", icon: "bar-chart", permission: "finance:view" }, // HIDDEN for staff/sales
         { id: "relationships", label: "Relationships", icon: "users", permission: "customers:view" },
         { id: "intelligence", label: "Intelligence", icon: "zap", permission: "intelligence:chat" },
+        { id: "onedrive_import", label: "OneDrive Import", icon: "folder", permission: "settings:view" },
         { id: "settings", label: "Settings", icon: "settings", permission: "settings:view" },
     ];
 

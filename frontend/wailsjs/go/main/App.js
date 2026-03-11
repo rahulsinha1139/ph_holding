@@ -2769,3 +2769,19 @@ export function ValidateStatementContinuity(arg1, arg2) {
 export function WatchInboxForTestFile(arg1) {
   return window['go']['main']['App']['WatchInboxForTestFile'](arg1);
 }
+
+export function ValidateOneDrivePath(arg1) {
+  return window['go']['main']['App']['ValidateOneDrivePath'](arg1);
+}
+
+export function ScanOneDrivePaths(arg1) {
+  return window['go']['main']['App']['ScanOneDrivePaths'](arg1);
+}
+
+export function ConfirmOneDriveDeal(arg1, arg2) {
+  return window['go']['main']['App']['ConfirmOneDriveDeal'](arg1, arg2);
+}
+
+export function ImportOneDriveDeals(arg1) {
+  return window['go']['main']['App']['ImportOneDriveDeals'](arg1);
+}

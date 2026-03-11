@@ -15,6 +15,7 @@
     // Core screens used directly in routing
     import Customer360 from "./lib/screens/Customer360.svelte";
     import SettingsScreen from "./lib/screens/SettingsScreen.svelte";
+    import OneDriveImportScreen from "./lib/screens/OneDriveImportScreen.svelte";
     import ArrivalCeremony from "./lib/screens/ArrivalCeremony.svelte";
     import UserManagementScreen from "./lib/screens/UserManagementScreen.svelte";
 
@@ -344,6 +345,7 @@
         relationships: CRMHub,
         intelligence: IntelligenceHub,
         // Utility screens (accessible via shortcuts, not main nav)
+        onedrive_import: OneDriveImportScreen,
         settings: SettingsScreen,
         showcase: ShowcaseScreen,
         customer360: Customer360,
