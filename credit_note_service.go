@@ -562,7 +562,7 @@ func (a *App) GenerateCreditNotePDF(id string) (string, error) {
 	pdf.Cell(60, 5, "Authorized Signatory")
 
 	// Save
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	if paths == nil {
 		return "", fmt.Errorf("application paths not available")
 	}

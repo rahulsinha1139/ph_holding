@@ -226,7 +226,7 @@ func (a *App) InitializeDefaultAssets() {
 	candidatePaths := []string{}
 
 	// Check various locations - GetApplicationPaths may return nil if no license is activated
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	if paths != nil {
 		candidatePaths = append(candidatePaths, filepath.Join(paths.ProjectRoot, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile))
 	}

@@ -212,7 +212,7 @@ func (a *App) GenerateEInvoiceXML(invoiceID string) (string, error) {
 	sb.WriteString("</Invoice>\n")
 
 	// Save XML file alongside PDFs
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	if paths == nil {
 		return "", fmt.Errorf("application paths not available")
 	}
@@ -293,7 +293,7 @@ func (a *App) ExportVATReturnData(year, quarter int) (string, error) {
 	netVAT := vatCollected - cnVATDeductions
 
 	// Write CSV
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	if paths == nil {
 		return "", fmt.Errorf("application paths not available")
 	}

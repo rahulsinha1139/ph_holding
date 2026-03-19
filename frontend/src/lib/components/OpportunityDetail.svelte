@@ -169,13 +169,13 @@
     // Refresh opportunity data (updates fields in-place to avoid triggering reactive loops)
     async function refreshOpportunityData() {
         if (!opportunity?.id) return;
+        // Pipeline opportunities use UUID strings — GetRFQ expects uint (RFQ IDs only)
+        if (opportunity._source === 'pipeline' || typeof opportunity.id === 'string') return;
         try {
             const fresh = await GetRFQ(opportunity.id);
             if (fresh) {
-                // Update individual fields without reassigning opportunity object
-                // This prevents the reactive $: block from firing again
                 Object.assign(opportunity, fresh);
-                opportunity = opportunity; // single reactivity trigger
+                opportunity = opportunity;
             }
         } catch (err) {
             devLog.error('Failed to refresh opportunity:', err);
@@ -185,6 +185,8 @@
     // Load comments for this opportunity
     async function loadComments() {
         if (!opportunity?.id) return;
+        // Pipeline opportunities don't have RFQ comments
+        if (opportunity._source === 'pipeline' || typeof opportunity.id === 'string') return;
         try {
             comments = await GetRFQComments(opportunity.id) || [];
         } catch (err) {

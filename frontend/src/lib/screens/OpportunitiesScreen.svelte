@@ -10,6 +10,7 @@
 
     import {
         GetRFQs,
+        GetPipelineOpportunities,
         CreateRFQ,
         DeleteRFQ,
         DeleteRFQWithCascade,
@@ -71,20 +72,44 @@
     };
 
     const priorityOptions = ["Normal", "Urgent", "Critical"];
-    const STATUS_OPTIONS = ['All', 'New', 'Quoted', 'Won', 'Lost', 'On Hold'];
+    const STATUS_OPTIONS = ['All', 'Qualified', 'Proposal', 'Quoted', 'Won', 'Lost', 'New', 'On Hold'];
 
     async function loadOpportunities() {
         loadingList = true;
         try {
-            opportunities = (await GetRFQs(200, 0)) || [];
+            // Load both RFQ data and pipeline opportunities
+            const [rfqs, pipeline, custList] = await Promise.all([
+                GetRFQs(200, 0).catch(() => []),
+                GetPipelineOpportunities(500, 0).catch(() => []),
+                ListCustomers(500, 0).catch(() => []),
+            ]);
+            customers = custList || [];
+
+            // Normalize pipeline opportunities to match RFQ field names for UI
+            const pipelineNormalized = (pipeline || []).map(p => ({
+                ...p,
+                client: p.customer_name,
+                customer: p.customer_name,
+                project: p.folder_name || p.title || p.folder_number,
+                project_name: p.title || p.folder_name,
+                value: p.revenue_bhd || 0,
+                status: p.stage || 'Qualified',
+                rfq_number: p.folder_number,
+                _source: 'pipeline',
+            }));
+
+            // Mark RFQs with source
+            const rfqsMarked = (rfqs || []).map(r => ({ ...r, _source: 'rfq' }));
+
+            // Merge: pipeline first (larger, canonical), then RFQs that don't overlap by folder number
+            const pipelineFolders = new Set(pipelineNormalized.map(p => p.folder_number));
+            const uniqueRfqs = rfqsMarked.filter(r => !pipelineFolders.has(r.rfq_number));
+
+            opportunities = [...pipelineNormalized, ...uniqueRfqs];
             calculateStats();
             applyFilters();
             if (filteredOpportunities.length > 0 && !selected)
                 selected = filteredOpportunities[0];
-
-            // Load customers for autocomplete
-            const custList = await ListCustomers(100, 0);
-            customers = custList || [];
         } catch (err) {
             devLog.error(err);
             toast.danger("Failed to load opportunities");
@@ -104,15 +129,16 @@
             closed = 0;
 
         opportunities.forEach((o) => {
-            const val = parseFloat(o.value) || 0;
-            if (o.status === "New") stats.newCount++;
-            if (o.status === "Quoted") stats.quotedCount++;
-            if (o.status === "Won") {
+            const val = parseFloat(o.value) || parseFloat(o.revenue_bhd) || 0;
+            const stage = o.status || o.stage || 'New';
+            if (stage === "New" || stage === "Qualified" || stage === "Proposal") stats.newCount++;
+            if (stage === "Quoted") stats.quotedCount++;
+            if (stage === "Won") {
                 stats.wonCount++;
                 won++;
                 closed++;
             }
-            if (o.status === "Lost") closed++;
+            if (stage === "Lost") closed++;
 
             stats.totalValue += val;
         });

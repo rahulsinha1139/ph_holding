@@ -150,7 +150,7 @@ func (a *App) generatePDFReport(category string, data ReportData, dateRange stru
 	pdf.CellFormat(0, 10, fmt.Sprintf("Page %d", pdf.PageNo()), "", 0, "C", false, 0, "")
 
 	// Save to file
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	exportDir := filepath.Join(paths.ProjectRoot, "exports", "reports")
 	os.MkdirAll(exportDir, 0755)
 
@@ -385,7 +385,7 @@ func (a *App) generateExcelReport(category string, data ReportData, dateRange st
 	}
 
 	// Save to file
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	exportDir := filepath.Join(paths.ProjectRoot, "exports", "reports")
 	os.MkdirAll(exportDir, 0755)
 
@@ -569,7 +569,7 @@ func (a *App) addFinancialReportToExcel(f *excelize.File, sheet string, data Rep
 // =============================================================================
 
 func (a *App) generateCSVReport(category string, data ReportData, dateRange struct{ Start, End string }) (string, error) {
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	exportDir := filepath.Join(paths.ProjectRoot, "exports", "reports")
 	os.MkdirAll(exportDir, 0755)
 

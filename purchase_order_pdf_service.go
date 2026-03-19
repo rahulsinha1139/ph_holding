@@ -533,7 +533,7 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	// ========================================================================
 	// SAVE PDF
 	// ========================================================================
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	exportDir := filepath.Join(paths.ProjectRoot, "exports", "purchase_orders")
 	os.MkdirAll(exportDir, 0755)
 

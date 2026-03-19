@@ -304,6 +304,14 @@
                     <div class="form-group"><label>TRN</label><input type="text" bind:value={editForm.trn} /></div>
                   </div>
                   <div class="form-row">
+                    <div class="form-group"><label>Phone</label><input type="text" bind:value={editForm.phone} placeholder="+973 17 XXXXXX" /></div>
+                    <div class="form-group"><label>Mobile Number</label><input type="text" bind:value={editForm.mobile_number} placeholder="+973 3XXX XXXX" /></div>
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group"><label>Email</label><input type="email" bind:value={editForm.email} placeholder="email@company.com" /></div>
+                    <div class="form-group"><label>VAT Number</label><input type="text" bind:value={editForm.vat_number} /></div>
+                  </div>
+                  <div class="form-row">
                     <div class="form-group"><label>Payment Grade</label>
                       <select bind:value={editForm.payment_grade}>
                         <option value="A">A</option><option value="B">B</option>

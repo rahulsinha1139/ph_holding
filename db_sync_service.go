@@ -91,8 +91,12 @@ var dbSyncTables = []string{
 	"bank_accounts",
 	"bank_statements",
 	"bank_statement_lines",
-	"costing_sheets",
-	"costing_items",
+	"costing_sheet_data",
+	"costing_line_items",
+	"costing_history",
+	"opportunities",
+	"rfq_data",
+	"offer_data",
 }
 
 // emitDBSyncProgress sends a sync progress event to the frontend

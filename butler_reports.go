@@ -198,7 +198,7 @@ func (a *App) letterheadImagePath() string {
 	candidatePaths := []string{}
 
 	// 1. From project root (dev mode / wails dev)
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	candidatePaths = append(candidatePaths, filepath.Join(paths.ProjectRoot, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile))
 
 	// 2. Relative to executable (production mode - exe is in build/bin/)
@@ -333,7 +333,7 @@ func (a *App) generateIntelligenceReportPDF(reportType, query string, context ma
 	}
 
 	// Save
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	exportDir := filepath.Join(paths.ProjectRoot, "exports", "intelligence")
 	os.MkdirAll(exportDir, 0755)
 

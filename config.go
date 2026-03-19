@@ -180,6 +180,13 @@ func LoadConfig() (*Config, error) {
 		".env", // Current directory
 	}
 
+	// Platform data directory: ~/.local/share/AsymmFlow/ (production)
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		envLocations = append(envLocations,
+			filepath.Join(homeDir, ".local", "share", "AsymmFlow", ".env"),
+		)
+	}
+
 	// Also try executable directory (no parent traversal)
 	if exePath, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exePath)

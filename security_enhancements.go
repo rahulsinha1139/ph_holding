@@ -170,14 +170,21 @@ func (v *InputValidator) ValidateCustomerInput(customer *CustomerMaster) error {
 		return err
 	}
 
-	if err := v.ValidateString("Short Code", customer.ShortCode, ValidationLimits.ShortCode, false); err != nil {
-		return err
+	if customer.ShortCode != "" {
+		if err := v.ValidateString("Short Code", customer.ShortCode, ValidationLimits.ShortCode, false); err != nil {
+			return err
+		}
 	}
 
-	if err := v.ValidateEmail(customer.TRN); err != nil {
-		// TRN is not email, but using for general format check
-		if len(customer.TRN) > 100 {
-			return fmt.Errorf("TRN exceeds maximum length of 100 characters")
+	// Validate TRN length (not email — it's a tax registration number)
+	if len(customer.TRN) > 100 {
+		return fmt.Errorf("TRN exceeds maximum length of 100 characters")
+	}
+
+	// Validate MobileNumber if provided
+	if customer.MobileNumber != "" {
+		if len(customer.MobileNumber) > 50 {
+			return fmt.Errorf("mobile number exceeds maximum length of 50 characters")
 		}
 	}
 
@@ -391,6 +398,16 @@ func (m *DataMasker) SanitizeForLog(fields map[string]interface{}) map[string]in
 		case strings.Contains(lowerKey, "webhook_secret") || strings.Contains(lowerKey, "webhooksecret"):
 			sanitized[k] = "***REDACTED***"
 		case strings.Contains(lowerKey, "aiml_key") || strings.Contains(lowerKey, "aimlkey"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "credential"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "certificate") || strings.Contains(lowerKey, "cert_"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "salt") || strings.Contains(lowerKey, "hmac"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "mistral_key") || strings.Contains(lowerKey, "mistralkey"):
+			sanitized[k] = "***REDACTED***"
+		case strings.Contains(lowerKey, "license_key") || strings.Contains(lowerKey, "licensekey"):
 			sanitized[k] = "***REDACTED***"
 		default:
 			sanitized[k] = v

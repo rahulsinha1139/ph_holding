@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 // CompanyBankAccount stores PH Trading's bank account details for invoices
@@ -302,138 +301,87 @@ func (a *App) DeleteBankAccount(id string) error {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GORM HOOKS - Transparent field-level encryption for sensitive bank data
+// NOTE: Bank account encryption was REMOVED.
+// Account numbers and IBANs are printed on every customer invoice PDF —
+// they are not secrets. The old encryption was hardware-bound (derived from
+// Mac serial number), making the database non-portable across machines.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// BeforeCreate encrypts AccountNumber and IBAN before inserting to DB.
-func (b *CompanyBankAccount) BeforeCreate(tx *gorm.DB) error {
-	return b.encryptSensitiveFields()
-}
-
-// BeforeSave encrypts AccountNumber and IBAN before updating in DB.
-func (b *CompanyBankAccount) BeforeSave(tx *gorm.DB) error {
-	return b.encryptSensitiveFields()
-}
-
-// AfterFind decrypts AccountNumber and IBAN after reading from DB.
-func (b *CompanyBankAccount) AfterFind(tx *gorm.DB) error {
-	return b.decryptSensitiveFields()
-}
-
-func (b *CompanyBankAccount) encryptSensitiveFields() error {
-	if globalFieldCrypto == nil {
-		return nil // Encryption not initialized yet (e.g., during early startup seeding)
-	}
-
-	// Only encrypt if not already encrypted
-	if b.AccountNumber != "" && !globalFieldCrypto.IsEncrypted(b.AccountNumber) {
-		encrypted, err := globalFieldCrypto.Encrypt(b.AccountNumber)
-		if err != nil {
-			return fmt.Errorf("failed to encrypt account number: %w", err)
-		}
-		b.AccountNumber = encrypted
-	}
-
-	if b.IBAN != "" && !globalFieldCrypto.IsEncrypted(b.IBAN) {
-		encrypted, err := globalFieldCrypto.Encrypt(b.IBAN)
-		if err != nil {
-			return fmt.Errorf("failed to encrypt IBAN: %w", err)
-		}
-		b.IBAN = encrypted
-	}
-
-	return nil
-}
-
-func (b *CompanyBankAccount) decryptSensitiveFields() error {
-	if globalFieldCrypto == nil {
-		return nil
-	}
-
-	// Only decrypt if value looks encrypted (base64 with version byte)
-	if b.AccountNumber != "" && globalFieldCrypto.IsEncrypted(b.AccountNumber) {
-		decrypted, err := globalFieldCrypto.Decrypt(b.AccountNumber)
-		if err != nil {
-			log.Printf("⚠ Failed to decrypt account number for %s: %v", b.ID, err)
-			return nil // Don't fail the query - return encrypted value
-		}
-		b.AccountNumber = decrypted
-	}
-
-	if b.IBAN != "" && globalFieldCrypto.IsEncrypted(b.IBAN) {
-		decrypted, err := globalFieldCrypto.Decrypt(b.IBAN)
-		if err != nil {
-			log.Printf("⚠ Failed to decrypt IBAN for %s: %v", b.ID, err)
-			return nil
-		}
-		b.IBAN = decrypted
-	}
-
-	return nil
-}
-
-// MigrateBankAccountEncryption encrypts any existing plaintext bank account fields.
-// Idempotent - skips values that are already encrypted.
-// Called once during App startup after FieldCrypto is initialized.
+// MigrateBankAccountEncryption strips any leftover encrypted values from
+// the 4 known seeded accounts and replaces them with plaintext.
+// For any user-added accounts with unrecoverable encrypted values, it
+// clears the field so the user can re-enter it via the Manage Accounts UI.
 func (a *App) MigrateBankAccountEncryption() {
-	if a.db == nil || a.fieldCrypto == nil {
+	if a.db == nil {
 		return
 	}
 
-	var banks []CompanyBankAccount
-	// Use a raw SQL query to bypass AfterFind hook (we want raw DB values)
+	// Known seeded accounts — restore their plaintext values
+	knownAccounts := map[string]struct{ acct, iban string }{
+		"bank-nbb":     {"99570076", "BH16NBOB00000099570076"},
+		"bank-ahli":    {"0010521957001", "BH04AUBB00010521957001"},
+		"bank-alsalam": {"205220101000", "BH37ALSA00205220101000"},
+		"bank-bbk":     {"100000451009", "BH71BBKU00100000451009"},
+	}
+
 	rows, err := a.db.Raw("SELECT id, account_number, iban FROM company_bank_accounts").Rows()
 	if err != nil {
-		log.Printf("⚠ Bank encryption migration: query failed: %v", err)
+		log.Printf("⚠ Bank decryption migration: query failed: %v", err)
 		return
 	}
 	defer rows.Close()
 
+	fixed := 0
 	for rows.Next() {
-		var b CompanyBankAccount
-		if err := rows.Scan(&b.ID, &b.AccountNumber, &b.IBAN); err != nil {
+		var id, acctNum, iban string
+		if err := rows.Scan(&id, &acctNum, &iban); err != nil {
 			continue
 		}
-		banks = append(banks, b)
-	}
 
-	migrated := 0
-	for _, bank := range banks {
-		needsUpdate := false
+		// Check if value looks encrypted (base64 with length > 20)
+		acctEncrypted := len(acctNum) > 20 && globalFieldCrypto != nil && globalFieldCrypto.IsEncrypted(acctNum)
+		ibanEncrypted := len(iban) > 30 && globalFieldCrypto != nil && globalFieldCrypto.IsEncrypted(iban)
+
+		if !acctEncrypted && !ibanEncrypted {
+			continue // Already plaintext
+		}
+
 		updates := map[string]interface{}{}
-
-		if bank.AccountNumber != "" && !a.fieldCrypto.IsEncrypted(bank.AccountNumber) {
-			encrypted, err := a.fieldCrypto.Encrypt(bank.AccountNumber)
-			if err != nil {
-				log.Printf("⚠ Failed to encrypt account %s: %v", bank.ID, err)
-				continue
+		if known, ok := knownAccounts[id]; ok {
+			// Restore known plaintext values
+			updates["account_number"] = known.acct
+			updates["iban"] = known.iban
+		} else {
+			// Unknown account — try to decrypt, clear if impossible
+			if acctEncrypted {
+				if decrypted, err := globalFieldCrypto.Decrypt(acctNum); err == nil {
+					updates["account_number"] = decrypted
+				} else {
+					updates["account_number"] = ""
+					log.Printf("⚠ Cleared unrecoverable encrypted account_number for %s — re-enter via Manage Accounts", id)
+				}
 			}
-			updates["account_number"] = encrypted
-			needsUpdate = true
+			if ibanEncrypted {
+				if decrypted, err := globalFieldCrypto.Decrypt(iban); err == nil {
+					updates["iban"] = decrypted
+				} else {
+					updates["iban"] = ""
+					log.Printf("⚠ Cleared unrecoverable encrypted iban for %s — re-enter via Manage Accounts", id)
+				}
+			}
 		}
 
-		if bank.IBAN != "" && !a.fieldCrypto.IsEncrypted(bank.IBAN) {
-			encrypted, err := a.fieldCrypto.Encrypt(bank.IBAN)
-			if err != nil {
-				log.Printf("⚠ Failed to encrypt IBAN %s: %v", bank.ID, err)
-				continue
+		if len(updates) > 0 {
+			for col, val := range updates {
+				a.db.Exec(fmt.Sprintf("UPDATE company_bank_accounts SET %s = ? WHERE id = ?", col), val, id)
 			}
-			updates["iban"] = encrypted
-			needsUpdate = true
-		}
-
-		if needsUpdate {
-			if err := a.db.Model(&CompanyBankAccount{}).Where("id = ?", bank.ID).Updates(updates).Error; err != nil {
-				log.Printf("⚠ Failed to update encrypted fields for %s: %v", bank.ID, err)
-			} else {
-				migrated++
-			}
+			fixed++
 		}
 	}
 
-	if migrated > 0 {
-		log.Printf("🔐 Encrypted %d bank account(s) (account numbers + IBANs)", migrated)
+	if fixed > 0 {
+		log.Printf("🔓 Decrypted %d bank account(s) — account numbers now stored as plaintext", fixed)
 	} else {
-		log.Printf("✅ Bank account encryption: all fields already encrypted")
+		log.Printf("✅ Bank accounts: all fields already plaintext")
 	}
 }

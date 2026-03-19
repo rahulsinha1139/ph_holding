@@ -280,7 +280,7 @@
       // Load RFQs and customers in parallel
       const [rfqsData, customersData] = await Promise.all([
         GetRFQs(100, 0),
-        ListCustomers(100, 0).catch(() => [])
+        ListCustomers(500, 0).catch(() => [])
       ]);
 
       rfqs = rfqsData || [];

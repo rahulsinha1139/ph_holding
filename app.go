@@ -172,19 +172,12 @@ type ApplicationPaths struct {
 	AsymmMathRoot string `json:"asymm_math_root"`
 }
 
-// GetApplicationPaths returns the current application paths (replaces hardcoded paths in frontend)
-func (a *App) GetApplicationPaths() *ApplicationPaths {
-	if err := a.requirePermission("settings:view"); err != nil {
-		return nil
-	}
-
-	// FIX: Remove ALL hardcoded absolute paths - use relative paths and environment variables
-
-	// Get project root from working directory (supports any deployment location)
+// getAppPaths returns application paths without RBAC check (for internal backend use).
+// Use GetApplicationPaths() for frontend-facing calls that need permission gating.
+func (a *App) getAppPaths() *ApplicationPaths {
 	projectRoot, err := os.Getwd()
 	if err != nil {
-		log.Printf(" Failed to get working directory: %v, using fallback", err)
-		// Fallback to executable directory
+		log.Printf("Failed to get working directory: %v, using fallback", err)
 		if ex, exErr := os.Executable(); exErr == nil {
 			projectRoot = filepath.Dir(ex)
 		} else {
@@ -192,15 +185,25 @@ func (a *App) GetApplicationPaths() *ApplicationPaths {
 		}
 	}
 
-	// Get asymm_math_root from environment or default to sibling directory
+	// Production fix: if CWD is not writable (e.g., "/" from Finder launch),
+	// use the data directory where the DB lives for all exports
+	testDir := filepath.Join(projectRoot, "exports")
+	if err := os.MkdirAll(testDir, 0755); err != nil {
+		// CWD not writable — use platform data directory
+		if homeDir, hErr := os.UserHomeDir(); hErr == nil {
+			dataDir := filepath.Join(homeDir, ".local", "share", "AsymmFlow")
+			os.MkdirAll(dataDir, 0755)
+			log.Printf("CWD not writable, using data dir: %s", dataDir)
+			projectRoot = dataDir
+		}
+	}
+
 	asymmMathRoot := os.Getenv("ASYMM_MATH_ROOT")
 	if asymmMathRoot == "" {
-		// Try to find it as a sibling directory to project root
 		potentialPath := filepath.Join(filepath.Dir(projectRoot), "asymm_all_math")
 		if _, err := os.Stat(potentialPath); err == nil {
 			asymmMathRoot = potentialPath
 		} else {
-			// Fallback to subdir in project root if sibling doesn't exist
 			asymmMathRoot = filepath.Join(projectRoot, "asymm_mathematical_organism")
 		}
 	}
@@ -212,6 +215,14 @@ func (a *App) GetApplicationPaths() *ApplicationPaths {
 		ReportOutput:  filepath.Join(projectRoot, "reports"),
 		AsymmMathRoot: asymmMathRoot,
 	}
+}
+
+// GetApplicationPaths returns the current application paths (RBAC-guarded for frontend calls)
+func (a *App) GetApplicationPaths() *ApplicationPaths {
+	if err := a.requirePermission("settings:view"); err != nil {
+		return nil
+	}
+	return a.getAppPaths()
 }
 
 // NewApp creates a new App application struct
@@ -248,6 +259,18 @@ func rotateLogFile(logPath string, maxSize int64, keepCount int) {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.appStartTime = time.Now()
+
+	// EARLY diagnostic — write to /tmp before anything else
+	earlyDiag := filepath.Join(os.TempDir(), "asymmflow_startup.log")
+	os.Remove(earlyDiag)
+	if f, err := os.Create(earlyDiag); err == nil {
+		fmt.Fprintf(f, "%s STARTUP BEGIN\n", time.Now().Format("15:04:05.000"))
+		fmt.Fprintf(f, "%s CWD: %s\n", time.Now().Format("15:04:05.000"), func() string { d, _ := os.Getwd(); return d }())
+		if ex, err := os.Executable(); err == nil {
+			fmt.Fprintf(f, "%s EXE: %s\n", time.Now().Format("15:04:05.000"), ex)
+		}
+		f.Close()
+	}
 
 	// 1. Setup File Logging with rotation (FIX: Handle error, store file handle for cleanup)
 	rotateLogFile("app_debug.log", 50*1024*1024, 5) // 50MB max, keep 5 rotated logs
@@ -325,6 +348,61 @@ func (a *App) startup(ctx context.Context) {
 		dbPath = "./ph_holdings.db"
 	}
 
+	// Production fix: macOS .app bundles launched from Finder have CWD=/
+	// Check platform data directory first, then executable-relative, then CWD
+	if !filepath.IsAbs(dbPath) {
+		dbName := filepath.Base(dbPath)
+		resolved := false
+
+		// 1. Platform data directory: ~/.local/share/AsymmFlow/ (created by prior runs)
+		if homeDir, hErr := os.UserHomeDir(); hErr == nil {
+			dataDir := filepath.Join(homeDir, ".local", "share", "AsymmFlow", dbName)
+			if _, statErr := os.Stat(dataDir); statErr == nil {
+				log.Printf("DB found in data directory: %s", dataDir)
+				dbPath = dataDir
+				resolved = true
+			}
+		}
+
+		// 2. Next to executable (deploy package)
+		if !resolved {
+			if exePath, exeErr := os.Executable(); exeErr == nil {
+				exeDir := filepath.Dir(exePath)
+				candidate := filepath.Join(exeDir, dbName)
+				if _, statErr := os.Stat(candidate); statErr == nil {
+					log.Printf("DB found next to executable: %s", candidate)
+					dbPath = candidate
+					resolved = true
+				}
+				// 3. Three levels up from .app/Contents/MacOS/ (project root)
+				if !resolved {
+					projectRoot := filepath.Join(exeDir, "..", "..", "..")
+					candidate2 := filepath.Join(projectRoot, dbName)
+					if _, statErr := os.Stat(candidate2); statErr == nil {
+						log.Printf("DB found at project root: %s", candidate2)
+						dbPath = candidate2
+						resolved = true
+					}
+				}
+			}
+		}
+
+		// 4. CWD (wails dev mode) — already set as default
+		if !resolved {
+			if _, statErr := os.Stat(dbPath); statErr == nil {
+				log.Printf("DB found in CWD: %s", dbPath)
+			} else {
+				// Last resort: create in data directory
+				if homeDir, hErr := os.UserHomeDir(); hErr == nil {
+					dataDir := filepath.Join(homeDir, ".local", "share", "AsymmFlow")
+					os.MkdirAll(dataDir, 0755)
+					dbPath = filepath.Join(dataDir, dbName)
+					log.Printf("DB will be created in data directory: %s", dbPath)
+				}
+			}
+		}
+	}
+
 	// Ensure database directory exists
 	dbDir := filepath.Dir(dbPath)
 	if dbDir != "" && dbDir != "." {
@@ -340,10 +418,12 @@ func (a *App) startup(ctx context.Context) {
 		"path": dbPath,
 	})
 
-	a.db, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+	// Open SQLite with PRAGMAs in DSN so every pooled connection gets them automatically
+	// This allows MaxOpenConns > 1 for concurrent reads (WAL mode)
+	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL&_foreign_keys=ON&_cache_size=-20000"
+	a.db, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Warn), // Reduce log noise in production
 		// CRITICAL: SQLite cannot modify FK constraints on existing tables
-		// This prevents migration errors like "table X__temp has no column named FOREIGN"
 		DisableForeignKeyConstraintWhenMigrating: true,
 	})
 
@@ -376,8 +456,8 @@ func (a *App) startup(ctx context.Context) {
 	// Configure connection pool for SQLite (limited settings)
 	sqlDB, poolErr := a.db.DB()
 	if poolErr == nil {
-		sqlDB.SetMaxOpenConns(1) // Single connection ensures PRAGMAs apply consistently
-		sqlDB.SetMaxIdleConns(1)
+		sqlDB.SetMaxOpenConns(4) // WAL mode supports concurrent readers; PRAGMAs set via DSN
+		sqlDB.SetMaxIdleConns(2)
 		sqlDB.SetConnMaxLifetime(time.Hour)
 
 		// P0 FIX: Enable foreign key constraints at runtime
@@ -390,24 +470,10 @@ func (a *App) startup(ctx context.Context) {
 			AppLogger.Info("Foreign key constraints enabled", nil)
 		}
 
-		// Production SQLite performance PRAGMAs
-		pragmas := []struct {
-			sql  string
-			desc string
-		}{
-			{"PRAGMA journal_mode = WAL", "WAL mode (concurrent reads during writes)"},
-			{"PRAGMA busy_timeout = 5000", "Busy timeout 5s (wait on lock instead of failing)"},
-			{"PRAGMA synchronous = NORMAL", "Synchronous NORMAL (safe with WAL, faster than FULL)"},
-			{"PRAGMA cache_size = -20000", "Cache size 20MB"},
-			{"PRAGMA temp_store = MEMORY", "Temp tables in RAM"},
-			{"PRAGMA mmap_size = 268435456", "Memory-mapped I/O 256MB"},
-		}
-		for _, p := range pragmas {
-			if _, err := sqlDB.Exec(p.sql); err != nil {
-				log.Printf("PRAGMA warning (%s): %v", p.desc, err)
-			}
-		}
-		log.Println("SQLite performance PRAGMAs applied (WAL mode, 20MB cache, 256MB mmap)")
+		// Additional PRAGMAs not settable via DSN
+		sqlDB.Exec("PRAGMA temp_store = MEMORY")
+		sqlDB.Exec("PRAGMA mmap_size = 268435456")
+		log.Println("SQLite PRAGMAs applied (WAL + busy_timeout via DSN, temp_store + mmap_size manual)")
 	}
 
 	// P2 FIX: Initialize in-memory cache for performance
@@ -435,12 +501,37 @@ func (a *App) startup(ctx context.Context) {
 		})
 	}
 
+	// Startup diagnostic: write progress to known location
+	diagPath := filepath.Join(os.TempDir(), "asymmflow_startup.log")
+	diagLog := func(msg string) {
+		f, _ := os.OpenFile(diagPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if f != nil {
+			fmt.Fprintf(f, "%s %s\n", time.Now().Format("15:04:05.000"), msg)
+			f.Close()
+		}
+		log.Println(msg)
+	}
+	os.Remove(diagPath) // Fresh start
+	diagLog(fmt.Sprintf("STARTUP: DB path = %s", dbPath))
+
 	// Auto-migrate the schema - Full ERP schema
 	// ENABLED: Runs on every startup to ensure client databases have latest schema
 	// This is IDEMPOTENT - safe to run multiple times, only adds missing columns
 	if a.db == nil {
+		diagLog("STARTUP: Skipping migration - no DB")
 		log.Println("⚠️ Skipping database migration - no database connection")
 	} else {
+		// Check if DB already has tables — skip AutoMigrate to avoid infinite loop
+		// (GORM SQLite migrator has a bug recreating book_bank_reconciliations__temp endlessly)
+		var tableCount int64
+		a.db.Raw("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tableCount)
+		diagLog(fmt.Sprintf("STARTUP: DB has %d tables", tableCount))
+
+		if tableCount > 50 {
+			diagLog("STARTUP: Skipping AutoMigrate — DB schema already established")
+			log.Printf("✅ Skipping AutoMigrate — %d tables already exist (schema stable)", tableCount)
+		} else {
+		diagLog("STARTUP: Beginning AutoMigrate...")
 		// ROBUST MIGRATION: Migrate each model individually to handle existing tables gracefully
 		// SQLite cannot modify constraints on existing tables, so we skip tables that already have data
 		models := []interface{}{
@@ -554,20 +645,26 @@ func (a *App) startup(ctx context.Context) {
 			&CreditNote{},
 			&CreditNoteItem{},
 			&SerialNumber{},
+
+			// Phase 33: Pipeline Opportunities
+			&Opportunity{},
+			&ARAgingBucket{},
 		}
 
 		// Migrate each model individually - skip on error for existing tables
 		migratedCount := 0
 		skippedCount := 0
-		for _, model := range models {
+		for i, model := range models {
+			modelName := fmt.Sprintf("%T", model)
 			if err := a.db.AutoMigrate(model); err != nil {
-				// Log the error but continue - table likely already exists with incompatible schema
-				log.Printf("⚠️ Migration skipped for %T: %v", model, err)
+				log.Printf("⚠️ Migration skipped for %s: %v", modelName, err)
+				diagLog(fmt.Sprintf("MIGRATE[%d/%d] SKIP %s: %v", i+1, len(models), modelName, err))
 				skippedCount++
 			} else {
 				migratedCount++
 			}
 		}
+		diagLog(fmt.Sprintf("STARTUP: AutoMigrate done (%d ok, %d skipped)", migratedCount, skippedCount))
 		log.Printf("✅ Database migration complete: %d migrated, %d skipped (existing tables)", migratedCount, skippedCount)
 	}
 
@@ -603,6 +700,7 @@ func (a *App) startup(ctx context.Context) {
 			}
 		}
 		AppLogger.Info("Critical tables ready", nil)
+		} // end of AutoMigrate else block (tableCount <= 50)
 
 		// Seed license keys (10 per role) if needed
 		if err := a.SeedLicenseKeys(); err != nil {
@@ -614,8 +712,13 @@ func (a *App) startup(ctx context.Context) {
 			AppLogger.Warn("Employee key assignment warning", map[string]interface{}{"error": err.Error()})
 		}
 
-		// Run custom migrations for schema fixes that SQLite ALTER TABLE can't handle
-		a.runCustomMigrations()
+		if tableCount <= 50 {
+			diagLog("STARTUP: Running custom migrations...")
+			a.runCustomMigrations()
+			diagLog("STARTUP: Custom migrations done")
+		} else {
+			diagLog("STARTUP: Skipping custom migrations — schema stable")
+		}
 
 		// Run database integrity check on startup
 		integrityResult := a.runIntegrityCheck()
@@ -623,13 +726,6 @@ func (a *App) startup(ctx context.Context) {
 			AppLogger.Warn("Database integrity issue detected on startup", map[string]interface{}{
 				"result": integrityResult,
 			})
-		}
-
-		// Create automated backup after successful migration
-		if backupPath, err := a.BackupDatabase(); err != nil {
-			log.Printf("Startup backup warning: %v", err)
-		} else {
-			log.Printf("Startup backup created: %s", backupPath)
 		}
 	}
 
@@ -674,10 +770,14 @@ func (a *App) startup(ctx context.Context) {
 		AppLogger.Info("FieldCrypto wired into SettingsService", nil)
 	}
 
-	// Migrate existing plaintext bank account fields to encrypted
-	// (runs AFTER migrations have ensured the table exists)
-	if a.fieldCrypto != nil {
-		a.MigrateBankAccountEncryption()
+	// Bank account encryption migration — skip for established DBs (already done)
+	// This was taking 45s and blocking all API calls on single-connection mode
+	{
+		var bankTableCount int64
+		a.db.Raw("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").Scan(&bankTableCount)
+		if bankTableCount <= 50 {
+			a.MigrateBankAccountEncryption()
+		}
 	}
 
 	// Initialize geometry bridge
@@ -743,13 +843,14 @@ func (a *App) startup(ctx context.Context) {
 	})
 	AppLogger.Info("AIML API key provider registered (Grok primary backend)", nil)
 
-	// Initialize dual-database manager (local + Supabase)
+	diagLog("STARTUP: Initializing DBManager...")
 	a.InitDBManager()
+	diagLog("STARTUP: DBManager done")
 	a.dbSyncService = newDBSyncService(a)
 
-	// Initialize database-backed assets (letterhead, logos)
-	// This uploads local assets to DB on first run, then they sync via Supabase
+	diagLog("STARTUP: Initializing assets...")
 	a.InitializeDefaultAssets()
+	diagLog("STARTUP: Assets done")
 
 	// Seed default RBAC roles
 	if err := a.SeedDefaultRoles(); err != nil {
@@ -784,15 +885,17 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 
-	// Initialize entity graph service
+	diagLog("STARTUP: Initializing graph service...")
 	a.graphService = graph.NewGraphService(a.db)
+	diagLog("STARTUP: Graph done")
 	AppLogger.Info("Entity Graph Service initialized", map[string]interface{}{
 		"feature": "Customer360 relationships",
 	})
 
-	// Initialize tools validator
+	diagLog("STARTUP: Validating tools...")
 	a.toolsValidator = integration.NewToolsValidator()
 	toolsReport := a.toolsValidator.ValidateAllTools()
+	diagLog("STARTUP: Tools done. STARTUP COMPLETE.")
 	AppLogger.Info("Tools Validator initialized", map[string]interface{}{
 		"summary": toolsReport.Summary,
 		"all_optional_available": toolsReport.AllOptional,
@@ -1972,6 +2075,9 @@ func (a *App) GetToolsStatus() *integration.ToolsReport {
 
 // RefreshToolsStatus forces fresh validation of all tools
 func (a *App) RefreshToolsStatus() *integration.ToolsReport {
+	if err := a.requirePermission("settings:view"); err != nil {
+		return nil
+	}
 	if a.toolsValidator == nil {
 		a.toolsValidator = integration.NewToolsValidator()
 	}
@@ -2993,6 +3099,35 @@ func (a *App) GetRFQs(limit int, offset int) ([]RFQData, error) {
 	return rfqs, nil
 }
 
+// GetPipelineOpportunities returns opportunities from the canonical pipeline (Phase 33 seed import)
+func (a *App) GetPipelineOpportunities(limit int, offset int) ([]Opportunity, error) {
+	if err := a.requirePermission("offers:view"); err != nil {
+		return nil, err
+	}
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	if limit <= 0 {
+		limit = 200
+	} else if limit > 500 {
+		limit = 500
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var opps []Opportunity
+	result := a.db.Order("year DESC, opp_number DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&opps)
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to retrieve opportunities: %w", result.Error)
+	}
+	return opps, nil
+}
+
 // GetRFQ retrieves a single RFQ by ID
 // P3 FIX: Added missing CRUD operation for consistency
 func (a *App) GetRFQ(id uint) (RFQData, error) {
@@ -3036,30 +3171,19 @@ func (a *App) generateRFQNumber() string {
 
 	var maxNum int
 
-	// Use a transaction with EXCLUSIVE lock to prevent race conditions
-	// SQLite's BEGIN EXCLUSIVE ensures only one process can generate a number at a time
+	// Use GORM transaction (SQLite single-writer ensures serialization)
 	err := a.db.Transaction(func(tx *gorm.DB) error {
-		// Lock the table for exclusive access during this transaction
-		// This prevents concurrent generateRFQNumber calls from reading the same maxNum
-		if err := tx.Exec("BEGIN EXCLUSIVE").Error; err != nil {
-			return err
-		}
-
-		// Find highest number for this year within the locked transaction
 		if err := tx.Model(&RFQData{}).
 			Where("rfq_number LIKE ?", "%"+yearSuffix).
 			Select("COALESCE(MAX(CAST(SUBSTR(rfq_number, 1, INSTR(rfq_number, '-')-1) AS INTEGER)), 0)").
 			Scan(&maxNum).Error; err != nil {
 			return err
 		}
-
-		// Transaction will commit automatically if no error is returned
 		return nil
 	})
 
 	if err != nil {
-		log.Printf("⚠️ Warning: RFQ number generation transaction failed: %v, falling back to best-effort", err)
-		// Fallback to non-transactional read (should rarely happen)
+		log.Printf("Warning: RFQ number generation failed: %v, falling back to best-effort", err)
 		a.db.Model(&RFQData{}).
 			Where("rfq_number LIKE ?", "%"+yearSuffix).
 			Select("COALESCE(MAX(CAST(SUBSTR(rfq_number, 1, INSTR(rfq_number, '-')-1) AS INTEGER)), 0)").
@@ -4216,6 +4340,24 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
+	// Validate VatRate bounds (0-100)
+	if data.VatRate < 0 || data.VatRate > 100 {
+		return nil, fmt.Errorf("VAT rate must be between 0%% and 100%%, got %.1f%%", data.VatRate)
+	}
+
+	// Validate QuoteType whitelist
+	validQuoteTypes := map[string]bool{
+		"":                  true, // empty = default Quotation
+		"Quotation":         true,
+		"Budgetary Quote":   true,
+		"Budgetary Estimate": true,
+		"Technical Offer":   true,
+		"Commercial Offer":  true,
+	}
+	if !validQuoteTypes[data.QuoteType] {
+		return nil, fmt.Errorf("invalid quote type: %q", data.QuoteType)
+	}
+
 	// Prevent duplicate offers for the same RFQ
 	if data.OpportunityId > 0 {
 		var existingCount int64
@@ -4284,6 +4426,18 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 		TotalValueBHD:   data.GrandTotal,
 		EstimatedMargin: margin,
 		Stage:           "Quoted",
+		QuoteType:       data.QuoteType,
+		// Commercial terms from costing header
+		PaymentTerms:     data.PaymentTerms,
+		DeliveryTerms:    data.DeliveryTerms,
+		DeliveryWeeks:    data.EstDelivery,
+		CountryOfOrigin:  data.CountryOfOrigin,
+		IssuedBy:         data.PreparedBy,
+		CustomerReference: data.RfqReference,
+		AttentionPerson:  data.ContactPerson,
+		AttentionCompany: data.CustomerName,
+		VatRate:          data.VatRate,
+		DiscountPercent:  func() float64 { if data.Subtotal > 0 { return (data.Discount / data.Subtotal) * 100 }; return 0 }(),
 		// Additional costing header fields (Fix 2026-02-05)
 		CocCoo:          data.CocCoo,
 		TestCertificate: data.TestCertificate,
@@ -4332,8 +4486,17 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 		offer.Items = append(offer.Items, offerItem)
 	}
 
-	// Save offer with items
-	if err := a.db.Create(offer).Error; err != nil {
+	// Save offer with items in transaction (re-check duplicate to prevent TOCTOU)
+	if err := a.db.Transaction(func(tx *gorm.DB) error {
+		if data.OpportunityId > 0 {
+			var dupCount int64
+			tx.Model(&Offer{}).Where("rfq_id = ? AND stage != ?", data.OpportunityId, "Lost").Count(&dupCount)
+			if dupCount > 0 {
+				return fmt.Errorf("an active offer already exists for this RFQ (RFQ #%d)", data.OpportunityId)
+			}
+		}
+		return tx.Create(offer).Error
+	}); err != nil {
 		log.Printf("❌ Failed to save offer: %v", err)
 		return nil, fmt.Errorf("failed to save offer: %v", err)
 	}
@@ -4369,30 +4532,20 @@ func (a *App) generateOfferNumber() string {
 
 	var maxNum int
 
-	// Use a transaction with EXCLUSIVE lock to prevent race conditions
-	// SQLite's BEGIN EXCLUSIVE ensures only one process can generate a number at a time
+	// Use GORM transaction (SQLite single-writer ensures serialization)
 	err := a.db.Transaction(func(tx *gorm.DB) error {
-		// Lock the table for exclusive access during this transaction
-		// This prevents concurrent generateOfferNumber calls from reading the same maxNum
-		if err := tx.Exec("BEGIN EXCLUSIVE").Error; err != nil {
-			return err
-		}
-
-		// Find highest number for this year within the locked transaction
+		// Find highest number for this year within the transaction
 		if err := tx.Model(&Offer{}).
 			Where("offer_number LIKE ?", "%"+yearSuffix).
 			Select("COALESCE(MAX(CAST(SUBSTR(offer_number, 1, INSTR(offer_number, '-')-1) AS INTEGER)), 0)").
 			Scan(&maxNum).Error; err != nil {
 			return err
 		}
-
-		// Transaction will commit automatically if no error is returned
 		return nil
 	})
 
 	if err != nil {
-		log.Printf("⚠️ Warning: Offer number generation transaction failed: %v, falling back to best-effort", err)
-		// Fallback to non-transactional read (should rarely happen)
+		log.Printf("Warning: Offer number generation failed: %v, falling back to best-effort", err)
 		a.db.Model(&Offer{}).
 			Where("offer_number LIKE ?", "%"+yearSuffix).
 			Select("COALESCE(MAX(CAST(SUBSTR(offer_number, 1, INSTR(offer_number, '-')-1) AS INTEGER)), 0)").
@@ -7623,6 +7776,9 @@ func (a *App) TestAIConnection(provider string, apiKey string) error {
 
 // GetBusinessVATRate returns the configured VAT rate from settings (default 10%)
 func (a *App) GetBusinessVATRate() float64 {
+	if err := a.requirePermission("settings:view"); err != nil {
+		return 10.0 // Default if no permission
+	}
 	userSettings, err := a.loadUserSettings()
 	if err != nil {
 		return 10.0 // Default VAT rate
@@ -11160,7 +11316,7 @@ func (a *App) ImportSSOTData() (*data.ImportResult, error) {
 	}
 
 	// Get project root path
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	dataDir := filepath.Join(paths.ProjectRoot, "CRITICAL_PH_CONTEXT_SSOT")
 
 	// Verify directory exists
@@ -12579,6 +12735,17 @@ type CostingExportData struct {
 	Installation    string `json:"installation"`    // Installation included?
 	Commissioning   string `json:"commissioning"`   // Commissioning included?
 	Testing         string `json:"testing"`         // Testing included?
+	// Quote type: "Quotation" or "Budgetary Quote"
+	QuoteType string `json:"quoteType"`
+	// Dynamic VAT rate (percentage, e.g., 10.0)
+	VatRate float64 `json:"vatRate"`
+	// Hidden charges (BHD amount added to cost)
+	HiddenCharges float64 `json:"hiddenCharges"`
+
+	// VAT/Tax compliance (Bahrain NBR)
+	PlaceOfSupply string `json:"placeOfSupply"`
+	TaxCategory   string `json:"taxCategory"`
+	CustomerTRN   string `json:"customerTRN"`
 
 	// Line Items
 	LineItems []CostingExportLineItem `json:"lineItems"`
@@ -12607,6 +12774,7 @@ type CostingExportLineItem struct {
 	Supplier            string  `json:"supplier"` // Kept for backwards compatibility but not used in UI
 	Equipment           string  `json:"equipment"`
 	Model               string  `json:"model"`
+	SerialNumber        string  `json:"serialNumber"` // Serial number for traceability
 	LongCode            string  `json:"longCode"`
 	Specification       string  `json:"specification"`
 	DetailedDescription string  `json:"detailedDescription"` // NEW: Wide field for instrumentation specs
@@ -12656,10 +12824,14 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	if userRef != "" {
 		fileName = fmt.Sprintf("%s_%s", fileName, userRef)
 	}
-	fileName = fmt.Sprintf("Quotation_%s.pdf", fileName)
+	filePrefix := "Quotation"
+	if data.QuoteType != "" && data.QuoteType != "Quotation" {
+		filePrefix = sanitizeFileName(data.QuoteType)
+	}
+	fileName = fmt.Sprintf("%s_%s.pdf", filePrefix, fileName)
 
 	// Save to structured folder: <exports>/<division>/Customers/<CustomerName>/Costing Sheets/
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	division := data.Division
 	if division == "" {
 		division = "PH Trading"
@@ -12733,7 +12905,11 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 		pdf.SetFont("main", "", 16)
 	}
 	pdf.SetXY(leftMargin, currentY)
-	pdf.Cell(nil, "QUOTATION")
+	quoteTitle := "QUOTATION"
+	if data.QuoteType != "" {
+		quoteTitle = strings.ToUpper(data.QuoteType)
+	}
+	pdf.Cell(nil, quoteTitle)
 
 	// Quotation number on right
 	pdf.SetFont("main", "", 10)
@@ -12753,11 +12929,13 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 		{"RFQ Ref", data.RfqReference},
 		{"Project", data.ProjectName},
 	}
-	for i, info := range infoLabels {
+	infoY := currentY
+	for _, info := range infoLabels {
 		if info.value == "" {
 			continue
 		}
-		y := currentY + float64(i)*14
+		y := infoY
+		infoY += 14
 		if hasBold {
 			pdf.SetFont("mainBold", "", 9)
 		}
@@ -12775,11 +12953,13 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 		{"Payment", data.PaymentTerms},
 		{"Est. Delivery", data.EstDelivery},
 	}
-	for i, info := range termsLabels {
+	termsY := currentY
+	for _, info := range termsLabels {
 		if info.value == "" {
 			continue
 		}
-		y := currentY + float64(i)*14
+		y := termsY
+		termsY += 14
 		if hasBold {
 			pdf.SetFont("mainBold", "", 9)
 		}
@@ -12869,20 +13049,7 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 			descY += 9
 		}
 
-		// Order Code on next line (long supplier order/configuration code)
-		if item.LongCode != "" {
-			pdf.SetFont("main", "", 6.5)
-			codeLines := wrapText(item.LongCode, 75)
-			for j, codeLine := range codeLines {
-				pdf.SetXY(colX[1]+2, descY)
-				if j == 0 {
-					pdf.Cell(nil, "Long Code: "+codeLine)
-				} else {
-					pdf.Cell(nil, "  "+codeLine)
-				}
-				descY += 8
-			}
-		}
+		// Long Code and Detailed Description are shown ONLY on Annexure page (not page 1)
 		pdf.SetFont("main", "", 8)
 
 		// Quantity
@@ -12905,19 +13072,7 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 			currentY += 24
 		}
 
-		// Print detailed description if present (instrumentation specs)
-		if item.DetailedDescription != "" {
-			pdf.SetFont("main", "", 7)
-
-			// Split description into lines (wrap at ~90 chars)
-			descLines := wrapText(item.DetailedDescription, 90)
-			for _, line := range descLines {
-				pdf.SetXY(colX[1]+2, currentY)
-				pdf.Cell(nil, line)
-				currentY += 9
-			}
-			pdf.SetFont("main", "", 8)
-		}
+		// Detailed description is shown only on Annexure page (not here on page 1)
 
 		// Light separator line between items
 		currentY += 4
@@ -12964,7 +13119,12 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	// VAT
 	currentY += 14
 	pdf.SetXY(totalsX, currentY)
-	pdf.Cell(nil, "VAT (10%):")
+	displayVatRate := data.VatRate
+	if displayVatRate == 0 && data.VAT > 0 {
+		displayVatRate = 10.0 // Fallback for old data without VatRate
+	}
+	vatLabel := fmt.Sprintf("VAT (%.0f%%)", displayVatRate)
+	pdf.Cell(nil, vatLabel+":")
 	pdf.SetXY(valuesX, currentY)
 	pdf.Cell(nil, fmt.Sprintf("%.3f BHD", data.VAT))
 
@@ -12989,6 +13149,91 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	currentY += 12
 	pdf.SetXY(leftMargin, currentY)
 	pdf.Cell(nil, "Prices are exclusive of VAT unless otherwise stated. Delivery subject to availability.")
+
+	// === ANNEXURE PAGE (Detailed Specifications) ===
+	hasDetailedSpecs := false
+	for _, item := range data.LineItems {
+		if item.DetailedDescription != "" || item.LongCode != "" {
+			hasDetailedSpecs = true
+			break
+		}
+	}
+	if hasDetailedSpecs {
+		pdf.AddPage()
+		if letterheadPath != "" {
+			if _, err := os.Stat(letterheadPath); err == nil {
+				pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+			}
+		}
+		annexY := 90.0
+		if hasBold {
+			pdf.SetFont("mainBold", "", 14)
+		} else {
+			pdf.SetFont("main", "", 14)
+		}
+		pdf.SetXY(leftMargin, annexY)
+		pdf.Cell(nil, "ANNEXURE - 1")
+		annexY += 20
+		pdf.SetFont("main", "", 9)
+		pdf.SetXY(leftMargin, annexY)
+		pdf.Cell(nil, "Detailed Long Codes and Specifications")
+		annexY += 16
+
+		for _, item := range data.LineItems {
+			if item.DetailedDescription == "" && item.LongCode == "" {
+				continue
+			}
+			if annexY > 740 {
+				pdf.AddPage()
+				if letterheadPath != "" {
+					if _, err := os.Stat(letterheadPath); err == nil {
+						pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+					}
+				}
+				annexY = 90.0
+			}
+
+			if hasBold {
+				pdf.SetFont("mainBold", "", 9)
+			}
+			pdf.SetXY(leftMargin, annexY)
+			pdf.Cell(nil, fmt.Sprintf("%d. %s", item.SlNo, item.Equipment))
+			annexY += 12
+
+			pdf.SetFont("main", "", 8)
+			if item.Model != "" {
+				pdf.SetXY(leftMargin+10, annexY)
+				pdf.Cell(nil, "Model: "+item.Model)
+				annexY += 10
+			}
+			if item.LongCode != "" {
+				codeLines := wrapText("Long Code: "+item.LongCode, 90)
+				for _, cl := range codeLines {
+					pdf.SetXY(leftMargin+10, annexY)
+					pdf.Cell(nil, cl)
+					annexY += 10
+				}
+			}
+			if item.DetailedDescription != "" {
+				descLines := wrapText(item.DetailedDescription, 90)
+				for _, dl := range descLines {
+					if annexY > 740 {
+						pdf.AddPage()
+						if letterheadPath != "" {
+							if _, err := os.Stat(letterheadPath); err == nil {
+								pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+							}
+						}
+						annexY = 90.0
+					}
+					pdf.SetXY(leftMargin+10, annexY)
+					pdf.Cell(nil, dl)
+					annexY += 10
+				}
+			}
+			annexY += 8
+		}
+	}
 
 	// === TERMS AND CONDITIONS PAGE ===
 	if data.TermsAndConditions != "" {
@@ -13105,7 +13350,7 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 	csvFileName = fmt.Sprintf("Costing_%s.csv", csvFileName)
 
 	// Save to structured folder: <exports>/<division>/Customers/<CustomerName>/Costing Sheets/
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	division := data.Division
 	if division == "" {
 		division = "PH Trading"
@@ -13127,29 +13372,33 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 	file.WriteString("VAT No.: 200010357800002, CR. No.68034-1\n")
 	file.WriteString("\n")
 
+	// RFC 4180 CSV escaping: doubles inner quotes, wraps in quotes if needed
+	escCSV := func(s string) string { return strings.ReplaceAll(s, "\"", "\"\"") }
+
 	// Write costing header
-	file.WriteString(fmt.Sprintf("Division:,%s\n", data.Division))
-	file.WriteString(fmt.Sprintf("Date:,%s\n", data.Date))
-	file.WriteString(fmt.Sprintf("Prepared By:,%s\n", data.PreparedBy))
-	file.WriteString(fmt.Sprintf("Customer:,%s\n", data.CustomerName))
-	file.WriteString(fmt.Sprintf("Contact Person:,%s\n", data.ContactPerson))
-	file.WriteString(fmt.Sprintf("RFQ Reference:,%s\n", data.RfqReference))
-	file.WriteString(fmt.Sprintf("Costing ID:,%s\n", data.CostingId))
-	file.WriteString(fmt.Sprintf("Delivery Terms:,%s\n", data.DeliveryTerms))
-	file.WriteString(fmt.Sprintf("Payment Terms:,%s\n", data.PaymentTerms))
-	file.WriteString(fmt.Sprintf("Est. Delivery:,%s\n", data.EstDelivery))
+	file.WriteString(fmt.Sprintf("Division:,%s\n", escCSV(data.Division)))
+	file.WriteString(fmt.Sprintf("Date:,%s\n", escCSV(data.Date)))
+	file.WriteString(fmt.Sprintf("Prepared By:,%s\n", escCSV(data.PreparedBy)))
+	file.WriteString(fmt.Sprintf("Customer:,%s\n", escCSV(data.CustomerName)))
+	file.WriteString(fmt.Sprintf("Contact Person:,%s\n", escCSV(data.ContactPerson)))
+	file.WriteString(fmt.Sprintf("RFQ Reference:,%s\n", escCSV(data.RfqReference)))
+	file.WriteString(fmt.Sprintf("Costing ID:,%s\n", escCSV(data.CostingId)))
+	file.WriteString(fmt.Sprintf("Delivery Terms:,%s\n", escCSV(data.DeliveryTerms)))
+	file.WriteString(fmt.Sprintf("Payment Terms:,%s\n", escCSV(data.PaymentTerms)))
+	file.WriteString(fmt.Sprintf("Est. Delivery:,%s\n", escCSV(data.EstDelivery)))
 	file.WriteString("\n")
 
-	// Write line items header
-	file.WriteString("Sl No,Supplier,Equipment,Model,Qty,Currency,FOB,Freight,Total Cost (BHD),Suggested Price (BHD),Total (BHD)\n")
+	// Write line items header (Misc Cost excluded — internal only)
+	file.WriteString("Sl No,Supplier,Equipment,Model,Serial No,Qty,Currency,FOB,Freight,Total Cost (BHD),Suggested Price (BHD),Total (BHD)\n")
 
 	// Write line items
 	for i, item := range data.LineItems {
-		file.WriteString(fmt.Sprintf("%d,%s,%s,%s,%d,%s,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+		file.WriteString(fmt.Sprintf("%d,\"%s\",\"%s\",\"%s\",\"%s\",%d,%s,%.3f,%.3f,%.3f,%.3f,%.3f\n",
 			i+1,
-			item.Supplier,
-			item.Equipment,
-			item.Model,
+			escCSV(item.Supplier),
+			escCSV(item.Equipment),
+			escCSV(item.Model),
+			escCSV(item.SerialNumber),
 			item.Quantity,
 			item.Currency,
 			item.FOB,
@@ -13165,13 +13414,23 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 	file.WriteString(fmt.Sprintf("Subtotal:,,,,,,,,,,%.3f\n", data.Subtotal))
 	file.WriteString(fmt.Sprintf("Discount:,,,,,,,,,,%.3f\n", data.Discount))
 	file.WriteString(fmt.Sprintf("Net Amount:,,,,,,,,,,%.3f\n", data.NetAmount))
-	file.WriteString(fmt.Sprintf("VAT (10%%):,,,,,,,,,,%.3f\n", data.VAT))
+	csvVatRate := data.VatRate
+	if csvVatRate == 0 && data.VAT > 0 {
+		csvVatRate = 10.0
+	}
+	csvVatLabel := fmt.Sprintf("VAT (%.0f%%)", csvVatRate)
+	file.WriteString(fmt.Sprintf("%s:,,,,,,,,,,%.3f\n", csvVatLabel, data.VAT))
 	file.WriteString(fmt.Sprintf("Grand Total:,,,,,,,,,,%.3f\n", data.GrandTotal))
 	file.WriteString("\n")
 	file.WriteString("PROFIT ANALYSIS\n")
 	file.WriteString(fmt.Sprintf("Total Cost:,,,,,,,,,,%.3f\n", data.TotalCost))
 	file.WriteString(fmt.Sprintf("Profit:,,,,,,,,,,%.3f\n", data.Profit))
 	file.WriteString(fmt.Sprintf("Profit %%:,,,,,,,,,,%.1f%%\n", data.ProfitPercent))
+
+	// Flush to disk to catch write errors (e.g., disk full)
+	if err := file.Sync(); err != nil {
+		return "", fmt.Errorf("failed to write CSV file: %v", err)
+	}
 
 	log.Printf("✅ Generated Excel/CSV costing sheet: %s", csvPath)
 	return csvPath, nil
@@ -15735,6 +15994,9 @@ func (a *App) BackfillRFQDocumentTracking() (int, error) {
 // BackfillOfferItemCostBreakdown populates extended cost breakdown fields in offer_items
 // from matching costing_line_items data. Runs once at startup.
 func (a *App) BackfillOfferItemCostBreakdown() (map[string]interface{}, error) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return nil, err
+	}
 	log.Println("🔧 Starting offer_items cost breakdown backfill...")
 
 	// First, ensure the columns exist (they should from database.go migration)

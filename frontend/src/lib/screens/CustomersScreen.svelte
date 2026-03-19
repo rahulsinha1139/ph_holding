@@ -71,6 +71,7 @@
 
         // Contact Section
         primary_phone: "",
+        mobile_number: "",
         primary_email: "",
         website: "",
 
@@ -99,7 +100,7 @@
     async function loadCustomers() {
         loading = true;
         try {
-            const res = await ListCustomers(100, 0); // simplistic pagination
+            const res = await ListCustomers(500, 0); // simplistic pagination
             customers = res || [];
         } catch (e) {
             toast.danger("Failed to load customers");
@@ -109,9 +110,15 @@
     }
 
     async function handleCreate() {
-        if (!newCustomer.business_name || !newCustomer.customer_id) {
-            toast.warning("Name and ID are required");
+        if (!newCustomer.business_name) {
+            toast.warning("Company Name is required");
             return;
+        }
+        // Auto-generate customer code if not provided
+        if (!newCustomer.customer_id) {
+            const prefix = newCustomer.business_name.substring(0, 4).toUpperCase().replace(/[^A-Z]/g, '');
+            const suffix = Date.now().toString().slice(-4);
+            newCustomer.customer_id = `CUST-${prefix}${suffix}`;
         }
         creating = true;
         try {
@@ -151,6 +158,7 @@
                 city: newCustomer.city,
                 country: newCustomer.country,
                 trn: newCustomer.trn || "",
+                mobile_number: newCustomer.mobile_number || "",
                 industry: newCustomer.industry || "",
                 relation_years: newCustomer.relation_years || 0,
                 payment_grade: newCustomer.payment_grade,
@@ -164,6 +172,7 @@
                 ar_risk_tier: "low",
                 outstanding_bhd: 0,
                 overdue_days: 0,
+                credit_limit_bhd: newCustomer.credit_limit || 50000,
                 is_credit_blocked: false,
                 requires_prepayment: false,
                 has_abb_competition: false,
@@ -186,6 +195,7 @@
                 payment_grade: "B",
                 status: "Active",
                 primary_phone: "",
+                mobile_number: "",
                 primary_email: "",
                 website: "",
                 building_flat: "",
@@ -205,7 +215,7 @@
             await loadCustomers();
         } catch (e) {
             console.error(e);
-            toast.danger("Create failed: " + e);
+            toast.danger("Create failed: " + String(e));
         } finally {
             creating = false;
         }
@@ -321,7 +331,7 @@
                 <div class="section-header">Identity</div>
                 <div class="row">
                     <div class="form-group third">
-                        <label>Customer Code *</label>
+                        <label>Customer Code</label>
                         <input
                             type="text"
                             bind:value={newCustomer.customer_id}
@@ -427,7 +437,7 @@
                 <!-- CONTACT SECTION -->
                 <div class="section-header">Contact</div>
                 <div class="row">
-                    <div class="form-group third">
+                    <div class="form-group quarter">
                         <label>Primary Phone</label>
                         <input
                             type="tel"
@@ -436,7 +446,16 @@
                             placeholder="+973 1234 5678"
                         />
                     </div>
-                    <div class="form-group third">
+                    <div class="form-group quarter">
+                        <label>Mobile Number</label>
+                        <input
+                            type="tel"
+                            bind:value={newCustomer.mobile_number}
+                            class="input-clean"
+                            placeholder="+973 3XXX XXXX"
+                        />
+                    </div>
+                    <div class="form-group quarter">
                         <label>Primary Email</label>
                         <input
                             type="email"
@@ -445,7 +464,7 @@
                             placeholder="contact@company.bh"
                         />
                     </div>
-                    <div class="form-group third">
+                    <div class="form-group quarter">
                         <label>Website</label>
                         <input
                             type="url"

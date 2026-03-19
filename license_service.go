@@ -208,6 +208,10 @@ func (a *App) GenerateBatchLicenseKeys(role string, count int, notes, createdBy 
 func (a *App) ActivateLicense(key string) (LicenseActivationResult, error) {
 	key = strings.ToUpper(strings.TrimSpace(key))
 
+	if a.db == nil {
+		return LicenseActivationResult{Success: false, Message: "Database not ready. Please restart the application."}, nil
+	}
+
 	// BE-7 FIX: Rate limiting - prevent brute force attacks on license keys
 	deviceHash := a.getDeviceHash()
 	licenseAttemptsMu.Lock()
@@ -238,36 +242,39 @@ func (a *App) ActivateLicense(key string) (LicenseActivationResult, error) {
 	licenseAttemptsMu.Unlock()
 
 	// Master key — reusable, never device-bound, works across rebuilds
+	// Return success immediately; persist to DB in background (startup AutoMigrate may hold the connection)
 	if key == masterKey {
-		// Upsert master key record in a transaction so ValidateLicense finds it
-		err := a.db.Transaction(func(tx *gorm.DB) error {
-			var existing LicenseKey
-			if err := tx.Where("key = ?", masterKey).First(&existing).Error; err != nil {
-				// Create new master key record
-				now := time.Now()
-				return tx.Create(&LicenseKey{
-					Key:         masterKey,
-					Role:        "admin",
-					DisplayName: "Developer",
-					DeviceHash:  deviceHash,
-					Activated:   true,
-					ActivatedAt: &now,
-					Notes:       "Reusable master key",
-					CreatedBy:   "system",
+		go func() {
+			err := a.db.Transaction(func(tx *gorm.DB) error {
+				var existing LicenseKey
+				if err := tx.Where("key = ?", masterKey).First(&existing).Error; err != nil {
+					now := time.Now()
+					return tx.Create(&LicenseKey{
+						Key:         masterKey,
+						Role:        "admin",
+						DisplayName: "Developer",
+						DeviceHash:  deviceHash,
+						Activated:   true,
+						ActivatedAt: &now,
+						Notes:       "Reusable master key",
+						CreatedBy:   "system",
+					}).Error
+				}
+				if existing.DeviceHash != "" && existing.DeviceHash != deviceHash {
+					log.Printf("CRITICAL: Master key device transfer from %s... to %s...", existing.DeviceHash[:16], deviceHash[:16])
+				}
+				return tx.Model(&existing).Updates(map[string]interface{}{
+					"device_hash": deviceHash,
+					"activated":   true,
 				}).Error
+			})
+			if err != nil {
+				log.Printf("Warning: Master key DB persist failed: %v (will retry on next startup)", err)
+			} else {
+				log.Printf("Master key persisted to DB for device: %s...", deviceHash[:16])
 			}
-			// Update device hash to current device (master key is portable)
-			if existing.DeviceHash != "" && existing.DeviceHash != deviceHash {
-				log.Printf("CRITICAL: Master key device transfer from %s... to %s...", existing.DeviceHash[:16], deviceHash[:16])
-			}
-			return tx.Model(&existing).Updates(map[string]interface{}{
-				"device_hash": deviceHash,
-				"activated":   true,
-			}).Error
-		})
-		if err != nil {
-			return LicenseActivationResult{Success: false, Message: "Master key activation failed"}, err
-		}
+		}()
+
 		log.Printf("Master key activated on device: %s...", deviceHash[:16])
 		return LicenseActivationResult{
 			Success:     true,
@@ -386,8 +393,17 @@ func (a *App) ValidateLicense() (LicenseValidationResult, error) {
 
 	log.Println("🔑 ValidateLicense: Querying database for license...")
 	var license LicenseKey
-	// Use integer 1 for activated to ensure SQLite compatibility
-	if err := a.db.Where("device_hash = ? AND activated = 1", deviceHash).First(&license).Error; err != nil {
+
+	// First: check for master key (device-hash-independent — works across all launch methods)
+	if err := a.db.Where("key = ? AND activated = 1", masterKey).First(&license).Error; err == nil {
+		// Master key found and activated — always valid regardless of device hash
+		// Silently update device hash if changed (different launch method)
+		if license.DeviceHash != deviceHash {
+			a.db.Model(&license).Update("device_hash", deviceHash)
+		}
+		log.Printf("🔑 ValidateLicense: Master key valid (role: %s)", license.Role)
+	} else if err := a.db.Where("device_hash = ? AND activated = 1", deviceHash).First(&license).Error; err != nil {
+		// No master key, no device-bound license
 		if err == gorm.ErrRecordNotFound {
 			log.Printf("🔑 ValidateLicense: No active license found for device hash: %s", deviceHash[:16])
 			return LicenseValidationResult{Valid: false}, nil

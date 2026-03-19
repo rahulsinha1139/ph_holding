@@ -2,8 +2,6 @@
     import { onMount } from "svelte";
     import { toast } from "$lib/stores/toasts";
     import { permissions } from '$lib/stores/authContext';
-    import { fade } from "svelte/transition";
-
     $: canView = $permissions.includes('*') || $permissions.includes('costing:read') || $permissions.includes('costing:*');
     import WabiSpinner from "../components/ui/WabiSpinner.svelte";
     import Button from "../components/ui/Button.svelte";
@@ -52,12 +50,14 @@
     let rfqCostings: any[] = [];
     let selectedRevision: any = null;
     let loadingRevisions = false;
+    let isDirty = false; // Track unsaved changes
+    let showAdvancedHeader = false; // Toggle for compliance/certificate fields
 
     // ========================================
     // HEADER SECTION - Matches Excel "Costing Sheet" header
     // ========================================
     let header = {
-        division: 'PH Trading',  // Can be 'PH Trading' or 'AHS Trading' (sister concerns)
+        division: 'PH Trading',
         date: new Date().toISOString().split('T')[0],
         preparedBy: '',
         customerId: '',
@@ -66,6 +66,7 @@
         rfqReference: '',
         folderNumber: '',
         costingId: '',
+        quoteType: 'Quotation',
         estDelivery: '5-7 weeks',
         deliveryTerms: 'DAP Bahrain at your store or PH Trading',
         paymentTerms: '30 days from Date of Delivery',
@@ -76,6 +77,10 @@
         installation: 'No',
         commissioning: 'No',
         testing: 'No',
+        // VAT/Tax compliance fields (Bahrain NBR)
+        placeOfSupply: 'Kingdom of Bahrain',
+        taxCategory: 'Standard',
+        customerTRN: '',
     };
 
     // Division options (sister companies)
@@ -213,6 +218,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         return {
             equipment: '',
             model: '',
+            serialNumber: '', // Serial number for traceability (GRN → DN → Invoice)
             longCode: '',  // Long supplier order/configuration code
             specification: '',
             detailedDescription: '', // Wide field for detailed instrumentation specs
@@ -351,17 +357,22 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     function calculateAll() {
         lineItems = lineItems.map(item => calculateLineItem(item));
         lineItems = [...lineItems]; // Trigger reactivity
+        isDirty = true;
     }
 
     // Summary calculations
     $: subtotal = lineItems.reduce((sum, item) => sum + item.totalSuggestedPrice, 0);
     let discount = 0;
+    let hiddenCharges = 0;
     $: netAmount = subtotal - discount;
     $: vat = netAmount * (vatRate / 100);
     $: grandTotal = netAmount + vat;
-    $: totalCost = lineItems.reduce((sum, item) => sum + (item.totalCost * item.quantity), 0);
+    $: totalCost = lineItems.reduce((sum, item) => sum + (item.totalCost * item.quantity), 0) + hiddenCharges;
     $: profit = netAmount - totalCost;
     $: profitPercent = netAmount > 0 ? (profit / netAmount) * 100 : 0;
+
+    // Keep T&C VAT label in sync when user changes VAT rate
+    $: termsAndConditions = termsAndConditions.replace(/VAT \(\d+\.?\d*%\)/, `VAT (${vatRate}%)`);
 
     // ========================================
     // DATA LOADING
@@ -370,7 +381,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         loading = true;
         try {
             const [c, s, o, settingsResult] = await Promise.all([
-                ListCustomers(100, 0),
+                ListCustomers(500, 0),
                 GetCostingSheets(20).catch(() => []),
                 GetRFQs(50, 0).catch(() => []),
                 GetSettings().catch(() => null),
@@ -553,7 +564,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             calculateAll();
             toast.success(`Loaded revision ${rev.revision_number}`);
         } catch (err) {
-            toast.danger('Failed to load revision: ' + err);
+            toast.danger('Failed to load revision: ' + String(err));
         }
     }
 
@@ -576,7 +587,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             toast.success(`Created Revision ${newCosting.revision_number}`);
             await loadRevisionsForRFQ(selectedOpportunity.id);
         } catch (err) {
-            toast.danger('Failed to create revision: ' + err);
+            toast.danger('Failed to create revision: ' + String(err));
         }
     }
 
@@ -586,7 +597,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             toast.success('Revision set as current');
             await loadRevisionsForRFQ(selectedOpportunity.id);
         } catch (err) {
-            toast.danger('Failed to set active revision: ' + err);
+            toast.danger('Failed to set active revision: ' + String(err));
         }
     }
 
@@ -624,6 +635,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             rfqReference: '',
             folderNumber: '',
             costingId: '',
+            quoteType: 'Quotation',
             estDelivery: '5-7 weeks',
             deliveryTerms: 'DAP Bahrain at your store or PH Trading',
             paymentTerms: '30 days from Date of Delivery',
@@ -690,6 +702,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     supplier: '',
                     equipment: item.equipment,
                     model: item.model,
+                    serialNumber: item.serialNumber || '',
                     longCode: item.longCode || '',
                     specification: item.specification || '',
                     detailedDescription: item.detailedDescription || '',
@@ -728,6 +741,13 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             opportunityId: selectedOpportunity?.id || 0,
             projectName: selectedOpportunity?.project || selectedOpportunity?.project_name || '',
             termsAndConditions: termsAndConditions,
+            quoteType: header.quoteType || 'Quotation',
+            vatRate: vatRate,
+            hiddenCharges: hiddenCharges,
+            // VAT/Tax compliance
+            placeOfSupply: header.placeOfSupply || 'Kingdom of Bahrain',
+            taxCategory: header.taxCategory || 'Standard',
+            customerTRN: header.customerTRN || '',
         };
     }
 
@@ -748,7 +768,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             }
         } catch (err) {
             console.error('Export PDF failed:', err);
-            toast.danger('Failed to generate PDF: ' + err);
+            toast.danger('Failed to generate PDF: ' + String(err));
         } finally {
             exporting = false;
         }
@@ -771,7 +791,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             }
         } catch (err) {
             console.error('Export Excel failed:', err);
-            toast.danger('Failed to generate Excel: ' + err);
+            toast.danger('Failed to generate Excel: ' + String(err));
         } finally {
             exporting = false;
         }
@@ -812,7 +832,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             }
         } catch (err) {
             console.error('Failed to delete costing:', err);
-            toast.danger('Failed to delete: ' + err);
+            toast.danger('Failed to delete: ' + String(err));
         } finally {
             deletingCosting = false;
         }
@@ -868,7 +888,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             }
         } catch (err) {
             console.error('Save as offer failed:', err);
-            toast.danger('Failed to save offer: ' + err);
+            toast.danger('Failed to save offer: ' + String(err));
         } finally {
             savingOffer = false;
         }
@@ -969,7 +989,10 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         {:else}
             <!-- Back Button and Selected Opportunity Info -->
             <div class="selected-opportunity-bar">
-                <Button variant="ghost" on:click={() => { showCostingForm = false; selectedOpportunityId = ''; selectedOpportunity = null; }}>
+                <Button variant="ghost" on:click={() => {
+                    if (isDirty && !confirm('You have unsaved changes. Leave anyway?')) return;
+                    showCostingForm = false; selectedOpportunityId = ''; selectedOpportunity = null; isDirty = false;
+                }}>
                     Back to Opportunities
                 </Button>
                 {#if selectedOpportunity}
@@ -1043,125 +1066,227 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             <!-- Left: Costing Form -->
             <div class="main-form">
                 <!-- Header Section -->
-                <Card title="Header Information">
-                    <div class="header-grid compact">
-                        <select bind:value={header.division} class="input" title="Division">
-                            {#each divisionOptions as div}
-                                <option value={div}>{div}</option>
-                            {/each}
-                        </select>
-                        <input type="date" bind:value={header.date} class="input" title="Date" />
-                        <select bind:value={header.preparedBy} class="input" title="Prepared By">
-                            <option value="">Prepared By...</option>
-                            {#each staffList as staff}
-                                <option value={staff.name}>{staff.name} - {staff.title}</option>
-                            {/each}
-                        </select>
-                        <select bind:value={header.customerId} on:change={handleCustomerChange} class="input" title="Customer">
-                            <option value="">Customer *</option>
-                            {#each customers as c}
-                                <option value={c.id}>{c.business_name}</option>
-                            {/each}
-                        </select>
-                        <input type="text" bind:value={header.contactPerson} class="input" placeholder="Contact Person" />
-                        <input type="text" bind:value={header.rfqReference} class="input" placeholder="RFQ Reference" />
-                        <input type="text" bind:value={header.folderNumber} class="input" placeholder="Folder No." />
-                        <input type="text" bind:value={header.costingId} class="input" placeholder="Costing ID" />
+                <Card>
+                    <!-- Row 1: Core fields always visible -->
+                    <div class="header-row-3col tight">
+                        <div class="field-group">
+                            <label>Customer *</label>
+                            <select bind:value={header.customerId} on:change={handleCustomerChange} class="input">
+                                <option value="">Select customer...</option>
+                                {#each customers as c}
+                                    <option value={c.id}>{c.business_name}</option>
+                                {/each}
+                            </select>
+                        </div>
+                        <div class="field-group">
+                            <label>Contact Person</label>
+                            <input type="text" bind:value={header.contactPerson} class="input" placeholder="Name" />
+                        </div>
+                        <div class="field-group">
+                            <label>RFQ Reference</label>
+                            <input type="text" bind:value={header.rfqReference} class="input" placeholder="RFQ / Enquiry ref" />
+                        </div>
                     </div>
 
-                    <div class="header-grid compact">
-                        <select bind:value={header.estDelivery} class="input" title="Est. Delivery">
-                            <option value="" disabled>Est. Delivery</option>
-                            {#each deliveryOptions as opt}
-                                <option value={opt}>{opt}</option>
-                            {/each}
-                        </select>
-                        <select bind:value={header.deliveryTerms} class="input" title="Delivery Terms">
-                            <option value="" disabled>Delivery Terms</option>
-                            {#each deliveryTermsOptions as opt}
-                                <option value={opt}>{opt}</option>
-                            {/each}
-                        </select>
-                        <select bind:value={header.paymentTerms} class="input" title="Payment Terms">
-                            <option value="" disabled>Payment Terms</option>
-                            {#each paymentTermsOptions as opt}
-                                <option value={opt}>{opt}</option>
-                            {/each}
-                        </select>
-                        <select bind:value={header.orderType} class="input" title="Order Type">
-                            <option value="" disabled>Order Type</option>
-                            {#each orderTypeOptions as opt}
-                                <option value={opt}>{opt}</option>
-                            {/each}
-                        </select>
-                        <select bind:value={header.countryOfOrigin} class="input" title="Country of Origin">
-                            <option value="" disabled>Country of Origin</option>
-                            {#each countryOptions as opt}
-                                <option value={opt.code}>{opt.code} - {opt.name}</option>
-                            {/each}
-                        </select>
-                        <select bind:value={header.cocCoo} class="input" title="COC / COO">
-                            <option value="" disabled>COC / COO</option>
-                            {#each certificateOptions as opt}
-                                <option value={opt}>{opt}</option>
-                            {/each}
-                        </select>
-                        <select bind:value={header.testCertificate} class="input" title="Test Certificate">
-                            <option value="" disabled>Test Certificate</option>
-                            {#each certificateOptions as opt}
-                                <option value={opt}>{opt}</option>
-                            {/each}
-                        </select>
-                        <select bind:value={header.installation} class="input" title="Installation">
-                            <option value="" disabled>Installation</option>
-                            <option value="Yes">Yes</option>
-                            <option value="No">No</option>
-                        </select>
+                    <!-- Row 2: Document + commercial -->
+                    <div class="header-row-6col tight">
+                        <div class="field-group">
+                            <label>Division</label>
+                            <select bind:value={header.division} class="input-sm">
+                                {#each divisionOptions as div}<option value={div}>{div}</option>{/each}
+                            </select>
+                        </div>
+                        <div class="field-group">
+                            <label>Date</label>
+                            <input type="date" bind:value={header.date} class="input-sm" />
+                        </div>
+                        <div class="field-group">
+                            <label>Prepared By</label>
+                            <select bind:value={header.preparedBy} class="input-sm">
+                                <option value="">Select...</option>
+                                {#each staffList as staff}<option value={staff.name}>{staff.name}</option>{/each}
+                            </select>
+                        </div>
+                        <div class="field-group">
+                            <label>Doc Type</label>
+                            <select bind:value={header.quoteType} class="input-sm">
+                                <option value="Quotation">Quotation</option>
+                                <option value="Budgetary Quote">Budgetary Quote</option>
+                                <option value="Budgetary Estimate">Budgetary Est.</option>
+                                <option value="Technical Offer">Technical</option>
+                                <option value="Commercial Offer">Commercial</option>
+                            </select>
+                        </div>
+                        <div class="field-group">
+                            <label>Folder No.</label>
+                            <input type="text" bind:value={header.folderNumber} class="input-sm" placeholder="42-26" />
+                        </div>
+                        <div class="field-group">
+                            <label>Costing ID</label>
+                            <input type="text" bind:value={header.costingId} class="input-sm" placeholder="Auto" />
+                        </div>
                     </div>
+
+                    <!-- Row 3: Terms (always visible - needed for every quote) -->
+                    <div class="header-row-3col tight">
+                        <div class="field-group">
+                            <label>Payment Terms</label>
+                            <select bind:value={header.paymentTerms} class="input-sm">
+                                {#each paymentTermsOptions as opt}<option value={opt}>{opt}</option>{/each}
+                            </select>
+                        </div>
+                        <div class="field-group">
+                            <label>Delivery Terms</label>
+                            <select bind:value={header.deliveryTerms} class="input-sm">
+                                {#each deliveryTermsOptions as opt}<option value={opt}>{opt}</option>{/each}
+                            </select>
+                        </div>
+                        <div class="field-group">
+                            <label>Est. Delivery</label>
+                            <select bind:value={header.estDelivery} class="input-sm">
+                                {#each deliveryOptions as opt}<option value={opt}>{opt}</option>{/each}
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Expandable: Compliance & certificates -->
+                    <button class="expand-toggle" on:click={() => showAdvancedHeader = !showAdvancedHeader}>
+                        {showAdvancedHeader ? '▾' : '▸'} Compliance, Certificates & VAT
+                    </button>
+
+                    {#if showAdvancedHeader}
+                    <div class="advanced-section">
+                        <div class="header-row-6col tight">
+                            <div class="field-group">
+                                <label>Order Type</label>
+                                <select bind:value={header.orderType} class="input-sm">
+                                    {#each orderTypeOptions as opt}<option value={opt}>{opt}</option>{/each}
+                                </select>
+                            </div>
+                            <div class="field-group">
+                                <label>Origin</label>
+                                <select bind:value={header.countryOfOrigin} class="input-sm">
+                                    {#each countryOptions as opt}<option value={opt.code}>{opt.code}</option>{/each}
+                                </select>
+                            </div>
+                            <div class="field-group">
+                                <label>COC/COO</label>
+                                <select bind:value={header.cocCoo} class="input-sm">
+                                    {#each certificateOptions as opt}<option value={opt}>{opt}</option>{/each}
+                                </select>
+                            </div>
+                            <div class="field-group">
+                                <label>Test Cert</label>
+                                <select bind:value={header.testCertificate} class="input-sm">
+                                    {#each certificateOptions as opt}<option value={opt}>{opt}</option>{/each}
+                                </select>
+                            </div>
+                            <div class="field-group">
+                                <label>Install</label>
+                                <select bind:value={header.installation} class="input-sm">
+                                    <option value="Yes">Yes</option><option value="No">No</option>
+                                </select>
+                            </div>
+                            <div class="field-group">
+                                <label>Commission</label>
+                                <select bind:value={header.commissioning} class="input-sm">
+                                    <option value="Yes">Yes</option><option value="No">No</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="header-row-3col tight">
+                            <div class="field-group">
+                                <label>Place of Supply</label>
+                                <select bind:value={header.placeOfSupply} class="input-sm">
+                                    <option value="Kingdom of Bahrain">Kingdom of Bahrain</option>
+                                    <option value="GCC">GCC Member State</option>
+                                    <option value="Export">Export (Outside GCC)</option>
+                                </select>
+                            </div>
+                            <div class="field-group">
+                                <label>Tax Category</label>
+                                <select bind:value={header.taxCategory} class="input-sm">
+                                    <option value="Standard">Standard Rate (10%)</option>
+                                    <option value="Zero-rated">Zero-rated</option>
+                                    <option value="Exempt">Exempt</option>
+                                    <option value="Out-of-scope">Out of Scope</option>
+                                </select>
+                            </div>
+                            <div class="field-group">
+                                <label>Customer TRN</label>
+                                <input type="text" bind:value={header.customerTRN} class="input-sm" placeholder="Tax Reg. Number" />
+                            </div>
+                        </div>
+                    </div>
+                    {/if}
                 </Card>
 
                 <!-- Line Items Section -->
                 <Card title="Line Items">
-                    <div class="line-items-header">
-                        <span>Equipment</span>
-                        <span>Model</span>
-                        <span>Qty</span>
-                        <span>Currency</span>
-                        <span>Unit Price</span>
-                        <span title="Always in BHD">Freight (BHD)</span>
-                        <span title="Internal bookkeeping only">Misc Cost</span>
-                        <span>Sell Price</span>
-                        <span>Total</span>
-                        <span></span>
-                    </div>
 
                     {#each lineItems as item, i}
-                        <div class="line-item-row" in:fade>
-                            <!-- Supplier removed per user request - invoices link to suppliers instead -->
-                            <input type="text" bind:value={item.equipment} class="input-sm" placeholder="Product name" />
-                            <input type="text" bind:value={item.model} class="input-sm" placeholder="Model #" />
-                            <input type="number" bind:value={item.quantity} class="input-sm qty" min="1" on:change={calculateAll} />
-                            <select bind:value={item.currency} class="input-sm" on:change={() => handleCurrencyChange(i)}>
-                                {#each currencyOptions as c}
-                                    <option value={c.code}>{c.code}</option>
-                                {/each}
-                            </select>
-                            <input type="number" bind:value={item.fobForeign} class="input-sm money" step="0.001" on:change={calculateAll} placeholder="0.000" />
-                            <input type="number" bind:value={item.freightForeign} class="input-sm money" step="0.001" min="0" on:change={calculateAll} placeholder="0.000" />
-                            <input type="number" bind:value={item.otherCosts} class="input-sm money" step="0.001" min="0" on:change={calculateAll} placeholder="0.000" title="Miscellaneous costs (internal bookkeeping)" />
-                            <!-- User selling price (can override suggested) -->
-                            <input
-                                type="number"
-                                class="input-sm money sell-price"
-                                class:user-overridden={item.userPriceSet && item.userPrice > 0}
-                                step="0.001"
-                                placeholder={item.suggestedPriceUnit.toFixed(0)}
-                                bind:value={item.userPrice}
-                                on:input={() => { item.userPriceSet = item.userPrice > 0; calculateAll(); }}
-                                title="Enter selling price (suggested: {item.suggestedPriceUnit.toFixed(3)})"
-                            />
-                            <span class="calc-value highlight">{formatBHD(item.totalSuggestedPrice)}</span>
-                            <button class="btn-remove" on:click={() => removeLineItem(i)}>×</button>
+                        <div class="line-item-group" class:alt-row={i % 2 === 1}>
+                        <!-- Line 1: Product identification -->
+                        <div class="line-row-top">
+                            <span class="sl-no">{i + 1}</span>
+                            <div class="field-inline">
+                                <label>Equipment</label>
+                                <input type="text" bind:value={item.equipment} class="input-sm" placeholder="Product name" />
+                            </div>
+                            <div class="field-inline">
+                                <label>Model</label>
+                                <input type="text" bind:value={item.model} class="input-sm" placeholder="Model #" />
+                            </div>
+                            <div class="field-inline">
+                                <label>Serial No.</label>
+                                <input type="text" bind:value={item.serialNumber} class="input-sm" placeholder="S/N" />
+                            </div>
+                            <div class="field-inline narrow">
+                                <label>Qty</label>
+                                <input type="number" bind:value={item.quantity} class="input-sm qty" min="1" on:change={calculateAll} />
+                            </div>
+                            <div class="field-inline narrow">
+                                <label>Currency</label>
+                                <select bind:value={item.currency} class="input-sm" on:change={() => handleCurrencyChange(i)}>
+                                    {#each currencyOptions as c}
+                                        <option value={c.code}>{c.code}</option>
+                                    {/each}
+                                </select>
+                            </div>
+                            <button class="btn-remove" on:click={() => removeLineItem(i)} title="Remove item">×</button>
+                        </div>
+
+                        <!-- Line 2: Pricing -->
+                        <div class="line-row-pricing">
+                            <div class="field-inline">
+                                <label>Unit Price (FOB)</label>
+                                <input type="number" bind:value={item.fobForeign} class="input-sm money" step="0.001" on:change={calculateAll} placeholder="0.000" />
+                            </div>
+                            <div class="field-inline">
+                                <label>Freight (BHD)</label>
+                                <input type="number" bind:value={item.freightForeign} class="input-sm money" step="0.001" min="0" on:change={calculateAll} placeholder="0.000" />
+                            </div>
+                            <div class="field-inline">
+                                <label>Misc Cost</label>
+                                <input type="number" bind:value={item.otherCosts} class="input-sm money" step="0.001" min="0" on:change={calculateAll} placeholder="0.000" title="Miscellaneous costs (internal)" />
+                            </div>
+                            <div class="field-inline">
+                                <label>Suggested Price</label>
+                                <input
+                                    type="number"
+                                    class="input-sm money sell-price"
+                                    class:user-overridden={item.userPriceSet && item.userPrice > 0}
+                                    step="0.001"
+                                    placeholder={item.suggestedPriceUnit.toFixed(0)}
+                                    bind:value={item.userPrice}
+                                    on:input={() => { item.userPriceSet = item.userPrice > 0; calculateAll(); }}
+                                    title="Enter selling price (suggested: {item.suggestedPriceUnit.toFixed(3)})"
+                                />
+                            </div>
+                            <div class="line-total">
+                                <label>Total (BHD)</label>
+                                <span class="calc-value highlight">{formatBHD(item.totalSuggestedPrice)}</span>
+                            </div>
                         </div>
 
                         <!-- Order Code - full width input for long supplier order/configuration codes -->
@@ -1233,6 +1358,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 <span class="cost-label suggested-highlight">Suggested: {formatBHD(item.suggestedPriceUnit)}</span>
                             </div>
                         </div>
+                        </div>
                     {/each}
 
                     <div class="add-item-row">
@@ -1255,7 +1381,15 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             <input type="number" bind:value={discount} class="input-sm money" step="0.001" on:change={calculateAll} />
                         </div>
                         <div class="summary-row">
-                            <span>VAT ({vatRate}%)</span>
+                            <span title="Additional charges not shown on quotation">Hidden Charges</span>
+                            <input type="number" bind:value={hiddenCharges} class="input-sm money" step="0.001" />
+                        </div>
+                        <div class="summary-row vat-row">
+                            <div class="vat-control">
+                                <span>VAT</span>
+                                <input type="number" bind:value={vatRate} class="vat-input" min="0" max="100" step="0.5" />
+                                <span>%</span>
+                            </div>
                             <span class="money">{formatBHD(vat)}</span>
                         </div>
                         <div class="summary-row total">
@@ -1389,15 +1523,89 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
 
     .header-grid {
         display: grid;
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(3, 1fr);
         gap: 12px 16px;
         margin-bottom: 16px;
     }
 
     .header-grid.compact {
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(3, 1fr);
         gap: 8px 12px;
         margin-bottom: 12px;
+    }
+
+    .header-row-3col {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px 14px;
+        margin-bottom: 6px;
+    }
+
+    .header-row-3col.tight {
+        margin-bottom: 4px;
+    }
+
+    .header-row-6col {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 6px 10px;
+        margin-bottom: 4px;
+    }
+
+    .header-row-6col.tight {
+        margin-bottom: 4px;
+    }
+
+    .field-group {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+    }
+
+    .field-group label {
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--text-secondary, #6b7280);
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }
+
+    .field-group .input,
+    .field-group .input-sm {
+        font-size: 12px;
+        padding: 4px 6px;
+        border: 1px solid var(--border-subtle, #e5e7eb);
+        border-radius: 4px;
+        background: var(--surface-base, #fff);
+        height: 28px;
+    }
+
+    .field-group .input:focus,
+    .field-group .input-sm:focus {
+        border-color: var(--accent-primary, #6366f1);
+        outline: none;
+        box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+    }
+
+    .expand-toggle {
+        background: none;
+        border: none;
+        color: var(--text-secondary, #6b7280);
+        font-size: 11px;
+        cursor: pointer;
+        padding: 4px 0;
+        margin-top: 2px;
+        text-align: left;
+    }
+
+    .expand-toggle:hover {
+        color: var(--accent-primary, #6366f1);
+    }
+
+    .advanced-section {
+        padding-top: 6px;
+        border-top: 1px solid var(--border-subtle, #e5e7eb);
+        margin-top: 4px;
     }
 
     .form-group {
@@ -1476,8 +1684,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     /* Line Items */
     .line-items-header {
         display: grid;
-        /* Equipment | Model | Qty | Currency | Unit Price | Freight | Misc Cost | Sell Price | Total | Remove */
-        grid-template-columns: 2fr 130px 45px 60px 80px 70px 70px 85px 90px 28px;
+        /* Sl No | Equipment | Model | Qty | Currency | Unit Price | Freight | Misc Cost | Suggested Price | Total (BHD) | Remove */
+        grid-template-columns: 35px 2fr 120px 45px 60px 80px 70px 70px 85px 90px 28px;
         gap: 8px;
         padding: 8px 10px;
         font-size: 10px;
@@ -1490,16 +1698,77 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         align-items: end;
     }
 
-    .line-item-row {
+    .line-row-top {
         display: grid;
-        /* Equipment | Model | Qty | Currency | Unit Price | Freight | Misc Cost | Sell Price | Total | Remove */
-        grid-template-columns: 2fr 130px 45px 60px 80px 70px 70px 85px 90px 28px;
+        grid-template-columns: 35px 2fr 1fr 1fr 55px 70px 28px;
         gap: 8px;
-        padding: 6px 10px;
-        align-items: center;
+        padding: 8px 10px 2px;
+        align-items: end;
         background: var(--surface-elevated);
-        border-radius: var(--border-radius-sm);
+        border-radius: var(--border-radius-sm) var(--border-radius-sm) 0 0;
+        border-left: 3px solid transparent;
+    }
+
+    .line-row-pricing {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr 1fr 130px;
+        gap: 8px;
+        padding: 2px 10px 8px;
+        margin-left: 43px;
+        align-items: end;
+        background: var(--surface-elevated);
+        border-radius: 0 0 var(--border-radius-sm) var(--border-radius-sm);
+    }
+
+    .field-inline {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+    }
+
+    .field-inline.narrow {
+        max-width: 80px;
+    }
+
+    .field-inline label {
+        font-size: 9px;
+        font-weight: 600;
+        color: var(--text-tertiary, #9ca3af);
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }
+
+    .line-total {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 1px;
+    }
+
+    .line-total label {
+        font-size: 9px;
+        font-weight: 600;
+        color: var(--text-tertiary, #9ca3af);
+        text-transform: uppercase;
+    }
+
+    .line-item-group.alt-row .line-row-top,
+    .line-item-group.alt-row .line-row-pricing {
+        background: rgba(99, 102, 241, 0.04);
+    }
+
+    .line-item-group {
         margin-bottom: 4px;
+    }
+
+    .sl-no {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        text-align: center;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 
     /* Order code row - full width for long supplier configuration codes */
@@ -1719,9 +1988,10 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
 
     .summary-row.total {
         padding-top: 12px;
-        border-top: 2px solid var(--brand-indigo);
-        font-weight: 600;
-        font-size: 16px;
+        border-top: 2px solid #059669;
+        font-weight: 700;
+        font-size: 18px;
+        color: #059669;
     }
 
     .summary-row .money {
@@ -2030,7 +2300,13 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     }
 
     /* Remove any parent container hover effects that cause visual dance */
-    .line-item-row:hover,
+    .line-item-row:hover {
+        transform: none !important;
+        transition: none !important;
+        border-left-color: var(--brand-indigo, #6366f1);
+        background: rgba(99, 102, 241, 0.06) !important;
+    }
+
     .cost-breakdown:hover {
         transform: none !important;
         transition: none !important;
@@ -2066,6 +2342,37 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     .tc-textarea:focus {
         outline: none;
         border-color: var(--onyx);
+    }
+
+    /* VAT editable control */
+    .vat-row .vat-control {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .vat-input {
+        width: 50px;
+        padding: 2px 6px;
+        border: 1px solid var(--border);
+        border-radius: var(--border-radius-sm);
+        font-size: 13px;
+        text-align: center;
+        background: var(--bg-base);
+    }
+
+    .vat-input:focus {
+        outline: none;
+        border-color: var(--brand-indigo);
+    }
+
+    /* Global anti-flicker: disable ALL transitions and animations on the costing page */
+    .costing-page * {
+        animation: none !important;
+    }
+
+    .costing-page :global(*) {
+        animation: none !important;
     }
 
     /* Revision Selector (Feature D) */

@@ -118,6 +118,10 @@ export function BackfillRFQDocumentTracking() {
   return window['go']['main']['App']['BackfillRFQDocumentTracking']();
 }
 
+export function BackupDatabase() {
+  return window['go']['main']['App']['BackupDatabase']();
+}
+
 export function BatchCreateInvoiceItems(arg1) {
   return window['go']['main']['App']['BatchCreateInvoiceItems'](arg1);
 }
@@ -296,6 +300,10 @@ export function ConfirmDelivery(arg1) {
 
 export function ConfirmDeliveryNote(arg1, arg2) {
   return window['go']['main']['App']['ConfirmDeliveryNote'](arg1, arg2);
+}
+
+export function ConfirmOneDriveDeal(arg1, arg2) {
+  return window['go']['main']['App']['ConfirmOneDriveDeal'](arg1, arg2);
 }
 
 export function ConvertOfferToOrder(arg1) {
@@ -734,6 +742,10 @@ export function GenerateContract(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['GenerateContract'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function GenerateCreditNoteNumber() {
+  return window['go']['main']['App']['GenerateCreditNoteNumber']();
+}
+
 export function GenerateCreditNotePDF(arg1) {
   return window['go']['main']['App']['GenerateCreditNotePDF'](arg1);
 }
@@ -754,6 +766,10 @@ export function GenerateDataImportTemplate() {
   return window['go']['main']['App']['GenerateDataImportTemplate']();
 }
 
+export function GenerateEInvoiceXML(arg1) {
+  return window['go']['main']['App']['GenerateEInvoiceXML'](arg1);
+}
+
 export function GenerateGRNNumber() {
   return window['go']['main']['App']['GenerateGRNNumber']();
 }
@@ -764,10 +780,6 @@ export function GenerateInvoiceNumber() {
 
 export function GenerateInvoicePDF(arg1) {
   return window['go']['main']['App']['GenerateInvoicePDF'](arg1);
-}
-
-export function GenerateEInvoiceXML(arg1) {
-  return window['go']['main']['App']['GenerateEInvoiceXML'](arg1);
 }
 
 export function GenerateLicenseKey(arg1, arg2, arg3) {
@@ -914,6 +926,10 @@ export function GetAvailableSerials(arg1) {
   return window['go']['main']['App']['GetAvailableSerials'](arg1);
 }
 
+export function GetBackupInfo() {
+  return window['go']['main']['App']['GetBackupInfo']();
+}
+
 export function GetBalanceContinuityReport(arg1) {
   return window['go']['main']['App']['GetBalanceContinuityReport'](arg1);
 }
@@ -1052,6 +1068,10 @@ export function GetCostingSheets(arg1) {
 
 export function GetCostingsByRFQ(arg1) {
   return window['go']['main']['App']['GetCostingsByRFQ'](arg1);
+}
+
+export function GetCreditNote(arg1) {
+  return window['go']['main']['App']['GetCreditNote'](arg1);
 }
 
 export function GetCurrencyRateHistory(arg1) {
@@ -1538,6 +1558,10 @@ export function GetPendingFollowUps() {
   return window['go']['main']['App']['GetPendingFollowUps']();
 }
 
+export function GetPipelineOpportunities(arg1, arg2) {
+  return window['go']['main']['App']['GetPipelineOpportunities'](arg1, arg2);
+}
+
 export function GetPipelineStatistics() {
   return window['go']['main']['App']['GetPipelineStatistics']();
 }
@@ -1580,22 +1604,6 @@ export function GetQuickCaptures(arg1) {
 
 export function GetRFQ(arg1) {
   return window['go']['main']['App']['GetRFQ'](arg1);
-}
-
-export function GetSerialByNumber(arg1) {
-  return window['go']['main']['App']['GetSerialByNumber'](arg1);
-}
-
-export function GetSerialsByCustomer(arg1) {
-  return window['go']['main']['App']['GetSerialsByCustomer'](arg1);
-}
-
-export function GetSerialsByProduct(arg1) {
-  return window['go']['main']['App']['GetSerialsByProduct'](arg1);
-}
-
-export function GetSerialsForInvoiceItem(arg1, arg2) {
-  return window['go']['main']['App']['GetSerialsForInvoiceItem'](arg1, arg2);
 }
 
 export function GetRFQComments(arg1) {
@@ -1682,6 +1690,22 @@ export function GetScanResult(arg1) {
   return window['go']['main']['App']['GetScanResult'](arg1);
 }
 
+export function GetSerialByNumber(arg1) {
+  return window['go']['main']['App']['GetSerialByNumber'](arg1);
+}
+
+export function GetSerialsByCustomer(arg1) {
+  return window['go']['main']['App']['GetSerialsByCustomer'](arg1);
+}
+
+export function GetSerialsByProduct(arg1) {
+  return window['go']['main']['App']['GetSerialsByProduct'](arg1);
+}
+
+export function GetSerialsForInvoiceItem(arg1, arg2) {
+  return window['go']['main']['App']['GetSerialsForInvoiceItem'](arg1, arg2);
+}
+
 export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }
@@ -1750,6 +1774,10 @@ export function GetSurvivalMetricsOptimized() {
   return window['go']['main']['App']['GetSurvivalMetricsOptimized']();
 }
 
+export function GetSyncHealth() {
+  return window['go']['main']['App']['GetSyncHealth']();
+}
+
 export function GetSyncStatus() {
   return window['go']['main']['App']['GetSyncStatus']();
 }
@@ -1784,6 +1812,10 @@ export function GetUser(arg1) {
 
 export function GetUserPermissions(arg1) {
   return window['go']['main']['App']['GetUserPermissions'](arg1);
+}
+
+export function GetVATReconciliation(arg1, arg2) {
+  return window['go']['main']['App']['GetVATReconciliation'](arg1, arg2);
 }
 
 export function GetVATReturns(arg1, arg2) {
@@ -1850,6 +1882,10 @@ export function ImportEncryptionBackup(arg1, arg2) {
   return window['go']['main']['App']['ImportEncryptionBackup'](arg1, arg2);
 }
 
+export function ImportOneDriveDeals(arg1) {
+  return window['go']['main']['App']['ImportOneDriveDeals'](arg1);
+}
+
 export function ImportSSOTData() {
   return window['go']['main']['App']['ImportSSOTData']();
 }
@@ -1886,12 +1922,12 @@ export function IsPeriodClosed(arg1) {
   return window['go']['main']['App']['IsPeriodClosed'](arg1);
 }
 
-export function IssueCreditNote(arg1) {
-  return window['go']['main']['App']['IssueCreditNote'](arg1);
-}
-
 export function IssueCheque(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['IssueCheque'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function IssueCreditNote(arg1) {
+  return window['go']['main']['App']['IssueCreditNote'](arg1);
 }
 
 export function LinkInvoiceToOrder(arg1, arg2) {
@@ -2366,6 +2402,10 @@ export function RunInitialScan() {
   return window['go']['main']['App']['RunInitialScan']();
 }
 
+export function RunIntegrityCheck() {
+  return window['go']['main']['App']['RunIntegrityCheck']();
+}
+
 export function SaveCostingAsOffer(arg1) {
   return window['go']['main']['App']['SaveCostingAsOffer'](arg1);
 }
@@ -2388,6 +2428,10 @@ export function SaveStatementHash(arg1, arg2) {
 
 export function ScanOfferFolders(arg1) {
   return window['go']['main']['App']['ScanOfferFolders'](arg1);
+}
+
+export function ScanOneDrivePaths(arg1) {
+  return window['go']['main']['App']['ScanOneDrivePaths'](arg1);
 }
 
 export function SearchGraphEntities(arg1, arg2) {
@@ -2518,6 +2562,10 @@ export function StartPeriodicSync(arg1) {
   return window['go']['main']['App']['StartPeriodicSync'](arg1);
 }
 
+export function StopBackgroundDBSync() {
+  return window['go']['main']['App']['StopBackgroundDBSync']();
+}
+
 export function StopFileWatcher() {
   return window['go']['main']['App']['StopFileWatcher']();
 }
@@ -2552,6 +2600,10 @@ export function TimeNow() {
 
 export function TrackLatePaymentHistory(arg1) {
   return window['go']['main']['App']['TrackLatePaymentHistory'](arg1);
+}
+
+export function TriggerBackup() {
+  return window['go']['main']['App']['TriggerBackup']();
 }
 
 export function TriggerManualSync() {
@@ -2694,6 +2746,10 @@ export function UpdateRFQStatus(arg1, arg2) {
   return window['go']['main']['App']['UpdateRFQStatus'](arg1, arg2);
 }
 
+export function UpdateSerialWarranty(arg1, arg2) {
+  return window['go']['main']['App']['UpdateSerialWarranty'](arg1, arg2);
+}
+
 export function UpdateSettings(arg1) {
   return window['go']['main']['App']['UpdateSettings'](arg1);
 }
@@ -2720,10 +2776,6 @@ export function UpdateSupplierInvoice(arg1) {
 
 export function UpdateSupplierPayment(arg1, arg2) {
   return window['go']['main']['App']['UpdateSupplierPayment'](arg1, arg2);
-}
-
-export function UpdateSerialWarranty(arg1, arg2) {
-  return window['go']['main']['App']['UpdateSerialWarranty'](arg1, arg2);
 }
 
 export function UpdateUser(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
@@ -2758,6 +2810,10 @@ export function ValidateLicense() {
   return window['go']['main']['App']['ValidateLicense']();
 }
 
+export function ValidateOneDrivePath(arg1) {
+  return window['go']['main']['App']['ValidateOneDrivePath'](arg1);
+}
+
 export function ValidateStatementBalance(arg1) {
   return window['go']['main']['App']['ValidateStatementBalance'](arg1);
 }
@@ -2768,20 +2824,4 @@ export function ValidateStatementContinuity(arg1, arg2) {
 
 export function WatchInboxForTestFile(arg1) {
   return window['go']['main']['App']['WatchInboxForTestFile'](arg1);
-}
-
-export function ValidateOneDrivePath(arg1) {
-  return window['go']['main']['App']['ValidateOneDrivePath'](arg1);
-}
-
-export function ScanOneDrivePaths(arg1) {
-  return window['go']['main']['App']['ScanOneDrivePaths'](arg1);
-}
-
-export function ConfirmOneDriveDeal(arg1, arg2) {
-  return window['go']['main']['App']['ConfirmOneDriveDeal'](arg1, arg2);
-}
-
-export function ImportOneDriveDeals(arg1) {
-  return window['go']['main']['App']['ImportOneDriveDeals'](arg1);
 }

@@ -1124,7 +1124,7 @@ func (a *App) getFinancialReport(startDate time.Time) (ReportData, error) {
 // PDF/Excel will be added later using existing generator functions
 func (a *App) ExportReport(reportType string, format string, dataJSON string) (string, error) {
 	// Ensure exports directory exists
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	exportDir := filepath.Join(paths.ProjectRoot, "exports")
 	if err := os.MkdirAll(exportDir, 0755); err != nil {
 		return "", newError("EXPORT_DIR_FAILED", "Failed to create exports directory", err.Error())

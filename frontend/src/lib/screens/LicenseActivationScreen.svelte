@@ -53,33 +53,17 @@
         error = "";
 
         try {
-            const result = await ActivateLicense(licenseKey);
+            // Wrap activation in 15s timeout — backend can hang if DB is slow on startup
+            const result = await Promise.race([
+                ActivateLicense(licenseKey),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Activation timed out — please try again')), 15000))
+            ]) as any;
 
             if (result.success) {
                 toast.success(result.message);
 
-                // Check if first-run sync is needed and perform it with progress UI
-                syncing = true;
-
-                try {
-                    const syncStatus = await GetFirstRunSyncStatus();
-
-                    if (syncStatus.sync_recommended) {
-                        // Show progress modal for first-run sync
-                        showSyncProgress = true;
-                        const syncResult = await FirstRunSyncWithProgress();
-
-                        if (syncResult.success && syncResult.records_pulled > 0) {
-                            toast.success(`Downloaded ${syncResult.records_pulled} records from cloud`);
-                        }
-                    }
-                } catch (syncErr) {
-                    // Sync error is not fatal - app can still work
-                    console.warn("First-run sync warning:", syncErr);
-                }
-
-                syncing = false;
-                showSyncProgress = false;
+                // Skip first-run sync entirely — Supabase may be down
+                // Sync will happen automatically in the background once app is running
 
                 dispatch("activated", {
                     role: result.role,
@@ -92,7 +76,7 @@
                 toast.danger(result.message);
             }
         } catch (err: any) {
-            error = err?.message || "Activation failed. Please try again.";
+            error = err?.message || "Activation timed out. The app may still be starting up — wait 10 seconds and try again.";
             toast.danger(error);
         } finally {
             loading = false;

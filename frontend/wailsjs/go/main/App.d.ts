@@ -65,6 +65,8 @@ export function BackfillOfferItemCostBreakdown():Promise<Record<string, any>>;
 
 export function BackfillRFQDocumentTracking():Promise<number>;
 
+export function BackupDatabase():Promise<string>;
+
 export function BatchCreateInvoiceItems(arg1:Array<main.DBInvoiceItem>):Promise<void>;
 
 export function BatchImportCostingSheets(arg1:string):Promise<main.ExcelBatchImportResult>;
@@ -155,6 +157,8 @@ export function ConfirmDelivery(arg1:string):Promise<void>;
 
 export function ConfirmDeliveryNote(arg1:string,arg2:string):Promise<void>;
 
+export function ConfirmOneDriveDeal(arg1:string,arg2:string):Promise<Record<string, any>>;
+
 export function ConvertOfferToOrder(arg1:number):Promise<void>;
 
 export function CreateAccount(arg1:main.ChartOfAccount):Promise<main.ChartOfAccount>;
@@ -175,7 +179,7 @@ export function CreateCostingSheet(arg1:number,arg2:string,arg3:string):Promise<
 
 export function CreateCostingSheetVersion(arg1:string,arg2:string):Promise<main.DBCostingSheet>;
 
-export function CreateCreditNote(arg1:string,arg2:string,arg3:Array<main.CreditNoteItem>):Promise<main.CreditNote>;
+export function CreateCreditNote(arg1:string,arg2:string,arg3:Array<main.CreditNoteItemInput>):Promise<main.CreditNote>;
 
 export function CreateCustomer(arg1:main.CustomerMaster):Promise<main.CustomerMaster>;
 
@@ -183,7 +187,7 @@ export function CreateCustomerFolder(arg1:string,arg2:string,arg3:string):Promis
 
 export function CreateDNFromOrder(arg1:string,arg2:Array<main.DeliveryNoteItem>):Promise<main.DeliveryNote>;
 
-export function CreateDNWithSerials(arg1:string,arg2:Array<any>):Promise<main.DeliveryNote>;
+export function CreateDNWithSerials(arg1:string,arg2:Array<main.DNItemInputWithSerials>):Promise<main.DeliveryNote>;
 
 export function CreateDeliveryNote(arg1:main.DeliveryNote):Promise<main.DeliveryNote>;
 
@@ -373,6 +377,8 @@ export function GenerateButlerReport(arg1:string,arg2:string):Promise<string>;
 
 export function GenerateContract(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string):Promise<main.Contract>;
 
+export function GenerateCreditNoteNumber():Promise<string>;
+
 export function GenerateCreditNotePDF(arg1:string):Promise<string>;
 
 export function GenerateCustomer360Report(arg1:string):Promise<string>;
@@ -383,13 +389,13 @@ export function GenerateDashboardReport():Promise<string>;
 
 export function GenerateDataImportTemplate():Promise<string>;
 
+export function GenerateEInvoiceXML(arg1:string):Promise<string>;
+
 export function GenerateGRNNumber():Promise<string>;
 
 export function GenerateInvoiceNumber():Promise<string>;
 
 export function GenerateInvoicePDF(arg1:string):Promise<string>;
-
-export function GenerateEInvoiceXML(arg1:string):Promise<string>;
 
 export function GenerateLicenseKey(arg1:string,arg2:string,arg3:string):Promise<string>;
 
@@ -463,6 +469,8 @@ export function GetAvailableFinancialYears():Promise<Array<number>>;
 
 export function GetAvailableSerials(arg1:string):Promise<Array<main.SerialNumber>>;
 
+export function GetBackupInfo():Promise<Record<string, any>>;
+
 export function GetBalanceContinuityReport(arg1:string):Promise<main.BalanceContinuityReportData>;
 
 export function GetBalanceSheet(arg1:time.Time):Promise<main.BalanceSheetReport>;
@@ -532,6 +540,8 @@ export function GetCostingSheet(arg1:number):Promise<main.CostingSheetData>;
 export function GetCostingSheets(arg1:number):Promise<Array<main.CostingSheetData>>;
 
 export function GetCostingsByRFQ(arg1:number):Promise<Array<main.CostingSheetData>>;
+
+export function GetCreditNote(arg1:string):Promise<main.CreditNote>;
 
 export function GetCurrencyRateHistory(arg1:string):Promise<Array<main.CurrencyExchangeRate>>;
 
@@ -775,6 +785,8 @@ export function GetPendingDeliveries():Promise<Array<main.DeliveryPlanningItem>>
 
 export function GetPendingFollowUps():Promise<Array<main.OfferFollowUp>>;
 
+export function GetPipelineOpportunities(arg1:number,arg2:number):Promise<Array<main.Opportunity>>;
+
 export function GetPipelineStatistics():Promise<Record<string, any>>;
 
 export function GetPostSaleNotes(arg1:string):Promise<Array<main.PostSaleNote>>;
@@ -796,14 +808,6 @@ export function GetPurchaseOrdersBySupplier(arg1:string):Promise<Array<main.Purc
 export function GetQuickCaptures(arg1:number):Promise<Array<main.QuickCapture>>;
 
 export function GetRFQ(arg1:number):Promise<main.RFQData>;
-
-export function GetSerialByNumber(arg1:string):Promise<main.SerialNumber>;
-
-export function GetSerialsByCustomer(arg1:string):Promise<Array<main.SerialNumber>>;
-
-export function GetSerialsByProduct(arg1:string):Promise<Array<main.SerialNumber>>;
-
-export function GetSerialsForInvoiceItem(arg1:string,arg2:string):Promise<Array<main.SerialNumber>>;
 
 export function GetRFQComments(arg1:number):Promise<Array<main.RFQComment>>;
 
@@ -847,6 +851,14 @@ export function GetScanProgress(arg1:string):Promise<main.ScanProgress>;
 
 export function GetScanResult(arg1:string):Promise<main.ScanResult>;
 
+export function GetSerialByNumber(arg1:string):Promise<main.SerialNumber>;
+
+export function GetSerialsByCustomer(arg1:string):Promise<Array<main.SerialNumber>>;
+
+export function GetSerialsByProduct(arg1:string):Promise<Array<main.SerialNumber>>;
+
+export function GetSerialsForInvoiceItem(arg1:string,arg2:string):Promise<Array<main.SerialNumber>>;
+
 export function GetSettings():Promise<Record<string, any>>;
 
 export function GetStaleCheques(arg1:string):Promise<Array<main.OutstandingCheque>>;
@@ -881,6 +893,8 @@ export function GetSurvivalMetrics():Promise<main.SurvivalMetrics>;
 
 export function GetSurvivalMetricsOptimized():Promise<main.SurvivalMetrics>;
 
+export function GetSyncHealth():Promise<main.SyncHealth>;
+
 export function GetSyncStatus():Promise<Record<string, any>>;
 
 export function GetToolInstallInstructions():Promise<string>;
@@ -898,6 +912,8 @@ export function GetUnpostedRevaluations():Promise<Array<main.FXRevaluation>>;
 export function GetUser(arg1:string):Promise<main.User>;
 
 export function GetUserPermissions(arg1:string):Promise<Array<string>>;
+
+export function GetVATReconciliation(arg1:string,arg2:string):Promise<main.VATReconciliation>;
 
 export function GetVATReturns(arg1:number,arg2:string):Promise<Array<main.VATReturn>>;
 
@@ -931,6 +947,8 @@ export function ImportCostingToOpportunity(arg1:main.ExcelCostingData):Promise<v
 
 export function ImportEncryptionBackup(arg1:string,arg2:string):Promise<void>;
 
+export function ImportOneDriveDeals(arg1:Array<main.DiscoveredDeal>):Promise<Array<main.OneDriveImportResult>>;
+
 export function ImportSSOTData():Promise<data.ImportResult>;
 
 export function ImportSupplierPaymentsFromFile():Promise<main.TallyImportResult>;
@@ -949,9 +967,9 @@ export function InvalidateCache(arg1:string):Promise<void>;
 
 export function IsPeriodClosed(arg1:string):Promise<boolean>;
 
-export function IssueCreditNote(arg1:string):Promise<main.CreditNote>;
-
 export function IssueCheque(arg1:string,arg2:number,arg3:string,arg4:string,arg5:any,arg6:string):Promise<main.OutstandingCheque>;
+
+export function IssueCreditNote(arg1:string):Promise<main.CreditNote>;
 
 export function LinkInvoiceToOrder(arg1:string,arg2:string):Promise<void>;
 
@@ -1125,7 +1143,7 @@ export function RecalculateInvoiceItemCosts():Promise<Record<string, any>>;
 
 export function ReceiveAgainstPO(arg1:string,arg2:Array<main.GRNItem>):Promise<main.GoodsReceivedNote>;
 
-export function ReceiveAgainstPOWithSerials(arg1:string,arg2:Array<any>):Promise<main.GoodsReceivedNote>;
+export function ReceiveAgainstPOWithSerials(arg1:string,arg2:Array<main.GRNItemWithSerials>):Promise<main.GoodsReceivedNote>;
 
 export function ReconcileOfferData(arg1:string):Promise<main.ReconciliationResult>;
 
@@ -1189,6 +1207,8 @@ export function RunBatchOCR(arg1:string,arg2:string,arg3:string):Promise<Record<
 
 export function RunInitialScan():Promise<main.InitialScanResult>;
 
+export function RunIntegrityCheck():Promise<string>;
+
 export function SaveCostingAsOffer(arg1:main.CostingExportData):Promise<main.Offer>;
 
 export function SaveDocumentToEntity(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number,arg7:string,arg8:string):Promise<Record<string, any>>;
@@ -1200,6 +1220,8 @@ export function SaveParsedEmailAsRFQ(arg1:main.ParsedRFQEmail):Promise<number>;
 export function SaveStatementHash(arg1:main.BankStatement,arg2:Array<main.BankStatementLine>):Promise<void>;
 
 export function ScanOfferFolders(arg1:string):Promise<main.ExcelBatchImportResult>;
+
+export function ScanOneDrivePaths(arg1:Array<string>):Promise<main.OneDriveScanResult>;
 
 export function SearchGraphEntities(arg1:string,arg2:number):Promise<Array<graph.GraphNode>>;
 
@@ -1265,6 +1287,8 @@ export function StartLogin():Promise<string>;
 
 export function StartPeriodicSync(arg1:time.Duration):Promise<void>;
 
+export function StopBackgroundDBSync():Promise<void>;
+
 export function StopFileWatcher():Promise<void>;
 
 export function StopPeriodicSync():Promise<void>;
@@ -1282,6 +1306,8 @@ export function TestSupabaseConnection(arg1:string,arg2:string,arg3:string,arg4:
 export function TimeNow():Promise<time.Time>;
 
 export function TrackLatePaymentHistory(arg1:string):Promise<number>;
+
+export function TriggerBackup():Promise<Record<string, any>>;
 
 export function TriggerManualSync():Promise<Record<string, any>>;
 
@@ -1353,6 +1379,8 @@ export function UpdateRFQStage(arg1:number,arg2:string):Promise<void>;
 
 export function UpdateRFQStatus(arg1:number,arg2:string):Promise<void>;
 
+export function UpdateSerialWarranty(arg1:string,arg2:number):Promise<void>;
+
 export function UpdateSettings(arg1:Record<string, any>):Promise<void>;
 
 export function UpdateShipment(arg1:string,arg2:string,arg3:string):Promise<void>;
@@ -1366,8 +1394,6 @@ export function UpdateSupplierGoals(arg1:number,arg2:number,arg3:number):Promise
 export function UpdateSupplierInvoice(arg1:main.SupplierInvoice):Promise<main.SupplierInvoice>;
 
 export function UpdateSupplierPayment(arg1:string,arg2:main.SupplierPayment):Promise<main.SupplierPayment>;
-
-export function UpdateSerialWarranty(arg1:string,arg2:number):Promise<void>;
 
 export function UpdateUser(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:boolean):Promise<void>;
 
@@ -1385,16 +1411,10 @@ export function ValidateJournalEntryBalance(arg1:string):Promise<boolean>;
 
 export function ValidateLicense():Promise<main.LicenseValidationResult>;
 
+export function ValidateOneDrivePath(arg1:string):Promise<Record<string, any>>;
+
 export function ValidateStatementBalance(arg1:string):Promise<boolean>;
 
 export function ValidateStatementContinuity(arg1:string,arg2:main.BankStatement):Promise<void>;
 
 export function WatchInboxForTestFile(arg1:string):Promise<void>;
-
-export function ValidateOneDrivePath(arg1:string):Promise<{[key: string]: any}>;
-
-export function ScanOneDrivePaths(arg1:string[]):Promise<main.OneDriveScanResult>;
-
-export function ConfirmOneDriveDeal(arg1:string,arg2:string):Promise<{[key: string]: any}>;
-
-export function ImportOneDriveDeals(arg1:main.DiscoveredDeal[]):Promise<main.OneDriveImportResult[]>;

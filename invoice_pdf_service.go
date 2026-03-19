@@ -657,7 +657,7 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 	// ========================================================================
 	// SECTION 11: SAVE PDF
 	// ========================================================================
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	exportDir := filepath.Join(paths.ProjectRoot, "exports", "invoices")
 	os.MkdirAll(exportDir, 0755)
 
@@ -938,7 +938,7 @@ func (a *App) GenerateSupplierInvoicePDF(invoiceID string) (string, error) {
 	pdf.Cell(0, 5, fmt.Sprintf("Supplier Invoice Record  |  PH Trading W.L.L.  |  Generated %s", time.Now().Format("02 Jan 2006")))
 
 	// Save PDF
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	exportDir := filepath.Join(paths.ProjectRoot, "exports", "invoices")
 	os.MkdirAll(exportDir, 0755)
 

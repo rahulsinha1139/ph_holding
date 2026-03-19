@@ -1116,7 +1116,7 @@
       <div class="form-row">
         <div class="form-field">
           <label>Invoice Number</label>
-          <input type="text" bind:value={editInvoice.invoice_number} class="input-field" />
+          <input type="text" value={editInvoice.invoice_number} class="input-field" disabled title="Invoice numbers are system-generated" />
         </div>
         <div class="form-field">
           <label>Status</label>

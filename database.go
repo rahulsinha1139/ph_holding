@@ -54,6 +54,7 @@ type CustomerMaster struct {
 	City         string `gorm:"index;size:100" json:"city"`
 	Country      string `gorm:"index;size:100" json:"country"`
 	TRN          string `gorm:"size:100" json:"trn"`
+	MobileNumber string `gorm:"size:50" json:"mobile_number"`
 
 	// Business Details
 	Industry      string `gorm:"index;size:100" json:"industry"`
@@ -257,6 +258,8 @@ type Offer struct {
 	AttentionPhone     string `gorm:"size:50" json:"attention_phone"`
 	AttentionAddress   string `gorm:"type:varchar(1000)" json:"attention_address"`
 	DiscountPercent    float64 `json:"discount_percent"`
+	QuoteType          string  `gorm:"size:50;default:'Quotation'" json:"quote_type"` // "Quotation" or "Budgetary Quote"
+	VatRate            float64 `gorm:"default:10" json:"vat_rate"`                    // VAT percentage (default 10%)
 
 	// Additional costing header fields
 	CocCoo          string `gorm:"size:50" json:"coc_coo"`                   // Certificate of Conformity/Country of Origin
@@ -321,14 +324,30 @@ type Opportunity struct {
 	OfferID      string `gorm:"index;size:36;constraint:OnDelete:SET NULL,OnUpdate:CASCADE;foreignKey:OfferID;references:ID" json:"offer_id"` // Link to Offer if quoted
 
 	// Customer & Sales
-	CustomerID   string `gorm:"index;size:36;constraint:OnDelete:RESTRICT,OnUpdate:CASCADE;foreignKey:CustomerID;references:ID" json:"customer_id"`
-	CustomerName string `gorm:"index;size:255" json:"customer_name"`
-	Salesperson  string `gorm:"index;size:100" json:"salesperson"`
+	CustomerID    string `gorm:"index;size:36;constraint:OnDelete:RESTRICT,OnUpdate:CASCADE;foreignKey:CustomerID;references:ID" json:"customer_id"`
+	CustomerName  string `gorm:"index;size:255" json:"customer_name"`
+	CustomerGrade string `gorm:"size:10" json:"customer_grade"` // Grade at time of opportunity (A/B/C)
+	Salesperson   string `gorm:"index;size:100" json:"salesperson"`
+
+	// Pipeline Identification (from canonical seed)
+	Year       int    `gorm:"index" json:"year"`                   // Pipeline year (2024, 2025, 2026)
+	OppNumber  int    `json:"opp_number"`                          // Opportunity sequence number within year
+	FolderName string `gorm:"size:500" json:"folder_name"`         // Full descriptive folder name
+	Title      string `gorm:"size:500" json:"title"`               // SFDC opportunity title
+	EHRef      string `gorm:"size:100" json:"eh_ref"`              // Endress+Hauser reference number
+	Source     string `gorm:"index;size:50" json:"source"`         // Data source: old_db, 2025_excel, 2026_ocr
+	Comment    string `gorm:"type:varchar(2000)" json:"comment"`   // Latest salesperson comment
+	OwnerNotes string `gorm:"type:varchar(2000)" json:"owner_notes"` // Management notes (Abie's notes)
 
 	// Dates
 	OfferDate    time.Time  `gorm:"index" json:"offer_date"`
+	OrderDate    *time.Time `json:"order_date"`    // Date PO/order received
 	ExpectedDate *time.Time `json:"expected_date"` // Expected close date
 	ClosedDate   *time.Time `json:"closed_date"`   // Actual close date
+
+	// Delivery & Terms
+	DeliveryTerms string `gorm:"size:200" json:"delivery_terms"` // Delivery weeks/terms
+	PaymentTerms  string `gorm:"size:500" json:"payment_terms"`  // Payment terms from pipeline
 
 	// Financial
 	RevenueBHD float64 `json:"revenue_bhd"` // Expected revenue
@@ -338,7 +357,7 @@ type Opportunity struct {
 	// Status Tracking
 	SPOCStatus string `gorm:"index;size:50" json:"spoc_status"` // Single Point of Contact status
 	WIPStatus  string `gorm:"index;size:50" json:"wip_status"`  // Work In Progress status
-	Stage      string `gorm:"index;size:50;check:stage IN ('Lead','Qualified','Proposal','Negotiation','Won','Lost','Expired')" json:"stage"`       // Lead/Qualified/Proposal/Negotiation/Won/Lost
+	Stage      string `gorm:"index;size:50" json:"stage"`       // Lead/Qualified/Proposal/Negotiation/Won/Lost/Quoted
 
 	// Three-Regime Dynamics (Asymmetrica Mathematical Framework)
 	Regime     int     `gorm:"index" json:"regime"`     // 1=Exploration(0-30%), 2=Optimization(30-50%), 3=Stabilization(50%+)

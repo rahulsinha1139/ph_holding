@@ -59,6 +59,10 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 
 	log.Printf("📄 Generating offer/quotation PDF: offerID=%s", offerID)
 
+	if a.db == nil {
+		return "", fmt.Errorf("database not initialized")
+	}
+
 	// 1. Fetch offer with items from database
 	var offer Offer
 	if err := a.db.Preload("Items").First(&offer, "id = ?", offerID).Error; err != nil {
@@ -139,7 +143,11 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	// "Quotation" title (top right)
 	pdf.SetFont("Helvetica", "B", 20)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.CellFormat(0, 10, "Quotation", "", 0, "R", false, 0, "")
+	quoteTitle := "Quotation"
+	if offer.QuoteType != "" {
+		quoteTitle = offer.QuoteType
+	}
+	pdf.CellFormat(0, 10, quoteTitle, "", 0, "R", false, 0, "")
 	pdf.Ln(12)
 
 	// Metadata block (2 columns)
@@ -323,11 +331,8 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 			}
 			description = description + "\n" + productCode
 		}
-		// Append order code below model/product code
-		if item.LongCode != "" {
-			orderCode := sanitizeForPDF(item.LongCode)
-			description = description + "\nLong Code: " + orderCode
-		}
+		// Long Code is shown only on Annexure page (not page 1)
+		// Previously rendered here, moved to Annexure for cleaner front page
 		lineTotal := item.UnitPrice * item.Quantity
 		subtotal += lineTotal
 
@@ -398,13 +403,17 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 		pdf.Ln(7)
 	}
 
-	// VAT (10%)
+	// VAT (dynamic rate, default 10%)
 	subtotalAfterDiscount := subtotal - discount
-	vatAmount := subtotalAfterDiscount * 0.10
+	vatPercent := offer.VatRate
+	if vatPercent == 0 && subtotalAfterDiscount > 0 {
+		vatPercent = 10.0 // Default to 10% only for legacy offers without explicit VatRate
+	}
+	vatAmount := subtotalAfterDiscount * (vatPercent / 100.0)
 	pdf.SetFont("Helvetica", "", 9)
 	pdf.SetTextColor(80, 80, 80)
 	pdf.SetX(totalsX)
-	pdf.Cell(24, 6, "VAT 10%:")
+	pdf.Cell(24, 6, fmt.Sprintf("VAT %.0f%%:", vatPercent))
 	pdf.SetFont("Helvetica", "B", 9)
 	pdf.SetTextColor(29, 29, 31)
 	pdf.Cell(27, 6, fmt.Sprintf("%.3f BHD", vatAmount))
@@ -509,7 +518,7 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	// Check if any items have detailed specs/codes that need annexure
 	hasDetailedSpecs := false
 	for _, item := range offer.Items {
-		if len(item.Description) > 100 || strings.Contains(item.Description, "\n") || item.DetailedDescription != "" {
+		if item.LongCode != "" || item.DetailedDescription != "" {
 			hasDetailedSpecs = true
 			break
 		}
@@ -543,9 +552,13 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 		pdf.SetTextColor(29, 29, 31)
 
 		for i, item := range offer.Items {
+			// Only include items that have LongCode or DetailedDescription
+			if item.LongCode == "" && item.DetailedDescription == "" {
+				continue
+			}
 			lineNum := i + 1
 
-			// Build full specification including detailed description
+			// Build full specification
 			fullSpec := ""
 			if item.Equipment != "" {
 				fullSpec = sanitizeForPDF(item.Equipment)
@@ -558,7 +571,6 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 			if item.LongCode != "" {
 				fullSpec = fullSpec + "\nLong Code: " + sanitizeForPDF(item.LongCode)
 			}
-			// Add detailed description (instrumentation specs) if present
 			if item.DetailedDescription != "" {
 				fullSpec = fullSpec + "\n\n" + sanitizeForPDF(item.DetailedDescription)
 			}
@@ -571,15 +583,14 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 			pdf.MultiCell(139, 4, fullSpec, "1", "L", false)
 			endY := pdf.GetY()
 
-			// If multiline, need to adjust the left cells
 			if endY-y > 6 {
 				pdf.SetXY(x, endY)
 			} else {
 				pdf.SetXY(18, y+6)
 			}
 
-			// Page overflow protection: if near bottom, add new page
-			if pdf.GetY() > 250 && i < len(offer.Items)-1 {
+			// Page overflow: add new page if near bottom (A4 = 297mm)
+			if pdf.GetY() > 260 && i < len(offer.Items)-1 {
 				pdf.AddPage()
 				pdf.SetY(52)
 				// Reprint header on new page
@@ -607,13 +618,17 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 		pdf.SetY(270) // Just above the letterhead footer area
 		pdf.SetFont("Helvetica", "I", 7)
 		pdf.SetTextColor(160, 160, 160)
-		pdf.CellFormat(0, 5, fmt.Sprintf("Quotation %s  |  Page %d of %d  |  PH Trading W.L.L.", offer.OfferNumber, i, totalPages), "", 0, "C", false, 0, "")
+		footerTitle := "Quotation"
+		if offer.QuoteType != "" {
+			footerTitle = offer.QuoteType
+		}
+		pdf.CellFormat(0, 5, fmt.Sprintf("%s %s  |  Page %d of %d  |  PH Trading W.L.L.", footerTitle, offer.OfferNumber, i, totalPages), "", 0, "C", false, 0, "")
 	}
 
 	// ========================================================================
 	// SAVE PDF
 	// ========================================================================
-	paths := a.GetApplicationPaths()
+	paths := a.getAppPaths()
 	exportDir := filepath.Join(paths.ProjectRoot, "exports", "offers")
 	os.MkdirAll(exportDir, 0755)
 
