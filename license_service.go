@@ -42,16 +42,16 @@ var (
 // LicenseKey represents a license key in the database
 type LicenseKey struct {
 	ID          uint       `gorm:"primaryKey" json:"id"`
-	Key         string     `gorm:"uniqueIndex;size:20" json:"key"`       // PH-ADM-A1B2C3
-	Role        string     `gorm:"size:20" json:"role"`                  // admin, manager, sales, operations
-	DisplayName string     `gorm:"size:100" json:"display_name"`         // Employee name (e.g. "Rishu", "Stanley")
-	DeviceHash  string     `gorm:"size:64;index" json:"device_hash"`     // Bound to this PC
+	Key         string     `gorm:"uniqueIndex;size:20" json:"key"`   // PH-ADM-A1B2C3
+	Role        string     `gorm:"size:20" json:"role"`              // admin, manager, sales, operations
+	DisplayName string     `gorm:"size:100" json:"display_name"`     // Employee name (e.g. "Rishu", "Stanley")
+	DeviceHash  string     `gorm:"size:64;index" json:"device_hash"` // Bound to this PC
 	Activated   bool       `gorm:"default:false" json:"activated"`
 	ActivatedAt *time.Time `json:"activated_at"`
 	IssuedAt    time.Time  `gorm:"autoCreateTime" json:"issued_at"`
-	ExpiresAt   *time.Time `json:"expires_at"`                           // Optional expiry
-	Notes       string     `gorm:"size:255" json:"notes"`                // Admin notes
-	CreatedBy   string     `gorm:"size:100" json:"created_by"`           // Who generated this key
+	ExpiresAt   *time.Time `json:"expires_at"`                 // Optional expiry
+	Notes       string     `gorm:"size:255" json:"notes"`      // Admin notes
+	CreatedBy   string     `gorm:"size:100" json:"created_by"` // Who generated this key
 }
 
 // LicenseActivationResult is returned after license activation
@@ -105,12 +105,18 @@ var rolePermissions = map[string][]string{
 		"offers:view", "offers:create", "offers:edit",
 		"orders:view", "orders:create", "orders:edit", "orders:update",
 		"finance:view", "finance:create", "finance:delete", // Bank reconciliation needs finance:delete
+		"expenses:view", "expenses:create", "expenses:update",
+		"payroll:view", "payroll:create", "payroll:update", "payroll:approve",
 		"invoices:view", "invoices:create", "invoices:update", // Invoice management
 		"payments:view", "payments:create", "payments:update", // Payment management (NO payments:delete - admin only)
 		"customers:view", "customers:edit", "customers:delete",
-		"suppliers:view", "suppliers:edit",
+		"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
 		"po:view", "po:create", "po:update", "po:approve", // Full PO management
 		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
+		"projects:view", "projects:create", "projects:update",
+		"tasks:view", "tasks:create", "tasks:update",
+		"notifications:view", "notifications:update",
+		"hr:view", "hr:create", "hr:update",
 		"grn:view", "grn:create",
 		"documents:create", "documents:view", // OCR features
 		"intelligence:chat", "intelligence:reports",
@@ -122,23 +128,43 @@ var rolePermissions = map[string][]string{
 		"orders:view", "orders:create", "orders:update",
 		"invoices:view", // Can VIEW invoices but NOT create (manager/admin only)
 		"payments:view", // Can VIEW payments but NOT create (manager/admin only)
+		"projects:view", "projects:create", "projects:update",
+		"tasks:view", "tasks:create", "tasks:update",
+		"notifications:view", "notifications:update",
 		"customers:view", "customers:edit",
-		"po:view",                             // Can view POs for order tracking
-		"delivery_notes:view",                 // Can view delivery notes
-		"documents:create", "documents:view",  // OCR features for scanning customer docs
+		"suppliers:view", "suppliers:create",
+		"po:view", "po:create", // Sales can raise supplier POs tied to their commercial flow
+		"delivery_notes:view",                // Can view delivery notes
+		"documents:create", "documents:view", // OCR features for scanning customer docs
 		"intelligence:chat",
 	},
 	"operations": {
 		"dashboard:view",
 		"orders:view", "orders:update",
 		"invoices:view", // Can VIEW invoices for procurement tracking
-		"suppliers:view", "suppliers:edit",
+		"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
+		"projects:view", "projects:create", "projects:update",
+		"tasks:view", "tasks:create", "tasks:update",
+		"notifications:view", "notifications:update",
 		"grn:view", "grn:create",
 		"po:view", "po:create", "po:update", "po:send", // Full PO lifecycle
 		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
 		"documents:create", "documents:view", // OCR features for scanning supplier docs
 		"intelligence:chat",
 	},
+	"staff": {
+		"dashboard:view",
+		"projects:view",
+		"tasks:view", "tasks:create", "tasks:update",
+		"notifications:view", "notifications:update",
+	},
+}
+
+func (a *App) developerMasterKeyEnabled() bool {
+	if a != nil && a.config != nil {
+		return a.config.App.EnableDeveloperMasterKey
+	}
+	return getEnvBool("ENABLE_DEVELOPER_MASTER_KEY", false)
 }
 
 // GenerateLicenseKey creates a new license key for a role (admin only)
@@ -241,9 +267,17 @@ func (a *App) ActivateLicense(key string) (LicenseActivationResult, error) {
 	licenseAttempts[deviceHash] = append(validAttempts, now)
 	licenseAttemptsMu.Unlock()
 
-	// Master key — reusable, never device-bound, works across rebuilds
-	// Return success immediately; persist to DB in background (startup AutoMigrate may hold the connection)
 	if key == masterKey {
+		if !a.developerMasterKeyEnabled() {
+			log.Printf("🚫 Master key activation blocked on this build/device")
+			return LicenseActivationResult{
+				Success: false,
+				Message: "Invalid license key. Please contact your administrator for a valid key.",
+			}, nil
+		}
+
+		// Master key — reusable, never device-bound, works across rebuilds
+		// Return success immediately; persist to DB in background (startup AutoMigrate may hold the connection)
 		go func() {
 			err := a.db.Transaction(func(tx *gorm.DB) error {
 				var existing LicenseKey
@@ -395,13 +429,23 @@ func (a *App) ValidateLicense() (LicenseValidationResult, error) {
 	var license LicenseKey
 
 	// First: check for master key (device-hash-independent — works across all launch methods)
-	if err := a.db.Where("key = ? AND activated = 1", masterKey).First(&license).Error; err == nil {
-		// Master key found and activated — always valid regardless of device hash
-		// Silently update device hash if changed (different launch method)
-		if license.DeviceHash != deviceHash {
-			a.db.Model(&license).Update("device_hash", deviceHash)
+	if a.developerMasterKeyEnabled() {
+		if err := a.db.Where("key = ? AND activated = 1", masterKey).First(&license).Error; err == nil {
+			// Master key found and activated — always valid regardless of device hash
+			// Silently update device hash if changed (different launch method)
+			if license.DeviceHash != deviceHash {
+				a.db.Model(&license).Update("device_hash", deviceHash)
+			}
+			log.Printf("🔑 ValidateLicense: Master key valid (role: %s)", license.Role)
+		} else if err := a.db.Where("device_hash = ? AND activated = 1", deviceHash).First(&license).Error; err != nil {
+			// No master key, no device-bound license
+			if err == gorm.ErrRecordNotFound {
+				log.Printf("🔑 ValidateLicense: No active license found for device hash: %s", deviceHash[:16])
+				return LicenseValidationResult{Valid: false}, nil
+			}
+			log.Printf("🔑 ValidateLicense: Database error: %v", err)
+			return LicenseValidationResult{Valid: false}, err
 		}
-		log.Printf("🔑 ValidateLicense: Master key valid (role: %s)", license.Role)
 	} else if err := a.db.Where("device_hash = ? AND activated = 1", deviceHash).First(&license).Error; err != nil {
 		// No master key, no device-bound license
 		if err == gorm.ErrRecordNotFound {
@@ -416,9 +460,9 @@ func (a *App) ValidateLicense() (LicenseValidationResult, error) {
 	// Check expiry
 	if license.ExpiresAt != nil && license.ExpiresAt.Before(time.Now()) {
 		return LicenseValidationResult{
-			Valid:   false,
-			Role:    license.Role,
-			Key:     license.Key,
+			Valid: false,
+			Role:  license.Role,
+			Key:   license.Key,
 		}, nil
 	}
 
@@ -455,15 +499,8 @@ func (a *App) HasLicensePermission(permission string) bool {
 	}
 
 	for _, perm := range result.Permissions {
-		if perm == "*" || perm == permission {
+		if permissionGranted(perm, permission) {
 			return true
-		}
-		// Check wildcard match (e.g., "finance:*" matches "finance:view")
-		if strings.HasSuffix(perm, ":*") {
-			prefix := strings.TrimSuffix(perm, ":*")
-			if strings.HasPrefix(permission, prefix+":") {
-				return true
-			}
 		}
 	}
 	return false
@@ -482,6 +519,37 @@ func (a *App) ListLicenseKeys() ([]LicenseKey, error) {
 		return nil, err
 	}
 	return licenses, nil
+}
+
+func (a *App) UpdateLicenseDisplayName(key, displayName string) (LicenseKey, error) {
+	if err := a.requirePermission("licenses:manage"); err != nil {
+		return LicenseKey{}, err
+	}
+	if a.db == nil {
+		return LicenseKey{}, fmt.Errorf("database not initialized")
+	}
+
+	key = strings.ToUpper(strings.TrimSpace(key))
+	displayName = strings.TrimSpace(displayName)
+	if key == "" {
+		return LicenseKey{}, fmt.Errorf("license key is required")
+	}
+	if displayName == "" {
+		return LicenseKey{}, fmt.Errorf("display name is required")
+	}
+
+	var license LicenseKey
+	if err := a.db.Where("key = ?", key).First(&license).Error; err != nil {
+		return LicenseKey{}, fmt.Errorf("license key not found: %w", err)
+	}
+
+	license.DisplayName = displayName
+	license.Notes = fmt.Sprintf("Assigned to %s", displayName)
+	if err := a.db.Save(&license).Error; err != nil {
+		return LicenseKey{}, fmt.Errorf("failed to update license display name: %w", err)
+	}
+
+	return license, nil
 }
 
 // RevokeLicense deactivates a license key (admin only)
@@ -631,7 +699,8 @@ func (a *App) SeedEmployeeKeys() error {
 
 	employees := []employeeKey{
 		// Admin keys
-		{Role: "admin", DisplayName: "Rishu"},
+		{Role: "admin", DisplayName: "Abhie"},
+		{Role: "admin", DisplayName: "Rahul"},
 		{Role: "admin", DisplayName: "Stanley"},
 		{Role: "admin", DisplayName: "Daniel"},
 		// Manager keys
@@ -640,6 +709,7 @@ func (a *App) SeedEmployeeKeys() error {
 		{Role: "sales", DisplayName: "Peri"},
 		{Role: "sales", DisplayName: "Ebin"},
 		{Role: "sales", DisplayName: "Support"},
+		{Role: "sales", DisplayName: "Sales Test"},
 		// Operations keys
 		{Role: "operations", DisplayName: "Clinton"},
 	}

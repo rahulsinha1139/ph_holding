@@ -15,7 +15,7 @@
    * Design System: Wabi-Sabi minimalism × Bloomberg data density
    */
 
-  import { onMount } from 'svelte';
+  import { createEventDispatcher, onMount } from 'svelte';
   import {
     ListCustomerInvoices,
     CreateInvoiceWithOptions,
@@ -24,6 +24,7 @@
     ListOrders,
     UpdateCustomerInvoice,
     GenerateInvoicePDF,
+    GetCustomerInvoiceByID,
     GetAvailableDeliveryNotesForOrder,
     ListCreditNotes,
     CreateCreditNote,
@@ -43,6 +44,8 @@
   import { escapeHtml } from '$lib/utils/escapeHtml';
   import { debounce } from '$lib/utils/debounce';
 
+  const dispatch = createEventDispatcher();
+
   // Props
   export let embedded = false;
 
@@ -56,6 +59,11 @@
     rate: number;
     total_bhd: number;
     line_number?: number;
+    product_code?: string;
+    equipment?: string;
+    model?: string;
+    specification?: string;
+    detailed_description?: string;
   }
 
   interface Invoice {
@@ -74,6 +82,16 @@
     delivery_note_id?: string;
     delivery_note_number?: string;
     items?: InvoiceItem[];  // Line items from Preload
+    rfq_id?: string;
+    offer_id?: string;
+    offer_number?: string;
+    customer_reference?: string;
+    attention_person?: string;
+    attention_company?: string;
+    delivery_weeks?: string;
+    country_of_origin?: string;
+    payment_terms?: string;
+    delivery_terms?: string;
   }
 
   interface Order {
@@ -215,7 +233,7 @@
   const defaultFieldVisibility = {
     show_equipment: true,        // Equipment/Product name
     show_specification: true,    // Short specification
-    show_detailed_desc: false,   // Full detailed description
+    show_detailed_desc: true,    // Full detailed description
     show_fob: false,             // FOB cost
     show_freight: false,         // Freight cost
     show_cost: false,            // Total cost
@@ -246,10 +264,15 @@
   let showDetailModal = false;
   let selectedInvoice: Invoice | null = null;
 
-  function openDetailModal(invoice: Invoice) {
+  async function openDetailModal(invoice: Invoice) {
     console.log('[InvoicesScreen] Opening detail modal, invoice items:', invoice.items);
     selectedInvoice = invoice;
     showDetailModal = true;
+    try {
+      selectedInvoice = await GetCustomerInvoiceByID(invoice.id) as Invoice;
+    } catch {
+      selectedInvoice = invoice;
+    }
   }
 
   // Status color mapping
@@ -457,7 +480,9 @@
 
   // Computed: KPI stats
   $: stats = {
-    totalRevenue: invoices.reduce((sum, i) => sum + i.grand_total_bhd, 0),
+    totalRevenueYTD: invoices
+      .filter((invoice) => parseGoDate(invoice.invoice_date).getFullYear() === new Date().getFullYear())
+      .reduce((sum, i) => sum + i.grand_total_bhd, 0),
     outstanding: invoices.reduce((sum, i) => sum + i.outstanding_bhd, 0),
     overdueCount: invoices.filter(
       (i) => i.status === 'Overdue' && i.outstanding_bhd > 0
@@ -466,7 +491,14 @@
 
   // Currency formatter - BHD with 3 decimal places
   function formatBHD(amount: number): string {
-    return `${amount.toFixed(3)}`;
+    return new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 3,
+      maximumFractionDigits: 3
+    }).format(Number(amount) || 0);
+  }
+
+  function openBankReconciliation() {
+    dispatch('navigate', { tab: 'bank_recon', source: 'customer_invoices' });
   }
 
   // Parse Go time.Time to JS Date
@@ -711,9 +743,11 @@
   <svelte:fragment slot="header-actions">
     {#if mainView === 'invoices'}
       <Button variant="secondary" on:click={loadInvoices}>Refresh</Button>
+      <Button variant="secondary" on:click={openBankReconciliation}>Open Bank Recon</Button>
       <Button variant="primary" on:click={openCreateModal}>+ Create Invoice</Button>
     {:else}
       <Button variant="secondary" on:click={loadCreditNotes}>Refresh</Button>
+      <Button variant="secondary" on:click={openBankReconciliation}>Open Bank Recon</Button>
       <Button variant="primary" on:click={() => openCNModal()}>+ Issue Credit Note</Button>
     {/if}
   </svelte:fragment>
@@ -734,11 +768,11 @@
     <div class="kpi-grid">
       <Card padding="md" variant="elevated">
         <div class="kpi-card">
-          <div class="kpi-label">Total Revenue</div>
+          <div class="kpi-label">Total Revenue (YTD)</div>
           <div class="kpi-value kpi-primary">
-            {formatBHD(stats.totalRevenue)} <span class="kpi-currency">BHD</span>
+            {formatBHD(stats.totalRevenueYTD)} <span class="kpi-currency">BHD</span>
           </div>
-          <div class="kpi-sublabel">{invoices.length} invoice{invoices.length !== 1 ? 's' : ''}</div>
+          <div class="kpi-sublabel">{new Date().getFullYear()} billings</div>
         </div>
       </Card>
 
@@ -1327,6 +1361,50 @@
             <span class="detail-value dn-link">{selectedInvoice.delivery_note_number}</span>
           </div>
         {/if}
+        {#if selectedInvoice.offer_number}
+          <div class="detail-item">
+            <span class="detail-label">Offer</span>
+            <span class="detail-value">{selectedInvoice.offer_number}</span>
+          </div>
+        {/if}
+        {#if selectedInvoice.customer_reference}
+          <div class="detail-item">
+            <span class="detail-label">RFQ / Reference</span>
+            <span class="detail-value">{selectedInvoice.customer_reference}</span>
+          </div>
+        {/if}
+        {#if selectedInvoice.attention_person || selectedInvoice.attention_company}
+          <div class="detail-item">
+            <span class="detail-label">Attention</span>
+            <span class="detail-value">
+              {selectedInvoice.attention_person || '—'}{selectedInvoice.attention_company ? ` · ${selectedInvoice.attention_company}` : ''}
+            </span>
+          </div>
+        {/if}
+        {#if selectedInvoice.delivery_weeks}
+          <div class="detail-item">
+            <span class="detail-label">Delivery Time</span>
+            <span class="detail-value">{selectedInvoice.delivery_weeks}</span>
+          </div>
+        {/if}
+        {#if selectedInvoice.country_of_origin}
+          <div class="detail-item">
+            <span class="detail-label">Country of Origin</span>
+            <span class="detail-value">{selectedInvoice.country_of_origin}</span>
+          </div>
+        {/if}
+        {#if selectedInvoice.payment_terms}
+          <div class="detail-item">
+            <span class="detail-label">Payment Terms</span>
+            <span class="detail-value">{selectedInvoice.payment_terms}</span>
+          </div>
+        {/if}
+        {#if selectedInvoice.delivery_terms}
+          <div class="detail-item">
+            <span class="detail-label">Delivery Terms</span>
+            <span class="detail-value">{selectedInvoice.delivery_terms}</span>
+          </div>
+        {/if}
       </div>
 
       <!-- Line Items Section -->
@@ -1344,7 +1422,18 @@
             {#each selectedInvoice.items as item, i}
               <div class="items-row">
                 <span class="item-col-num">{item.line_number || i + 1}</span>
-                <span class="item-col-desc">{item.description || `Item ${i + 1}`}</span>
+                <span class="item-col-desc">
+                  <strong>{item.equipment || item.description || `Item ${i + 1}`}</strong>
+                  {#if item.model || item.product_code}
+                    <small>{item.model || item.product_code}</small>
+                  {/if}
+                  {#if item.specification}
+                    <small>{item.specification}</small>
+                  {/if}
+                  {#if item.detailed_description}
+                    <small>{item.detailed_description}</small>
+                  {/if}
+                </span>
                 <span class="item-col-qty">{item.quantity || 0}</span>
                 <span class="item-col-rate">{(item.rate || 0).toFixed(3)}</span>
                 <span class="item-col-total">{(item.total_bhd || 0).toFixed(3)}</span>
@@ -1903,8 +1992,19 @@
   }
 
   .item-col-desc {
-    overflow: hidden;
-    text-overflow: ellipsis;
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .item-col-desc strong {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .item-col-desc small {
+    color: var(--text-secondary);
+    line-height: 1.45;
   }
 
   .item-col-qty,

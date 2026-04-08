@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,6 +46,283 @@ func computeDocumentHMAC(invoiceNumber, date string, grandTotal, vat float64) st
 	})
 	hash := sha256.Sum256([]byte(hashInput))
 	return hex.EncodeToString(hash[:])
+}
+
+func roundInvoiceMoney(value float64) float64 {
+	return math.Round(value*1000) / 1000
+}
+
+func normalizeOrderItemForInvoice(item OrderItem) (OrderItem, bool) {
+	if isSyntheticCommercialSummary(item.Description, item.ProductCode, item.Model, item.Equipment) {
+		return item, false
+	}
+
+	item.Quantity = roundInvoiceMoney(item.Quantity)
+	item.UnitPrice = roundInvoiceMoney(item.UnitPrice)
+	item.TotalPrice = roundInvoiceMoney(item.TotalPrice)
+
+	if item.UnitPrice <= 0 && item.Quantity > 0 && item.TotalPrice > 0 {
+		item.UnitPrice = roundInvoiceMoney(item.TotalPrice / item.Quantity)
+	}
+	if item.TotalPrice <= 0 && item.Quantity > 0 && item.UnitPrice > 0 {
+		item.TotalPrice = roundInvoiceMoney(item.Quantity * item.UnitPrice)
+	}
+
+	item.Description = strings.TrimSpace(item.Description)
+	if item.Description == "" {
+		switch {
+		case strings.TrimSpace(item.Equipment) != "" && strings.TrimSpace(item.Model) != "":
+			item.Description = fmt.Sprintf("%s - %s", strings.TrimSpace(item.Equipment), strings.TrimSpace(item.Model))
+		case strings.TrimSpace(item.Equipment) != "":
+			item.Description = strings.TrimSpace(item.Equipment)
+		case strings.TrimSpace(item.Model) != "":
+			item.Description = strings.TrimSpace(item.Model)
+		case strings.TrimSpace(item.ProductCode) != "":
+			item.Description = strings.TrimSpace(item.ProductCode)
+		}
+	}
+
+	hasCommercialIdentity := item.Description != "" ||
+		strings.TrimSpace(item.ProductCode) != "" ||
+		strings.TrimSpace(item.Equipment) != "" ||
+		strings.TrimSpace(item.Model) != ""
+
+	if !hasCommercialIdentity {
+		return item, false
+	}
+	if item.Quantity <= 0 {
+		return item, false
+	}
+	if item.UnitPrice <= 0 && item.TotalPrice <= 0 {
+		return item, false
+	}
+
+	return item, true
+}
+
+func invoiceOrderItemsFromOrder(order Order) []OrderItem {
+	targetTotal := roundInvoiceMoney(order.TotalValueBHD)
+	if targetTotal <= 0 {
+		targetTotal = roundInvoiceMoney(order.GrandTotalBHD)
+	}
+
+	normalized := make([]OrderItem, 0, len(order.Items))
+	seen := make(map[string]struct{})
+	for _, item := range order.Items {
+		clean, ok := normalizeOrderItemForInvoice(item)
+		if !ok {
+			continue
+		}
+		signature := strings.Join([]string{
+			strings.ToLower(strings.TrimSpace(clean.ProductCode)),
+			strings.ToLower(strings.TrimSpace(clean.Description)),
+			fmt.Sprintf("%.3f", clean.Quantity),
+			fmt.Sprintf("%.3f", clean.UnitPrice),
+			fmt.Sprintf("%.3f", clean.TotalPrice),
+		}, "|")
+		if _, exists := seen[signature]; exists {
+			continue
+		}
+		seen[signature] = struct{}{}
+		normalized = append(normalized, clean)
+	}
+
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	if targetTotal > 0 {
+		for _, item := range normalized {
+			if math.Abs(roundInvoiceMoney(item.TotalPrice)-targetTotal) <= 0.01 {
+				return []OrderItem{item}
+			}
+		}
+	}
+
+	sum := 0.0
+	for _, item := range normalized {
+		sum += item.TotalPrice
+	}
+	if targetTotal > 0 && math.Abs(roundInvoiceMoney(sum)-targetTotal) <= 0.01 {
+		return normalized
+	}
+
+	return normalized
+}
+
+func defaultInvoiceFieldVisibilityJSON() string {
+	return `{"show_fob":false,"show_freight":false,"show_margin":false,"show_cost":false,"show_contact":true,"show_rfq":true,"show_equipment":true,"show_specification":true,"show_detailed_desc":true,"show_country_origin":true,"show_delivery_weeks":true}`
+}
+
+func (a *App) BackfillInvoiceItemsFromOrders() (map[string]interface{}, error) {
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	type invoiceShell struct {
+		ID string
+	}
+
+	var targets []invoiceShell
+	if err := a.db.Raw(`
+			SELECT i.id
+			FROM invoices i
+			LEFT JOIN invoice_items ii ON ii.invoice_id = i.id AND ii.deleted_at IS NULL
+			WHERE i.deleted_at IS NULL
+			  AND COALESCE(i.order_id, '') != ''
+			GROUP BY i.id
+			HAVING COUNT(ii.id) = 0
+		`).Scan(&targets).Error; err != nil {
+		return nil, fmt.Errorf("failed to find invoices missing items: %w", err)
+	}
+
+	repaired := 0
+	skipped := 0
+	examples := make([]string, 0, 5)
+
+	for _, shell := range targets {
+		var invoice Invoice
+		if err := a.db.First(&invoice, "id = ?", shell.ID).Error; err != nil {
+			return nil, fmt.Errorf("failed to load invoice %s: %w", shell.ID, err)
+		}
+
+		var order Order
+		if err := a.db.Preload("Items").First(&order, "id = ?", invoice.OrderID).Error; err != nil {
+			skipped++
+			continue
+		}
+
+		items := invoiceOrderItemsFromOrder(order)
+		if len(items) == 0 {
+			fallbackAmount := roundInvoiceMoney(invoice.SubtotalBHD)
+			if fallbackAmount <= 0 {
+				fallbackAmount = roundInvoiceMoney(order.TotalValueBHD)
+			}
+			if fallbackAmount <= 0 {
+				fallbackAmount = roundInvoiceMoney(invoice.GrandTotalBHD)
+			}
+			if fallbackAmount <= 0 {
+				skipped++
+				continue
+			}
+			items = []OrderItem{{
+				Base:        Base{ID: uuid.New().String()},
+				OrderID:     order.ID,
+				LineNumber:  1,
+				Description: fmt.Sprintf("Per Order %s", order.OrderNumber),
+				Quantity:    1,
+				UnitPrice:   fallbackAmount,
+				TotalPrice:  fallbackAmount,
+			}}
+		}
+
+		invoiceItems := make([]DBInvoiceItem, 0, len(items))
+		totalSupplierCost := 0.0
+		subtotal := 0.0
+		for index, item := range items {
+			lineTotal := roundInvoiceMoney(item.TotalPrice)
+			if lineTotal <= 0 && item.Quantity > 0 && item.UnitPrice > 0 {
+				lineTotal = roundInvoiceMoney(item.Quantity * item.UnitPrice)
+			}
+			unitPrice := roundInvoiceMoney(item.UnitPrice)
+			if unitPrice <= 0 && item.Quantity > 0 && lineTotal > 0 {
+				unitPrice = roundInvoiceMoney(lineTotal / item.Quantity)
+			}
+			if lineTotal <= 0 {
+				continue
+			}
+			supplierCost := roundInvoiceMoney(item.TotalCost)
+			totalSupplierCost += supplierCost
+			subtotal += lineTotal
+			invoiceItems = append(invoiceItems, DBInvoiceItem{
+				Base:                Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+				InvoiceID:           invoice.ID,
+				LineNumber:          index + 1,
+				Description:         item.Description,
+				Quantity:            item.Quantity,
+				Rate:                unitPrice,
+				TotalBHD:            lineTotal,
+				ProductID:           item.ProductID,
+				ProductCode:         item.ProductCode,
+				Equipment:           item.Equipment,
+				Model:               item.Model,
+				Specification:       item.Specification,
+				DetailedDescription: item.DetailedDescription,
+				Currency:            item.Currency,
+				FOB:                 item.FOB,
+				Freight:             item.Freight,
+				TotalCost:           item.TotalCost,
+				MarginPercent:       item.MarginPercent,
+				TotalPrice:          lineTotal,
+			})
+		}
+
+		if len(invoiceItems) == 0 {
+			skipped++
+			continue
+		}
+
+		currentSubtotal := roundInvoiceMoney(invoice.SubtotalBHD)
+		if currentSubtotal <= 0 {
+			currentSubtotal = roundInvoiceMoney(subtotal)
+		}
+
+		updates := map[string]interface{}{
+			"rfq_id":                  order.RFQID,
+			"offer_id":                order.OfferID,
+			"offer_number":            order.OfferNumber,
+			"customer_reference":      order.CustomerReference,
+			"attention_person":        order.AttentionPerson,
+			"attention_company":       order.AttentionCompany,
+			"attention_phone":         order.AttentionPhone,
+			"attention_address":       order.AttentionAddress,
+			"delivery_weeks":          order.DeliveryWeeks,
+			"country_of_origin":       order.CountryOfOrigin,
+			"issued_by":               order.IssuedBy,
+			"contact_phone":           order.ContactPhone,
+			"discount_percent":        order.DiscountPercent,
+			"payment_terms":           order.PaymentTerms,
+			"delivery_terms":          order.DeliveryTerms,
+			"total_supplier_cost_bhd": roundInvoiceMoney(totalSupplierCost),
+			"gross_margin_bhd":        roundInvoiceMoney(currentSubtotal - totalSupplierCost),
+		}
+		if invoice.SubtotalBHD <= 0 {
+			updates["subtotal_bhd"] = currentSubtotal
+		}
+		if currentSubtotal > 0 {
+			updates["gross_margin_percent"] = roundInvoiceMoney(((currentSubtotal - totalSupplierCost) / currentSubtotal) * 100)
+		}
+		if strings.TrimSpace(invoice.FieldVisibility) == "" {
+			updates["field_visibility"] = defaultInvoiceFieldVisibilityJSON()
+		}
+
+		if err := a.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Where("invoice_id = ?", invoice.ID).Delete(&DBInvoiceItem{}).Error; err != nil {
+				return fmt.Errorf("failed to clear stale invoice items for %s: %w", invoice.InvoiceNumber, err)
+			}
+			if err := tx.Create(&invoiceItems).Error; err != nil {
+				return fmt.Errorf("failed to create invoice items for %s: %w", invoice.InvoiceNumber, err)
+			}
+			if err := tx.Model(&Invoice{}).Where("id = ?", invoice.ID).Updates(updates).Error; err != nil {
+				return fmt.Errorf("failed to update invoice header for %s: %w", invoice.InvoiceNumber, err)
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+
+		repaired++
+		if len(examples) < 5 {
+			examples = append(examples, invoice.InvoiceNumber)
+		}
+	}
+
+	return map[string]interface{}{
+		"attempted": len(targets),
+		"repaired":  repaired,
+		"skipped":   skipped,
+		"examples":  examples,
+	}, nil
 }
 
 // =============================================================================
@@ -207,6 +485,8 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 	}
 	log.Printf("✅ CreateInvoiceWithOptions: Loaded order %s with %d items, Total: %.3f BHD", order.OrderNumber, len(order.Items), order.GrandTotalBHD)
 
+	order.Items = invoiceOrderItemsFromOrder(order)
+
 	// FIXED: Handle orders without items (e.g., Tally imports) by creating a single line item
 	// B1 FIX: Synthetic item is added to memory here but persisted inside the transaction below
 	var syntheticItem *OrderItem
@@ -344,8 +624,7 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 			if fieldVisibilityJSON != "" {
 				return fieldVisibilityJSON
 			}
-			// Default: show customer-facing fields, hide internal cost data
-			return `{"show_fob":false,"show_freight":false,"show_margin":false,"show_cost":false,"show_contact":true,"show_rfq":true,"show_equipment":true,"show_specification":true}`
+			return defaultInvoiceFieldVisibilityJSON()
 		}(),
 		Items: []DBInvoiceItem{},
 	}
@@ -388,7 +667,9 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		}
 
 		// Track invoiced quantity for this order item
-		invoicedQtyByOrderItemID[orderItem.ID] = invoiceQty
+		if strings.TrimSpace(orderItem.ID) != "" {
+			invoicedQtyByOrderItemID[orderItem.ID] = invoiceQty
+		}
 		lineNum++
 
 		// Use TotalCost from costing sheet if available, otherwise estimate
@@ -407,7 +688,14 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		}
 		totalSupplierCost += supplierCost
 
-		lineTotal := invoiceQty * orderItem.UnitPrice
+		unitPrice := roundInvoiceMoney(orderItem.UnitPrice)
+		lineTotal := roundInvoiceMoney(orderItem.TotalPrice)
+		if lineTotal <= 0 && invoiceQty > 0 && unitPrice > 0 {
+			lineTotal = roundInvoiceMoney(invoiceQty * unitPrice)
+		}
+		if unitPrice <= 0 && invoiceQty > 0 && lineTotal > 0 {
+			unitPrice = roundInvoiceMoney(lineTotal / invoiceQty)
+		}
 		invoiceSubtotal += lineTotal
 
 		// Invoice item contains FULL costing sheet data (the costing sheet becomes the invoice)
@@ -421,7 +709,7 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 			LineNumber:  lineNum,
 			Description: orderItem.Description,
 			Quantity:    invoiceQty,
-			Rate:        orderItem.UnitPrice,
+			Rate:        unitPrice,
 			TotalBHD:    lineTotal,
 			// Full costing data from OrderItem (originally from OfferItem/CostingSheet)
 			ProductID:           orderItem.ProductID,
@@ -435,7 +723,7 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 			Freight:             orderItem.Freight,
 			TotalCost:           orderItem.TotalCost,
 			MarginPercent:       orderItem.MarginPercent,
-			TotalPrice:          orderItem.TotalPrice,
+			TotalPrice:          lineTotal,
 		}
 		invoice.Items = append(invoice.Items, invoiceItem)
 	}
@@ -702,6 +990,12 @@ func (a *App) UpdateCustomerInvoice(inv Invoice) (Invoice, error) {
 	if inv.InvoiceNumber != "" && inv.InvoiceNumber != existing.InvoiceNumber {
 		if existing.Status != "Draft" {
 			return Invoice{}, fmt.Errorf("cannot change invoice number on %s invoice (locked for audit compliance)", existing.Status)
+		}
+		// Uniqueness check: verify no other invoice has the same number
+		var count int64
+		a.db.Model(&Invoice{}).Where("invoice_number = ? AND id != ?", inv.InvoiceNumber, inv.ID).Count(&count)
+		if count > 0 {
+			return Invoice{}, fmt.Errorf("invoice number %s already exists", inv.InvoiceNumber)
 		}
 		existing.InvoiceNumber = inv.InvoiceNumber
 	}

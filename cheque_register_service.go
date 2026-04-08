@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // =============================================================================
@@ -145,42 +147,65 @@ func (a *App) IssueCheque(bankAccountID string, amount float64, payeeName, payee
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	// Get next cheque number
-	chequeNumber, err := a.GetNextChequeNumber(bankAccountID)
+	// Wrap cheque number allocation + creation + increment in a single transaction
+	var cheque *OutstandingCheque
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		// Get active register inside transaction
+		var register ChequeRegister
+		if err := tx.Where("bank_account_id = ? AND status = ?", bankAccountID, "ACTIVE").
+			First(&register).Error; err != nil {
+			return fmt.Errorf("no active cheque register found for bank account %s", bankAccountID)
+		}
+
+		if register.CurrentNumber > register.EndNumber {
+			return fmt.Errorf("cheque book exhausted - please create a new register")
+		}
+
+		chequeNumber := fmt.Sprintf("%06d", register.CurrentNumber)
+
+		cheque = &OutstandingCheque{
+			BankAccountID: bankAccountID,
+			ChequeNumber:  chequeNumber,
+			Amount:        amount,
+			Currency:      "BHD",
+			IssuedDate:    time.Now(),
+			PayeeName:     payeeName,
+			PayeeType:     payeeType,
+			SupplierID:    supplierID,
+			Purpose:       purpose,
+			Status:        "ISSUED",
+		}
+
+		if err := tx.Create(cheque).Error; err != nil {
+			return fmt.Errorf("failed to issue cheque: %w", err)
+		}
+
+		// Increment the register's current number
+		newNumber := register.CurrentNumber + 1
+		if err := tx.Model(&register).Update("current_number", newNumber).Error; err != nil {
+			return fmt.Errorf("failed to increment cheque number: %w", err)
+		}
+
+		// Check if exhausted
+		if newNumber > register.EndNumber {
+			now := time.Now()
+			if err := tx.Model(&ChequeRegister{}).
+				Where("id = ?", register.ID).
+				Updates(map[string]interface{}{
+					"status":         "EXHAUSTED",
+					"exhausted_date": now,
+				}).Error; err != nil {
+				log.Printf("⚠️ Failed to mark register as exhausted: %v", err)
+			}
+		}
+
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	cheque := &OutstandingCheque{
-		BankAccountID: bankAccountID,
-		ChequeNumber:  chequeNumber,
-		Amount:        amount,
-		Currency:      "BHD",
-		IssuedDate:    time.Now(),
-		PayeeName:     payeeName,
-		PayeeType:     payeeType,
-		SupplierID:    supplierID,
-		Purpose:       purpose,
-		Status:        "ISSUED",
-	}
-
-	if err := a.db.Create(cheque).Error; err != nil {
-		return nil, fmt.Errorf("failed to issue cheque: %w", err)
-	}
-
-	// Increment the register's current number
-	register, _ := a.GetActiveChequeRegister(bankAccountID)
-	if register != nil {
-		newNumber := register.CurrentNumber + 1
-		a.db.Model(register).Update("current_number", newNumber)
-
-		// Check if exhausted
-		if newNumber > register.EndNumber {
-			a.ExhaustChequeRegister(register.ID)
-		}
-	}
-
-	log.Printf("📝 Cheque issued: #%s for %.3f BHD to %s", chequeNumber, amount, payeeName)
+	log.Printf("📝 Cheque issued: #%s for %.3f BHD to %s", cheque.ChequeNumber, amount, payeeName)
 	return cheque, nil
 }
 

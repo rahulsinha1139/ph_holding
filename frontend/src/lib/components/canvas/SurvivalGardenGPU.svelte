@@ -194,45 +194,47 @@
     animationId = requestAnimationFrame(draw);
   }
 
-  onMount(async () => {
+  onMount(() => {
     ctx = canvas.getContext("2d")!;
     resize();
     window.addEventListener("resize", resize);
 
-    // Run GPU-accelerated simulation via Asymmetrica.Runtime
-    try {
-      devLog.log('Starting GPU-accelerated simulation...');
-      const startTime = performance.now();
+    void (async () => {
+      // Run GPU-accelerated simulation via Asymmetrica.Runtime
+      try {
+        devLog.log('Starting GPU-accelerated simulation...');
+        const startTime = performance.now();
 
-      gardenStates = await SimulateSurvivalGarden(
-        runwayMonths,
-        burnRate,
-        expenses,
-        maxMonths
-      );
+        gardenStates = await SimulateSurvivalGarden(
+          runwayMonths,
+          burnRate,
+          expenses,
+          maxMonths
+        );
 
-      const elapsed = performance.now() - startTime;
-      devLog.log(`GPU simulation completed in ${elapsed.toFixed(1)}ms`);
-      devLog.log(`Generated ${gardenStates.length} garden states`);
+        const elapsed = performance.now() - startTime;
+        devLog.log(`GPU simulation completed in ${elapsed.toFixed(1)}ms`);
+        devLog.log(`Generated ${gardenStates.length} garden states`);
 
-      updateCurrentState();
-    } catch (error) {
-      devLog.warn("GPU simulation failed, using CPU fallback:", error);
+        updateCurrentState();
+      } catch (error) {
+        devLog.warn("GPU simulation failed, using CPU fallback:", error);
 
-      // Fallback: create default states (CPU-based)
-      gardenStates = Array.from({ length: maxMonths + 1 }, (_, i) => ({
-        waterLevel: Math.max(0, (runwayMonths - i) / runwayMonths),
-        stoneHeights: [0.1, 0.15, 0.2, 0.25, 0.3],
-        particleCount: 0,
-        regime: 3,
-        temperature: 0,
-        turbulence: 0.2
-      }));
+        // Fallback: create default states (CPU-based)
+        gardenStates = Array.from({ length: maxMonths + 1 }, (_, i) => ({
+          waterLevel: Math.max(0, (runwayMonths - i) / runwayMonths),
+          stoneHeights: [0.1, 0.15, 0.2, 0.25, 0.3],
+          particleCount: 0,
+          regime: 3,
+          temperature: 0,
+          turbulence: 0.2
+        }));
 
-      devLog.log('CPU fallback simulation completed');
-    }
+        devLog.log('CPU fallback simulation completed');
+      }
 
-    draw();
+      draw();
+    })();
 
     return () => {
       window.removeEventListener("resize", resize);

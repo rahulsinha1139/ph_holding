@@ -150,9 +150,7 @@ func (a *App) generatePDFReport(category string, data ReportData, dateRange stru
 	pdf.CellFormat(0, 10, fmt.Sprintf("Page %d", pdf.PageNo()), "", 0, "C", false, 0, "")
 
 	// Save to file
-	paths := a.getAppPaths()
-	exportDir := filepath.Join(paths.ProjectRoot, "exports", "reports")
-	os.MkdirAll(exportDir, 0755)
+	exportDir := a.getExportDir("report", "", "", time.Now().Year())
 
 	timestamp := time.Now().Format("20060102_150405")
 	filename := fmt.Sprintf("%s_report_%s.pdf", category, timestamp)
@@ -385,9 +383,7 @@ func (a *App) generateExcelReport(category string, data ReportData, dateRange st
 	}
 
 	// Save to file
-	paths := a.getAppPaths()
-	exportDir := filepath.Join(paths.ProjectRoot, "exports", "reports")
-	os.MkdirAll(exportDir, 0755)
+	exportDir := a.getExportDir("report", "", "", time.Now().Year())
 
 	timestamp := time.Now().Format("20060102_150405")
 	filename := fmt.Sprintf("%s_report_%s.xlsx", category, timestamp)
@@ -569,9 +565,7 @@ func (a *App) addFinancialReportToExcel(f *excelize.File, sheet string, data Rep
 // =============================================================================
 
 func (a *App) generateCSVReport(category string, data ReportData, dateRange struct{ Start, End string }) (string, error) {
-	paths := a.getAppPaths()
-	exportDir := filepath.Join(paths.ProjectRoot, "exports", "reports")
-	os.MkdirAll(exportDir, 0755)
+	exportDir := a.getExportDir("report", "", "", time.Now().Year())
 
 	timestamp := time.Now().Format("20060102_150405")
 	filename := fmt.Sprintf("%s_report_%s.csv", category, timestamp)

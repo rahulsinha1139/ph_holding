@@ -31,6 +31,8 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,23 +47,53 @@ type ButlerResponse struct {
 	Actions    []ButlerAction         `json:"actions"`
 	Confidence float64                `json:"confidence"`
 	Context    map[string]interface{} `json:"context"`
+	Metadata   ButlerResponseMetadata `json:"metadata"`
+}
+
+type ButlerResponseMetadata struct {
+	UsedBackend       string                 `json:"used_backend"`
+	RequestedModel    string                 `json:"requested_model"`
+	UsedModel         string                 `json:"used_model"`
+	FallbackReason    string                 `json:"fallback_reason"`
+	FinanceDataAccess bool                   `json:"finance_data_access"`
+	ContextMode       string                 `json:"context_mode"`
+	DataCoverage      []string               `json:"data_coverage"`
+	EntityResolution  map[string]interface{} `json:"entity_resolution"`
+	GeneratedAt       string                 `json:"generated_at"`
+	Error             string                 `json:"error"`
 }
 
 // ButlerAction represents a suggested action from Butler
 type ButlerAction struct {
 	Type   string      `json:"type"`   // "navigate", "create", "update", "fetch", "analyze", "alert"
 	Target string      `json:"target"` // screen or entity
+	Label  string      `json:"label"`
 	Data   interface{} `json:"data"`
 }
 
 // Intent represents classified user intent
 type Intent struct {
-	Domain       string   // customer, supplier, financial, operations, risk, market, general
-	EntityName   string   // extracted customer/supplier name
-	Confidence   float64  // 0.0 - 1.0
-	Keywords     []string // matched keywords
-	NeedsScraper bool     // true if external data needed
-	IsComplex    bool     // true if requires mistral-large
+	RawQuery      string
+	Domain        string   // customer, supplier, financial, operations, risk, market, general
+	EntityName    string   // extracted customer/supplier name
+	PersonName    string   // extracted contact/account-manager reference
+	ReferenceKind string   // customer, contact_person, account_manager
+	Confidence    float64  // 0.0 - 1.0
+	Keywords      []string // matched keywords
+	NeedsScraper  bool     // true if external data needed
+	IsComplex     bool     // true if requires mistral-large
+}
+
+type ButlerResolvedEntity struct {
+	EntityType        string
+	EntityID          string
+	DisplayName       string
+	Confidence        float64
+	MatchReason       string
+	RelatedCustomerID string
+	RelatedCustomer   string
+	Ambiguous         bool
+	Alternatives      []map[string]interface{}
 }
 
 // ============================================================================
@@ -79,17 +111,24 @@ const (
 	// AIML API is OpenAI-compatible; Grok offers ~1M token context window
 	// Model ID: verify exact name in your AIML API dashboard (https://api.aimlapi.com)
 	aimlAPIURL      = "https://api.aimlapi.com/v1/chat/completions"
-	aimlModelID     = "grok-4"  // xAI Grok 4 via AIML API — update if model ID differs
+	aimlModelID     = "x-ai/grok-4-fast-reasoning" // xAI Grok 4 via AIML API (prefixed model IDs)
 	aimlMaxTokens   = 16384
 	aimlTemperature = 0.4
 
 	// Intent classification constants
-	MaxKeywordMatchScore         = 4.0
-	ComplexQueryDomainThreshold  = 3
-	ComplexQueryLengthThreshold  = 200
-	MistralAPITimeout            = 120 * time.Second
-	AimlAPITimeout               = 120 * time.Second
+	MaxKeywordMatchScore        = 4.0
+	ComplexQueryDomainThreshold = 3
+	ComplexQueryLengthThreshold = 200
+	MistralAPITimeout           = 120 * time.Second
+	AimlAPITimeout              = 120 * time.Second
 )
+
+var fallbackAIMLModels = []string{
+	"x-ai/grok-4-1-fast-reasoning",
+	"x-ai/grok-3-beta",
+	"gpt-4o",
+	"gpt-4o-mini",
+}
 
 // ============================================================================
 // INTENT CLASSIFICATION
@@ -99,8 +138,8 @@ var (
 	customerKeywords   = []string{"customer", "client", "buyer", "account", "bapco", "alba", "ewa", "gpic", "noga", "aluminium bahrain", "bahrain petroleum", "electricity water", "gulf petrochemical", "tatweer", "banagas", "business with", "total business", "how much", "who is our", "top customer", "biggest customer", "best customer", "worst customer", "most profitable", "profitab", "dormant", "inactive", "haven't ordered", "not ordered", "lapsed", "churn", "retention", "new customer", "acquisition", "which customer"}
 	supplierKeywords   = []string{"supplier", "vendor", "source", "endress", "hauser", "servomex", "landis", "gyr", "e+h", "bought from", "purchased from", "procurement", "supply chain", "top supplier", "lead time", "delivery time", "reliable", "on time", "supplier performance", "qc rate", "quality"}
 	financialKeywords  = []string{"cash", "payment", "invoice", "receivable", "payable", "balance", "revenue", "profit", "margin", "ar", "aging", "dso", "outstanding", "collection", "money", "owe", "owes", "paid", "unpaid", "earned", "income", "expense", "cashflow", "cash flow", "how much did we", "total sales", "turnover", "gross", "net", "bhd", "fiscal", "financial year", "days to pay", "payment speed", "slow payer", "fast payer", "days sales outstanding", "margin by", "profit by"}
-	operationsKeywords = []string{"quote", "rfq", "order", "pipeline", "delivery", "purchase", "costing", "offer", "grn", "shipment", "po", "purchase order", "win rate", "conversion", "open orders", "pending", "active orders", "quotation", "expir", "validity", "expire", "lapsing", "about to expire", "win loss", "lost reason", "competition", "competitor", "abb", "won", "lost deals"}
-	riskKeywords       = []string{"overdue", "late", "risk", "aging", "collection", "blocked", "dispute", "critical", "warning", "defaulter", "slow payer", "bad debt", "credit block", "action item", "what should", "what do i", "today", "urgent", "priorit", "focus", "stuck", "follow up", "pending approval", "awaiting"}
+	operationsKeywords = []string{"quote", "rfq", "order", "pipeline", "delivery", "purchase", "costing", "offer", "grn", "shipment", "po", "purchase order", "win rate", "conversion", "open orders", "pending", "active orders", "quotation", "expir", "validity", "expire", "lapsing", "about to expire", "win loss", "lost reason", "competition", "competitor", "abb", "won", "lost deals", "service", "maintenance", "calibration", "install", "installation", "commission", "commissioning", "repair", "visit"}
+	riskKeywords       = []string{"overdue", "late", "risk", "aging", "collection", "blocked", "dispute", "critical", "warning", "defaulter", "slow payer", "bad debt", "credit block", "action item", "what should", "what do i", "today", "urgent", "priorit", "focus", "stuck", "follow up", "pending approval", "awaiting", "service due", "warranty", "calibration due", "cashflow", "cash flow"}
 	marketKeywords     = []string{"price", "market", "competitor", "trend", "industry", "steel", "instrumentation"}
 
 	// Patterns that indicate complex queries needing mistral-large
@@ -115,6 +154,7 @@ func classifyIntent(query string) Intent {
 	queryLower := strings.ToLower(query)
 
 	intent := Intent{
+		RawQuery:   query,
 		Domain:     "general",
 		Confidence: 0.5,
 		Keywords:   []string{},
@@ -151,6 +191,18 @@ func classifyIntent(query string) Intent {
 	// Extract entity name for customer/supplier queries
 	if intent.Domain == "customer" || intent.Domain == "supplier" {
 		intent.EntityName = extractEntityName(query)
+		if intent.EntityName != "" {
+			intent.ReferenceKind = intent.Domain
+		}
+	}
+
+	intent.PersonName = extractPersonReference(query)
+	if intent.PersonName != "" {
+		if looksLikeAccountManagerReference(queryLower) {
+			intent.ReferenceKind = "account_manager"
+		} else if intent.ReferenceKind == "" {
+			intent.ReferenceKind = "contact_person"
+		}
 	}
 
 	// Market queries need scraper
@@ -270,6 +322,38 @@ func isEntityStopWord(w string) bool {
 	return stops[w]
 }
 
+func extractPersonReference(query string) string {
+	triggerPatterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(?:contact|attention|attn|spoc|person)\s+(?:for|at|of)?\s*([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,3})`),
+		regexp.MustCompile(`(?i)(?:account manager|salesperson|sales person|owner|handled by|handling)\s+(?:for|is|:)?\s*([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,3})`),
+	}
+	for _, pattern := range triggerPatterns {
+		if m := pattern.FindStringSubmatch(query); len(m) > 1 {
+			return strings.TrimSpace(m[1])
+		}
+	}
+
+	fullNamePattern := regexp.MustCompile(`\b([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+)+)\b`)
+	if m := fullNamePattern.FindStringSubmatch(query); len(m) > 1 {
+		return strings.TrimSpace(m[1])
+	}
+
+	return ""
+}
+
+func looksLikeAccountManagerReference(queryLower string) bool {
+	accountManagerHints := []string{
+		"account manager", "salesperson", "sales person", "owner",
+		"who is handling", "who's handling", "handled by", "managed by",
+	}
+	for _, hint := range accountManagerHints {
+		if strings.Contains(queryLower, hint) {
+			return true
+		}
+	}
+	return false
+}
+
 // ============================================================================
 // MAIN CHAT FUNCTION
 // ============================================================================
@@ -283,21 +367,40 @@ func (a *App) ChatWithButler(message string) (ButlerResponse, error) {
 	intent := classifyIntent(message)
 	log.Printf("🧠 Intent classified: domain=%s entity=%q confidence=%.2f complex=%v",
 		intent.Domain, intent.EntityName, intent.Confidence, intent.IsComplex)
+	hasFinanceAccess := a.requirePermission("finance:view") == nil
 
 	// 2. RBAC: Check if user has permission to access financial data
-	if intent.Domain == "financial" || intent.Domain == "risk" {
+	if requiresFinancePrivilege(intent, message) {
 		userRole := a.GetCurrentUserRole()
-		hasFinanceAccess := a.CheckPermissionByRole(userRole, "finance:view")
-
+		licenseRole := a.GetLicenseRole()
 		if !hasFinanceAccess {
-			log.Printf("🔒 Butler financial query blocked: user role=%s lacks finance:view", userRole)
+			log.Printf("🔒 Butler financial query blocked: user role=%s license role=%s lacks finance:view", userRole, licenseRole)
 			return ButlerResponse{
-				Message: "Financial data access requires manager or admin privileges.\n\nYou can still ask me about:\n• Customer information\n• Supplier details\n• Order status\n• Operations and pipeline\n\nFor financial reports and metrics, please contact your manager.",
+				Message:    "Financial data access requires manager or admin privileges.\n\nYou can still ask me about:\n• Customer information\n• Supplier details\n• Order status\n• Operations and pipeline\n\nFor financial reports and metrics, please contact your manager.",
 				Actions:    []ButlerAction{},
 				Confidence: 0.95,
-				Context:    map[string]interface{}{"blocked_domain": intent.Domain, "user_role": userRole},
+				Context: map[string]interface{}{
+					"blocked_domain": intent.Domain,
+					"user_role":      userRole,
+					"license_role":   licenseRole,
+				},
+				Metadata: buildButlerMetadata(intent, map[string]interface{}{
+					"blocked_domain": intent.Domain,
+					"user_role":      userRole,
+					"license_role":   licenseRole,
+				}, false, "blocked", "", "", "", nil),
 			}, nil
 		}
+	}
+
+	if groundedReply, handled := a.tryGroundedCustomerFastPath(intent, message); handled {
+		return ButlerResponse{
+			Message:    groundedReply,
+			Actions:    []ButlerAction{},
+			Confidence: 0.98,
+			Context:    map[string]interface{}{"fast_path": "grounded_customer"},
+			Metadata:   buildButlerMetadata(intent, map[string]interface{}{"fast_path": "grounded_customer"}, hasFinanceAccess, "grounded_sql", "", "", "", nil),
+		}, nil
 	}
 
 	// 3. Check if this is a report generation request
@@ -319,10 +422,14 @@ func (a *App) ChatWithButler(message string) (ButlerResponse, error) {
 	var aiResponse string
 	var aiErr error
 	usedBackend := "Mistral"
+	requestedModel := getAIMLModelID()
+	usedModel := ""
+	fallbackReason := ""
 	if aimlKey := getAIMLAPIKey(); aimlKey != "" {
-		aiResponse, aiErr = callAIML(aimlKey, systemPrompt, message)
+		aiResponse, usedModel, aiErr = callAIMLWithFallback(aimlKey, systemPrompt, message)
 		usedBackend = "AIML/Grok"
 		if aiErr != nil {
+			fallbackReason = aiErr.Error()
 			log.Printf("⚠️ AIML API error, falling back to Mistral: %v", aiErr)
 			aiResponse, aiErr = callMistral(mistralModelLarge, systemPrompt, message)
 			usedBackend = "Mistral (fallback)"
@@ -338,11 +445,31 @@ func (a *App) ChatWithButler(message string) (ButlerResponse, error) {
 			Actions:    []ButlerAction{},
 			Confidence: 0.0,
 			Context:    context,
+			Metadata: buildButlerMetadata(
+				intent,
+				context,
+				hasFinanceAccess,
+				usedBackend,
+				requestedModel,
+				usedModel,
+				fallbackReason,
+				aiErr,
+			),
 		}, nil
 	}
 
 	// 8. Parse response (extract actions, clean message)
 	butlerResponse := parseMistralResponse(aiResponse, context, intent)
+	butlerResponse.Metadata = buildButlerMetadata(
+		intent,
+		context,
+		hasFinanceAccess,
+		usedBackend,
+		requestedModel,
+		usedModel,
+		fallbackReason,
+		nil,
+	)
 
 	log.Printf("🤖 Butler responded via %s: %s (confidence: %.2f, actions: %d)",
 		usedBackend, butlerTruncate(butlerResponse.Message, 60), butlerResponse.Confidence, len(butlerResponse.Actions))
@@ -407,6 +534,11 @@ func detectReportType(message string, intent Intent) string {
 func (a *App) handleReportRequest(message string, intent Intent) (ButlerResponse, error) {
 	reportType := detectReportType(message, intent)
 	log.Printf("📊 Report request detected: type=%s entity=%q", reportType, intent.EntityName)
+	financeAccess := a.currentSessionHasPermission("finance:view")
+	reportMetadata := buildButlerMetadata(intent, map[string]interface{}{
+		"request":     message,
+		"report_type": reportType,
+	}, financeAccess, "local_report", "", "", "", nil)
 
 	filePath, err := a.GenerateButlerReport(reportType, intent.EntityName)
 	if err != nil {
@@ -416,10 +548,11 @@ func (a *App) handleReportRequest(message string, intent Intent) (ButlerResponse
 
 		if isPermissionError {
 			return ButlerResponse{
-				Message: "I cannot generate this report due to insufficient permissions.\n\nFinancial, risk, and executive reports require manager or admin privileges.\n\nYou can still request:\n• Customer reports\n• Supplier reports\n• Operations reports\n\nPlease contact your manager for financial report access.",
+				Message:    "I cannot generate this report due to insufficient permissions.\n\nFinancial, risk, and executive reports require manager or admin privileges.\n\nYou can still request:\n• Customer reports\n• Supplier reports\n• Operations reports\n\nPlease contact your manager for financial report access.",
 				Actions:    []ButlerAction{},
 				Confidence: 0.95,
 				Context:    map[string]interface{}{"report_type": reportType, "blocked": "permission_denied"},
+				Metadata:   reportMetadata,
 			}, nil
 		}
 
@@ -428,6 +561,7 @@ func (a *App) handleReportRequest(message string, intent Intent) (ButlerResponse
 			Actions:    []ButlerAction{},
 			Confidence: 0.3,
 			Context:    map[string]interface{}{"report_type": reportType, "error": err.Error()},
+			Metadata:   buildButlerMetadata(intent, map[string]interface{}{"report_type": reportType, "error": err.Error()}, financeAccess, "local_report", "", "", err.Error(), err),
 		}, nil
 	}
 
@@ -439,6 +573,7 @@ func (a *App) handleReportRequest(message string, intent Intent) (ButlerResponse
 		Actions:    []ButlerAction{{Type: "fetch", Target: "report", Data: filePath}},
 		Confidence: 0.95,
 		Context:    map[string]interface{}{"report_type": reportType, "file_path": filePath},
+		Metadata:   reportMetadata,
 	}, nil
 }
 
@@ -455,8 +590,7 @@ func (a *App) buildIntentContext(intent Intent) map[string]interface{} {
 	}
 
 	// Check if user has finance access (for redacting financial data from non-finance contexts)
-	userRole := a.GetCurrentUserRole()
-	hasFinanceAccess := a.CheckPermissionByRole(userRole, "finance:view")
+	hasFinanceAccess := a.requirePermission("finance:view") == nil
 
 	// Always include dashboard summary (redacted for non-finance users)
 	summary := a.getBusinessSummary()
@@ -465,16 +599,35 @@ func (a *App) buildIntentContext(intent Intent) map[string]interface{} {
 		delete(summary, "total_outstanding_bhd")
 	}
 	context["business_summary"] = summary
+	context["system_time"] = a.getSystemTimeContext()
+	if periodSummary := a.getBusinessPeriodSummary(intent.RawQuery); len(periodSummary) > 0 {
+		context["business_period_summary"] = periodSummary
+	}
+	if yearSummary := a.getBusinessYearSummary(intent.RawQuery); len(yearSummary) > 0 {
+		context["business_year_summary"] = yearSummary
+	}
+	a.injectGroundedReferenceContext(context, intent, hasFinanceAccess)
+	context["butler_memory"] = a.getButlerMemoryContext(intent)
+	context["proactive_briefing"] = a.getProactiveBriefingContext(hasFinanceAccess)
 
 	// Domain-specific context injection
 	switch intent.Domain {
 	case "customer":
-		customerCtx := a.getCustomerContext(intent.EntityName)
+		customerCtx, ok := context["customer_data"].(map[string]interface{})
+		if !ok || len(customerCtx) == 0 {
+			customerCtx = a.getCustomerContext(intent.EntityName)
+		}
 		if !hasFinanceAccess {
 			// Redact financial data from customer context for non-finance users
 			a.redactFinancialFromContext(customerCtx)
 		}
 		context["customer_data"] = customerCtx
+		if quarterSummary := a.getCustomerPeriodSummary(intent.EntityName, intent.RawQuery); len(quarterSummary) > 0 {
+			context["customer_period_summary"] = quarterSummary
+		} else if _, ok := parseCustomerPeriodLabel(intent.RawQuery); ok {
+			context["customer_period_summary"] = a.getMissingCustomerPeriodSummary(intent.EntityName, intent.RawQuery)
+		}
+		context["installed_base_summary"] = a.getInstalledBaseSummary(intent.EntityName)
 		if hasFinanceAccess {
 			context["ar_summary"] = a.getARSummary()
 		}
@@ -486,25 +639,43 @@ func (a *App) buildIntentContext(intent Intent) map[string]interface{} {
 	case "financial":
 		context["financial_data"] = a.getFinancialContext()
 		context["ar_summary"] = a.getARSummary()
+		context["cashflow_projection"] = a.getCashflowProjectionContext()
 
 	case "operations":
 		context["operations_data"] = a.getOperationsContext()
 		context["po_summary"] = a.getPurchaseOrderSummary()
 		context["risk_data"] = a.getRiskContext() // Include risk for operations awareness
+		context["service_due_installations"] = a.getServiceDueInstallationsContext()
+		context["quotation_precheck"] = a.getQuotationPrecheckContext(intent)
 
 	case "risk":
 		context["risk_data"] = a.getRiskContext()
 		context["ar_summary"] = a.getARSummary()
 		context["operations_data"] = a.getOperationsContext() // Include ops for delivery risk context
+		context["service_due_installations"] = a.getServiceDueInstallationsContext()
+		context["closeable_opportunities"] = a.getCloseableOpportunitiesContext()
+		if hasFinanceAccess {
+			context["cashflow_projection"] = a.getCashflowProjectionContext()
+		}
 
 	default:
 		// General query - provide comprehensive overview
 		context["customer_data"] = a.getCustomerContext(intent.EntityName)
+		if quarterSummary := a.getCustomerPeriodSummary(intent.EntityName, intent.RawQuery); len(quarterSummary) > 0 {
+			context["customer_period_summary"] = quarterSummary
+		} else if _, ok := parseCustomerPeriodLabel(intent.RawQuery); ok {
+			context["customer_period_summary"] = a.getMissingCustomerPeriodSummary(intent.EntityName, intent.RawQuery)
+		}
+		context["installed_base_summary"] = a.getInstalledBaseSummary(intent.EntityName)
 		context["ar_summary"] = a.getARSummary()
 		context["operations_data"] = a.getOperationsContext()
 		context["risk_data"] = a.getRiskContext()
+		context["service_due_installations"] = a.getServiceDueInstallationsContext()
+		context["closeable_opportunities"] = a.getCloseableOpportunitiesContext()
+		context["quotation_precheck"] = a.getQuotationPrecheckContext(intent)
 		if hasFinanceAccess {
 			context["financial_data"] = a.getFinancialContext()
+			context["cashflow_projection"] = a.getCashflowProjectionContext()
 		}
 	}
 
@@ -522,8 +693,7 @@ func (a *App) buildFullContext(intent Intent) map[string]interface{} {
 		return context
 	}
 
-	userRole := a.GetCurrentUserRole()
-	hasFinanceAccess := a.CheckPermissionByRole(userRole, "finance:view")
+	hasFinanceAccess := a.requirePermission("finance:view") == nil
 
 	// Business summary (always included)
 	summary := a.getBusinessSummary()
@@ -532,9 +702,22 @@ func (a *App) buildFullContext(intent Intent) map[string]interface{} {
 		delete(summary, "total_outstanding_bhd")
 	}
 	context["business_summary"] = summary
+	context["system_time"] = a.getSystemTimeContext()
+	if periodSummary := a.getBusinessPeriodSummary(intent.RawQuery); len(periodSummary) > 0 {
+		context["business_period_summary"] = periodSummary
+	}
+	if yearSummary := a.getBusinessYearSummary(intent.RawQuery); len(yearSummary) > 0 {
+		context["business_year_summary"] = yearSummary
+	}
+	a.injectGroundedReferenceContext(context, intent, hasFinanceAccess)
+	context["butler_memory"] = a.getButlerMemoryContext(intent)
+	context["proactive_briefing"] = a.getProactiveBriefingContext(hasFinanceAccess)
 
 	// Customer context — includes entity-specific data if name was extracted from query
-	customerCtx := a.getCustomerContext(intent.EntityName)
+	customerCtx, ok := context["customer_data"].(map[string]interface{})
+	if !ok || len(customerCtx) == 0 {
+		customerCtx = a.getCustomerContext(intent.EntityName)
+	}
 	if !hasFinanceAccess {
 		a.redactFinancialFromContext(customerCtx)
 	}
@@ -542,12 +725,19 @@ func (a *App) buildFullContext(intent Intent) map[string]interface{} {
 
 	// Supplier context — entity-specific if supplier name extracted, always top suppliers
 	context["supplier_data"] = a.getSupplierContext(intent.EntityName)
+	if quarterSummary := a.getCustomerPeriodSummary(intent.EntityName, intent.RawQuery); len(quarterSummary) > 0 {
+		context["customer_period_summary"] = quarterSummary
+	} else if _, ok := parseCustomerPeriodLabel(intent.RawQuery); ok {
+		context["customer_period_summary"] = a.getMissingCustomerPeriodSummary(intent.EntityName, intent.RawQuery)
+	}
 
 	// Financial context (only if user has finance:view permission)
 	if hasFinanceAccess {
 		context["financial_data"] = a.getFinancialContext()
 		context["ar_summary"] = a.getARSummary()
 	}
+	context["action_items"] = a.getActionItemsContext()
+	context["competition_intelligence"] = a.getCompetitionContext()
 
 	// Operations context (always included — non-sensitive pipeline data)
 	context["operations_data"] = a.getOperationsContext()
@@ -588,6 +778,7 @@ func (a *App) buildFullContext(intent Intent) map[string]interface{} {
 	// DSO — Days Sales Outstanding per customer (who pays slow/fast)
 	if hasFinanceAccess {
 		context["dso_analysis"] = a.getDSOContext()
+		context["cashflow_projection"] = a.getCashflowProjectionContext()
 	}
 
 	// Offer expiry — active quotes approaching their ValidityDate
@@ -603,6 +794,9 @@ func (a *App) buildFullContext(intent Intent) map[string]interface{} {
 
 	// Customer activity — dormant, new, and lapsed customers
 	context["customer_activity"] = a.getCustomerActivityContext()
+	context["service_due_installations"] = a.getServiceDueInstallationsContext()
+	context["closeable_opportunities"] = a.getCloseableOpportunitiesContext()
+	context["quotation_precheck"] = a.getQuotationPrecheckContext(intent)
 
 	// Action items — prioritized list of things needing attention today
 	context["action_items"] = a.getActionItemsContext()
@@ -613,9 +807,1070 @@ func (a *App) buildFullContext(intent Intent) map[string]interface{} {
 	return context
 }
 
+func (a *App) getServiceDueInstallationsContext() map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil {
+		return result
+	}
+
+	type serviceCandidate struct {
+		SerialID           string
+		SerialNo           string
+		ProductID          string
+		ProductCode        string
+		ProductName        string
+		CustomerID         string
+		CustomerName       string
+		DeliveryAddress    string
+		InvoiceID          string
+		InvoiceNumber      string
+		InvoiceDate        *time.Time
+		LineValueBHD       float64
+		OEMName            string
+		WarrantyEndDate    *time.Time
+		CalibrationDueDate *time.Time
+		WarrantyStartDate  *time.Time
+	}
+
+	var rows []serviceCandidate
+	a.db.Table("serial_numbers").
+		Select(`serial_numbers.id as serial_id, serial_numbers.serial_no, serial_numbers.product_id, serial_numbers.product_code,
+			products.product_name, serial_numbers.customer_id, serial_numbers.customer_name,
+			delivery_notes.delivery_address, serial_numbers.invoice_id, serial_numbers.invoice_number,
+			invoices.invoice_date, COALESCE(invoice_items.total_bhd, invoices.grand_total_bhd, 0) as line_value_bhd,
+			suppliers.supplier_name as oem_name, serial_numbers.warranty_end_date, serial_numbers.calibration_due_date,
+			serial_numbers.warranty_start_date`).
+		Joins("LEFT JOIN products ON products.id = serial_numbers.product_id").
+		Joins("LEFT JOIN suppliers ON suppliers.id = products.supplier_id").
+		Joins("LEFT JOIN invoices ON invoices.id = serial_numbers.invoice_id").
+		Joins("LEFT JOIN invoice_items ON invoice_items.invoice_id = serial_numbers.invoice_id AND invoice_items.product_id = serial_numbers.product_id").
+		Joins("LEFT JOIN delivery_notes ON delivery_notes.id = invoices.delivery_note_id").
+		Where("serial_numbers.status = ?", "Delivered").
+		Order("COALESCE(invoice_items.total_bhd, invoices.grand_total_bhd, 0) DESC, invoices.invoice_date DESC").
+		Limit(50).
+		Scan(&rows)
+
+	now := time.Now()
+	dueSoon := now.AddDate(0, 0, 45)
+	top := make([]map[string]interface{}, 0, 5)
+	seen := make(map[string]bool)
+
+	for _, row := range rows {
+		serviceDate, dueReason, isDue := deriveServiceDueStatus(now, dueSoon, row.InvoiceDate, row.WarrantyStartDate, row.WarrantyEndDate, row.CalibrationDueDate)
+		if !isDue {
+			continue
+		}
+
+		groupKey := firstNonEmpty(row.InvoiceID+"|"+row.ProductID, row.InvoiceNumber+"|"+row.ProductCode, row.SerialID)
+		if groupKey == "" || seen[groupKey] {
+			continue
+		}
+		seen[groupKey] = true
+
+		top = append(top, map[string]interface{}{
+			"customer_name":       row.CustomerName,
+			"customer_id":         row.CustomerID,
+			"site":                row.DeliveryAddress,
+			"equipment":           firstNonEmpty(row.ProductName, row.ProductCode),
+			"product_code":        row.ProductCode,
+			"serial_no":           row.SerialNo,
+			"oem":                 row.OEMName,
+			"invoice_number":      row.InvoiceNumber,
+			"invoice_date":        formatOptionalDate(row.InvoiceDate),
+			"estimated_value_bhd": row.LineValueBHD,
+			"service_due_date":    serviceDate,
+			"due_reason":          dueReason,
+		})
+		if len(top) >= 5 {
+			break
+		}
+	}
+
+	result["top_due_installations"] = top
+	result["field_follow_up_candidates"] = buildFieldFollowUpCandidates(top)
+	result["basis"] = "Delivered serial-tracked installations due by calibration date, warranty milestone, or age-from-delivery heuristic"
+	result["window_days"] = 45
+	return result
+}
+
+func deriveServiceDueStatus(now, dueSoon time.Time, invoiceDate, warrantyStartDate, warrantyEndDate, calibrationDueDate *time.Time) (string, string, bool) {
+	if calibrationDueDate != nil && !calibrationDueDate.After(dueSoon) {
+		return calibrationDueDate.Format("2006-01-02"), "calibration due", true
+	}
+	if warrantyEndDate != nil && !warrantyEndDate.After(dueSoon) {
+		return warrantyEndDate.Format("2006-01-02"), "warranty milestone due", true
+	}
+	baseDate := invoiceDate
+	if warrantyStartDate != nil {
+		baseDate = warrantyStartDate
+	}
+	if baseDate != nil {
+		heuristicDue := baseDate.AddDate(1, 0, 0)
+		if !heuristicDue.After(dueSoon) {
+			return heuristicDue.Format("2006-01-02"), "annual service heuristic", true
+		}
+	}
+	return "", "", false
+}
+
+func (a *App) getCloseableOpportunitiesContext() map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil {
+		return result
+	}
+
+	type closeableCandidate struct {
+		OpportunityID    string
+		FolderNumber     string
+		Title            string
+		CustomerID       string
+		CustomerName     string
+		Stage            string
+		Salesperson      string
+		OfferID          string
+		OfferNumber      string
+		RevenueBHD       float64
+		InvoiceNumber    string
+		OutstandingBHD   float64
+		PaymentDate      *time.Time
+		PaymentAmountBHD float64
+	}
+
+	var rows []closeableCandidate
+	a.db.Table("opportunities").
+		Select(`opportunities.id as opportunity_id, opportunities.folder_number, opportunities.title,
+			opportunities.customer_id, opportunities.customer_name, opportunities.stage, opportunities.salesperson,
+			opportunities.offer_id, invoices.offer_number, opportunities.revenue_bhd,
+			invoices.invoice_number, invoices.outstanding_bhd, payments.payment_date, payments.amount_bhd as payment_amount_bhd`).
+		Joins("LEFT JOIN invoices ON invoices.offer_id = opportunities.offer_id").
+		Joins("LEFT JOIN payments ON payments.invoice_id = invoices.id").
+		Where("opportunities.stage NOT IN ?", []string{"Won", "Lost"}).
+		Where("opportunities.offer_id <> ''").
+		Where("invoices.id IS NOT NULL").
+		Where("invoices.outstanding_bhd <= ?", 0.001).
+		Order("payments.payment_date DESC, invoices.invoice_date DESC").
+		Limit(25).
+		Scan(&rows)
+
+	candidates := make([]map[string]interface{}, 0, len(rows))
+	seen := make(map[string]bool)
+	for _, row := range rows {
+		if seen[row.OpportunityID] {
+			continue
+		}
+		seen[row.OpportunityID] = true
+		candidates = append(candidates, map[string]interface{}{
+			"opportunity_id":        row.OpportunityID,
+			"folder_number":         row.FolderNumber,
+			"title":                 firstNonEmpty(row.Title, row.OfferNumber, row.InvoiceNumber),
+			"customer_id":           row.CustomerID,
+			"customer_name":         row.CustomerName,
+			"current_stage":         row.Stage,
+			"salesperson":           row.Salesperson,
+			"offer_id":              row.OfferID,
+			"offer_number":          row.OfferNumber,
+			"invoiced_reference":    row.InvoiceNumber,
+			"payment_received_date": formatOptionalDate(row.PaymentDate),
+			"payment_amount_bhd":    row.PaymentAmountBHD,
+			"expected_revenue_bhd":  row.RevenueBHD,
+			"close_readiness":       "Fully paid invoice linked to opportunity offer",
+			"evidence_trail": []map[string]interface{}{
+				{"step": "offer_linked", "value": row.OfferID != "", "detail": row.OfferNumber},
+				{"step": "invoice_linked", "value": row.InvoiceNumber != "", "detail": row.InvoiceNumber},
+				{"step": "invoice_paid", "value": true, "detail": fmt.Sprintf("Outstanding %.3f BHD", row.OutstandingBHD)},
+				{"step": "payment_recorded", "value": row.PaymentDate != nil, "detail": formatOptionalDate(row.PaymentDate)},
+			},
+		})
+	}
+
+	result["candidates"] = candidates
+	result["rule"] = "Candidate when linked invoice exists against the opportunity offer and outstanding amount is effectively zero"
+	return result
+}
+
+func (a *App) getInstalledBaseSummary(customerName string) map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil || strings.TrimSpace(customerName) == "" {
+		return result
+	}
+
+	escaped := escapeLikeWildcards(customerName)
+	type installedBaseRow struct {
+		CustomerName       string
+		ProductCode        string
+		ProductName        string
+		OEMName            string
+		SerialNo           string
+		InvoiceNumber      string
+		InvoiceDate        *time.Time
+		DeliveryAddress    string
+		WarrantyEndDate    *time.Time
+		CalibrationDueDate *time.Time
+	}
+
+	var rows []installedBaseRow
+	a.db.Table("serial_numbers").
+		Select(`serial_numbers.customer_name, serial_numbers.product_code, products.product_name, suppliers.supplier_name as oem_name,
+			serial_numbers.serial_no, serial_numbers.invoice_number, invoices.invoice_date, delivery_notes.delivery_address,
+			serial_numbers.warranty_end_date, serial_numbers.calibration_due_date`).
+		Joins("LEFT JOIN products ON products.id = serial_numbers.product_id").
+		Joins("LEFT JOIN suppliers ON suppliers.id = products.supplier_id").
+		Joins("LEFT JOIN invoices ON invoices.id = serial_numbers.invoice_id").
+		Joins("LEFT JOIN delivery_notes ON delivery_notes.id = invoices.delivery_note_id").
+		Where("serial_numbers.customer_name LIKE ? ESCAPE '\\'", "%"+escaped+"%").
+		Order("invoices.invoice_date DESC").
+		Limit(25).
+		Scan(&rows)
+
+	items := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, map[string]interface{}{
+			"customer_name":        row.CustomerName,
+			"equipment":            firstNonEmpty(row.ProductName, row.ProductCode),
+			"product_code":         row.ProductCode,
+			"oem":                  row.OEMName,
+			"serial_no":            row.SerialNo,
+			"invoice_number":       row.InvoiceNumber,
+			"invoice_date":         formatOptionalDate(row.InvoiceDate),
+			"site":                 row.DeliveryAddress,
+			"warranty_end_date":    formatOptionalDate(row.WarrantyEndDate),
+			"calibration_due_date": formatOptionalDate(row.CalibrationDueDate),
+		})
+	}
+
+	result["customer_name"] = customerName
+	result["serial_tracked_items"] = items
+	result["installed_base_count"] = len(items)
+	return result
+}
+
+func (a *App) getButlerMemoryContext(intent Intent) map[string]interface{} {
+	ctx := make(map[string]interface{})
+	if a.db == nil {
+		return ctx
+	}
+
+	resolution := a.resolveBestEntityReference(intent)
+	if resolution != nil {
+		switch resolution.EntityType {
+		case "customer":
+			ctx["entity_notes"] = a.getEntityNotesForMemory("customer", resolution.EntityID)
+			ctx["follow_ups"] = a.getFollowUpsForMemory(resolution.EntityID)
+		case "customer_contact":
+			ctx["entity_notes"] = a.getEntityNotesForMemory("customer", resolution.RelatedCustomerID)
+			ctx["follow_ups"] = a.getFollowUpsForMemory(resolution.RelatedCustomerID)
+		}
+	}
+
+	ctx["quick_memory"] = a.getRecentOpenQuickCaptures()
+	return ctx
+}
+
+func (a *App) getEntityNotesForMemory(entityType, entityID string) []map[string]interface{} {
+	if strings.TrimSpace(entityID) == "" {
+		return []map[string]interface{}{}
+	}
+
+	var notes []EntityNote
+	a.db.Where("entity_type = ? AND entity_id = ?", entityType, entityID).
+		Order("created_at DESC").
+		Limit(5).
+		Find(&notes)
+
+	memories := make([]map[string]interface{}, 0, len(notes))
+	for _, note := range notes {
+		memories = append(memories, map[string]interface{}{
+			"type":       note.NoteType,
+			"content":    note.Content,
+			"created_at": note.CreatedAt.Format("2006-01-02"),
+		})
+	}
+	return memories
+}
+
+func (a *App) getFollowUpsForMemory(customerID string) []map[string]interface{} {
+	if strings.TrimSpace(customerID) == "" {
+		return []map[string]interface{}{}
+	}
+
+	var tasks []FollowUpTask
+	a.db.Where("customer_id = ? AND status IN ?", customerID, []string{"pending", "in_progress", "overdue"}).
+		Order("due_date ASC").
+		Limit(5).
+		Find(&tasks)
+
+	memories := make([]map[string]interface{}, 0, len(tasks))
+	for _, task := range tasks {
+		memories = append(memories, map[string]interface{}{
+			"title":       task.Title,
+			"status":      task.Status,
+			"priority":    task.Priority,
+			"due_date":    task.DueDate.Format("2006-01-02"),
+			"description": task.Description,
+		})
+	}
+	return memories
+}
+
+func (a *App) getRecentOpenQuickCaptures() []map[string]interface{} {
+	var captures []QuickCapture
+	a.db.Where("status IN ?", []string{"Open", "In Progress"}).
+		Order("created_at DESC").
+		Limit(5).
+		Find(&captures)
+
+	items := make([]map[string]interface{}, 0, len(captures))
+	for _, capture := range captures {
+		items = append(items, map[string]interface{}{
+			"title":      capture.Title,
+			"priority":   capture.Priority,
+			"status":     capture.Status,
+			"source":     firstNonEmpty(capture.Tags, "quick_capture"),
+			"created_at": capture.CreatedAt.Format("2006-01-02"),
+		})
+	}
+	return items
+}
+
+type contactMatch struct {
+	CustomerContact
+	BusinessName string
+	BusinessID   string
+}
+
+func (a *App) getProactiveBriefingContext(hasFinanceAccess bool) map[string]interface{} {
+	ctx := make(map[string]interface{})
+	actionItems := a.getActionItemsContext()
+	riskData := a.getRiskContext()
+	serviceDue := a.getServiceDueInstallationsContext()
+
+	ctx["action_items"] = actionItems
+	ctx["risk_summary"] = riskData
+	ctx["service_due"] = serviceDue
+
+	if hasFinanceAccess {
+		ctx["cashflow_projection"] = a.getCashflowProjectionContext()
+		ctx["ar_summary"] = a.getARSummary()
+	}
+
+	return ctx
+}
+
+func (a *App) getQuotationPrecheckContext(intent Intent) map[string]interface{} {
+	result := make(map[string]interface{})
+	resolution := a.resolveBestEntityReference(intent)
+	if resolution == nil {
+		result["status"] = "needs_customer_resolution"
+		result["missing_fields"] = []string{"customer"}
+		result["draft_clues"] = extractQuotationDraftClues(intent.RawQuery)
+		return result
+	}
+
+	customerName := resolution.DisplayName
+	if resolution.EntityType == "customer_contact" && resolution.RelatedCustomer != "" {
+		customerName = resolution.RelatedCustomer
+	}
+
+	customerCtx := a.getCustomerContext(customerName)
+	customer, _ := customerCtx["customer"].(map[string]interface{})
+	contacts, _ := customerCtx["contacts"].([]map[string]interface{})
+	offers, _ := customerCtx["active_offers"].([]map[string]interface{})
+
+	var primaryContact map[string]interface{}
+	for _, contact := range contacts {
+		if isPrimary, _ := contact["is_primary"].(bool); isPrimary {
+			primaryContact = contact
+			break
+		}
+	}
+	if primaryContact == nil && len(contacts) > 0 {
+		primaryContact = contacts[0]
+	}
+
+	missing := make([]string, 0)
+	if customerName == "" {
+		missing = append(missing, "customer")
+	}
+	if len(primaryContact) == 0 {
+		missing = append(missing, "contact_person")
+	}
+	paymentTerms, _ := customer["payment_terms_days"].(int)
+	if paymentTerms == 0 {
+		missing = append(missing, "payment_terms")
+	}
+
+	result["status"] = "ready"
+	if len(missing) > 0 {
+		result["status"] = "needs_inputs"
+	}
+	if resolution.Ambiguous {
+		result["status"] = "needs_clarification"
+	}
+	result["resolved_customer"] = customer
+	result["primary_contact"] = primaryContact
+	result["recent_active_offers"] = offers
+	result["missing_fields"] = missing
+	result["draft_clues"] = extractQuotationDraftClues(intent.RawQuery)
+	result["ambiguity_summary"] = buildAmbiguitySummary(resolution)
+	result["draft_payload"] = buildQuotationDraftPayload(customer, primaryContact, extractQuotationDraftClues(intent.RawQuery), missing, resolution)
+	result["default_guidance"] = map[string]interface{}{
+		"vat_percent": 10,
+		"quote_types": []string{"Quotation", "Budgetary Quote", "Estimate", "Technical", "Commercial"},
+	}
+	return result
+}
+
+func (a *App) injectGroundedReferenceContext(context map[string]interface{}, intent Intent, hasFinanceAccess bool) {
+	resolution := a.resolveBestEntityReference(intent)
+	if resolution == nil {
+		return
+	}
+
+	context["entity_resolution"] = map[string]interface{}{
+		"reference_kind":      intent.ReferenceKind,
+		"entity_type":         resolution.EntityType,
+		"entity_id":           resolution.EntityID,
+		"display_name":        resolution.DisplayName,
+		"confidence":          resolution.Confidence,
+		"match_reason":        resolution.MatchReason,
+		"related_customer":    resolution.RelatedCustomer,
+		"related_customer_id": resolution.RelatedCustomerID,
+		"ambiguous":           resolution.Ambiguous,
+		"alternatives":        resolution.Alternatives,
+	}
+	context["clarification_prompt"] = buildAmbiguitySummary(resolution)
+
+	switch resolution.EntityType {
+	case "customer":
+		customerCtx := a.getCustomerContext(resolution.DisplayName)
+		if !hasFinanceAccess {
+			a.redactFinancialFromContext(customerCtx)
+		}
+		context["customer_data"] = customerCtx
+		context["customer_360"] = customerCtx
+		context["installed_base_summary"] = a.getInstalledBaseSummary(resolution.DisplayName)
+	case "customer_contact":
+		contactCtx := a.getCustomerContactContext(resolution)
+		if !hasFinanceAccess {
+			delete(contactCtx, "linked_customer_financials")
+		}
+		context["contact_context"] = contactCtx
+		if resolution.RelatedCustomer != "" {
+			customerCtx := a.getCustomerContext(resolution.RelatedCustomer)
+			if !hasFinanceAccess {
+				a.redactFinancialFromContext(customerCtx)
+			}
+			context["customer_data"] = customerCtx
+			context["customer_360"] = customerCtx
+			context["installed_base_summary"] = a.getInstalledBaseSummary(resolution.RelatedCustomer)
+		}
+	case "user":
+		context["account_manager_context"] = a.getAccountManagerContext(resolution)
+	}
+
+	context["action_items"] = a.getActionItemsContext()
+	context["competition_intelligence"] = a.getCompetitionContext()
+}
+
+func (a *App) resolveBestEntityReference(intent Intent) *ButlerResolvedEntity {
+	if a.db == nil {
+		return nil
+	}
+
+	reference := strings.TrimSpace(intent.EntityName)
+	if reference == "" {
+		reference = strings.TrimSpace(intent.PersonName)
+	}
+	if reference == "" {
+		return nil
+	}
+
+	if intent.ReferenceKind == "account_manager" {
+		if user := a.resolveUserReference(reference); user != nil {
+			return user
+		}
+	}
+
+	if customer := a.resolveCustomerReference(reference); customer != nil {
+		return customer
+	}
+
+	if contact := a.resolveCustomerContactReference(reference); contact != nil {
+		return contact
+	}
+
+	if user := a.resolveUserReference(reference); user != nil {
+		return user
+	}
+
+	return nil
+}
+
+func (a *App) resolveCustomerReference(reference string) *ButlerResolvedEntity {
+	if reference == "" {
+		return nil
+	}
+
+	var customer CustomerMaster
+	exactErr := a.db.Where(
+		"business_name = ? OR short_code = ? OR customer_code = ? OR customer_id = ?",
+		reference, reference, reference, reference,
+	).First(&customer).Error
+	if exactErr == nil {
+		return &ButlerResolvedEntity{
+			EntityType:  "customer",
+			EntityID:    customer.CustomerID,
+			DisplayName: customer.BusinessName,
+			Confidence:  0.98,
+			MatchReason: "exact customer match",
+		}
+	}
+
+	escaped := escapeLikeWildcards(reference)
+	pattern := "%" + escaped + "%"
+	var matches []CustomerMaster
+	if err := a.db.Where(
+		"business_name LIKE ? ESCAPE '\\' OR short_code LIKE ? ESCAPE '\\' OR customer_code LIKE ? ESCAPE '\\'",
+		pattern, pattern, pattern,
+	).Order("business_name").Limit(3).Find(&matches).Error; err == nil && len(matches) > 0 {
+		customer = matches[0]
+		resolution := &ButlerResolvedEntity{
+			EntityType:  "customer",
+			EntityID:    customer.CustomerID,
+			DisplayName: customer.BusinessName,
+			Confidence:  0.82,
+			MatchReason: "fuzzy customer match",
+		}
+		if len(matches) > 1 {
+			resolution.Ambiguous = true
+			resolution.Confidence = 0.55
+			resolution.MatchReason = "multiple customer matches"
+			resolution.Alternatives = customerAlternatives(matches)
+		}
+		return resolution
+	}
+
+	return nil
+}
+
+func (a *App) resolveCustomerContactReference(reference string) *ButlerResolvedEntity {
+	if reference == "" {
+		return nil
+	}
+
+	var match contactMatch
+	exactErr := a.db.Table("customer_contacts").
+		Select("customer_contacts.*, customers.business_name, customers.customer_id as business_id").
+		Joins("JOIN customers ON customers.id = customer_contacts.customer_id").
+		Where("customer_contacts.contact_name = ?", reference).
+		Order("customer_contacts.is_primary_contact DESC, customer_contacts.contact_name").
+		Scan(&match).Error
+	if exactErr == nil && match.ContactName != "" {
+		return &ButlerResolvedEntity{
+			EntityType:        "customer_contact",
+			EntityID:          match.ID,
+			DisplayName:       match.ContactName,
+			Confidence:        0.96,
+			MatchReason:       "exact contact match",
+			RelatedCustomerID: match.BusinessID,
+			RelatedCustomer:   match.BusinessName,
+		}
+	}
+
+	escaped := escapeLikeWildcards(reference)
+	pattern := "%" + escaped + "%"
+	var matches []contactMatch
+	if err := a.db.Table("customer_contacts").
+		Select("customer_contacts.*, customers.business_name, customers.customer_id as business_id").
+		Joins("JOIN customers ON customers.id = customer_contacts.customer_id").
+		Where("customer_contacts.contact_name LIKE ? ESCAPE '\\'", pattern).
+		Order("customer_contacts.is_primary_contact DESC, customer_contacts.contact_name").
+		Limit(3).
+		Scan(&matches).Error; err == nil && len(matches) > 0 && matches[0].ContactName != "" {
+		match = matches[0]
+		resolution := &ButlerResolvedEntity{
+			EntityType:        "customer_contact",
+			EntityID:          match.ID,
+			DisplayName:       match.ContactName,
+			Confidence:        0.79,
+			MatchReason:       "fuzzy contact match",
+			RelatedCustomerID: match.BusinessID,
+			RelatedCustomer:   match.BusinessName,
+		}
+		if len(matches) > 1 {
+			resolution.Ambiguous = true
+			resolution.Confidence = 0.5
+			resolution.MatchReason = "multiple contact matches"
+			resolution.Alternatives = contactAlternatives(matches)
+		}
+		return resolution
+	}
+
+	return nil
+}
+
+func (a *App) resolveUserReference(reference string) *ButlerResolvedEntity {
+	if reference == "" {
+		return nil
+	}
+
+	var user User
+	exactErr := a.db.Where(
+		"full_name = ? OR display_name = ? OR username = ?",
+		reference, reference, reference,
+	).First(&user).Error
+	if exactErr == nil {
+		return &ButlerResolvedEntity{
+			EntityType:  "user",
+			EntityID:    user.ID,
+			DisplayName: firstNonEmpty(user.DisplayName, user.FullName, user.Username),
+			Confidence:  0.95,
+			MatchReason: "exact internal user match",
+		}
+	}
+
+	escaped := escapeLikeWildcards(reference)
+	pattern := "%" + escaped + "%"
+	var matches []User
+	if err := a.db.Where(
+		"full_name LIKE ? ESCAPE '\\' OR display_name LIKE ? ESCAPE '\\' OR username LIKE ? ESCAPE '\\'",
+		pattern, pattern, pattern,
+	).Order("full_name").Limit(3).Find(&matches).Error; err == nil && len(matches) > 0 {
+		user = matches[0]
+		resolution := &ButlerResolvedEntity{
+			EntityType:  "user",
+			EntityID:    user.ID,
+			DisplayName: firstNonEmpty(user.DisplayName, user.FullName, user.Username),
+			Confidence:  0.78,
+			MatchReason: "fuzzy internal user match",
+		}
+		if len(matches) > 1 {
+			resolution.Ambiguous = true
+			resolution.Confidence = 0.52
+			resolution.MatchReason = "multiple internal user matches"
+			resolution.Alternatives = userAlternatives(matches)
+		}
+		return resolution
+	}
+
+	return nil
+}
+
+func (a *App) getCustomerContactContext(resolution *ButlerResolvedEntity) map[string]interface{} {
+	result := make(map[string]interface{})
+	if resolution == nil || resolution.EntityType != "customer_contact" {
+		return result
+	}
+
+	var contact CustomerContact
+	if err := a.db.First(&contact, "id = ?", resolution.EntityID).Error; err != nil {
+		return result
+	}
+
+	result["contact"] = map[string]interface{}{
+		"id":                 contact.ID,
+		"name":               contact.ContactName,
+		"job_title":          contact.JobTitle,
+		"email":              contact.Email,
+		"phone":              contact.Phone,
+		"is_primary_contact": contact.IsPrimaryContact,
+	}
+	result["linked_customer"] = map[string]interface{}{
+		"customer_id":   resolution.RelatedCustomerID,
+		"business_name": resolution.RelatedCustomer,
+	}
+
+	if resolution.RelatedCustomer != "" {
+		customerCtx := a.getCustomerContext(resolution.RelatedCustomer)
+		if customerSummary, ok := customerCtx["customer"]; ok {
+			result["linked_customer_financials"] = customerSummary
+		}
+		if offers, ok := customerCtx["active_offers"]; ok {
+			result["active_offers"] = offers
+		}
+		if tasks, ok := customerCtx["pending_tasks"]; ok {
+			result["pending_tasks"] = tasks
+		}
+	}
+
+	return result
+}
+
+func (a *App) getAccountManagerContext(resolution *ButlerResolvedEntity) map[string]interface{} {
+	result := make(map[string]interface{})
+	if resolution == nil || resolution.EntityType != "user" {
+		return result
+	}
+
+	var user User
+	if err := a.db.First(&user, "id = ?", resolution.EntityID).Error; err != nil {
+		return result
+	}
+
+	identifiers := uniqueNonEmptyStrings(user.FullName, user.DisplayName, user.Username)
+	result["user"] = map[string]interface{}{
+		"id":           user.ID,
+		"full_name":    user.FullName,
+		"display_name": user.DisplayName,
+		"username":     user.Username,
+		"department":   user.Department,
+		"job_title":    user.JobTitle,
+		"is_active":    user.IsActive,
+	}
+
+	if len(identifiers) == 0 {
+		return result
+	}
+
+	var opportunities []Opportunity
+	if err := a.db.Where("salesperson IN ?", identifiers).
+		Order("offer_date DESC").
+		Limit(10).
+		Find(&opportunities).Error; err != nil {
+		return result
+	}
+
+	openCount := 0
+	totalPipeline := 0.0
+	customers := map[string]bool{}
+	oppSummary := make([]map[string]interface{}, 0, len(opportunities))
+	for _, opp := range opportunities {
+		if opp.Stage != "Won" && opp.Stage != "Lost" {
+			openCount++
+			totalPipeline += opp.RevenueBHD
+		}
+		if opp.CustomerName != "" {
+			customers[opp.CustomerName] = true
+		}
+		oppSummary = append(oppSummary, map[string]interface{}{
+			"folder_number": opp.FolderNumber,
+			"title":         firstNonEmpty(opp.Title, opp.FolderName),
+			"customer_name": opp.CustomerName,
+			"stage":         opp.Stage,
+			"revenue_bhd":   opp.RevenueBHD,
+			"offer_date":    opp.OfferDate.Format("2006-01-02"),
+			"expected_date": formatOptionalDate(opp.ExpectedDate),
+		})
+	}
+
+	result["portfolio_summary"] = map[string]interface{}{
+		"open_opportunities": openCount,
+		"tracked_customers":  len(customers),
+		"open_pipeline_bhd":  totalPipeline,
+	}
+	result["recent_opportunities"] = oppSummary
+
+	return result
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func uniqueNonEmptyStrings(values ...string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		result = append(result, trimmed)
+	}
+	return result
+}
+
+func formatOptionalDate(ts *time.Time) string {
+	if ts == nil {
+		return ""
+	}
+	return ts.Format("2006-01-02")
+}
+
+func customerAlternatives(matches []CustomerMaster) []map[string]interface{} {
+	alternatives := make([]map[string]interface{}, 0, len(matches))
+	for _, match := range matches {
+		alternatives = append(alternatives, map[string]interface{}{
+			"entity_type": "customer",
+			"id":          match.CustomerID,
+			"name":        match.BusinessName,
+			"short_code":  match.ShortCode,
+		})
+	}
+	return alternatives
+}
+
+func contactAlternatives(matches []contactMatch) []map[string]interface{} {
+	alternatives := make([]map[string]interface{}, 0, len(matches))
+	for _, match := range matches {
+		alternatives = append(alternatives, map[string]interface{}{
+			"entity_type":   "customer_contact",
+			"id":            match.ID,
+			"name":          match.ContactName,
+			"customer_name": match.BusinessName,
+			"job_title":     match.JobTitle,
+		})
+	}
+	return alternatives
+}
+
+func userAlternatives(matches []User) []map[string]interface{} {
+	alternatives := make([]map[string]interface{}, 0, len(matches))
+	for _, match := range matches {
+		alternatives = append(alternatives, map[string]interface{}{
+			"entity_type":  "user",
+			"id":           match.ID,
+			"display_name": firstNonEmpty(match.DisplayName, match.FullName, match.Username),
+			"department":   match.Department,
+			"job_title":    match.JobTitle,
+		})
+	}
+	return alternatives
+}
+
+func extractQuotationDraftClues(query string) map[string]interface{} {
+	clues := make(map[string]interface{})
+	if strings.TrimSpace(query) == "" {
+		return clues
+	}
+
+	queryLower := strings.ToLower(query)
+	if strings.Contains(queryLower, "service visit") {
+		clues["service_type"] = "service_visit"
+	}
+	if strings.Contains(queryLower, "calibration") {
+		clues["scope"] = "calibration"
+	}
+
+	dayRe := regexp.MustCompile(`(?i)(\d+)\s*day`)
+	if m := dayRe.FindStringSubmatch(query); len(m) > 1 {
+		clues["visit_days"] = atoiSafe(m[1])
+	}
+
+	priceRe := regexp.MustCompile(`(?i)(?:daily price.*?around|price.*?around|around)\s*(\d+(?:\.\d+)?)\s*(?:bd|bhd)`)
+	if m := priceRe.FindStringSubmatch(query); len(m) > 1 {
+		clues["daily_rate_bhd"] = atofSafe(m[1])
+	}
+
+	optionalRe := regexp.MustCompile(`(?i)(?:optional.*?line item.*?)(\d+(?:\.\d+)?)\s*(?:bd|bhd)`)
+	if m := optionalRe.FindStringSubmatch(query); len(m) > 1 {
+		clues["optional_line_amount_bhd"] = atofSafe(m[1])
+		clues["optional_line_label"] = "mobilization_of_repair_expert"
+	}
+
+	if strings.Contains(queryLower, "expert") && clues["optional_line_label"] == nil {
+		clues["optional_line_label"] = "mobilization_of_repair_expert"
+	}
+
+	return clues
+}
+
+func atoiSafe(value string) int {
+	var out int
+	fmt.Sscanf(value, "%d", &out)
+	return out
+}
+
+func atofSafe(value string) float64 {
+	var out float64
+	fmt.Sscanf(value, "%f", &out)
+	return out
+}
+
+func (a *App) getCashflowProjectionContext() map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil {
+		return result
+	}
+
+	projection, err := a.GetCashFlowProjection(365)
+	if err != nil {
+		result["status"] = "unavailable"
+		result["error"] = err.Error()
+		return result
+	}
+
+	type monthlyBucket struct {
+		Inflows  float64
+		Outflows float64
+	}
+
+	buckets := make(map[string]*monthlyBucket)
+	order := make([]string, 0, 12)
+	for _, day := range projection.DailyProjections {
+		key := day.Date.Format("2006-01")
+		if buckets[key] == nil {
+			buckets[key] = &monthlyBucket{}
+			order = append(order, key)
+		}
+		buckets[key].Inflows += day.ExpectedInflows
+		buckets[key].Outflows += day.ExpectedOutflows
+	}
+
+	staticOpex := 16500.0
+	monthly := make([]map[string]interface{}, 0, len(order))
+	for _, key := range order {
+		bucket := buckets[key]
+		net := bucket.Inflows - bucket.Outflows - staticOpex
+		monthly = append(monthly, map[string]interface{}{
+			"month":                       key,
+			"payments_from_customers_bhd": round3(bucket.Inflows),
+			"payments_to_suppliers_bhd":   round3(bucket.Outflows),
+			"operations_cost_bhd":         round3(staticOpex),
+			"net_cashflow_bhd":            round3(net),
+		})
+	}
+
+	result["status"] = "available"
+	result["start_date"] = projection.StartDate.Format("2006-01-02")
+	result["end_date"] = projection.EndDate.Format("2006-01-02")
+	result["opening_cash_bhd"] = round3(projection.OpeningCash)
+	result["projected_cash_bhd"] = round3(projection.ProjectedCash)
+	result["monthly_projection"] = monthly
+	result["static_operations_cost_bhd"] = staticOpex
+	result["basis"] = "Customer inflows from projected invoice collections, supplier outflows from due supplier invoices, plus static operating cost"
+	return result
+}
+
+func round3(value float64) float64 {
+	return math.Round(value*1000) / 1000
+}
+
+func (a *App) getSystemTimeContext() map[string]interface{} {
+	now := time.Now()
+	return map[string]interface{}{
+		"current_date":    now.Format("2006-01-02"),
+		"current_time":    now.Format(time.RFC3339),
+		"current_year":    now.Year(),
+		"current_quarter": fmt.Sprintf("Q%d", (int(now.Month())-1)/3+1),
+		"timezone":        now.Location().String(),
+	}
+}
+
+func buildFieldFollowUpCandidates(items []map[string]interface{}) []map[string]interface{} {
+	candidates := make([]map[string]interface{}, 0, len(items))
+	for idx, item := range items {
+		candidate := map[string]interface{}{
+			"rank":                idx + 1,
+			"customer_name":       item["customer_name"],
+			"site":                item["site"],
+			"equipment":           item["equipment"],
+			"oem":                 item["oem"],
+			"estimated_value_bhd": item["estimated_value_bhd"],
+			"service_due_date":    item["service_due_date"],
+			"follow_up_reason":    item["due_reason"],
+			"recommended_action":  "Schedule field check and propose service visit",
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates
+}
+
+func buildAmbiguitySummary(resolution *ButlerResolvedEntity) map[string]interface{} {
+	if resolution == nil || !resolution.Ambiguous || len(resolution.Alternatives) == 0 {
+		return map[string]interface{}{
+			"needs_clarification": false,
+		}
+	}
+
+	return map[string]interface{}{
+		"needs_clarification": true,
+		"message":             fmt.Sprintf("I found multiple %s matches for %q. Please tell me which one you mean.", resolution.EntityType, resolution.DisplayName),
+		"alternatives":        resolution.Alternatives,
+	}
+}
+
+func buildQuotationDraftPayload(customer map[string]interface{}, primaryContact map[string]interface{}, clues map[string]interface{}, missing []string, resolution *ButlerResolvedEntity) map[string]interface{} {
+	payload := map[string]interface{}{
+		"ready_to_draft": false,
+		"document_type":  "Quotation",
+	}
+
+	if len(clues) > 0 {
+		if scope, ok := clues["scope"]; ok {
+			payload["scope"] = scope
+		}
+		if serviceType, ok := clues["service_type"]; ok {
+			payload["service_type"] = serviceType
+		}
+		if visitDays, ok := clues["visit_days"]; ok {
+			payload["visit_days"] = visitDays
+		}
+		if dailyRate, ok := clues["daily_rate_bhd"]; ok {
+			payload["daily_rate_bhd"] = dailyRate
+		}
+		if optionalAmount, ok := clues["optional_line_amount_bhd"]; ok {
+			payload["optional_line_amount_bhd"] = optionalAmount
+		}
+		if optionalLabel, ok := clues["optional_line_label"]; ok {
+			payload["optional_line_label"] = optionalLabel
+		}
+	}
+
+	if resolution != nil && !resolution.Ambiguous {
+		payload["resolved_entity_type"] = resolution.EntityType
+		payload["resolved_entity_name"] = resolution.DisplayName
+	}
+
+	if customer != nil {
+		if name, ok := customer["name"]; ok && name != "" {
+			payload["customer_name"] = name
+		}
+		if grade, ok := customer["grade"]; ok {
+			payload["customer_grade"] = grade
+		}
+		if paymentTermsDays, ok := customer["payment_terms_days"]; ok {
+			payload["payment_terms_days"] = paymentTermsDays
+		}
+	}
+
+	if len(primaryContact) > 0 {
+		payload["attention_person"] = primaryContact["name"]
+		payload["attention_phone"] = primaryContact["phone"]
+		payload["attention_email"] = primaryContact["email"]
+	}
+
+	lineItems := make([]map[string]interface{}, 0, 2)
+	if visitDays, ok := clues["visit_days"].(int); ok && visitDays > 0 {
+		if dailyRate, ok := clues["daily_rate_bhd"].(float64); ok && dailyRate > 0 {
+			lineItems = append(lineItems, map[string]interface{}{
+				"description":     "Service visit",
+				"quantity":        visitDays,
+				"unit_price_bhd":  round3(dailyRate),
+				"total_price_bhd": round3(float64(visitDays) * dailyRate),
+			})
+		}
+	}
+	if optionalAmount, ok := clues["optional_line_amount_bhd"].(float64); ok && optionalAmount > 0 {
+		label := "Optional line item"
+		if optionalLabel, ok := clues["optional_line_label"].(string); ok && optionalLabel != "" {
+			label = optionalLabel
+		}
+		lineItems = append(lineItems, map[string]interface{}{
+			"description":     label,
+			"quantity":        1,
+			"unit_price_bhd":  round3(optionalAmount),
+			"total_price_bhd": round3(optionalAmount),
+			"optional":        true,
+		})
+	}
+	payload["line_items"] = lineItems
+	payload["missing_fields"] = missing
+	payload["ready_to_draft"] = len(missing) == 0 && resolution != nil && !resolution.Ambiguous && len(lineItems) > 0
+
+	return payload
+}
+
 // getBusinessSummary provides high-level business metrics
 func (a *App) getBusinessSummary() map[string]interface{} {
 	summary := make(map[string]interface{})
+	now := time.Now()
 
 	var customerCount, supplierCount, invoiceCount, orderCount int64
 	a.db.Model(&CustomerMaster{}).Count(&customerCount)
@@ -627,6 +1882,8 @@ func (a *App) getBusinessSummary() map[string]interface{} {
 	summary["total_suppliers"] = supplierCount
 	summary["total_invoices"] = invoiceCount
 	summary["total_orders"] = orderCount
+	summary["as_of_date"] = now.Format("2006-01-02")
+	summary["current_year"] = now.Year()
 
 	// Customer grade distribution
 	var gradeA, gradeB, gradeC, gradeD int64
@@ -683,14 +1940,26 @@ func (a *App) getBusinessSummary() map[string]interface{} {
 	topBizList := make([]map[string]interface{}, 0)
 	for _, c := range topByBusiness {
 		topBizList = append(topBizList, map[string]interface{}{
-			"name":          c.BusinessName,
-			"total_value":   c.TotalOrdersValue,
-			"total_orders":  c.TotalOrdersCount,
-			"outstanding":   c.OutstandingBHD,
-			"grade":         c.CustomerGrade,
+			"name":         c.BusinessName,
+			"total_value":  c.TotalOrdersValue,
+			"total_orders": c.TotalOrdersCount,
+			"outstanding":  c.OutstandingBHD,
+			"grade":        c.CustomerGrade,
 		})
 	}
 	summary["top_customers_by_business"] = topBizList
+
+	var latestInvoice Invoice
+	if err := a.db.Order("invoice_date DESC").Limit(1).First(&latestInvoice).Error; err == nil {
+		summary["latest_invoice_date"] = latestInvoice.InvoiceDate.Format("2006-01-02")
+		summary["latest_invoice_year"] = latestInvoice.InvoiceDate.Year()
+	}
+
+	var latestOrder Order
+	if err := a.db.Order("order_date DESC").Limit(1).First(&latestOrder).Error; err == nil {
+		summary["latest_order_date"] = latestOrder.OrderDate.Format("2006-01-02")
+		summary["latest_order_year"] = latestOrder.OrderDate.Year()
+	}
 
 	return summary
 }
@@ -706,18 +1975,18 @@ func (a *App) getCustomerContext(entityName string) map[string]interface{} {
 		query := "%" + escapedName + "%"
 		if err := a.db.Where("business_name LIKE ? ESCAPE '\\'", query).First(&customer).Error; err == nil {
 			result["customer"] = map[string]interface{}{
-				"id":              customer.CustomerID,
-				"name":            customer.BusinessName,
-				"grade":           customer.CustomerGrade,
-				"payment_grade":   customer.PaymentGrade,
+				"id":               customer.CustomerID,
+				"name":             customer.BusinessName,
+				"grade":            customer.CustomerGrade,
+				"payment_grade":    customer.PaymentGrade,
 				"avg_payment_days": customer.AvgPaymentDays,
-				"outstanding_bhd": customer.OutstandingBHD,
-				"overdue_days":    customer.OverdueDays,
-				"total_orders":    customer.TotalOrdersCount,
-				"total_value":     customer.TotalOrdersValue,
-				"industry":        customer.Industry,
-				"credit_blocked":  customer.IsCreditBlocked,
-				"ar_risk_tier":    customer.ARRiskTier,
+				"outstanding_bhd":  customer.OutstandingBHD,
+				"overdue_days":     customer.OverdueDays,
+				"total_orders":     customer.TotalOrdersCount,
+				"total_value":      customer.TotalOrdersValue,
+				"industry":         customer.Industry,
+				"credit_blocked":   customer.IsCreditBlocked,
+				"ar_risk_tier":     customer.ARRiskTier,
 			}
 
 			// Get ALL invoices for this customer (for yearly aggregation)
@@ -739,10 +2008,10 @@ func (a *App) getCustomerContext(entityName string) map[string]interface{} {
 			yearSummary := make([]map[string]interface{}, 0)
 			for year, total := range yearlyTotals {
 				yearSummary = append(yearSummary, map[string]interface{}{
-					"year":         year,
-					"total_bhd":    fmt.Sprintf("%.3f", total),
+					"year":          year,
+					"total_bhd":     fmt.Sprintf("%.3f", total),
 					"invoice_count": yearlyCount[year],
-					"outstanding":  fmt.Sprintf("%.3f", yearlyOutstanding[year]),
+					"outstanding":   fmt.Sprintf("%.3f", yearlyOutstanding[year]),
 				})
 			}
 			result["yearly_business_summary"] = yearSummary
@@ -772,10 +2041,10 @@ func (a *App) getCustomerContext(entityName string) map[string]interface{} {
 			paySummary := make([]map[string]interface{}, 0)
 			for _, pay := range payments {
 				paySummary = append(paySummary, map[string]interface{}{
-					"amount":       pay.AmountBHD,
-					"date":         pay.PaymentDate.Format("2006-01-02"),
-					"method":       pay.PaymentMethod,
-					"days_to_pay":  pay.DaysToPayment,
+					"amount":      pay.AmountBHD,
+					"date":        pay.PaymentDate.Format("2006-01-02"),
+					"method":      pay.PaymentMethod,
+					"days_to_pay": pay.DaysToPayment,
 				})
 			}
 			result["recent_payments"] = paySummary
@@ -814,11 +2083,11 @@ func (a *App) getCustomerContext(entityName string) map[string]interface{} {
 				itemList := make([]map[string]interface{}, 0)
 				for _, item := range items {
 					itemList = append(itemList, map[string]interface{}{
-						"equipment":   item.Equipment,
-						"model":       item.Model,
-						"qty":         item.Quantity,
-						"unit_price":  item.UnitPrice,
-						"margin_pct":  item.MarginPercent,
+						"equipment":      item.Equipment,
+						"model":          item.Model,
+						"qty":            item.Quantity,
+						"unit_price_bhd": item.UnitPrice,
+						"margin_pct":     item.MarginPercent,
 					})
 				}
 				orderEntry["items"] = itemList
@@ -891,6 +2160,621 @@ func (a *App) getCustomerContext(entityName string) map[string]interface{} {
 	return result
 }
 
+func (a *App) getCustomerPeriodSummary(entityName, query string) map[string]interface{} {
+	if strings.TrimSpace(entityName) == "" || strings.TrimSpace(query) == "" {
+		return nil
+	}
+
+	start, end, label, ok := parseQuarterWindowFromQuery(query)
+	if !ok {
+		return nil
+	}
+
+	resolution := a.resolveCustomerReference(entityName)
+	if resolution == nil {
+		return map[string]interface{}{
+			"status":         "customer_not_resolved",
+			"period":         label,
+			"message":        fmt.Sprintf("Could not resolve a unique customer for %q in context.", entityName),
+			"invoices":       []map[string]interface{}{},
+			"invoices_count": 0,
+			"orders":         []map[string]interface{}{},
+			"orders_count":   0,
+		}
+	}
+
+	var invoices []Invoice
+	if err := a.db.Where("customer_id = ? AND invoice_date >= ? AND invoice_date <= ? AND status NOT IN ?", resolution.EntityID, start, end, []string{"Cancelled", "Void", "Proforma", "Draft"}).
+		Order("invoice_date DESC").Find(&invoices).Error; err != nil {
+		return map[string]interface{}{
+			"status":         "error",
+			"period":         label,
+			"error":          err.Error(),
+			"invoices":       []map[string]interface{}{},
+			"invoices_count": 0,
+			"orders":         []map[string]interface{}{},
+			"orders_count":   0,
+		}
+	}
+
+	invoiceSummary := make([]map[string]interface{}, 0, len(invoices))
+	invoiceTotals := 0.0
+	for _, inv := range invoices {
+		invoiceTotals += inv.GrandTotalBHD
+		invoiceSummary = append(invoiceSummary, map[string]interface{}{
+			"number":      inv.InvoiceNumber,
+			"date":        inv.InvoiceDate.Format("2006-01-02"),
+			"total":       inv.GrandTotalBHD,
+			"status":      inv.Status,
+			"outstanding": inv.OutstandingBHD,
+		})
+	}
+
+	var orders []Order
+	if err := a.db.Where("customer_id = ? AND order_date >= ? AND order_date <= ?", resolution.EntityID, start, end).
+		Order("order_date DESC").Find(&orders).Error; err != nil {
+		return map[string]interface{}{
+			"status":             "error",
+			"period":             label,
+			"error":              err.Error(),
+			"invoices":           invoiceSummary,
+			"invoices_count":     len(invoices),
+			"invoices_total_bhd": invoiceTotals,
+			"orders":             []map[string]interface{}{},
+			"orders_count":       0,
+		}
+	}
+
+	orderSummary := make([]map[string]interface{}, 0, len(orders))
+	orderTotals := 0.0
+	for _, order := range orders {
+		orderTotals += order.GrandTotalBHD
+		orderSummary = append(orderSummary, map[string]interface{}{
+			"number":   order.OrderNumber,
+			"date":     order.OrderDate.Format("2006-01-02"),
+			"total":    order.GrandTotalBHD,
+			"status":   order.Status,
+			"division": order.Division,
+		})
+	}
+
+	status := "available"
+	if len(invoices) == 0 && len(orders) == 0 {
+		status = "empty_period_window"
+	}
+
+	return map[string]interface{}{
+		"status":             status,
+		"period":             label,
+		"invoices_count":     len(invoices),
+		"invoices_total_bhd": round3(invoiceTotals),
+		"invoices":           invoiceSummary,
+		"orders_count":       len(orders),
+		"orders_total_bhd":   round3(orderTotals),
+		"orders":             orderSummary,
+	}
+}
+
+func (a *App) getMissingCustomerPeriodSummary(entityName, query string) map[string]interface{} {
+	periodLabel, ok := parseCustomerPeriodLabel(query)
+	if !ok {
+		return map[string]interface{}{
+			"status": "not_requested",
+		}
+	}
+
+	resolution := a.resolveCustomerReference(entityName)
+	if resolution == nil {
+		return map[string]interface{}{
+			"status":  "customer_not_resolved",
+			"period":  periodLabel,
+			"message": fmt.Sprintf("Could not resolve a unique customer for %q in context.", entityName),
+		}
+	}
+
+	return map[string]interface{}{
+		"status":             "empty_period_window",
+		"period":             periodLabel,
+		"invoices_count":     0,
+		"invoices_total_bhd": 0.0,
+		"invoices":           []map[string]interface{}{},
+		"orders_count":       0,
+		"orders_total_bhd":   0.0,
+		"orders":             []map[string]interface{}{},
+		"message":            "No invoices or orders found in this period in the connected data.",
+	}
+}
+
+func (a *App) getBusinessPeriodSummary(query string) map[string]interface{} {
+	start, end, label, ok := parseQuarterWindowFromQuery(query)
+	if !ok || a.db == nil {
+		return nil
+	}
+
+	var invoices []Invoice
+	if err := a.db.Where("invoice_date >= ? AND invoice_date <= ? AND status NOT IN ?", start, end, []string{"Cancelled", "Void", "Proforma", "Draft"}).
+		Order("invoice_date DESC").Find(&invoices).Error; err != nil {
+		return map[string]interface{}{
+			"status": "error",
+			"period": label,
+			"error":  err.Error(),
+		}
+	}
+
+	var orders []Order
+	if err := a.db.Where("order_date >= ? AND order_date <= ?", start, end).
+		Order("order_date DESC").Find(&orders).Error; err != nil {
+		return map[string]interface{}{
+			"status": "error",
+			"period": label,
+			"error":  err.Error(),
+		}
+	}
+
+	var wonOpportunities []Opportunity
+	if err := a.db.Where("stage = ? AND ((closed_date IS NOT NULL AND closed_date >= ? AND closed_date <= ?) OR (order_date IS NOT NULL AND order_date >= ? AND order_date <= ?))",
+		"Won", start, end, start, end).
+		Order("COALESCE(order_date, closed_date) DESC").
+		Find(&wonOpportunities).Error; err != nil {
+		return map[string]interface{}{
+			"status": "error",
+			"period": label,
+			"error":  err.Error(),
+		}
+	}
+
+	type stageSummary struct {
+		Stage      string
+		Count      int64
+		TotalValue float64
+	}
+	var openStageRows []stageSummary
+	a.db.Model(&Opportunity{}).
+		Where("stage NOT IN ?", []string{"Won", "Lost", "Expired"}).
+		Where("(expected_date BETWEEN ? AND ?) OR (offer_date BETWEEN ? AND ?) OR (created_at BETWEEN ? AND ?)",
+			start, end, start, end, start, end).
+		Select("stage, COUNT(*) as count, COALESCE(SUM(revenue_bhd), 0) as total_value").
+		Group("stage").
+		Scan(&openStageRows)
+
+	invoiceTotal := 0.0
+	invoiceSummary := make([]map[string]interface{}, 0, len(invoices))
+	for _, inv := range invoices {
+		invoiceTotal += inv.GrandTotalBHD
+		invoiceSummary = append(invoiceSummary, map[string]interface{}{
+			"number":      inv.InvoiceNumber,
+			"customer":    inv.CustomerName,
+			"date":        inv.InvoiceDate.Format("2006-01-02"),
+			"total_bhd":   round3(inv.GrandTotalBHD),
+			"status":      inv.Status,
+			"outstanding": round3(inv.OutstandingBHD),
+		})
+	}
+
+	orderTotal := 0.0
+	orderSummary := make([]map[string]interface{}, 0, len(orders))
+	for _, order := range orders {
+		orderTotal += order.GrandTotalBHD
+		orderSummary = append(orderSummary, map[string]interface{}{
+			"number":      order.OrderNumber,
+			"customer":    order.CustomerName,
+			"date":        order.OrderDate.Format("2006-01-02"),
+			"total_bhd":   round3(order.GrandTotalBHD),
+			"status":      order.Status,
+			"offer_id":    order.OfferID,
+			"opportunity": order.RFQID,
+		})
+	}
+
+	wonTotal := 0.0
+	wonSummary := make([]map[string]interface{}, 0, len(wonOpportunities))
+	for _, opp := range wonOpportunities {
+		wonTotal += opp.RevenueBHD
+		wonSummary = append(wonSummary, map[string]interface{}{
+			"folder_number": opp.FolderNumber,
+			"customer":      opp.CustomerName,
+			"title":         firstNonEmpty(opp.Title, opp.FolderName),
+			"closed_date":   formatOptionalDate(opp.ClosedDate),
+			"order_date":    formatOptionalDate(opp.OrderDate),
+			"revenue_bhd":   round3(opp.RevenueBHD),
+			"offer_id":      opp.OfferID,
+			"source":        opp.Source,
+		})
+	}
+
+	openStageSummary := make([]map[string]interface{}, 0, len(openStageRows))
+	for _, row := range openStageRows {
+		openStageSummary = append(openStageSummary, map[string]interface{}{
+			"stage":           row.Stage,
+			"count":           row.Count,
+			"total_value_bhd": round3(row.TotalValue),
+		})
+	}
+
+	status := "available"
+	if len(invoices) == 0 && len(orders) == 0 && len(wonOpportunities) == 0 {
+		status = "empty_period_window"
+	}
+
+	return map[string]interface{}{
+		"status":                      status,
+		"period":                      label,
+		"window_start":                start.Format("2006-01-02"),
+		"window_end":                  end.Format("2006-01-02"),
+		"invoices_count":              len(invoices),
+		"invoices_total_bhd":          round3(invoiceTotal),
+		"invoices":                    invoiceSummary,
+		"orders_count":                len(orders),
+		"orders_total_bhd":            round3(orderTotal),
+		"orders":                      orderSummary,
+		"won_opportunities_count":     len(wonOpportunities),
+		"won_opportunities_total_bhd": round3(wonTotal),
+		"won_opportunities":           wonSummary,
+		"open_pipeline_in_period":     openStageSummary,
+		"message":                     "This period summary is authoritative for company-wide quarter questions.",
+	}
+}
+
+func (a *App) getBusinessYearSummary(query string) map[string]interface{} {
+	start, end, year, label, ok := parseYearWindowFromQuery(query)
+	if !ok || a.db == nil {
+		return nil
+	}
+
+	result := map[string]interface{}{
+		"status":       "available",
+		"year":         year,
+		"period":       label,
+		"window_start": start.Format("2006-01-02"),
+		"window_end":   end.Format("2006-01-02"),
+	}
+
+	var invoices []Invoice
+	if err := a.db.Where("invoice_date >= ? AND invoice_date <= ? AND status NOT IN ?",
+		start, end, []string{"Cancelled", "Void", "Proforma", "Draft"}).
+		Order("invoice_date ASC").
+		Find(&invoices).Error; err != nil {
+		return map[string]interface{}{
+			"status": "error",
+			"year":   year,
+			"period": label,
+			"error":  err.Error(),
+		}
+	}
+
+	invoiceTotal := 0.0
+	for _, inv := range invoices {
+		invoiceTotal += inv.GrandTotalBHD
+	}
+
+	var orders []Order
+	if err := a.db.Where("order_date >= ? AND order_date <= ?", start, end).
+		Order("order_date ASC").
+		Find(&orders).Error; err != nil {
+		return map[string]interface{}{
+			"status": "error",
+			"year":   year,
+			"period": label,
+			"error":  err.Error(),
+		}
+	}
+
+	orderTotal := 0.0
+	for _, order := range orders {
+		orderTotal += order.GrandTotalBHD
+	}
+
+	var offers []Offer
+	if err := a.db.Where("quotation_date >= ? AND quotation_date <= ?", start, end).
+		Order("quotation_date ASC").
+		Find(&offers).Error; err != nil {
+		return map[string]interface{}{
+			"status": "error",
+			"year":   year,
+			"period": label,
+			"error":  err.Error(),
+		}
+	}
+
+	offerTotal := 0.0
+	for _, offer := range offers {
+		offerTotal += offer.TotalValueBHD
+	}
+
+	var opportunities []Opportunity
+	if err := a.db.Where("year = ?", year).
+		Order("offer_date ASC, created_at ASC").
+		Find(&opportunities).Error; err != nil {
+		return map[string]interface{}{
+			"status": "error",
+			"year":   year,
+			"period": label,
+			"error":  err.Error(),
+		}
+	}
+
+	opportunityTotal := 0.0
+	openOpportunityCount := 0
+	openOpportunityTotal := 0.0
+	wonOpportunityCount := 0
+	wonOpportunityTotal := 0.0
+	stageRollup := make(map[string]map[string]interface{})
+	for _, opp := range opportunities {
+		opportunityTotal += opp.RevenueBHD
+		if opp.Stage != "Won" && opp.Stage != "Lost" && opp.Stage != "Expired" {
+			openOpportunityCount++
+			openOpportunityTotal += opp.RevenueBHD
+		}
+		if opp.Stage == "Won" {
+			wonOpportunityCount++
+			wonOpportunityTotal += opp.RevenueBHD
+		}
+		row, exists := stageRollup[opp.Stage]
+		if !exists {
+			row = map[string]interface{}{
+				"stage":           opp.Stage,
+				"count":           0,
+				"total_value_bhd": 0.0,
+			}
+			stageRollup[opp.Stage] = row
+		}
+		row["count"] = row["count"].(int) + 1
+		row["total_value_bhd"] = round3(row["total_value_bhd"].(float64) + opp.RevenueBHD)
+	}
+
+	stageBreakdown := make([]map[string]interface{}, 0, len(stageRollup))
+	for _, row := range stageRollup {
+		stageBreakdown = append(stageBreakdown, row)
+	}
+	sort.Slice(stageBreakdown, func(i, j int) bool {
+		return fmt.Sprint(stageBreakdown[i]["stage"]) < fmt.Sprint(stageBreakdown[j]["stage"])
+	})
+
+	availableDataTypes := make([]string, 0, 4)
+	if len(invoices) > 0 {
+		availableDataTypes = append(availableDataTypes, "invoices")
+	}
+	if len(orders) > 0 {
+		availableDataTypes = append(availableDataTypes, "orders")
+	}
+	if len(offers) > 0 {
+		availableDataTypes = append(availableDataTypes, "offers")
+	}
+	if len(opportunities) > 0 {
+		availableDataTypes = append(availableDataTypes, "opportunities")
+	}
+
+	if len(availableDataTypes) == 0 {
+		result["status"] = "empty_year_window"
+		result["message"] = "No invoices, orders, offers, or opportunities were found for this year in the connected data."
+	}
+
+	result["available_data_types"] = availableDataTypes
+	result["invoices"] = map[string]interface{}{
+		"count":       len(invoices),
+		"total_bhd":   round3(invoiceTotal),
+		"first_date":  firstInvoiceDate(invoices),
+		"latest_date": lastInvoiceDate(invoices),
+	}
+	result["orders"] = map[string]interface{}{
+		"count":       len(orders),
+		"total_bhd":   round3(orderTotal),
+		"first_date":  firstOrderDate(orders),
+		"latest_date": lastOrderDate(orders),
+	}
+	result["offers"] = map[string]interface{}{
+		"count":       len(offers),
+		"total_bhd":   round3(offerTotal),
+		"first_date":  firstOfferDate(offers),
+		"latest_date": lastOfferDate(offers),
+	}
+	result["opportunities"] = map[string]interface{}{
+		"count":                      len(opportunities),
+		"total_value_bhd":            round3(opportunityTotal),
+		"open_count":                 openOpportunityCount,
+		"open_pipeline_bhd":          round3(openOpportunityTotal),
+		"won_count":                  wonOpportunityCount,
+		"won_value_bhd":              round3(wonOpportunityTotal),
+		"stage_breakdown":            stageBreakdown,
+		"latest_activity_date":       latestOpportunityActivityDate(opportunities),
+		"latest_recorded_offer_date": latestOpportunityOfferDate(opportunities),
+	}
+	result["message"] = "This year summary is authoritative for questions about whether data exists for a given year and how complete that coverage is."
+
+	return result
+}
+
+func parseCustomerPeriodLabel(query string) (string, bool) {
+	_, _, periodLabel, ok := parseQuarterWindowFromQuery(query)
+	return periodLabel, ok
+}
+
+func parseYearWindowFromQuery(query string) (time.Time, time.Time, int, string, bool) {
+	now := time.Now()
+	q := strings.ToLower(strings.TrimSpace(query))
+
+	year := 0
+	switch {
+	case strings.Contains(q, "this year") || strings.Contains(q, "current year"):
+		year = now.Year()
+	case strings.Contains(q, "last year") || strings.Contains(q, "previous year"):
+		year = now.Year() - 1
+	default:
+		re := regexp.MustCompile(`\b(20\d{2})\b`)
+		if match := re.FindStringSubmatch(q); len(match) > 1 {
+			parsed, err := strconv.Atoi(match[1])
+			if err == nil {
+				year = parsed
+			}
+		}
+	}
+
+	if year == 0 {
+		return time.Time{}, time.Time{}, 0, "", false
+	}
+
+	start := time.Date(year, time.January, 1, 0, 0, 0, 0, time.Local)
+	end := time.Date(year, time.December, 31, 23, 59, 59, 0, time.Local)
+	return start, end, year, fmt.Sprintf("%d", year), true
+}
+
+func firstInvoiceDate(invoices []Invoice) string {
+	if len(invoices) == 0 {
+		return ""
+	}
+	return invoices[0].InvoiceDate.Format("2006-01-02")
+}
+
+func lastInvoiceDate(invoices []Invoice) string {
+	if len(invoices) == 0 {
+		return ""
+	}
+	return invoices[len(invoices)-1].InvoiceDate.Format("2006-01-02")
+}
+
+func firstOrderDate(orders []Order) string {
+	if len(orders) == 0 {
+		return ""
+	}
+	return orders[0].OrderDate.Format("2006-01-02")
+}
+
+func lastOrderDate(orders []Order) string {
+	if len(orders) == 0 {
+		return ""
+	}
+	return orders[len(orders)-1].OrderDate.Format("2006-01-02")
+}
+
+func firstOfferDate(offers []Offer) string {
+	if len(offers) == 0 {
+		return ""
+	}
+	return offers[0].QuotationDate.Format("2006-01-02")
+}
+
+func lastOfferDate(offers []Offer) string {
+	if len(offers) == 0 {
+		return ""
+	}
+	return offers[len(offers)-1].QuotationDate.Format("2006-01-02")
+}
+
+func latestOpportunityOfferDate(opportunities []Opportunity) string {
+	latest := time.Time{}
+	for _, opp := range opportunities {
+		if opp.OfferDate.After(latest) {
+			latest = opp.OfferDate
+		}
+	}
+	if latest.IsZero() {
+		return ""
+	}
+	return latest.Format("2006-01-02")
+}
+
+func latestOpportunityActivityDate(opportunities []Opportunity) string {
+	latest := time.Time{}
+	for _, opp := range opportunities {
+		for _, candidate := range []time.Time{opp.OfferDate, opp.CreatedAt, opp.UpdatedAt} {
+			if candidate.After(latest) {
+				latest = candidate
+			}
+		}
+		if opp.ExpectedDate != nil && opp.ExpectedDate.After(latest) {
+			latest = *opp.ExpectedDate
+		}
+		if opp.ClosedDate != nil && opp.ClosedDate.After(latest) {
+			latest = *opp.ClosedDate
+		}
+		if opp.OrderDate != nil && opp.OrderDate.After(latest) {
+			latest = *opp.OrderDate
+		}
+	}
+	if latest.IsZero() {
+		return ""
+	}
+	return latest.Format("2006-01-02")
+}
+
+func parseQuarterWindowFromQuery(query string) (time.Time, time.Time, string, bool) {
+	now := time.Now()
+	q := strings.ToLower(strings.TrimSpace(query))
+
+	if strings.Contains(q, "last 2 quarter") || strings.Contains(q, "last two quarter") {
+		month := int(now.Month())
+		currentQuarter := (month-1)/3 + 1
+		endQuarter := currentQuarter - 1
+		endYear := now.Year()
+		if endQuarter == 0 {
+			endQuarter = 4
+			endYear--
+		}
+
+		startQuarter := endQuarter - 1
+		startYear := endYear
+		if startQuarter == 0 {
+			startQuarter = 4
+			startYear--
+		}
+
+		startMonth := time.Month((startQuarter-1)*3 + 1)
+		start := time.Date(startYear, startMonth, 1, 0, 0, 0, 0, time.Local)
+
+		endStartMonth := time.Month((endQuarter-1)*3 + 1)
+		endStart := time.Date(endYear, endStartMonth, 1, 0, 0, 0, 0, time.Local)
+		end := endStart.AddDate(0, 3, 0).Add(-time.Second)
+
+		label := fmt.Sprintf("last 2 quarters (Q%d %d to Q%d %d)", startQuarter, startYear, endQuarter, endYear)
+		return start, end, label, true
+	}
+
+	if strings.Contains(q, "last quarter") || strings.Contains(q, "previous quarter") {
+		month := int(now.Month())
+		currentQuarter := (month-1)/3 + 1
+		previousQuarter := currentQuarter - 1
+		year := now.Year()
+		if previousQuarter == 0 {
+			previousQuarter = 4
+			year--
+		}
+		startMonth := time.Month((previousQuarter-1)*3 + 1)
+		start := time.Date(year, startMonth, 1, 0, 0, 0, 0, time.Local)
+		end := start.AddDate(0, 3, 0).Add(-time.Second)
+		label := fmt.Sprintf("Q%d %d", previousQuarter, year)
+		return start, end, label, true
+	}
+
+	if strings.Contains(q, "this quarter") || strings.Contains(q, "current quarter") {
+		month := int(now.Month())
+		currentQuarter := (month-1)/3 + 1
+		year := now.Year()
+		startMonth := time.Month((currentQuarter-1)*3 + 1)
+		start := time.Date(year, startMonth, 1, 0, 0, 0, 0, time.Local)
+		end := start.AddDate(0, 3, 0).Add(-time.Second)
+		label := fmt.Sprintf("Q%d %d", currentQuarter, year)
+		return start, end, label, true
+	}
+
+	re := regexp.MustCompile(`(?i)\bq([1-4])(?:\s+)?(?:\(?(\d{4})\)?)?`)
+	m := re.FindStringSubmatch(q)
+	if len(m) == 3 {
+		var quarter int
+		fmt.Sscanf(m[1], "%d", &quarter)
+		year := now.Year()
+		if m[2] != "" {
+			fmt.Sscanf(m[2], "%d", &year)
+		}
+		startMonth := time.Month((quarter-1)*3 + 1)
+		start := time.Date(year, startMonth, 1, 0, 0, 0, 0, time.Local)
+		end := start.AddDate(0, 3, 0).Add(-time.Second)
+		label := fmt.Sprintf("Q%d %d", quarter, year)
+		return start, end, label, true
+	}
+
+	return time.Time{}, time.Time{}, "", false
+}
+
 // redactFinancialFromContext removes financial data from context maps for non-finance users
 func (a *App) redactFinancialFromContext(ctx map[string]interface{}) {
 	// Redact financial fields from customer data
@@ -919,15 +2803,15 @@ func (a *App) getSupplierContext(entityName string) map[string]interface{} {
 		query := "%" + escapedName + "%"
 		if err := a.db.Where("supplier_name LIKE ? ESCAPE '\\'", query).First(&supplier).Error; err == nil {
 			result["supplier"] = map[string]interface{}{
-				"id":            supplier.ID,
-				"name":          supplier.SupplierName,
-				"type":          supplier.SupplierType,
-				"country":       supplier.Country,
-				"rating":        supplier.Rating,
+				"id":             supplier.ID,
+				"name":           supplier.SupplierName,
+				"type":           supplier.SupplierType,
+				"country":        supplier.Country,
+				"rating":         supplier.Rating,
 				"lead_time_days": supplier.LeadTimeDays,
-				"brands":        supplier.BrandsHandled,
-				"contact":       supplier.PrimaryContact,
-				"email":         supplier.Email,
+				"brands":         supplier.BrandsHandled,
+				"contact":        supplier.PrimaryContact,
+				"email":          supplier.Email,
 			}
 
 			// Get ALL POs for this supplier (for yearly aggregation)
@@ -946,9 +2830,9 @@ func (a *App) getSupplierContext(entityName string) map[string]interface{} {
 			yearlyPOSummary := make([]map[string]interface{}, 0)
 			for year, total := range yearlyPO {
 				yearlyPOSummary = append(yearlyPOSummary, map[string]interface{}{
-					"year":     year,
+					"year":      year,
 					"total_bhd": fmt.Sprintf("%.3f", total),
-					"po_count": yearlyPOCount[year],
+					"po_count":  yearlyPOCount[year],
 				})
 			}
 			result["yearly_purchase_summary"] = yearlyPOSummary
@@ -1058,9 +2942,9 @@ func (a *App) getSupplierContext(entityName string) map[string]interface{} {
 				Where("purchase_orders.supplier_id = ? AND goods_received_notes.qc_status = ?", supplier.ID, "Passed").Count(&grnPassedCount)
 			if grnCount > 0 {
 				result["grn_quality"] = map[string]interface{}{
-					"total_grns":  grnCount,
-					"passed":      grnPassedCount,
-					"pass_rate":   fmt.Sprintf("%.1f%%", float64(grnPassedCount)/float64(grnCount)*100),
+					"total_grns": grnCount,
+					"passed":     grnPassedCount,
+					"pass_rate":  fmt.Sprintf("%.1f%%", float64(grnPassedCount)/float64(grnCount)*100),
 				}
 			}
 		}
@@ -1091,6 +2975,9 @@ func (a *App) getSupplierContext(entityName string) map[string]interface{} {
 // getFinancialContext fetches financial metrics
 func (a *App) getFinancialContext() map[string]interface{} {
 	result := make(map[string]interface{})
+	now := time.Now()
+	result["as_of_date"] = now.Format("2006-01-02")
+	result["current_year"] = now.Year()
 
 	// Invoice statistics
 	var totalInvoiced, totalPaid, totalOutstanding float64
@@ -1120,10 +3007,10 @@ func (a *App) getFinancialContext() map[string]interface{} {
 	payList := make([]map[string]interface{}, 0)
 	for _, p := range recentPayments {
 		payList = append(payList, map[string]interface{}{
-			"invoice":  p.InvoiceNumber,
-			"amount":   p.AmountBHD,
-			"date":     p.PaymentDate.Format("2006-01-02"),
-			"method":   p.PaymentMethod,
+			"invoice": p.InvoiceNumber,
+			"amount":  p.AmountBHD,
+			"date":    p.PaymentDate.Format("2006-01-02"),
+			"method":  p.PaymentMethod,
 		})
 	}
 	result["recent_payments"] = payList
@@ -1221,6 +3108,17 @@ func (a *App) getFinancialContext() map[string]interface{} {
 		"ahs_trading": ahsRevenue,
 	}
 
+	var latestInvoice Invoice
+	if err := a.db.Order("invoice_date DESC").Limit(1).First(&latestInvoice).Error; err == nil {
+		result["latest_invoice_date"] = latestInvoice.InvoiceDate.Format("2006-01-02")
+		result["latest_invoice_year"] = latestInvoice.InvoiceDate.Year()
+	}
+
+	var latestPayment Payment
+	if err := a.db.Order("payment_date DESC").Limit(1).First(&latestPayment).Error; err == nil {
+		result["latest_payment_date"] = latestPayment.PaymentDate.Format("2006-01-02")
+	}
+
 	return result
 }
 
@@ -1316,12 +3214,12 @@ func (a *App) getOperationsContext() map[string]interface{} {
 		itemList := make([]map[string]interface{}, 0)
 		for _, item := range items {
 			itemList = append(itemList, map[string]interface{}{
-				"equipment":   item.Equipment,
-				"model":       item.Model,
-				"qty":         item.Quantity,
-				"unit_price":  item.UnitPrice,
-				"margin_pct":  item.MarginPercent,
-				"currency":    item.Currency,
+				"equipment":      item.Equipment,
+				"model":          item.Model,
+				"qty":            item.Quantity,
+				"unit_price_bhd": item.UnitPrice,
+				"margin_pct":     item.MarginPercent,
+				"currency":       item.Currency,
 			})
 		}
 		offerEntry["items"] = itemList
@@ -1346,8 +3244,8 @@ func (a *App) getOperationsContext() map[string]interface{} {
 	a.db.Model(&GRNItem{}).Count(&totalGRNItems)
 	a.db.Model(&GRNItem{}).Select("COALESCE(SUM(quantity_rejected), 0)").Scan(&rejectedItems)
 	result["grn_quality"] = map[string]interface{}{
-		"total_items":      totalGRNItems,
-		"total_rejected":   rejectedItems,
+		"total_items":    totalGRNItems,
+		"total_rejected": rejectedItems,
 	}
 
 	// Pending offer follow-ups (upcoming pipeline actions)
@@ -1362,10 +3260,10 @@ func (a *App) getOperationsContext() map[string]interface{} {
 			offerNum = offer.OfferNumber
 		}
 		followUpList = append(followUpList, map[string]interface{}{
-			"offer":     offerNum,
-			"customer":  offer.CustomerName,
-			"date":      fu.FollowUpDate.Format("2006-01-02"),
-			"notes":     fu.Notes,
+			"offer":    offerNum,
+			"customer": offer.CustomerName,
+			"date":     fu.FollowUpDate.Format("2006-01-02"),
+			"notes":    fu.Notes,
 		})
 	}
 	result["pending_follow_ups"] = followUpList
@@ -1692,10 +3590,10 @@ func (a *App) getProductContext() map[string]interface{} {
 	topList := make([]map[string]interface{}, 0)
 	for _, tp := range topProducts {
 		topList = append(topList, map[string]interface{}{
-			"equipment": tp.Equipment,
-			"model":     tp.Model,
+			"equipment":   tp.Equipment,
+			"model":       tp.Model,
 			"order_count": tp.Count,
-			"total_qty": tp.TotalQty,
+			"total_qty":   tp.TotalQty,
 		})
 	}
 	result["top_ordered_products"] = topList
@@ -1772,36 +3670,86 @@ func (a *App) getForecastContext() map[string]interface{} {
 	if a.db == nil {
 		return result
 	}
+	now := time.Now()
+	result["as_of_date"] = now.Format("2006-01-02")
+	result["current_year"] = now.Year()
+
+	var allOpportunities []Opportunity
+	a.db.Find(&allOpportunities)
+
+	closedKeys := make(map[string]bool)
+	for _, opp := range allOpportunities {
+		normalized := normalizeOpportunityForList(opp)
+		if normalized.Stage != "Won" && normalized.Stage != "Lost" {
+			continue
+		}
+		key := canonicalOpportunityKey(normalized)
+		if strings.TrimSpace(key) != "" {
+			closedKeys[key] = true
+		}
+	}
+
+	openByKey := make(map[string]Opportunity)
+	for _, opp := range allOpportunities {
+		normalized := normalizeOpportunityForList(opp)
+		if shouldSuppressSyntheticOCR(normalized) {
+			continue
+		}
+		if normalized.Stage == "Won" || normalized.Stage == "Lost" || normalized.Stage == "Expired" {
+			continue
+		}
+		key := canonicalOpportunityKey(normalized)
+		if key != "" && closedKeys[key] {
+			continue
+		}
+		if key == "" {
+			key = normalized.ID
+		}
+		existing, exists := openByKey[key]
+		if !exists || shouldPreferOpportunity(normalized, existing) {
+			openByKey[key] = normalized
+		}
+	}
+
+	openOpportunities := make([]Opportunity, 0, len(openByKey))
+	for _, opp := range openByKey {
+		openOpportunities = append(openOpportunities, opp)
+	}
 
 	// --- Pipeline by stage with weighted value ---
 	type stageData struct {
-		Stage      string
 		Count      int64
 		TotalValue float64
 	}
-	var stageBreakdown []stageData
-	a.db.Model(&Opportunity{}).
-		Where("stage NOT IN ?", []string{"Won", "Lost", "Expired"}).
-		Select("stage, COUNT(*) as count, SUM(revenue_bhd) as total_value").
-		Group("stage").
-		Scan(&stageBreakdown)
+	stageBreakdown := make(map[string]*stageData)
+	for _, opp := range openOpportunities {
+		stage := strings.TrimSpace(opp.Stage)
+		if stage == "" {
+			stage = "New"
+		}
+		if stageBreakdown[stage] == nil {
+			stageBreakdown[stage] = &stageData{}
+		}
+		stageBreakdown[stage].Count++
+		stageBreakdown[stage].TotalValue += opp.RevenueBHD
+	}
 	pipelineStages := make([]map[string]interface{}, 0)
 	var weightedPipeline float64
 	stageWeights := map[string]float64{
 		"Lead": 0.10, "Qualified": 0.25, "Proposal": 0.50, "Negotiation": 0.75,
 	}
-	for _, s := range stageBreakdown {
-		w := stageWeights[s.Stage]
+	for stage, s := range stageBreakdown {
+		w := stageWeights[stage]
 		if w == 0 {
 			w = 0.50
 		}
 		weighted := s.TotalValue * w
 		weightedPipeline += weighted
 		pipelineStages = append(pipelineStages, map[string]interface{}{
-			"stage":            s.Stage,
-			"count":            s.Count,
-			"total_value_bhd":  fmt.Sprintf("%.3f", s.TotalValue),
-			"weighted_bhd":     fmt.Sprintf("%.3f", weighted),
+			"stage":             stage,
+			"count":             s.Count,
+			"total_value_bhd":   fmt.Sprintf("%.3f", s.TotalValue),
+			"weighted_bhd":      fmt.Sprintf("%.3f", weighted),
 			"close_probability": fmt.Sprintf("%.0f%%", w*100),
 		})
 	}
@@ -1809,11 +3757,22 @@ func (a *App) getForecastContext() map[string]interface{} {
 	result["weighted_pipeline_bhd"] = fmt.Sprintf("%.3f", weightedPipeline)
 
 	// --- Opportunities closing soon (next 60 days) ---
-	var closingSoon []Opportunity
-	a.db.Where("stage NOT IN ? AND expected_date BETWEEN ? AND ?",
-		[]string{"Won", "Lost", "Expired"},
-		time.Now(), time.Now().AddDate(0, 0, 60)).
-		Order("expected_date ASC").Limit(10).Find(&closingSoon)
+	closingSoon := make([]Opportunity, 0)
+	for _, opp := range openOpportunities {
+		if opp.ExpectedDate == nil {
+			continue
+		}
+		if opp.ExpectedDate.Before(now) || opp.ExpectedDate.After(now.AddDate(0, 0, 60)) {
+			continue
+		}
+		closingSoon = append(closingSoon, opp)
+	}
+	sort.Slice(closingSoon, func(i, j int) bool {
+		return closingSoon[i].ExpectedDate.Before(*closingSoon[j].ExpectedDate)
+	})
+	if len(closingSoon) > 10 {
+		closingSoon = closingSoon[:10]
+	}
 	closingList := make([]map[string]interface{}, 0)
 	for _, opp := range closingSoon {
 		expectedStr := ""
@@ -1895,17 +3854,28 @@ func (a *App) getForecastContext() map[string]interface{} {
 		TotalValue  float64
 	}
 	var salesPerf []salespersonPerf
-	a.db.Model(&Opportunity{}).
-		Where("stage NOT IN ? AND salesperson != ''", []string{"Won", "Lost", "Expired"}).
-		Select("salesperson, COUNT(*) as open_count, SUM(revenue_bhd) as total_value").
-		Group("salesperson").
-		Order("total_value DESC").
-		Scan(&salesPerf)
+	perfMap := make(map[string]*salespersonPerf)
+	for _, opp := range openOpportunities {
+		if strings.TrimSpace(opp.Salesperson) == "" {
+			continue
+		}
+		if perfMap[opp.Salesperson] == nil {
+			perfMap[opp.Salesperson] = &salespersonPerf{Salesperson: opp.Salesperson}
+		}
+		perfMap[opp.Salesperson].OpenCount++
+		perfMap[opp.Salesperson].TotalValue += opp.RevenueBHD
+	}
+	for _, perf := range perfMap {
+		salesPerf = append(salesPerf, *perf)
+	}
+	sort.Slice(salesPerf, func(i, j int) bool {
+		return salesPerf[i].TotalValue > salesPerf[j].TotalValue
+	})
 	salesList := make([]map[string]interface{}, 0)
 	for _, sp := range salesPerf {
 		salesList = append(salesList, map[string]interface{}{
-			"salesperson": sp.Salesperson,
-			"open_opps":   sp.OpenCount,
+			"salesperson":  sp.Salesperson,
+			"open_opps":    sp.OpenCount,
 			"pipeline_bhd": fmt.Sprintf("%.3f", sp.TotalValue),
 		})
 	}
@@ -2233,7 +4203,7 @@ func (a *App) getCustomerActivityContext() map[string]interface{} {
 	for _, c := range dormant {
 		dormantResult = append(dormantResult, map[string]interface{}{
 			"customer": c.CustomerName, "last_order": c.LastOrderDate.Format("2006-01-02"),
-			"days_silent":     int(now.Sub(c.LastOrderDate).Hours() / 24),
+			"days_silent":            int(now.Sub(c.LastOrderDate).Hours() / 24),
 			"historical_revenue_bhd": c.TotalRevenueBHD,
 		})
 	}
@@ -2241,10 +4211,10 @@ func (a *App) getCustomerActivityContext() map[string]interface{} {
 
 	// New customers who placed their first-ever order this year
 	type NewCust struct {
-		CustomerName  string    `gorm:"column:customer_name"`
-		FirstOrder    time.Time `gorm:"column:first_order"`
-		OrderCount    int       `gorm:"column:order_count"`
-		RevenueBHD    float64   `gorm:"column:revenue_bhd"`
+		CustomerName string    `gorm:"column:customer_name"`
+		FirstOrder   time.Time `gorm:"column:first_order"`
+		OrderCount   int       `gorm:"column:order_count"`
+		RevenueBHD   float64   `gorm:"column:revenue_bhd"`
 	}
 	var newCustomers []NewCust
 	a.db.Raw(`
@@ -2263,8 +4233,8 @@ func (a *App) getCustomerActivityContext() map[string]interface{} {
 	newResult := []map[string]interface{}{}
 	for _, c := range newCustomers {
 		newResult = append(newResult, map[string]interface{}{
-			"customer":      c.CustomerName, "first_order": c.FirstOrder.Format("2006-01-02"),
-			"orders":        c.OrderCount,   "revenue_bhd":  c.RevenueBHD,
+			"customer": c.CustomerName, "first_order": c.FirstOrder.Format("2006-01-02"),
+			"orders": c.OrderCount, "revenue_bhd": c.RevenueBHD,
 		})
 	}
 	ctx["new_customers_this_year"] = newResult
@@ -2317,10 +4287,10 @@ func (a *App) getActionItemsContext() map[string]interface{} {
 
 	// 1. Overdue invoices to chase (top 10 by amount)
 	type OverdueInv struct {
-		CustomerName  string    `gorm:"column:customer_name"`
-		InvoiceNumber string    `gorm:"column:invoice_number"`
-		OutstandingBHD float64  `gorm:"column:outstanding_bhd"`
-		DueDate       time.Time `gorm:"column:due_date"`
+		CustomerName   string    `gorm:"column:customer_name"`
+		InvoiceNumber  string    `gorm:"column:invoice_number"`
+		OutstandingBHD float64   `gorm:"column:outstanding_bhd"`
+		DueDate        time.Time `gorm:"column:due_date"`
 	}
 	var overdueInvoices []OverdueInv
 	a.db.Raw(`
@@ -2343,10 +4313,10 @@ func (a *App) getActionItemsContext() map[string]interface{} {
 
 	// 2. Offers expiring this week
 	type ExpiryItem struct {
-		OfferNumber  string    `gorm:"column:offer_number"`
-		CustomerName string    `gorm:"column:customer_name"`
-		TotalValueBHD float64  `gorm:"column:total_value_bhd"`
-		ValidityDate time.Time `gorm:"column:validity_date"`
+		OfferNumber   string    `gorm:"column:offer_number"`
+		CustomerName  string    `gorm:"column:customer_name"`
+		TotalValueBHD float64   `gorm:"column:total_value_bhd"`
+		ValidityDate  time.Time `gorm:"column:validity_date"`
 	}
 	var expiringOffers []ExpiryItem
 	a.db.Raw(`
@@ -2746,14 +4716,20 @@ func callMistralVision(base64Image string, mimeType string, prompt string) (stri
 
 // settingsBasedAIMLKey is injected by the App during startup for settings-based key lookup
 var settingsBasedAIMLKey func() string
+var settingsBasedAIMLModel func() string
 
 // SetAIMLKeyProvider allows the App to inject the settings-based AIML key provider
 func SetAIMLKeyProvider(provider func() string) {
 	settingsBasedAIMLKey = provider
 }
 
-// getAIMLAPIKey retrieves the AIML API key from settings, environment, or hardcoded fallback.
-// Priority: settings DB → env var → hardcoded fallback (ensures Grok pipeline never breaks).
+// SetAIMLModelProvider allows the App to inject the settings-based AIML model provider.
+func SetAIMLModelProvider(provider func() string) {
+	settingsBasedAIMLModel = provider
+}
+
+// getAIMLAPIKey retrieves the AIML API key from settings or environment.
+// Priority: settings DB → ASYMM/AIML env var.
 func getAIMLAPIKey() string {
 	// 1. Try settings-based provider (injected by App)
 	if settingsBasedAIMLKey != nil {
@@ -2761,20 +4737,64 @@ func getAIMLAPIKey() string {
 			return key
 		}
 	}
-	// 2. Try environment variable
+	// 2. Try environment variables
+	if key := strings.TrimSpace(os.Getenv("ASYMM_AIML_API_KEY")); key != "" {
+		return key
+	}
 	if key := strings.TrimSpace(os.Getenv("AIML_API_KEY")); key != "" {
 		return key
 	}
-	// 3. Hardcoded fallback — ensures Butler/Grok pipeline always works on deployment
-	return "bf395c42f717475798bdfdd56891c208"
+	return ""
+}
+
+func getAIMLModelID() string {
+	if settingsBasedAIMLModel != nil {
+		if model := strings.TrimSpace(settingsBasedAIMLModel()); model != "" {
+			return model
+		}
+	}
+	if model := strings.TrimSpace(os.Getenv("ASYMM_AIML_MODEL")); model != "" {
+		return model
+	}
+	if model := strings.TrimSpace(os.Getenv("AIML_MODEL")); model != "" {
+		return model
+	}
+	return aimlModelID
+}
+
+func getAIMLModelCandidates() []string {
+	requested := getAIMLModelID()
+	models := []string{}
+	if requested != "" {
+		models = append(models, requested)
+	}
+	models = append(models, fallbackAIMLModels...)
+	return dedupeStringSlice(models)
+}
+
+func dedupeStringSlice(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	unique := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, value)
+	}
+	return unique
 }
 
 // callAIML sends a chat request to the AIML API (OpenAI-compatible format).
-// Uses aimlModelID (Grok) which supports a ~1M token context window, enabling
-// full business context injection without truncation.
-func callAIML(apiKey, systemPrompt, userMessage string) (string, error) {
+// Uses explicit model selection to support runtime fallback orchestration.
+func callAIML(apiKey, systemPrompt, userMessage, model string) (string, error) {
 	requestBody := map[string]interface{}{
-		"model": aimlModelID,
+		"model": model,
 		"messages": []map[string]interface{}{
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": userMessage},
@@ -2830,6 +4850,78 @@ func callAIML(apiKey, systemPrompt, userMessage string) (string, error) {
 	return apiResponse.Choices[0].Message.Content, nil
 }
 
+func callAIMLWithFallback(apiKey, systemPrompt, userMessage string) (string, string, error) {
+	var lastErr error
+	for _, model := range getAIMLModelCandidates() {
+		response, err := callAIML(apiKey, systemPrompt, userMessage, model)
+		if err == nil {
+			return response, model, nil
+		}
+		lastErr = err
+		log.Printf("⚠️ AIML model attempt failed (%s): %v", model, err)
+	}
+	return "", "", lastErr
+}
+
+// callAIMLWithMessages sends the full messages array to AIML API (preserves conversation history).
+func callAIMLWithMessages(apiKey string, messages []map[string]interface{}) (string, string, error) {
+	var lastErr error
+	for _, model := range getAIMLModelCandidates() {
+		requestBody := map[string]interface{}{
+			"model":       model,
+			"messages":    messages,
+			"max_tokens":  aimlMaxTokens,
+			"temperature": aimlTemperature,
+		}
+		jsonData, err := json.Marshal(requestBody)
+		if err != nil {
+			lastErr = fmt.Errorf("marshal error: %w", err)
+			continue
+		}
+		req, err := http.NewRequest("POST", aimlAPIURL, bytes.NewBuffer(jsonData))
+		if err != nil {
+			lastErr = fmt.Errorf("request creation error: %w", err)
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		client := &http.Client{Timeout: AimlAPITimeout}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("HTTP request failed: %w", err)
+			log.Printf("⚠️ AIML model attempt failed (%s): %v", model, lastErr)
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			lastErr = fmt.Errorf("AIML API error (status %d): %s", resp.StatusCode, string(body))
+			log.Printf("⚠️ AIML model attempt failed (%s): %v", model, lastErr)
+			continue
+		}
+		var apiResponse struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(body, &apiResponse); err != nil {
+			lastErr = fmt.Errorf("JSON parse error: %w", err)
+			log.Printf("⚠️ AIML model attempt failed (%s): %v", model, lastErr)
+			continue
+		}
+		if len(apiResponse.Choices) == 0 {
+			lastErr = fmt.Errorf("no response choices from AIML API")
+			log.Printf("⚠️ AIML model attempt failed (%s): %v", model, lastErr)
+			continue
+		}
+		return apiResponse.Choices[0].Message.Content, model, nil
+	}
+	return "", "", lastErr
+}
+
 // ============================================================================
 // SYSTEM PROMPT BUILDER
 // ============================================================================
@@ -2852,36 +4944,55 @@ func buildMistralSystemPrompt(context map[string]interface{}, regime map[string]
 	// Build regime guidance
 	regimeGuidance := buildRegimeGuidance(regime)
 
-	prompt := fmt.Sprintf(`You are Butler, the business intelligence AI for PH Trading WLL — a Bahrain-based process instrumentation company. You have access to the company's complete live database and can answer any question the team has.
+	prompt := fmt.Sprintf(`You are Butler, the business intelligence AI for PH Trading WLL — a Bahrain-based process instrumentation company.
+You have access to connected business data in this system and should answer only from that evidence.
+Do not invent entities, people, products, projects, invoice numbers, payment events, competitor notes, or business assertions not present in context.
+
+CURRENT SYSTEM DATE:
+- Treat today as %s.
+- Treat the current operating year as %d.
+- Do not describe explicitly requested periods in %d as "future" unless the period is actually after today.
+
+DATA-GROUNDING RULES:
+- Answer only from facts present in context JSON and keys listed below.
+- If a requested data point is not present, state explicitly: "I cannot confirm this from current data." Then immediately provide the closest grounded data, adjacent metric, or next-best action you can support from context.
+- For period-scoped questions (quarter/month/year), use 'customer_period_summary' when provided.
+- For company-wide quarter/month/year questions, use 'business_period_summary' when provided and treat it as authoritative.
+- For year-scoped questions, use 'business_year_summary' when provided and treat it as authoritative.
+- If the user asks whether the system has access to a year's data, answer with coverage across invoices, orders, offers, and opportunities rather than only invoiced revenue.
+- If period summary is empty, do not infer from lifetime data and present period-specific result only.
 
 COMPANY PROFILE:
 - Industry: Process Instrumentation & Control Systems (Bahrain)
 - Currency: BHD (Bahraini Dinar, 3 decimal places = fils)
-- Key Customers: BAPCO, EWA, Alba, GPIC, NOGA, Tatweer, Banagas (government/industrial)
-- Key Suppliers: Endress+Hauser (E+H), Servomex, Landis+Gyr, GIC
 - Divisions: PH Trading (primary) + AHS Trading (secondary)
 - VAT Rate: 10%%
 
 FULL DATA ACCESS — you have live data on:
-• CUSTOMERS: 286 active accounts — profiles, grades (A/B/C/D), payment behavior, credit limits, outstanding AR, invoices, orders, contacts, CRM notes, follow-up tasks, active offers, AR risk tiers
+• CUSTOMERS: live customer accounts — profiles, grades (A/B/C/D), payment behavior, credit limits, outstanding AR, invoices, orders, contacts, CRM notes, follow-up tasks, active offers, AR risk tiers
 • CUSTOMER ACTIVITY: Dormant customers (no orders 6+ months), new customers this year, lapsed customers (ordered last year but not this year), customer retention signals
 • CUSTOMER PROFITABILITY: Revenue and gross margin by customer — top earners, lowest margin accounts (pricing opportunities)
-• SUPPLIERS: 34 suppliers — profiles, PO history, invoice matching, payment history, GRN quality stats
+• SUPPLIERS: live supplier records — profiles, PO history, invoice matching, payment history, GRN quality stats
 • SUPPLIER PERFORMANCE: Average delivery lead times (PO date → GRN date), QC pass/fail rates by supplier — who is reliable, who isn't
-• SALES PIPELINE: Offers (RFQ → Quotation → Won/Lost/Expired), costing sheets, win rates, opportunities by stage, ABB competition flags
+• SALES PIPELINE: Offers (RFQ → Quotation → Won/Lost/Expired), costing sheets, win rates, opportunities by stage, competition markers when stored
 • OFFER EXPIRY: Active quotes approaching ValidityDate — this week / this month / next 60 days, total value at risk
-• COMPETITION: Win rate vs ABB, overall win rate, top lost-deal reasons, win rate by product type
-• ORDERS & INVOICES: 175 orders, 468 customer invoices (2023-2025), invoice status, line items, margins
+• COMPETITION: Win/loss trend, top lost-deal reasons, and supplier/product competitiveness signals from stored records
+• ORDERS & INVOICES: live orders and customer invoices, including status, line items, and margins
 • PROCUREMENT: 45 POs (multi-currency EUR/USD/BHD), 3-way matching (PO/GRN/Invoice), GRN quality
 • DELIVERY: 155 delivery notes — Prepared/Dispatched/Delivered, serial traceability
+• SERVICE DUE INTELLIGENCE: Serial-tracked installations nearing calibration, warranty, or annual-service milestones
 • FINANCE: AR/AP, bank balances (multiple accounts), FX rates, monthly revenue trends, payment predictions
 • DSO ANALYSIS: Days Sales Outstanding per customer — who pays in 15 days vs 90 days, overall DSO trend
 • BANKING: Bank statements, reconciliation status, outstanding/stale/bounced cheques
+• PAYMENT CLOSURE READINESS: Opportunities with linked invoices fully paid and therefore eligible to review for closure
 • CREDIT NOTES: Draft/Issued/Applied pipeline, outstanding credits
 • PRODUCTS: 19 active products — catalog, pricing, margins, order frequency, serial tracking
 • FORECASTING: Weighted pipeline by stage, opportunities closing in 60 days, payment day predictions, win rates by product type, salesperson performance
 • RISK: Overdue AR/AP, credit-blocked customers, expiring offers, system alerts
 • ACTION ITEMS: Prioritized list — overdue invoices to chase, offers expiring this week, stuck delivery notes, POs awaiting supplier acknowledgment, supplier invoices pending approval
+• DOCUMENT PRECHECKS: Quotation readiness context — resolved customer, primary contact, recent offers, missing required fields before drafting
+• STRUCTURED MEMORY: Recent entity notes, pending follow-ups, and tactical quick captures relevant to the active customer/workflow
+• PROACTIVE BRIEFING: Compact daily operating picture — action items, risks, service follow-ups, and cashflow cues
 • INTELLIGENCE: Three-Regime dynamics (R1=Exploration/R2=Optimization/R3=Stabilization), payment behavior models
 
 COMPLETE BUSINESS DATA:
@@ -2891,32 +5002,52 @@ COMPLETE BUSINESS DATA:
 
 YOUR CAPABILITIES:
 1. Answer ANY question about the business — customers, suppliers, finance, operations, pipeline, risk
-2. Discuss FUTURE PROSPECTS — use pipeline data, payment predictions, and win probability to project outcomes
+2. Discuss FUTURE PROSPECTS — use only explicit pipeline data, payment predictions, and win probability from context
 3. STRATEGIC ANALYSIS — recommend actions, identify patterns, surface insights from data trends
 4. FORECASTING — estimate future revenue using pipeline × close probability, analyze payment timing risk
-5. MARKET INTELLIGENCE — use your knowledge of the instrumentation industry to add context to data
-6. WHAT-IF SCENARIOS — reason about hypothetical situations ("what if EWA delays payment?", "what margin do we need to break even on this order?")
+5. WHAT-IF SCENARIOS — reason about hypothetical situations with explicit stated assumptions
 7. RELATIONSHIP ANALYSIS — cross-reference customers, orders, offers, and payments to find patterns
 8. DAILY PRIORITIZATION — tell the team what to focus on today: overdue collections, expiring offers, stuck deliveries, pending approvals
 9. CUSTOMER HEALTH — identify dormant accounts, churn risk, and new customer opportunities worth nurturing
-10. COMPETITIVE INTELLIGENCE — analyze win/loss patterns, ABB competition win rate, pricing vs margin trade-offs
-11. SUPPLIER BENCHMARKING — compare lead times and QC reliability across E+H, Servomex, Landis+Gyr, and others
+10. COMPETITIVE INTELLIGENCE — analyze win/loss patterns and pricing vs margin trade-offs when present in context
+11. SUPPLIER BENCHMARKING — compare lead times and QC reliability by supplier from context
 12. PAYMENT BEHAVIOR — DSO by customer, predict who will pay late, recommend collection priority
+13. SERVICE FOLLOW-UPS — identify installed equipment that is likely due for calibration, warranty action, or annual service
+14. DOCUMENT READINESS — before drafting quotations or service offers, verify resolved customer/contact context and missing fields
+15. PROACTIVE BRIEFING — summarize what needs attention today across collections, operations, service, and approvals
+16. CONTINUITY — use structured memory to recall recent notes, follow-ups, and tactical tasks without inventing new facts
+17. CREATE CUSTOMERS — create new customer records from natural language (name, type, grade, city, contact)
+18. CREATE SUPPLIERS — create new supplier records from natural language (name, type, country, contact, brands)
 
 RESPONSE GUIDELINES:
 - Always cite specific numbers from the context data when available
 - For forward-looking questions, clearly distinguish between actual data and projections
 - Be as detailed or as brief as the question requires — match depth to complexity
 - If data is not in context, say so and offer what you do know
-- Suggest next actions when relevant
+- Do not dead-end with a refusal when related grounded data exists; pivot to the nearest useful answer, comparison, shortlist, or clarifying question
+- Suggest next actions only when supported by context
 - For strategic recommendations, ground them in the actual data provided
+- Never invent contact people, internal owners, invoice numbers, project names, or payment events that are absent from context
+- Treat entity_resolution, contact_context, account_manager_context, service_due_installations, closeable_opportunities, and quotation_precheck as higher-trust sources when present
+- Treat clarification_prompt and quotation_precheck.draft_payload as the preferred handoff rails when they are present
+- Treat butler_memory and proactive_briefing as trusted context for continuity and daily-priority answers
+- For "who handled"/ownership questions, only mention people present in context fields (e.g., user references, account_manager_context, team context tags); otherwise state no owner is currently recorded
+- If a period is requested (quarter/year/month) and customer_period_summary.status is empty_period_window or no period rows exist, present that clearly as no activity in that period
+- If business_year_summary is present, use it to distinguish invoice activity from broader commercial coverage such as orders, offers, and opportunities
+- Do not claim a PDF, Excel export, or any document file was generated unless the context explicitly includes a real file path or generated artifact reference
+- If entity_resolution indicates ambiguous=true, ask a short clarification question and show the alternatives instead of committing to one match
+- For cashflow questions, prefer cashflow_projection monthly_projection when present and state that operating cost is a static assumption if included
+- For quotation drafting, use quotation_precheck and draft_clues to summarize what is known, what was inferred from the user's request, and what fields are still missing
+- For questions about external events (bank outages, AWS incidents, political disruption, etc.), do not speculate about real-world causation from outside knowledge. Instead, quantify the internal exposure you can see in the system and state clearly that the external event itself is not confirmed in current data
+- For create/update/delete requests, ask concise clarifying questions when required fields are missing; otherwise provide a short preview and executable action block rather than only descriptive text
 
-ACTION FORMAT (when recommending next steps):
-[ACTIONS]
-[{"type":"NAVIGATE","target":"screen_name","label":"Description","data":{}}]
-[/ACTIONS]
+ACTION FORMAT CONTRACT (must be explicit and execute-ready):
+%s
 
-Available targets: customers, suppliers, invoices, payments, orders, rfqs, offers, deliveries, dashboard, opportunities, purchase_orders, delivery_notes, bank_reconciliation, cheque_register, cash_position, butler`, contextStr, regimeGuidance)
+Available targets:
+%s
+`,
+		time.Now().Format("2006-01-02"), time.Now().Year(), time.Now().Year(), contextStr, regimeGuidance, buildButlerActionContractPrompt(), strings.Join(buildButlerActionTargetAliases(), ", "))
 
 	return prompt
 }
@@ -2959,6 +5090,151 @@ func buildRegimeGuidance(regime map[string]interface{}) string {
 // RESPONSE PARSING
 // ============================================================================
 
+func buildButlerActionContract() string {
+	return buildButlerActionContractPrompt()
+}
+
+func buildButlerActionContractPrompt() string {
+	return `Use [ACTIONS]...[/ACTIONS] to return machine-executable actions.
+
+Rules:
+- Emit JSON action objects only when the capability is supported by live context.
+- Use lower-case values for type and target.
+- Include a short label for every action.
+- Never emit an action if required fields are missing or unclear.
+- If data is missing, ask for clarification instead of guessing IDs, statuses, or entities.
+- Never invent entities, ids, statuses, or workflow statuses.
+
+General schema:
+{"type":"...","target":"...","label":"...","data":{...}}
+
+1) APPROVE / REJECT
+{"type":"approve|reject","target":"<target>","label":"...","data":{"entity_id":"<id>","reason":"<optional>"}}
+Requirements:
+- required: type, target, data.entity_id
+- supported targets: purchase_order, costing_sheet, supplier_invoice, stock_adjustment, offer, quotation, order, rfq, invoice
+- Never invent ids.
+
+2) UPDATE
+{"type":"update","target":"<target>","label":"...","data":{"entity_id":"<id>","status":"<exact status/stage string>"}}
+Requirements:
+- required: type, target, data.entity_id, data.status or data.stage
+- allowed status/stage by target:
+  - opportunity: New, Qualified, Proposal, Quoted, Won, Lost, On Hold
+  - purchase_order: Draft, Pending Approval, Approved, Sent, Acknowledged, Partially Received, Received, Closed, Cancelled
+  - order: Draft, Confirmed, Processing, InProgress, Shipped, PartiallyDelivered, FullyDelivered, Delivered, Invoiced, Complete, Cancelled
+  - rfq: RFQ Received, Offer Sent, Follow-up/Eval, PO/LOI Received, Order Placed, In Process, Delivered, Closed (Payment), Closed (Lost)
+  - offer/quotation: draft, quoted, sent, accepted, rejected, won, lost
+  - costing_sheet: draft, pending_approval, approved, rejected
+  - follow_up: pending, in_progress, completed, cancelled, overdue
+  - stock_adjustment: pending, approved, rejected
+- opportunity updates may also include comment and owner_notes when the request is about notes or detail cleanup
+
+3) CREATE
+{"type":"create", "target":"<target>", "label":"...", "data":{...}}
+Requirements by target:
+- offer/quotation: customer_id or customer_name, and one of line_items/items OR amount (grand_total, total, total_amount, amount, amount_bhd)
+- follow_up: customer_id or customer_name, title
+- order: order_number/reference, customer_id or customer_name, and amount
+- opportunity: customer_id or customer_name, and project/title/opportunity_name
+- stock_adjustment: inventory_item_id or item_id, reason, and one of variance or (system_quantity + physical_quantity)
+- customer: business_name (required), optional: customer_type, payment_grade, city, country, primary_email, primary_phone, industry
+- supplier: supplier_name (required), optional: supplier_type, country, primary_contact, email, phone, brands_handled
+- customer_contact: customer_id or customer_name, contact_name, optional job_title, email, phone, address, is_primary_contact
+- supplier_contact: supplier_id or supplier_name, contact_name, optional job_title, email, phone, address, is_primary_contact
+- optional fields: unit_cost, notes, due_date, priority, quote_type, vat_rate
+
+4) OPEN / NAVIGATE
+{"type":"open|navigate","target":"<screen_or_entity>","label":"...","data":{}}
+Requirements:
+- required: type and target
+- target should map to app screens: dashboard, opportunities, relationships, finance, operations, intelligence, settings, customers, suppliers, orders, offers, rfq, costing_sheet, purchase_order, supplier_invoice, invoice, stock_adjustment
+- include lookup ids when available (offer_id, order_id, customer_id)
+
+5) ANALYZE / FETCH / DAILY_BRIEFING
+{"type":"analyze|fetch|daily_briefing","target":"<topic>","label":"...","data":{}}
+Requirements:
+- required: type and target.
+
+6) STATUS FIELDING
+- Always send explicit status/stage in data.status or data.stage for update actions.
+- Never emit placeholders.
+- Do not claim readiness if required fields are missing.
+
+Examples:
+[ACTIONS]
+[{"type":"approve","target":"costing_sheet","label":"Approve costing sheet","data":{"entity_id":123,"reason":"Margin approval complete"}}]
+[{"type":"reject","target":"supplier_invoice","label":"Reject supplier invoice","data":{"entity_id":456,"reason":"Mismatch against GRN"}}]
+[{"type":"create","target":"offer_draft","label":"Create offer draft","data":{"customer_id":789,"customer_name":"BAPCO","quote_type":"Quotation","vat_rate":10}}]
+[{"type":"create","target":"follow_up","label":"Create follow-up","data":{"customer_name":"BAPCO","title":"Request additional requirements","due_date":"2026-01-12","priority":"high"}}]
+[{"type":"create","target":"stock_adjustment","label":"Create stock adjustment","data":{"inventory_item_id":"ITM-0001","reason":"Physical audit adjustment","physical_quantity":40,"system_quantity":38,"unit_cost":12.5}}]
+[{"type":"create","target":"order","label":"Create order","data":{"order_number":"ORD-2026-111","customer_name":"BAPCO","total_amount":12450}}]
+[{"type":"create","target":"opportunity","label":"Create opportunity","data":{"customer_name":"BAPCO","title":"Upgrade custody transfer skids","amount":18500,"notes":"Created from Butler request"}}]
+[{"type":"create","target":"customer","label":"Create customer","data":{"business_name":"Gulf Industrial Co","customer_type":"Corporate","city":"Manama","country":"Bahrain","industry":"Oil & Gas"}}]
+[{"type":"create","target":"supplier","label":"Create supplier","data":{"supplier_name":"Endress+Hauser AG","supplier_type":"Manufacturer","country":"Switzerland","brands_handled":"Endress+Hauser"}}]
+[{"type":"create","target":"customer_contact","label":"Create customer contact","data":{"customer_name":"BAPCO","contact_name":"Bader Nabeel","job_title":"Instrument Engineer - FPE Department","email":"bader.nabeel@bapcoenergies.com","phone":"+973-17752985","mobile":"+973-32009292","address":"P.O. Box 25555, Awali, Kingdom of Bahrain"}}]
+[{"type":"update","target":"opportunity","label":"Update opportunity notes","data":{"entity_id":"OPP-123","comment":"Customer requested revised commercial split","owner_notes":"Follow up after internal pricing review"}}]
+[{"type":"update","target":"rfq","label":"Move RFQ to In Process","data":{"entity_id":333,"stage":"In Process"}}]
+[{"type":"update","target":"stock_adjustment","label":"Approve adjustment","data":{"entity_id":77,"status":"approved"}}]
+[{"type":"navigate","target":"finance","label":"Open finance hub","data":{}}]
+[{"type":"open","target":"orders","label":"Open recent orders","data":{"order_id":42}}]
+[{"type":"fetch","target":"daily_briefing","label":"Show daily briefing","data":{}}]
+[/ACTIONS]`
+}
+
+func buildButlerActionTargetAliases() []string {
+	return []string{
+		"customers",
+		"suppliers",
+		"customer",
+		"supplier",
+		"invoices",
+		"offers",
+		"order",
+		"orders",
+		"opportunity",
+		"opportunities",
+		"rfq",
+		"rfqs",
+		"offer",
+		"offer_draft",
+		"deliveries",
+		"dashboard",
+		"opportunities",
+		"purchase_order",
+		"purchase_orders",
+		"po",
+		"delivery_note",
+		"delivery_notes",
+		"bank_reconciliation",
+		"cheque_register",
+		"cash_position",
+		"butler",
+		"costing_sheet",
+		"costingsheet",
+		"costing",
+		"supplier_invoice",
+		"supplier_invoices",
+		"follow_up",
+		"follow_up_task",
+		"tasks",
+		"follow_ups",
+		"customer_contact",
+		"customer_contacts",
+		"supplier_contact",
+		"supplier_contacts",
+		"contact",
+		"contacts",
+		"stock_adjustment",
+		"stock_adjustments",
+		"daily_briefing",
+		"contact",
+		"quotation",
+		"payment",
+		"payments",
+	}
+}
+
 // parseMistralResponse converts Mistral output to ButlerResponse
 func parseMistralResponse(aiText string, context map[string]interface{}, intent Intent) ButlerResponse {
 	// Extract actions from [ACTIONS]...[/ACTIONS] blocks
@@ -2995,6 +5271,114 @@ func parseMistralResponse(aiText string, context map[string]interface{}, intent 
 	}
 }
 
+func buildButlerMetadata(intent Intent, context map[string]interface{}, hasFinanceAccess bool, usedBackend, requestedModel, usedModel, fallbackReason string, err error) ButlerResponseMetadata {
+	metadata := ButlerResponseMetadata{
+		UsedBackend:       usedBackend,
+		RequestedModel:    requestedModel,
+		UsedModel:         usedModel,
+		FallbackReason:    strings.TrimSpace(fallbackReason),
+		FinanceDataAccess: hasFinanceAccess,
+		ContextMode:       intent.Domain,
+		DataCoverage:      collectContextCoverage(context),
+		EntityResolution:  getEntityResolutionFromContext(context),
+		GeneratedAt:       time.Now().Format(time.RFC3339),
+	}
+	if err != nil {
+		metadata.Error = err.Error()
+	}
+	return metadata
+}
+
+func collectContextCoverage(context map[string]interface{}) []string {
+	if len(context) == 0 {
+		return []string{}
+	}
+
+	keys := []string{
+		"business_summary",
+		"entity_resolution",
+		"customer_data",
+		"customer_period_summary",
+		"installed_base_summary",
+		"ar_summary",
+		"supplier_data",
+		"financial_data",
+		"operations_data",
+		"risk_data",
+		"banking_data",
+		"credit_notes",
+		"product_catalog",
+		"delivery_data",
+		"po_summary",
+		"forecast_intelligence",
+		"serial_inventory",
+		"cashflow_projection",
+		"dso_analysis",
+		"offer_expiry",
+		"customer_profitability",
+		"supplier_performance",
+		"customer_activity",
+		"service_due_installations",
+		"closeable_opportunities",
+		"quotation_precheck",
+		"competition_analysis",
+		"competition_intelligence",
+		"customer_360",
+		"contact_context",
+		"account_manager_context",
+		"proactive_briefing",
+		"action_items",
+		"customer_notes",
+	}
+
+	coverage := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if value, ok := context[key]; ok && !isContextEmpty(value) {
+			coverage = append(coverage, key)
+		}
+	}
+	return coverage
+}
+
+func isContextEmpty(value interface{}) bool {
+	if value == nil {
+		return true
+	}
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return len(v) == 0
+	case map[interface{}]interface{}:
+		return len(v) == 0
+	case []interface{}:
+		return len(v) == 0
+	case string:
+		return strings.TrimSpace(v) == ""
+	default:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return false
+		}
+		switch string(data) {
+		case "null", "{}", "[]":
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+func getEntityResolutionFromContext(context map[string]interface{}) map[string]interface{} {
+	raw, ok := context["entity_resolution"]
+	if !ok {
+		return nil
+	}
+	resolution, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	return resolution
+}
+
 // parseActionBlocks extracts structured actions from [ACTIONS]...[/ACTIONS] JSON
 func parseActionBlocks(text string) []ButlerAction {
 	actions := []ButlerAction{}
@@ -3007,37 +5391,131 @@ func parseActionBlocks(text string) []ButlerAction {
 
 		jsonStr := strings.TrimSpace(match[1])
 
-		// Try parsing as array of action objects
-		var rawActions []struct {
-			Type       string      `json:"type"`
-			Target     string      `json:"target"`
-			Label      string      `json:"label"`
-			Data       interface{} `json:"data"`
-			Parameters interface{} `json:"parameters"`
+		type actionAlias struct {
+			Type        string      `json:"type"`
+			ActionType  string      `json:"action_type"`
+			Target      string      `json:"target"`
+			Topic       string      `json:"topic"`
+			ActionTag   string      `json:"action_tag"`
+			Screen      string      `json:"screen"`
+			Entity      string      `json:"entity"`
+			EntityType  string      `json:"entity_type"`
+			Resource    string      `json:"resource"`
+			Label       string      `json:"label"`
+			ActionLabel string      `json:"action_label"`
+			Name        string      `json:"name"`
+			Data        interface{} `json:"data"`
+			Parameters  interface{} `json:"parameters"`
+			Payload     interface{} `json:"payload"`
 		}
 
+		getStringFromData := func(raw interface{}, keys ...string) string {
+			if raw == nil {
+				return ""
+			}
+			mapValue, ok := raw.(map[string]interface{})
+			if !ok {
+				return ""
+			}
+			for _, key := range keys {
+				if text, ok := mapValue[key].(string); ok {
+					text = strings.TrimSpace(text)
+					if text != "" {
+						return text
+					}
+				}
+			}
+			return ""
+		}
+
+		rawActions := []actionAlias{}
 		if err := json.Unmarshal([]byte(jsonStr), &rawActions); err != nil {
-			log.Printf("⚠️ Failed to parse action block: %v", err)
-			continue
+			// Try single-action object fallback
+			var single actionAlias
+			if err2 := json.Unmarshal([]byte(jsonStr), &single); err2 == nil {
+				rawActions = append(rawActions, single)
+			} else {
+				log.Printf("⚠️ Failed to parse action block: %v", err)
+				continue
+			}
 		}
 
 		for _, ra := range rawActions {
-			data := ra.Data
-			if data == nil {
-				data = ra.Parameters
+			typeValue := strings.ToLower(strings.TrimSpace(coalesceString(ra.Type, ra.ActionType, ra.ActionTag)))
+			rawTarget := coalesceString(ra.Target, ra.Screen, ra.Topic, ra.Entity, ra.EntityType, ra.Resource)
+			nType, nTarget := normalizedButlerActionTypeTarget(typeValue, rawTarget)
+			if nType == "" {
+				continue
 			}
-			if data == nil {
-				data = ra.Label
+			target := nTarget
+			label := strings.TrimSpace(coalesceString(ra.Label, ra.ActionLabel, ra.Name))
+			data := coalesceInterface(ra.Data, ra.Parameters, ra.Payload)
+
+			if target == "" && data != nil {
+				if fallback := getStringFromData(data, "target", "entity", "entity_type", "screen", "topic", "resource"); fallback != "" {
+					target = normalizeButlerActionTarget(fallback)
+				}
 			}
+
+			if nType == "daily_briefing" && target == "" {
+				target = "daily_briefing"
+			}
+
+			if nType == "create" && target == "" {
+				if getStringFromData(data, "entity", "entity_type", "target", "table") == "quotation" {
+					target = "offer"
+				}
+			}
+
+			if label == "" {
+				label = inferActionLabel(nType, target)
+			}
+
+			if target == "" || typeValue == "" {
+				continue
+			}
+
 			actions = append(actions, ButlerAction{
-				Type:   strings.ToLower(ra.Type),
-				Target: strings.ToLower(ra.Target),
+				Type:   nType,
+				Target: target,
+				Label:  label,
 				Data:   data,
 			})
 		}
 	}
 
 	return actions
+}
+
+func coalesceString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func coalesceInterface(values ...interface{}) interface{} {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func inferActionLabel(actionType, target string) string {
+	if actionType == "" {
+		return "Action"
+	}
+
+	prettyTarget := strings.ReplaceAll(target, "_", " ")
+	if prettyTarget == "" {
+		return fmt.Sprintf("%s action", strings.ToUpper(string(actionType[0]))+actionType[1:])
+	}
+
+	return fmt.Sprintf("%s %s", strings.ToUpper(string(actionType[0]))+actionType[1:], strings.TrimSpace(prettyTarget))
 }
 
 // ============================================================================
@@ -3115,24 +5593,24 @@ func butlerTruncate(s string, maxLen int) string {
 
 // ButlerOCRInsight represents AI-extracted insights from document text
 type ButlerOCRInsight struct {
-	Summary           string                   `json:"summary"`            // 1-2 sentence summary
-	ExtractedItems    []map[string]interface{} `json:"extracted_items"`    // Line items (flexible: RFQ items OR bank transactions)
-	DetectedCustomer  string                   `json:"detected_customer"`  // Customer name if found
-	DetectedProject   string                   `json:"detected_project"`   // Project/reference if found
-	RequiredDeadline  string                   `json:"required_deadline"`  // Deadline if mentioned
-	Confidence        float64                  `json:"confidence"`         // 0.0-1.0 confidence score
-	SuggestedActions  []ButlerAction           `json:"suggested_actions"`  // Recommended next steps
-	DocumentType      string                   `json:"document_type"`      // RFQ, PO, Invoice, etc.
-	ExtractedMetadata map[string]interface{}   `json:"metadata"`           // Key-value pairs extracted (bank name, balances, etc.)
+	Summary           string                   `json:"summary"`           // 1-2 sentence summary
+	ExtractedItems    []map[string]interface{} `json:"extracted_items"`   // Line items (flexible: RFQ items OR bank transactions)
+	DetectedCustomer  string                   `json:"detected_customer"` // Customer name if found
+	DetectedProject   string                   `json:"detected_project"`  // Project/reference if found
+	RequiredDeadline  string                   `json:"required_deadline"` // Deadline if mentioned
+	Confidence        float64                  `json:"confidence"`        // 0.0-1.0 confidence score
+	SuggestedActions  []ButlerAction           `json:"suggested_actions"` // Recommended next steps
+	DocumentType      string                   `json:"document_type"`     // RFQ, PO, Invoice, etc.
+	ExtractedMetadata map[string]interface{}   `json:"metadata"`          // Key-value pairs extracted (bank name, balances, etc.)
 }
 
 // RFQLineItem represents a line item extracted from an RFQ/email
 type RFQLineItem struct {
-	Description string  `json:"description"`
-	Quantity    int     `json:"quantity"`
-	Unit        string  `json:"unit"`
-	PartNumber  string  `json:"part_number"`
-	Notes       string  `json:"notes"`
+	Description string `json:"description"`
+	Quantity    int    `json:"quantity"`
+	Unit        string `json:"unit"`
+	PartNumber  string `json:"part_number"`
+	Notes       string `json:"notes"`
 }
 
 // AnalyzeDocumentWithButler uses Mistral to extract structured insights from document text
@@ -3269,7 +5747,7 @@ IMPORTANT:
 - Use 0.0-1.0 for confidence based on how clear the information is
 - If information is not found, use empty string or empty array
 - Be conservative with quantities - only extract if clearly stated
-- For bank statements: DEBIT = money LEAVING the account (outgoing payments, transfers out, charges). CREDIT = money ENTERING the account (incoming payments, transfers in, deposits). Incoming transfers from customers (Fawri, INWD, deposit, TRF-IN, receipts) should be CREDITS. Outgoing payments (DGC, ONUS, Fawri-out, TRF-OUT, withdrawals, fees, charges) should be DEBITS. Use the running balance to validate: if the balance increases after a transaction it is a credit; if it decreases it is a debit. Consolidate related charges into their parent transaction. Bank fees (EFTS Charges, SWIFT FEES, Corr Bnk Chg), VAT on fees, and similar service charges that reference the same transaction should be MERGED into the parent transaction by adding the amounts together. Use the parent description. Do NOT list fee/VAT lines as separate transactions. Use date format YYYY-MM-DD (e.g. 2026-01-15).`
+- For bank statements: DEBIT = money LEAVING the account (outgoing payments, transfers out, charges). CREDIT = money ENTERING the account (incoming payments, transfers in, deposits). Incoming transfers from customers (Fawri, INWD, deposit, TRF-IN, receipts) should be CREDITS. Outgoing payments (DGC, ONUS, Fawri-out, TRF-OUT, withdrawals, fees, charges) should be DEBITS. Use the running balance to validate: if the balance increases after a transaction it is a credit; if it decreases it is a debit. Preserve the bank statement exactly as presented: bank fees (EFTS Charges, SWIFT FEES, Corr Bnk Chg), VAT on fees, and similar service charges must remain as separate transaction rows if the statement shows them separately. Do NOT merge VAT/fee lines into a parent transaction. Use date format YYYY-MM-DD (e.g. 2026-01-15).`
 
 	// Sanitize user-supplied data before injection into prompt
 	userPrompt := fmt.Sprintf("Analyze this %s document and extract structured information:\n\n%s%s",

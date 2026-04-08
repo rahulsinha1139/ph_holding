@@ -6,6 +6,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -67,9 +68,13 @@ func TestLoadConfigWithEnvVars(t *testing.T) {
 		t.Fatalf("LoadConfig() failed: %v", err)
 	}
 
-	// Check custom values
-	if cfg.Database.Path != "./test_custom.db" {
-		t.Errorf("Expected database path './test_custom.db', got %s", cfg.Database.Path)
+	// Packaged database now takes precedence over ad-hoc env overrides when present.
+	expectedDBPath := resolveConfiguredPath("./test_custom.db")
+	if packaged := packagedDatabasePath(); packaged != "" {
+		expectedDBPath = packaged
+	}
+	if cfg.Database.Path != expectedDBPath {
+		t.Errorf("Expected database path '%s', got %s", expectedDBPath, cfg.Database.Path)
 	}
 
 	if cfg.App.LogLevel != "debug" {
@@ -89,6 +94,50 @@ func TestLoadConfigWithEnvVars(t *testing.T) {
 	}
 
 	t.Logf("✓ Config loaded with environment variables successfully")
+}
+
+func TestGetDatabasePathResolvesRelativeEnvPath(t *testing.T) {
+	dataDir := filepath.Join(".", "data")
+	dbPath := filepath.Join(dataDir, "ph_holdings.db")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatalf("failed to create test data dir: %v", err)
+	}
+	if err := os.WriteFile(dbPath, []byte("test"), 0644); err != nil {
+		t.Fatalf("failed to create test db: %v", err)
+	}
+	defer os.Remove(dbPath)
+	defer os.Remove(dataDir)
+
+	originalPHDB := os.Getenv("PH_DB_PATH")
+	originalDB := os.Getenv("DATABASE_PATH")
+	os.Unsetenv("PH_DB_PATH")
+	os.Setenv("DATABASE_PATH", "./data/ph_holdings.db")
+	defer func() {
+		if originalPHDB == "" {
+			os.Unsetenv("PH_DB_PATH")
+		} else {
+			os.Setenv("PH_DB_PATH", originalPHDB)
+		}
+		if originalDB == "" {
+			os.Unsetenv("DATABASE_PATH")
+		} else {
+			os.Setenv("DATABASE_PATH", originalDB)
+		}
+	}()
+
+	resolved := getDatabasePath()
+	if packaged := packagedDatabasePath(); packaged != "" {
+		if resolved != packaged {
+			t.Fatalf("expected packaged database path %s to win, got %s", packaged, resolved)
+		}
+		return
+	}
+	if !strings.HasSuffix(filepath.ToSlash(resolved), "data/ph_holdings.db") {
+		t.Fatalf("expected resolved path to end with data/ph_holdings.db, got %s", resolved)
+	}
+	if _, err := os.Stat(resolved); err != nil {
+		t.Fatalf("expected resolved database path to exist: %v", err)
+	}
 }
 
 func TestConfigValidation(t *testing.T) {
@@ -153,8 +202,8 @@ func TestAzureConfigEnabled(t *testing.T) {
 	// Missing client secret - should be disabled
 	cfg2 := &Config{
 		Azure: AzureConfig{
-			TenantID: "tenant-123",
-			ClientID: "client-456",
+			TenantID:     "tenant-123",
+			ClientID:     "client-456",
 			ClientSecret: "",
 		},
 	}

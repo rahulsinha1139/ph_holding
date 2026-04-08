@@ -1,41 +1,38 @@
-import { test, expect } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { installMockWailsBridge } from './helpers/mockWailsBridge';
 
-test.describe('RFQ to Order Pipeline', () => {
+const BASE_URL = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173';
+
+test.describe('Commercial pipeline transitions', () => {
   test.beforeEach(async ({ page }) => {
-    // Navigate to the app
-    await page.goto('http://localhost:5173');
-    
-    // If the wizard/setup is visible, we might need to bypass it or handle it
-    // For now, assume it lands on dashboard if database is already populated
+    await installMockWailsBridge(page);
+    await page.goto(BASE_URL);
+    await page.getByRole('link', { name: 'Opportunities' }).click();
   });
 
-  test('Create RFQ for BAPCO and generate Quotation', async ({ page }) => {
-    // 1. Go to Opportunities
-    await page.click('[data-testid="nav-opportunities"]');
-    await expect(page).toHaveURL(/.*#\/opportunities/);
+  test('RFQ list shows seeded opportunities for commercial follow-up', async ({ page }) => {
+    await page.getByRole('tab', { name: /^RFQs$/ }).click();
 
-    // 2. Click Create RFQ
-    await page.click('[data-testid="create-rfq-button"]');
-    
-    // 3. Fill in details
-    await page.fill('[data-testid="rfq-client-input"]', 'BAPCO');
-    await page.fill('[data-testid="rfq-project-input"]', 'Refinery Expansion Phase 4');
-    await page.fill('[data-testid="rfq-value-input"]', '25000');
-    
-    // 4. Submit
-    await page.click('[data-testid="rfq-submit-button"]');
-    
-    // 5. Verify success and get ID
-    await expect(page.locator('[data-testid="success-toast"]')).toBeVisible();
-    
-    // 6. Navigate to the new RFQ
-    // (In a real app, we'd find it in the list)
-    await page.click('text=Refinery Expansion Phase 4');
-    
-    // 7. Click Create Quotation
-    await page.click('[data-testid="create-quotation-btn"]');
-    
-    // 8. Verify it opened the quotation screen
-    await expect(page.locator('text=Quotation for BAPCO')).toBeVisible();
+    await expect(page.getByRole('button', { name: /RFQ-2026-001 2026 RFQ BAPCO/ })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'BAPCO / RFQ-2026-001' })).toBeVisible();
+  });
+
+  test('new opportunity appears in the modal workflow and can be handed into costing', async ({ page }) => {
+    const opportunityTitle = 'BAPCO / RFQ-2026-002';
+
+    await page.getByRole('button', { name: /\+ New Opportunity/ }).click();
+
+    await page.locator('input[list="cust-list"]').fill('BAPCO');
+    await page.getByPlaceholder('Project name').fill('Pipeline handoff smoke');
+    await page.getByPlaceholder('0.00').fill('18500');
+    await page.getByPlaceholder('Add context, scope, customer request details, exclusions, or next steps...').fill('Carry this into costing for the sales team.');
+    await page.getByRole('button', { name: 'Create' }).click();
+
+    await expect(page.getByRole('heading', { name: opportunityTitle })).toBeVisible();
+    await page.getByRole('button', { name: new RegExp(opportunityTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) }).first().click();
+
+    await expect(page.locator('#opportunity-modal-title')).toHaveText(opportunityTitle);
+    await expect(page.getByPlaceholder('Add notes for this opportunity...')).toHaveValue('Carry this into costing for the sales team.');
+    await expect(page.getByText('REFERENCE').first()).toBeVisible();
   });
 });

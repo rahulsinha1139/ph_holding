@@ -15,7 +15,7 @@
    * Design System: Wabi-Sabi minimalism × Bloomberg data density
    */
 
-  import { onMount } from 'svelte';
+  import { createEventDispatcher, onMount } from 'svelte';
   import { fade } from 'svelte/transition';
 
   // Wails API imports
@@ -43,6 +43,7 @@
   import { permissions } from '$lib/stores/authContext';
 
   $: canView = $permissions.includes('*') || $permissions.includes('finance:view') || $permissions.includes('finance:*');
+  const dispatch = createEventDispatcher();
 
   // Props
   export let embedded = false;
@@ -225,7 +226,7 @@
 
   // Computed: KPI stats
   $: stats = {
-    totalCollected: filteredPayments.reduce((sum, p) => sum + p.amount_bhd, 0),
+    totalCollectedYTD: payments.filter((p) => isCurrentYear(p.payment_date)).reduce((sum, p) => sum + p.amount_bhd, 0),
     paymentsThisMonth: payments.filter(p => isThisMonth(p.payment_date)).length,
     avgDaysToPayment: filteredPayments.length > 0
       ? filteredPayments.reduce((sum, p) => sum + p.days_to_payment, 0) / filteredPayments.length
@@ -260,7 +261,14 @@
 
   // Currency formatter - BHD with 3 decimal places
   function formatBHD(amount: number): string {
-    return `${amount.toFixed(3)}`;
+    return new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 3,
+      maximumFractionDigits: 3
+    }).format(Number(amount) || 0);
+  }
+
+  function openBankReconciliation() {
+    dispatch('navigate', { tab: 'bank_recon', source: 'payments' });
   }
 
   // Format date - handles both string and Go Time object
@@ -297,6 +305,14 @@
     const currentQuarter = Math.floor(now.getMonth() / 3);
     const dateQuarter = Math.floor(date.getMonth() / 3);
     return dateQuarter === currentQuarter && date.getFullYear() === now.getFullYear();
+  }
+
+  function isCurrentYear(dateStr: any): boolean {
+    if (!dateStr) return false;
+    const dateVal = typeof dateStr === 'string' ? dateStr : String(dateStr);
+    const date = new Date(dateVal);
+    if (isNaN(date.getTime())) return false;
+    return date.getFullYear() === new Date().getFullYear();
   }
 
   // Load payments and unpaid invoices with pagination
@@ -451,6 +467,9 @@
     <Button variant="secondary" on:click={loadData}>
       Refresh
     </Button>
+    <Button variant="secondary" on:click={openBankReconciliation}>
+      Open Bank Recon
+    </Button>
     <Button variant="primary" on:click={openRecordModal}>
       + Record Payment
     </Button>
@@ -461,9 +480,9 @@
     <div class="kpi-grid">
       <Card padding="md" variant="elevated">
         <div class="kpi-card">
-          <div class="kpi-label">Total Collected</div>
-          <div class="kpi-value kpi-success">{formatBHD(stats.totalCollected)} <span class="kpi-currency">BHD</span></div>
-          <div class="kpi-sublabel">{stats.count} payment{stats.count !== 1 ? 's' : ''}</div>
+          <div class="kpi-label">Total Collected (YTD)</div>
+          <div class="kpi-value kpi-success">{formatBHD(stats.totalCollectedYTD)} <span class="kpi-currency">BHD</span></div>
+          <div class="kpi-sublabel">{new Date().getFullYear()} collections</div>
         </div>
       </Card>
 

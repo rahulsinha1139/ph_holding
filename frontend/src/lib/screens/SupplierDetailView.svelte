@@ -29,9 +29,34 @@
   let showContactModal = false;
   let contactForm = { contact_name: '', job_title: '', email: '', phone: '', address: '', is_primary_contact: false };
 
+  function buildSupplierUpdatePayload(source: any): any {
+    return {
+      id: source?.id || '',
+      supplier_code: source?.supplier_code || '',
+      supplier_name: source?.supplier_name || '',
+      country: source?.country || '',
+      lead_time_days: Number(source?.lead_time_days || 0) || 0,
+      tax_id: source?.tax_id || '',
+      supplier_type: source?.supplier_type || '',
+      brands_handled: source?.brands_handled || '',
+      product_types: source?.product_types || '',
+      primary_contact: source?.primary_contact || '',
+      email: source?.email || '',
+      phone: source?.phone || '',
+      address: source?.address || '',
+      bank_name: source?.bank_name || '',
+      account_number: source?.account_number || '',
+      iban: source?.iban || '',
+      swift_code: source?.swift_code || '',
+      payment_terms: source?.payment_terms || 'Net 30',
+      rating: Number(source?.rating || 0) || 0,
+      notes: typeof source?.notes === 'string' ? source.notes : ''
+    };
+  }
+
   function startEdit() {
     if (profile) {
-      editForm = { ...profile };
+      editForm = buildSupplierUpdatePayload(profile);
       editMode = true;
     }
   }
@@ -44,12 +69,13 @@
   async function saveEdit() {
     saveLoading = true;
     try {
-      await UpdateSupplier(editForm);
+      await UpdateSupplier(buildSupplierUpdatePayload(editForm));
       toast.success('Supplier updated successfully');
       editMode = false;
       await loadProfile();
     } catch (err) {
-      toast.danger('Failed to update supplier: ' + err);
+      const errorMsg = err?.message || String(err);
+      toast.danger('Failed to update supplier: ' + errorMsg);
     } finally {
       saveLoading = false;
     }

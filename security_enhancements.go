@@ -160,12 +160,19 @@ func (v *InputValidator) SanitizeFilePath(path string) (string, error) {
 	if filepath.IsAbs(cleaned) {
 		return "", fmt.Errorf("absolute paths not allowed")
 	}
+	if regexp.MustCompile(`^[A-Za-z]:[\\/]+`).MatchString(cleaned) {
+		return "", fmt.Errorf("absolute paths not allowed")
+	}
 
 	return cleaned, nil
 }
 
 // ValidateCustomerInput validates customer master data inputs
 func (v *InputValidator) ValidateCustomerInput(customer *CustomerMaster) error {
+	// BusinessName is required
+	if strings.TrimSpace(customer.BusinessName) == "" {
+		return fmt.Errorf("Business Name is required")
+	}
 	if err := v.ValidateString("Business Name", customer.BusinessName, ValidationLimits.CustomerName, false); err != nil {
 		return err
 	}
@@ -188,11 +195,77 @@ func (v *InputValidator) ValidateCustomerInput(customer *CustomerMaster) error {
 		}
 	}
 
+	// Validate PrimaryEmail if provided
+	if customer.PrimaryEmail != "" {
+		if err := v.ValidateEmail(customer.PrimaryEmail); err != nil {
+			return err
+		}
+	}
+
+	// Validate PrimaryPhone length
+	if len(customer.PrimaryPhone) > 50 {
+		return fmt.Errorf("primary phone exceeds maximum length of 50 characters")
+	}
+
+	// Validate CRNumber length
+	if len(customer.CRNumber) > 100 {
+		return fmt.Errorf("CR number exceeds maximum length of 100 characters")
+	}
+
+	// Validate TradingName length
+	if len(customer.TradingName) > 255 {
+		return fmt.Errorf("trading name exceeds maximum length of 255 characters")
+	}
+
+	// Validate Website length
+	if len(customer.Website) > 255 {
+		return fmt.Errorf("website exceeds maximum length of 255 characters")
+	}
+
+	// Validate Status whitelist
+	if customer.Status != "" {
+		validStatuses := map[string]bool{"Active": true, "Inactive": true, "Blacklisted": true}
+		if !validStatuses[customer.Status] {
+			return fmt.Errorf("invalid status: must be Active, Inactive, or Blacklisted")
+		}
+	}
+
+	// Validate CustomerType whitelist
+	if customer.CustomerType != "" {
+		validTypes := map[string]bool{"Corporate": true, "Government": true, "Individual": true, "SME": true, "EC": true}
+		if !validTypes[customer.CustomerType] {
+			return fmt.Errorf("invalid customer type: must be Corporate, Government, Individual, SME, or EC")
+		}
+	}
+
+	// Validate PaymentGrade whitelist
+	if customer.PaymentGrade != "" {
+		validGrades := map[string]bool{"A": true, "B": true, "C": true, "D": true}
+		if !validGrades[customer.PaymentGrade] {
+			return fmt.Errorf("invalid payment grade: must be A, B, C, or D")
+		}
+	}
+
+	// Validate CreditLimitBHD non-negative
+	if customer.CreditLimitBHD < 0 {
+		return fmt.Errorf("credit limit must be >= 0")
+	}
+
+	// Validate PaymentTermsDays range
+	if customer.PaymentTermsDays < 0 || customer.PaymentTermsDays > 365 {
+		return fmt.Errorf("payment terms days must be between 0 and 365")
+	}
+
 	return nil
 }
 
 // ValidateSupplierInput validates supplier master data inputs
 func (v *InputValidator) ValidateSupplierInput(supplier *SupplierMaster) error {
+	// SupplierName must be non-empty
+	if strings.TrimSpace(supplier.SupplierName) == "" {
+		return fmt.Errorf("supplier name is required")
+	}
+
 	if err := v.ValidateString("Supplier Name", supplier.SupplierName, ValidationLimits.SupplierName, false); err != nil {
 		return err
 	}
@@ -205,8 +278,36 @@ func (v *InputValidator) ValidateSupplierInput(supplier *SupplierMaster) error {
 		return err
 	}
 
-	if err := v.ValidateString("Address", supplier.Address, ValidationLimits.Address, true); err != nil {
+	if err := v.ValidateString("Address", supplier.Address, 1000, true); err != nil {
 		return err
+	}
+
+	// SupplierType whitelist validation
+	if supplier.SupplierType != "" {
+		validTypes := map[string]bool{
+			"Manufacturer":     true,
+			"Distributor":      true,
+			"Agent":            true,
+			"Service Provider": true,
+		}
+		if !validTypes[supplier.SupplierType] {
+			return fmt.Errorf("invalid supplier type: %s (allowed: Manufacturer, Distributor, Agent, Service Provider)", supplier.SupplierType)
+		}
+	}
+
+	// LeadTimeDays bounds check
+	if supplier.LeadTimeDays < 0 || supplier.LeadTimeDays > 365 {
+		return fmt.Errorf("lead time days must be between 0 and 365 (got %d)", supplier.LeadTimeDays)
+	}
+
+	// Country length validation
+	if len(supplier.Country) > 100 {
+		return fmt.Errorf("country exceeds maximum length of 100 characters (got %d)", len(supplier.Country))
+	}
+
+	// BrandsHandled length validation
+	if len(supplier.BrandsHandled) > 2000 {
+		return fmt.Errorf("brands handled exceeds maximum length of 2000 characters (got %d)", len(supplier.BrandsHandled))
 	}
 
 	return nil

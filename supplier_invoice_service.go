@@ -266,6 +266,16 @@ func (a *App) UpdateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 	// Update timestamp
 	inv.UpdatedAt = time.Now()
 
+	if inv.PaymentStatus == "Paid" {
+		inv.Status = "Paid"
+		if inv.PaymentDate == nil {
+			now := time.Now()
+			inv.PaymentDate = &now
+		}
+	} else if inv.Status == "Paid" && inv.PaymentStatus != "Paid" {
+		inv.Status = "Approved"
+	}
+
 	// Recalculate BHD amounts if currency changed
 	if inv.Currency != "BHD" {
 		inv.SubtotalBHD = inv.SubtotalForeign * inv.ExchangeRate
@@ -282,6 +292,143 @@ func (a *App) UpdateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 	}
 
 	log.Printf("✅ Updated Supplier Invoice: %s", inv.InvoiceNumber)
+	return inv, nil
+}
+
+// UpdateSupplierInvoiceWithPayment updates a supplier invoice and, when requested,
+// creates the missing supplier payment ledger entry from the invoice editor itself.
+func (a *App) UpdateSupplierInvoiceWithPayment(inv SupplierInvoice, createPaymentEntry bool) (SupplierInvoice, error) {
+	if err := a.requirePermission("po:create"); err != nil {
+		return SupplierInvoice{}, err
+	}
+	if a.db == nil {
+		return SupplierInvoice{}, fmt.Errorf("database not initialized")
+	}
+
+	tx := a.db.Begin()
+	if tx.Error != nil {
+		return SupplierInvoice{}, fmt.Errorf("failed to start transaction: %w", tx.Error)
+	}
+
+	var existing SupplierInvoice
+	if err := tx.Where("id = ?", inv.ID).First(&existing).Error; err != nil {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("supplier invoice not found: %w", err)
+	}
+
+	if inv.SupplierID != "" && inv.SupplierID != existing.SupplierID {
+		var supplier SupplierMaster
+		if err := tx.Where("id = ?", inv.SupplierID).First(&supplier).Error; err == nil {
+			inv.SupplierName = supplier.SupplierName
+		}
+	}
+	if inv.PurchaseOrderID != "" && inv.PurchaseOrderID != existing.PurchaseOrderID {
+		var po PurchaseOrder
+		if err := tx.Where("id = ?", inv.PurchaseOrderID).First(&po).Error; err == nil {
+			inv.PONumber = po.PONumber
+		}
+	}
+
+	inv.UpdatedAt = time.Now()
+
+	if inv.PaymentStatus == "Paid" {
+		inv.Status = "Paid"
+		if inv.PaymentDate == nil {
+			now := time.Now()
+			inv.PaymentDate = &now
+		}
+	} else if inv.Status == "Paid" && inv.PaymentStatus != "Paid" {
+		inv.Status = "Approved"
+	}
+
+	if inv.Currency != "BHD" {
+		inv.SubtotalBHD = inv.SubtotalForeign * inv.ExchangeRate
+		inv.VATBHD = inv.VATForeign * inv.ExchangeRate
+		inv.TotalBHD = inv.TotalForeign * inv.ExchangeRate
+	} else {
+		inv.SubtotalBHD = inv.SubtotalForeign
+		inv.VATBHD = inv.VATForeign
+		inv.TotalBHD = inv.TotalForeign
+	}
+
+	if err := tx.Save(&inv).Error; err != nil {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("failed to update supplier invoice: %w", err)
+	}
+
+	if createPaymentEntry && inv.PaymentStatus == "Paid" {
+		var totals struct {
+			AmountBHD     float64
+			AmountForeign float64
+		}
+		if err := tx.Model(&SupplierPayment{}).
+			Where("supplier_invoice_id = ?", inv.ID).
+			Select("COALESCE(SUM(amount_bhd), 0) AS amount_bhd, COALESCE(SUM(amount_foreign), 0) AS amount_foreign").
+			Scan(&totals).Error; err != nil {
+			tx.Rollback()
+			return SupplierInvoice{}, fmt.Errorf("failed to calculate existing supplier payments: %w", err)
+		}
+
+		remainingBHD := inv.TotalBHD - totals.AmountBHD
+		if remainingBHD > FloatingPointTolerance {
+			currency := inv.Currency
+			if currency == "" {
+				currency = "BHD"
+			}
+
+			exchangeRate := inv.ExchangeRate
+			if exchangeRate <= 0 {
+				exchangeRate = 1
+			}
+
+			amountForeign := remainingBHD
+			if currency != "BHD" {
+				remainingForeign := inv.TotalForeign - totals.AmountForeign
+				if remainingForeign > FloatingPointTolerance {
+					amountForeign = remainingForeign
+				} else {
+					amountForeign = remainingBHD / exchangeRate
+				}
+			}
+
+			paymentMethod := inv.PaymentMethod
+			if paymentMethod == "" {
+				paymentMethod = "Other"
+			}
+
+			paymentDate := time.Now()
+			if inv.PaymentDate != nil {
+				paymentDate = *inv.PaymentDate
+			}
+
+			payment := SupplierPayment{
+				SupplierInvoiceID: inv.ID,
+				SupplierID:        inv.SupplierID,
+				AmountForeign:     amountForeign,
+				Currency:          currency,
+				ExchangeRate:      exchangeRate,
+				AmountBHD:         remainingBHD,
+				PaymentDate:       paymentDate,
+				PaymentMethod:     paymentMethod,
+				Reference:         inv.PaymentRef,
+				Notes:             "Created from supplier invoice edit",
+				SupplierName:      inv.SupplierName,
+				InvoiceNumber:     inv.InvoiceNumber,
+			}
+
+			if err := tx.Create(&payment).Error; err != nil {
+				tx.Rollback()
+				return SupplierInvoice{}, fmt.Errorf("failed to create supplier payment ledger entry: %w", err)
+			}
+		}
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("failed to commit supplier invoice update: %w", err)
+	}
+
+	log.Printf("✅ Updated Supplier Invoice from editor: %s (create payment entry=%v)", inv.InvoiceNumber, createPaymentEntry)
 	return inv, nil
 }
 

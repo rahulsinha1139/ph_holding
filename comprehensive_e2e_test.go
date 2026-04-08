@@ -66,8 +66,6 @@ func setupFullTestApp(t *testing.T) *App {
 		&Opportunity{},
 		&Offer{},
 		&OfferItem{},
-		&CostingSheet{},
-		&CostingItem{},
 		&Setting{},
 		&CompanyBankAccount{},
 		&FollowUpTask{},
@@ -126,12 +124,18 @@ func setupFullTestApp(t *testing.T) *App {
 		fieldCrypto:      fc,
 		settingsService:  settingsSvc,
 		config:           &Config{},
-		startupImporting: true,   // Bypass RBAC for testing
+		startupImporting: false,
+		startupImportStartTime: time.Now(),
 		currentUserID:    "test-user-001", // Avoid DB query in getCurrentUserID()
 		currentUser: &User{
 			Base:     Base{ID: "test-user-001"},
 			Username: "test-admin",
 			RoleName: "admin",
+			Role: Role{
+				Name:        "admin",
+				DisplayName: "Administrator",
+				Permissions: `["*"]`,
+			},
 		},
 	}
 
@@ -343,8 +347,8 @@ func TestBankAccount_SeedAndEncryption(t *testing.T) {
 	err := app.SeedCompanyBankAccounts()
 	require.NoError(t, err)
 
-	// The GORM hooks should have encrypted account numbers and IBANs
-	// But AfterFind should decrypt them transparently for the API
+	// Bank details are intentionally stored plaintext now so the DB remains portable
+	// across client machines and invoice PDFs can read them directly.
 	banks, err := app.GetActiveBankAccounts()
 	require.NoError(t, err)
 	require.Len(t, banks, 4, "Should have 4 seeded bank accounts")
@@ -359,12 +363,12 @@ func TestBankAccount_SeedAndEncryption(t *testing.T) {
 	assert.Equal(t, "0010521957001", ahli.AccountNumber)
 	assert.Equal(t, "BH04AUBB00010521957001", ahli.IBAN)
 
-	// Verify data is ENCRYPTED in the raw DB
+	// Verify data remains plaintext in the raw DB as well
 	var rawBank CompanyBankAccount
 	app.db.Raw("SELECT account_number, iban FROM company_bank_accounts WHERE id = ?", "bank-nbb").Scan(&rawBank)
-	assert.NotEqual(t, "99570076", rawBank.AccountNumber, "Raw DB should have encrypted account number")
-	assert.NotEqual(t, "BH16NBOB00000099570076", rawBank.IBAN, "Raw DB should have encrypted IBAN")
-	assert.True(t, app.fieldCrypto.IsEncrypted(rawBank.AccountNumber), "Raw value should be detected as encrypted")
+	assert.Equal(t, "99570076", rawBank.AccountNumber, "Raw DB should keep plaintext account number")
+	assert.Equal(t, "BH16NBOB00000099570076", rawBank.IBAN, "Raw DB should keep plaintext IBAN")
+	assert.False(t, app.fieldCrypto.IsEncrypted(rawBank.AccountNumber), "Raw value should not be encrypted anymore")
 }
 
 func TestBankAccount_CreateEncrypted(t *testing.T) {
@@ -387,10 +391,11 @@ func TestBankAccount_CreateEncrypted(t *testing.T) {
 	assert.Equal(t, "1234567890", retrieved.AccountNumber)
 	assert.Equal(t, "BH99TEST1234567890", retrieved.IBAN)
 
-	// Verify encrypted in raw DB
+	// Verify plaintext in raw DB for portability
 	var rawBank CompanyBankAccount
 	app.db.Raw("SELECT account_number, iban FROM company_bank_accounts WHERE id = ?", newBank.ID).Scan(&rawBank)
-	assert.NotEqual(t, "1234567890", rawBank.AccountNumber)
+	assert.Equal(t, "1234567890", rawBank.AccountNumber)
+	assert.Equal(t, "BH99TEST1234567890", rawBank.IBAN)
 }
 
 func TestBankAccount_Migration(t *testing.T) {
@@ -404,13 +409,13 @@ func TestBankAccount_Migration(t *testing.T) {
 	// Run migration
 	app.MigrateBankAccountEncryption()
 
-	// Verify it got encrypted in raw DB
+	// Verify plaintext remains available after migration
 	var rawBank CompanyBankAccount
 	app.db.Raw("SELECT account_number, iban FROM company_bank_accounts WHERE id = ?", "bank-legacy").Scan(&rawBank)
-	assert.NotEqual(t, "PLAINTEXT123", rawBank.AccountNumber, "Migration should have encrypted plaintext")
-	assert.True(t, app.fieldCrypto.IsEncrypted(rawBank.AccountNumber), "Migrated value should be encrypted")
+	assert.Equal(t, "PLAINTEXT123", rawBank.AccountNumber, "Migration should preserve plaintext portability")
+	assert.Equal(t, "BH99PLAIN123", rawBank.IBAN)
 
-	// Verify GORM reads it back decrypted
+	// Verify GORM still reads back the same plaintext values
 	var decryptedBank CompanyBankAccount
 	app.db.First(&decryptedBank, "id = ?", "bank-legacy")
 	assert.Equal(t, "PLAINTEXT123", decryptedBank.AccountNumber, "Should decrypt after migration")
@@ -702,11 +707,11 @@ func TestOrder_CreateAndList(t *testing.T) {
 func TestOrder_StageTransitions(t *testing.T) {
 	app := setupFullTestApp(t)
 
-	order, err := app.CreateOrder("ORD-STAGE-001", "Stage Test Corp", 5000.0, time.Now().Format("2006-01-02"), "confirmed")
+	order, err := app.CreateOrder("ORD-STAGE-001", "Stage Test Corp", 5000.0, time.Now().Format("2006-01-02"), "Confirmed")
 	require.NoError(t, err)
 
-	// Advance through stages
-	stages := []string{"po_issued", "goods_received", "invoice_sent", "payment_received", "completed"}
+	// Advance through the current canonical state machine
+	stages := []string{"Processing", "FullyDelivered", "Invoiced", "Complete"}
 	for _, stage := range stages {
 		err = app.UpdateOrderStage(order.ID, stage)
 		require.NoError(t, err, "Should transition to %s", stage)

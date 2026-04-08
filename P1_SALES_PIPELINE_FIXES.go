@@ -23,6 +23,9 @@ func ValidateOfferExpiry(validityDate time.Time) error {
 // AutoExpireOffers scans all Quoted/Proposal stage offers and marks expired ones
 // Should be called periodically (e.g., daily cron job or on app startup)
 func (a *App) AutoExpireOffers() error {
+	if err := a.requirePermission("offers:edit"); err != nil {
+		return err
+	}
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
@@ -68,6 +71,9 @@ func ValidateRFQTraceability(offer *Offer, order *Order) error {
 
 // GetRFQTraceability retrieves full pipeline traceability for an order
 func (a *App) GetRFQTraceability(orderID string) (*PipelineTraceability, error) {
+	if err := a.requirePermission("offers:view"); err != nil {
+		return nil, err
+	}
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
@@ -277,6 +283,9 @@ func CheckMarginThreshold(margin float64, totalValue float64) *MarginAlert {
 
 // LogMarginAlert records margin alerts to database for management review
 func (a *App) LogMarginAlert(entityType string, entityID string, alert *MarginAlert) error {
+	if err := a.requirePermission("offers:view"); err != nil {
+		return err
+	}
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
@@ -307,6 +316,9 @@ func (a *App) LogMarginAlert(entityType string, entityID string, alert *MarginAl
 
 // GetLowMarginOffers retrieves all offers with margins below threshold
 func (a *App) GetLowMarginOffers(threshold float64) ([]Offer, error) {
+	if err := a.requirePermission("offers:view"); err != nil {
+		return nil, err
+	}
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}

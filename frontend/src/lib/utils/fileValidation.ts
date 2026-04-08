@@ -18,9 +18,17 @@ const FILE_SIGNATURES: Record<string, { mimes: string[], magic: number[][] }> = 
         mimes: ['application/vnd.ms-excel'],
         magic: [[0xD0, 0xCF, 0x11, 0xE0]] // OLE format
     },
+    rtf: {
+        mimes: ['application/rtf', 'text/rtf', 'text/plain'],
+        magic: [[0x7B, 0x5C, 0x72, 0x74, 0x66]] // {\rtf
+    },
     png: {
         mimes: ['image/png'],
         magic: [[0x89, 0x50, 0x4E, 0x47]] // .PNG
+    },
+    bmp: {
+        mimes: ['image/bmp', 'image/x-ms-bmp'],
+        magic: [[0x42, 0x4D]] // BM
     },
     jpg: {
         mimes: ['image/jpeg'],
@@ -29,6 +37,24 @@ const FILE_SIGNATURES: Record<string, { mimes: string[], magic: number[][] }> = 
     jpeg: {
         mimes: ['image/jpeg'],
         magic: [[0xFF, 0xD8, 0xFF]] // JPEG start
+    },
+    tiff: {
+        mimes: ['image/tiff'],
+        magic: [
+            [0x49, 0x49, 0x2A, 0x00], // II*.
+            [0x4D, 0x4D, 0x00, 0x2A]  // MM.*
+        ]
+    },
+    tif: {
+        mimes: ['image/tiff'],
+        magic: [
+            [0x49, 0x49, 0x2A, 0x00],
+            [0x4D, 0x4D, 0x00, 0x2A]
+        ]
+    },
+    webp: {
+        mimes: ['image/webp'],
+        magic: [[0x52, 0x49, 0x46, 0x46]] // RIFF....WEBP (prefix check)
     },
     msg: {
         mimes: ['application/vnd.ms-outlook', 'application/octet-stream'],

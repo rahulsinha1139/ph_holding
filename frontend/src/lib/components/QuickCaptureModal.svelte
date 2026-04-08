@@ -2,7 +2,7 @@
     import { createEventDispatcher, onMount } from "svelte";
     import { fade, scale } from "svelte/transition";
     import { toast } from "$lib/stores/toasts";
-    import { AnalyzeDocumentWithButler, CheckDuplicateRFQ, ListCustomers, ListSuppliers } from "../../../wailsjs/go/main/App";
+    import { AnalyzeDocumentWithButler, CheckDuplicateOpportunity, CheckDuplicateRFQ, ListCustomers, ListSuppliers } from "../../../wailsjs/go/main/App";
 
     export let show = false;
     export let processing = false;
@@ -160,6 +160,7 @@
     let duplicateRFQ: any = null;
     let showDuplicateWarning = false;
     let checkingDuplicate = false;
+    let duplicateType: "rfq" | "opportunity" | null = null;
 
     // UI state
     let showRawText = false;
@@ -176,6 +177,8 @@
         { id: "purchase_order", label: "Purchase Order", icon: "", screen: "/operations" },
         { id: "delivery_note", label: "Delivery Note", icon: "", screen: "/operations" },
         { id: "bank_statement", label: "Bank Statement", icon: "", screen: "/finance" },
+        { id: "contract", label: "Contract / Agreement", icon: "", screen: "/intelligence" },
+        { id: "report", label: "Report / Summary", icon: "", screen: "/intelligence" },
         { id: "excel_data", label: "Excel Data", icon: "", screen: "/opportunities" },
     ];
 
@@ -212,7 +215,8 @@
             'Quotation': 'quotation',
             'DeliveryNote': 'delivery_note',
             'BankStatement': 'bank_statement',
-            'Contract': 'rfq', // No dedicated contract type in frontend, route to inbox
+            'Contract': 'contract',
+            'Report': 'report',
             'Other': 'rfq',
         };
         return typeMap[backendType] || backendType.toLowerCase();
@@ -447,6 +451,12 @@
         if (lower.includes("bank statement") || lower.includes("account statement") ||
             lower.includes("opening balance") || lower.includes("closing balance") ||
             (lower.includes("credit") && lower.includes("debit") && lower.includes("balance"))) return "bank_statement";
+        if (lower.includes("monthly report") || lower.includes("weekly report") ||
+            lower.includes("management report") || lower.includes("executive summary") ||
+            lower.includes("analysis report") || lower.includes("summary report") ||
+            lower.includes("performance report")) return "report";
+        if (lower.includes("terms and conditions") || lower.includes("service agreement") ||
+            lower.includes("contract") || lower.includes("hereby agree")) return "contract";
         if (lower.includes("costing") || lower.includes("cost sheet")) return "costing";
         if (lower.includes("purchase order") || lower.includes("p.o. number") || lower.includes("p.o number")) return "purchase_order";
         if (lower.includes("delivery note") || lower.includes("packing list") || lower.includes("dn number")) return "delivery_note";
@@ -475,6 +485,8 @@
             purchase_order: ['supplier_name', 'po_number', 'invoice_date', 'delivery_date', 'total', 'currency'],
             delivery_note: ['customer_name', 'dn_number', 'delivery_date', 'po_number'],
             bank_statement: ['bank_name', 'account_number', 'period_start', 'period_end', 'opening_balance', 'closing_balance', 'currency', 'notes'],
+            contract: ['customer_name', 'supplier_name', 'project', 'notes'],
+            report: ['project', 'notes'],
             excel_data: ['customer_name', 'project', 'notes'],
         };
         return fieldsByType[selectedType] || fieldsByType.rfq;
@@ -536,6 +548,7 @@
         butlerInsights = null;
         duplicateRFQ = null;
         showDuplicateWarning = false;
+        duplicateType = null;
         lineItems = [];
         activeTab = 'details';
         // Reset dropdown state
@@ -623,26 +636,38 @@
         console.log('[Butler Merge] extracted_items:', butlerInsights.extracted_items?.length, 'items');
         console.log('[Butler Merge] metadata:', butlerInsights.metadata);
 
+        const assignIfBlank = (key: keyof typeof editableData, value: any) => {
+            const nextValue = value == null ? "" : String(value).trim();
+            if (!nextValue) return;
+            if (!String(editableData[key] || "").trim()) {
+                editableData[key] = nextValue;
+            }
+        };
+
         // Update fields from Butler if they're empty or Butler has better data
-        if (butlerInsights.detected_customer && !editableData.customer_name) {
-            editableData.customer_name = butlerInsights.detected_customer;
-        }
-        if (butlerInsights.detected_project || butlerInsights.project) {
-            editableData.project = butlerInsights.detected_project || butlerInsights.project;
-        }
-        if (butlerInsights.required_deadline && !editableData.delivery_date) {
-            editableData.delivery_date = butlerInsights.required_deadline;
-        }
+        assignIfBlank('customer_name', butlerInsights.detected_customer);
+        assignIfBlank('project', butlerInsights.detected_project || butlerInsights.project);
+        assignIfBlank('delivery_date', butlerInsights.required_deadline);
 
         // Merge bank statement specific fields from Butler
-        if (selectedType === 'bank_statement' && butlerInsights.metadata) {
+        if (butlerInsights.metadata) {
             const meta = butlerInsights.metadata;
-            if (meta.bank_name && !editableData.bank_name) editableData.bank_name = meta.bank_name;
-            if (meta.account_number && !editableData.account_number) editableData.account_number = meta.account_number;
-            if (meta.opening_balance && !editableData.opening_balance) editableData.opening_balance = String(meta.opening_balance);
-            if (meta.closing_balance && !editableData.closing_balance) editableData.closing_balance = String(meta.closing_balance);
-            if (meta.period_start && !editableData.period_start) editableData.period_start = meta.period_start;
-            if (meta.period_end && !editableData.period_end) editableData.period_end = meta.period_end;
+            assignIfBlank('supplier_name', meta.supplier_name || meta.vendor_name);
+            assignIfBlank('invoice_number', meta.invoice_number || meta.reference_number);
+            assignIfBlank('po_number', meta.po_number || meta.purchase_order_number);
+            assignIfBlank('rfq_number', meta.rfq_number || meta.reference || meta.folder_number);
+            assignIfBlank('invoice_date', meta.invoice_date || meta.date);
+            assignIfBlank('delivery_date', meta.delivery_date || meta.required_by || meta.deadline);
+            assignIfBlank('due_date', meta.due_date);
+            assignIfBlank('total', meta.total || meta.total_amount);
+            assignIfBlank('vat', meta.vat || meta.vat_amount);
+            assignIfBlank('currency', meta.currency);
+            assignIfBlank('bank_name', meta.bank_name);
+            assignIfBlank('account_number', meta.account_number || meta.iban);
+            assignIfBlank('opening_balance', meta.opening_balance);
+            assignIfBlank('closing_balance', meta.closing_balance);
+            assignIfBlank('period_start', meta.period_start);
+            assignIfBlank('period_end', meta.period_end);
         }
 
         // Merge line items from Butler
@@ -773,9 +798,19 @@
 
         checkingDuplicate = true;
         try {
+            const reference = editableData.rfq_number || editableData.po_number || "";
+            const existingOpp = await CheckDuplicateOpportunity(reference, editableData.customer_name, editableData.project);
+            if (existingOpp && existingOpp.id) {
+                duplicateRFQ = existingOpp;
+                duplicateType = 'opportunity';
+                showDuplicateWarning = true;
+                return true;
+            }
+
             const result = await CheckDuplicateRFQ(editableData.customer_name, editableData.project, "");
             if (result && result.id) {
                 duplicateRFQ = result;
+                duplicateType = 'rfq';
                 showDuplicateWarning = true;
                 return true;
             }
@@ -856,7 +891,8 @@
         showDuplicateWarning = false;
         dispatch('viewRFQ', {
             rfqId: duplicateRFQ?.id,
-            rfq: duplicateRFQ
+            rfq: duplicateRFQ,
+            duplicateType
         });
         handleClose();
     }
@@ -1273,16 +1309,26 @@
                     </div>
                     <div class="rfq-detail">
                         <span class="detail-label">Customer</span>
-                        <span class="detail-value">{duplicateRFQ?.Client || 'Unknown'}</span>
+                        <span class="detail-value">{duplicateRFQ?.Client || duplicateRFQ?.customer_name || 'Unknown'}</span>
                     </div>
                     <div class="rfq-detail">
-                        <span class="detail-label">Project</span>
-                        <span class="detail-value">{duplicateRFQ?.Project || 'Unknown'}</span>
+                        <span class="detail-label">{duplicateType === 'opportunity' ? 'Title' : 'Project'}</span>
+                        <span class="detail-value">{duplicateRFQ?.Project || duplicateRFQ?.title || duplicateRFQ?.folder_name || 'Unknown'}</span>
                     </div>
                     <div class="rfq-detail">
                         <span class="detail-label">Status</span>
-                        <span class="detail-value status-badge">{duplicateRFQ?.Status || 'pending'}</span>
+                        <span class="detail-value status-badge">{duplicateRFQ?.Status || duplicateRFQ?.stage || 'pending'}</span>
                     </div>
+                    {#if duplicateType === 'opportunity'}
+                    <div class="rfq-detail">
+                        <span class="detail-label">Reference</span>
+                        <span class="detail-value">{duplicateRFQ?.folder_number || '—'}</span>
+                    </div>
+                    <div class="rfq-detail">
+                        <span class="detail-label">Value</span>
+                        <span class="detail-value">{duplicateRFQ?.revenue_bhd ? Number(duplicateRFQ.revenue_bhd).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' BHD' : '—'}</span>
+                    </div>
+                    {/if}
                 </div>
                 <p class="warning-question">What would you like to do?</p>
             </div>

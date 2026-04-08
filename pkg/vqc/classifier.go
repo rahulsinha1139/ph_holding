@@ -105,24 +105,42 @@ func NewClassifier() *Classifier {
 func (c *Classifier) Train(dataPoints []DataPoint) {
 	start := time.Now()
 	c.DataPoints = dataPoints
+	if len(dataPoints) == 0 {
+		c.Centroids = make(map[string]Quaternion)
+		c.TrainTime = time.Since(start)
+		return
+	}
 
 	// Encode all data points to quaternions (PARALLEL!)
 	var wg sync.WaitGroup
-	chunkSize := len(dataPoints) / c.NumWorkers
+	workerCount := c.NumWorkers
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if workerCount > len(dataPoints) {
+		workerCount = len(dataPoints)
+	}
+	chunkSize := len(dataPoints) / workerCount
 	if chunkSize < 1 {
 		chunkSize = 1
 	}
 
-	for w := 0; w < c.NumWorkers; w++ {
+	for w := 0; w < workerCount; w++ {
 		wg.Add(1)
 		startIdx := w * chunkSize
 		endIdx := startIdx + chunkSize
-		if w == c.NumWorkers-1 {
+		if w == workerCount-1 {
 			endIdx = len(dataPoints)
 		}
 
 		go func(start, end int) {
 			defer wg.Done()
+			if start >= len(c.DataPoints) {
+				return
+			}
+			if end > len(c.DataPoints) {
+				end = len(c.DataPoints)
+			}
 			for i := start; i < end; i++ {
 				c.DataPoints[i].State = EncodeFeatures(c.DataPoints[i].Features)
 			}
@@ -173,23 +191,40 @@ func (c *Classifier) Predict(dp *DataPoint) string {
 // PredictAll classifies all data points (PARALLEL!)
 func (c *Classifier) PredictAll() {
 	start := time.Now()
+	if len(c.DataPoints) == 0 {
+		c.PredictTime = time.Since(start)
+		return
+	}
 
 	var wg sync.WaitGroup
-	chunkSize := len(c.DataPoints) / c.NumWorkers
+	workerCount := c.NumWorkers
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if workerCount > len(c.DataPoints) {
+		workerCount = len(c.DataPoints)
+	}
+	chunkSize := len(c.DataPoints) / workerCount
 	if chunkSize < 1 {
 		chunkSize = 1
 	}
 
-	for w := 0; w < c.NumWorkers; w++ {
+	for w := 0; w < workerCount; w++ {
 		wg.Add(1)
 		startIdx := w * chunkSize
 		endIdx := startIdx + chunkSize
-		if w == c.NumWorkers-1 {
+		if w == workerCount-1 {
 			endIdx = len(c.DataPoints)
 		}
 
 		go func(start, end int) {
 			defer wg.Done()
+			if start >= len(c.DataPoints) {
+				return
+			}
+			if end > len(c.DataPoints) {
+				end = len(c.DataPoints)
+			}
 			for i := start; i < end; i++ {
 				c.DataPoints[i].Predicted = c.Predict(&c.DataPoints[i])
 			}

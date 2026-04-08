@@ -117,7 +117,7 @@
         // Auto-generate customer code if not provided
         if (!newCustomer.customer_id) {
             const prefix = newCustomer.business_name.substring(0, 4).toUpperCase().replace(/[^A-Z]/g, '');
-            const suffix = Date.now().toString().slice(-4);
+            const suffix = Date.now().toString().slice(-6) + Math.random().toString(36).slice(-2);
             newCustomer.customer_id = `CUST-${prefix}${suffix}`;
         }
         creating = true;
@@ -154,6 +154,12 @@
                 customer_type: newCustomer.customer_type,
                 business_name: newCustomer.business_name,
                 short_code: newCustomer.short_code || "",
+                trading_name: newCustomer.trading_name || "",
+                cr_number: newCustomer.cr_number || "",
+                status: newCustomer.status || "Active",
+                primary_phone: newCustomer.primary_phone || "",
+                primary_email: newCustomer.primary_email || "",
+                website: newCustomer.website || "",
                 address_line1: newCustomer.address_line1,
                 city: newCustomer.city,
                 country: newCustomer.country,

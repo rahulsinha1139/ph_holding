@@ -11,7 +11,7 @@
    * - Overdue tracking with visual warnings
    */
 
-  import { onMount, onDestroy } from 'svelte';
+  import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import { fade } from 'svelte/transition';
   import type { main } from '../../../wailsjs/go/models';
 
@@ -19,8 +19,10 @@
   import {
     GetSupplierInvoices,
     GetSupplierInvoiceByID,
+    GetSupplierPaymentsByInvoice,
     CreateSupplierInvoice,
     UpdateSupplierInvoice,
+    UpdateSupplierInvoiceWithPayment,
     DeleteSupplierInvoice,
     PerformThreeWayMatch,
     ApproveSupplierInvoice,
@@ -45,12 +47,44 @@
   import { permissions } from '$lib/stores/authContext';
 
   $: canView = $permissions.includes('*') || $permissions.includes('po:view') || $permissions.includes('po:*');
+  const dispatch = createEventDispatcher();
 
   // Props
   export let embedded = false;
 
   // Types
   type InvoiceFilter = 'all' | 'pending' | 'matched' | 'discrepancy' | 'paid' | 'overdue';
+
+  function getErrorMessage(err: unknown): string {
+    if (!err) return 'Unknown error';
+    if (err instanceof Error && err.message) return err.message;
+    if (typeof err === 'string') return err;
+    if (typeof err === 'object') {
+      const candidate = (err as any).message || (err as any).error || (err as any).cause;
+      if (candidate) return String(candidate);
+    }
+    return String(err);
+  }
+
+  function roundAmount(value: number): number {
+    return Math.round((Number(value) || 0) * 1000) / 1000;
+  }
+
+  function formatMoney(value: number): string {
+    return new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 3,
+      maximumFractionDigits: 3
+    }).format(Number(value) || 0);
+  }
+
+  function formatDateForApi(value: string): string | null {
+    if (!value) return null;
+    return `${value}T00:00:00Z`;
+  }
+
+  function openBankReconciliation() {
+    dispatch('navigate', { tab: 'bank_recon', source: 'supplier_invoices' });
+  }
 
   interface SupplierInvoiceDisplay extends main.SupplierInvoice {
     // Computed fields
@@ -84,6 +118,9 @@
   let editingInvoice: any = null;
   let selectedInvoice: SupplierInvoiceDisplay | null = null;
   let invoiceToMarkPaid: string | null = null;
+  let createPaymentEntry = false;
+  let existingPaymentCount = 0;
+  let existingPaymentTotalBhd = 0;
 
   // Line item interface for form
   interface FormLineItem {
@@ -127,7 +164,7 @@
       key: 'invoice_number',
       label: 'Invoice #',
       sortable: true,
-      width: '140px',
+      width: '110px',
       render: (row: SupplierInvoiceDisplay) => {
         return `<span class="invoice-num">${row.invoice_number}</span>`;
       }
@@ -136,7 +173,7 @@
       key: 'supplier_id',
       label: 'Supplier',
       sortable: true,
-      width: '180px',
+      width: '150px',
       render: (row: SupplierInvoiceDisplay) => {
         let name = row.supplier_name || '';
         // Detect UUID-like values and show friendly fallback
@@ -150,7 +187,7 @@
       key: 'purchase_order_id',
       label: 'PO Reference',
       sortable: true,
-      width: '120px',
+      width: '100px',
       render: (row: SupplierInvoiceDisplay) => {
         if (!row.purchase_order_id) {
           return '<span style="color: var(--text-muted); font-style: italic;">No PO</span>';
@@ -162,7 +199,7 @@
       key: 'grn_id',
       label: 'GRN Reference',
       sortable: true,
-      width: '120px',
+      width: '100px',
       render: (row: SupplierInvoiceDisplay) => {
         if (!row.grn_id) {
           return '<span style="color: var(--text-muted); font-style: italic;">No GRN</span>';
@@ -174,7 +211,7 @@
       key: 'currency',
       label: 'Currency',
       sortable: true,
-      width: '80px'
+      width: '72px'
     },
     {
       key: 'total_bhd',
@@ -182,16 +219,16 @@
       type: 'currency' as const,
       align: 'right' as const,
       sortable: true,
-      width: '140px',
+      width: '110px',
       render: (row: SupplierInvoiceDisplay) => {
-        return `<span class="amount-bhd">${row.total_bhd.toFixed(3)} BHD</span>`;
+        return `<span class="amount-bhd">${formatMoney(row.total_bhd)}</span>`;
       }
     },
     {
       key: 'match_status',
       label: 'Match Status',
       sortable: true,
-      width: '130px',
+      width: '112px',
       render: (row: SupplierInvoiceDisplay) => {
         return renderMatchStatus(row);
       }
@@ -200,7 +237,7 @@
       key: 'payment_status',
       label: 'Payment Status',
       sortable: true,
-      width: '130px',
+      width: '110px',
       render: (row: SupplierInvoiceDisplay) => {
         return renderPaymentStatus(row);
       }
@@ -210,7 +247,7 @@
       label: 'Due Date',
       type: 'date' as const,
       sortable: true,
-      width: '120px',
+      width: '110px',
       render: (row: SupplierInvoiceDisplay) => {
         // Handle time.Time object from Go
         const dueDate = row.due_date ? new Date(row.due_date.toString()) : new Date();
@@ -232,10 +269,10 @@
       key: 'actions',
       label: 'Actions',
       type: 'actions' as const,
-      width: '220px',
+      width: '150px',
       render: (row: SupplierInvoiceDisplay) => {
         return `
-          <div style="display: flex; gap: 6px; justify-content: flex-end;">
+          <div style="display: flex; gap: 6px; justify-content: flex-start; flex-wrap: wrap;">
             <button
               class="action-btn action-btn-view"
               data-action="view"
@@ -500,7 +537,7 @@
       console.log(`Loaded ${invoices.length} supplier invoices`);
     } catch (err) {
       console.error('Failed to load supplier invoices:', err);
-      toast.danger('Failed to load supplier invoices');
+      toast.danger('Failed to load supplier invoices: ' + getErrorMessage(err));
       invoices = [];
     } finally {
       loading = false;
@@ -512,14 +549,39 @@
     const now = new Date();
     const dueDate = invoice.due_date ? new Date(invoice.due_date.toString()) : now;
     const daysUntilDue = Math.ceil((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    const items = Array.isArray(invoice.items) ? invoice.items : [];
+    const itemsSubtotal = items.reduce((sum: number, item: any) => {
+      const lineTotal = Number(item?.total_price || 0) || ((Number(item?.quantity || 0) || 0) * (Number(item?.unit_price || 0) || 0));
+      return sum + lineTotal;
+    }, 0);
+    const exchangeRate = Number(invoice.exchange_rate || 1) || 1;
+    const subtotalForeign = Number(invoice.subtotal_foreign || 0) || (itemsSubtotal > 0 ? roundAmount(itemsSubtotal) : 0);
+    const vatForeign = Number(invoice.vat_foreign || 0) || 0;
+    const totalForeign = Number(invoice.total_foreign || 0) || roundAmount(subtotalForeign + vatForeign);
+    const subtotalBHD = Number(invoice.subtotal_bhd || 0) || roundAmount(subtotalForeign * exchangeRate);
+    const vatBHD = Number(invoice.vat_bhd || 0) || roundAmount(vatForeign * exchangeRate);
+    const totalBHD = Number(invoice.total_bhd || 0) || roundAmount(totalForeign * exchangeRate);
 
     return {
       ...invoice,
+      items,
+      exchange_rate: exchangeRate,
+      subtotal_foreign: subtotalForeign,
+      vat_foreign: vatForeign,
+      total_foreign: totalForeign,
+      subtotal_bhd: subtotalBHD,
+      vat_bhd: vatBHD,
+      total_bhd: totalBHD,
       days_until_due: daysUntilDue,
       is_overdue: daysUntilDue < 0 && invoice.payment_status !== 'Paid',
       // supplier_name already comes from database - no mapping needed!
       supplier_name: invoice.supplier_name || suppliersMap.get(invoice.supplier_id) || undefined
     } as SupplierInvoiceDisplay;
+  }
+
+  async function hydrateInvoice(invoiceId: string): Promise<SupplierInvoiceDisplay> {
+    const invoice = await GetSupplierInvoiceByID(invoiceId);
+    return enrichInvoice(invoice);
   }
 
   // Open create modal
@@ -613,8 +675,8 @@
         grn_id: formData.grn_id,
         order_id: formData.order_id,
         invoice_number: formData.invoice_number,
-        invoice_date: formData.invoice_date + 'T00:00:00Z',
-        due_date: formData.due_date + 'T00:00:00Z',
+        invoice_date: formatDateForApi(formData.invoice_date),
+        due_date: formatDateForApi(formData.due_date),
         currency: formData.currency,
         exchange_rate: formData.exchange_rate,
         subtotal_foreign: formData.subtotal_foreign,
@@ -632,7 +694,7 @@
       await loadInvoices();
     } catch (err) {
       console.error('Failed to create supplier invoice:', err);
-      toast.danger('Failed to create supplier invoice: ' + (err as Error).message);
+      toast.danger('Failed to create supplier invoice: ' + getErrorMessage(err));
     } finally {
       formLoading = false;
     }
@@ -661,7 +723,7 @@
       selectedInvoice = null;
     } catch (err) {
       console.error('Failed to perform 3-way match:', err);
-      toast.danger('Failed to perform 3-way match: ' + (err as Error).message);
+      toast.danger('Failed to perform 3-way match: ' + getErrorMessage(err));
       showMatchModal = false;
       selectedInvoice = null;
     }
@@ -680,7 +742,7 @@
       await loadInvoices();
     } catch (err) {
       console.error('Failed to approve invoice:', err);
-      toast.danger('Failed to approve invoice: ' + (err as Error).message);
+      toast.danger('Failed to approve invoice: ' + getErrorMessage(err));
     } finally {
       approvingInvoice = false;
     }
@@ -716,18 +778,20 @@
       await loadInvoices();
     } catch (err) {
       console.error('Failed to mark invoice as paid:', err);
-      toast.danger('Failed to mark invoice as paid: ' + (err as Error).message);
+      toast.danger('Failed to mark invoice as paid: ' + getErrorMessage(err));
     } finally {
       paymentLoading = false;
     }
   }
 
   // Handle view invoice
-  function handleViewInvoice(invoiceId: string) {
-    const invoice = invoices.find(i => i.id === invoiceId);
-    if (invoice) {
-      selectedInvoice = invoice;
+  async function handleViewInvoice(invoiceId: string) {
+    try {
+      selectedInvoice = await hydrateInvoice(invoiceId);
       showDetailModal = true;
+    } catch (err) {
+      console.error('Failed to load supplier invoice details:', err);
+      toast.danger('Failed to load supplier invoice details: ' + getErrorMessage(err));
     }
   }
 
@@ -743,7 +807,7 @@
 
     switch (action) {
       case 'view':
-        handleViewInvoice(id);
+        void handleViewInvoice(id);
         break;
       case 'edit':
         handleEditInvoice(id);
@@ -763,11 +827,41 @@
   // Edit invoice handling
   let editLoading = false;
 
-  function handleEditInvoice(id: string) {
-    const invoice = invoices.find(i => i.id === id);
-    if (invoice) {
-      editingInvoice = { ...invoice };
+  function formatDateForInput(value: any): string {
+    if (!value) return '';
+    try {
+      const raw = value.toString();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+      return new Date(raw).toISOString().split('T')[0];
+    } catch {
+      return '';
+    }
+  }
+
+  async function handleEditInvoice(id: string) {
+    try {
+      const invoice = await hydrateInvoice(id);
+      let existingPayments: any[] = [];
+      try {
+        existingPayments = await GetSupplierPaymentsByInvoice(id);
+      } catch {
+        existingPayments = [];
+      }
+
+      existingPaymentCount = existingPayments.length;
+      existingPaymentTotalBhd = existingPayments.reduce((sum, payment) => sum + Number(payment?.amount_bhd || 0), 0);
+      createPaymentEntry = invoice.payment_status === 'Paid' && existingPaymentCount === 0;
+      editingInvoice = {
+        ...invoice,
+        supplier_id: invoice.supplier_id || '',
+        invoice_date: formatDateForInput(invoice.invoice_date),
+        due_date: formatDateForInput(invoice.due_date),
+        payment_date: formatDateForInput(invoice.payment_date)
+      };
       showEditModal = true;
+    } catch (err) {
+      console.error('Failed to load supplier invoice for editing:', err);
+      toast.danger('Failed to load supplier invoice: ' + getErrorMessage(err));
     }
   }
 
@@ -775,13 +869,44 @@
     if (!editingInvoice) return;
     editLoading = true;
     try {
-      await UpdateSupplierInvoice(editingInvoice as any);
-      toast.success('Supplier invoice updated');
+      const normalizedInvoice = {
+        ...editingInvoice,
+        invoice_date: formatDateForApi(editingInvoice.invoice_date),
+        due_date: formatDateForApi(editingInvoice.due_date),
+        payment_date: formatDateForApi(editingInvoice.payment_date)
+      };
+      if (normalizedInvoice.payment_status === 'Paid' && !normalizedInvoice.payment_date) {
+        normalizedInvoice.payment_date = formatDateForApi(new Date().toISOString().split('T')[0]);
+      }
+      if (normalizedInvoice.supplier_id) {
+        const supplier = suppliersList.find((s: any) => s.id === normalizedInvoice.supplier_id);
+        if (supplier) {
+          normalizedInvoice.supplier_name = supplier.supplier_name;
+        }
+      }
+      if (normalizedInvoice.payment_status === 'Paid') {
+        normalizedInvoice.status = 'Paid';
+      }
+      const shouldCreatePaymentEntry =
+        normalizedInvoice.payment_status === 'Paid' &&
+        createPaymentEntry &&
+        existingPaymentTotalBhd + 0.001 < Number(normalizedInvoice.total_bhd || 0);
+
+      if (shouldCreatePaymentEntry) {
+        await UpdateSupplierInvoiceWithPayment(normalizedInvoice as any, true);
+      } else {
+        await UpdateSupplierInvoice(normalizedInvoice as any);
+      }
+
+      toast.success(shouldCreatePaymentEntry ? 'Supplier invoice updated and payment entry created' : 'Supplier invoice updated');
       showEditModal = false;
       editingInvoice = null;
+      createPaymentEntry = false;
+      existingPaymentCount = 0;
+      existingPaymentTotalBhd = 0;
       await loadInvoices();
     } catch (e) {
-      toast.danger('Failed to update: ' + e);
+      toast.danger('Failed to update: ' + getErrorMessage(e));
     } finally {
       editLoading = false;
     }
@@ -814,9 +939,14 @@
   <div class="supplier-invoices-embedded">
     <div class="header-embedded">
       <h2>Supplier Invoices</h2>
-      <Button variant="primary" size="sm" on:click={openCreateModal}>
-        + New Invoice
-      </Button>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <Button variant="secondary" size="sm" on:click={openBankReconciliation}>
+          Open Bank Recon
+        </Button>
+        <Button variant="primary" size="sm" on:click={openCreateModal}>
+          + New Invoice
+        </Button>
+      </div>
     </div>
 
     <Card padding="sm">
@@ -837,6 +967,9 @@
   <!-- Full page mode -->
   <PageLayout title="Supplier Invoices" subtitle="3-Way Matching & Payment Tracking">
     <svelte:fragment slot="header-actions">
+      <Button variant="secondary" on:click={openBankReconciliation}>
+        Open Bank Recon
+      </Button>
       <Button variant="primary" on:click={openCreateModal}>
         + New Supplier Invoice
       </Button>
@@ -892,7 +1025,7 @@
           onRowClick={() => {}}
           on:rowClick={handleRowClick}
           stickyHeader={true}
-          maxHeight="calc(100vh - 350px)"
+          maxHeight="calc(100vh - 300px)"
           showBorder={false}
         />
       </Card>
@@ -910,7 +1043,7 @@
           <div class="stat">
             <div class="stat-label">Total Amount (BHD)</div>
             <div class="stat-value">
-              {invoices.reduce((sum, i) => sum + i.total_bhd, 0).toFixed(3)}
+              {formatMoney(invoices.reduce((sum, i) => sum + i.total_bhd, 0))}
             </div>
           </div>
         </Card>
@@ -1071,7 +1204,7 @@
               step="0.001"
               on:input={recalcLineItems}
             />
-            <span class="li-col-total li-total-value">{(item.quantity * item.unit_price).toFixed(3)}</span>
+            <span class="li-col-total li-total-value">{formatMoney(item.quantity * item.unit_price)}</span>
             <button type="button" class="li-remove-btn" on:click={() => removeLineItem(i)} disabled={formItems.length <= 1}>x</button>
           </div>
         {/each}
@@ -1102,7 +1235,7 @@
     <!-- Total (calculated) -->
     <div class="total-display">
       <span class="total-label">Total:</span>
-      <span class="total-value">{formData.total_foreign.toFixed(3)} {formData.currency}</span>
+      <span class="total-value">{formatMoney(formData.total_foreign)} {formData.currency}</span>
     </div>
   </form>
 
@@ -1178,19 +1311,19 @@
           </div>
           <div class="detail-item">
             <span class="detail-label">Subtotal</span>
-            <span class="detail-value">{selectedInvoice.subtotal_foreign.toFixed(3)} {selectedInvoice.currency}</span>
+            <span class="detail-value">{formatMoney(selectedInvoice.subtotal_foreign)} {selectedInvoice.currency}</span>
           </div>
           <div class="detail-item">
             <span class="detail-label">VAT</span>
-            <span class="detail-value">{selectedInvoice.vat_foreign.toFixed(3)} {selectedInvoice.currency}</span>
+            <span class="detail-value">{formatMoney(selectedInvoice.vat_foreign)} {selectedInvoice.currency}</span>
           </div>
           <div class="detail-item">
             <span class="detail-label">Total</span>
-            <span class="detail-value amount-highlight">{selectedInvoice.total_foreign.toFixed(3)} {selectedInvoice.currency}</span>
+            <span class="detail-value amount-highlight">{formatMoney(selectedInvoice.total_foreign)} {selectedInvoice.currency}</span>
           </div>
           <div class="detail-item">
             <span class="detail-label">Total (BHD)</span>
-            <span class="detail-value amount-highlight">{selectedInvoice.total_bhd.toFixed(3)} BHD</span>
+            <span class="detail-value amount-highlight">{formatMoney(selectedInvoice.total_bhd)} BHD</span>
           </div>
         </div>
       </div>
@@ -1297,6 +1430,14 @@
 {#if showEditModal && editingInvoice}
   <WabiModal bind:open={showEditModal} title="Edit Supplier Invoice" size="md">
     <div class="edit-form-grid">
+      <FormGroup label="Supplier">
+        <select class="select-input" bind:value={editingInvoice.supplier_id}>
+          <option value="">Select supplier...</option>
+          {#each suppliersList as supplier}
+            <option value={supplier.id}>{supplier.supplier_name}</option>
+          {/each}
+        </select>
+      </FormGroup>
       <FormGroup label="Invoice Number">
         <Input type="text" bind:value={editingInvoice.invoice_number} />
       </FormGroup>
@@ -1314,9 +1455,58 @@
       <FormGroup label="Currency">
         <Input type="text" bind:value={editingInvoice.currency} />
       </FormGroup>
+      <FormGroup label="Invoice Date">
+        <Input type="date" bind:value={editingInvoice.invoice_date} />
+      </FormGroup>
+      <FormGroup label="Due Date">
+        <Input type="date" bind:value={editingInvoice.due_date} />
+      </FormGroup>
+      <FormGroup label="Payment Status">
+        <select class="select-input" bind:value={editingInvoice.payment_status}>
+          <option value="Unpaid">Unpaid</option>
+          <option value="Scheduled">Scheduled</option>
+          <option value="Paid">Paid</option>
+        </select>
+      </FormGroup>
+      <FormGroup label="Payment Method">
+        <select class="select-input" bind:value={editingInvoice.payment_method}>
+          <option value="">Not Set</option>
+          <option value="Bank Transfer">Bank Transfer</option>
+          <option value="Cheque">Cheque</option>
+          <option value="Cash">Cash</option>
+          <option value="Wire Transfer">Wire Transfer</option>
+          <option value="LC">LC</option>
+          <option value="PDC">PDC</option>
+          <option value="Other">Other</option>
+        </select>
+      </FormGroup>
+      <FormGroup label="Payment Date">
+        <Input type="date" bind:value={editingInvoice.payment_date} />
+      </FormGroup>
+      <FormGroup label="Payment Ref">
+        <Input type="text" bind:value={editingInvoice.payment_ref} placeholder="Transfer / cheque reference" />
+      </FormGroup>
     </div>
+    {#if editingInvoice.payment_status === 'Paid'}
+      <div class="payment-entry-card">
+        {#if existingPaymentCount > 0}
+          <p class="payment-entry-note">
+            This invoice already has {existingPaymentCount} supplier payment entr{existingPaymentCount === 1 ? 'y' : 'ies'}
+            totaling {formatMoney(existingPaymentTotalBhd)} BHD.
+          </p>
+        {:else}
+          <label class="payment-entry-toggle">
+            <input type="checkbox" bind:checked={createPaymentEntry} />
+            <span>Create supplier payment ledger entry from this payment info</span>
+          </label>
+          <p class="payment-entry-note">
+            This will make the payment appear in Supplier Payments and Bank Reconciliation matching.
+          </p>
+        {/if}
+      </div>
+    {/if}
     <svelte:fragment slot="footer">
-      <Button variant="ghost" on:click={() => { showEditModal = false; editingInvoice = null; }}>Cancel</Button>
+      <Button variant="ghost" on:click={() => { showEditModal = false; editingInvoice = null; createPaymentEntry = false; existingPaymentCount = 0; existingPaymentTotalBhd = 0; }}>Cancel</Button>
       <Button variant="primary" loading={editLoading} on:click={saveEditInvoice}>Save Changes</Button>
     </svelte:fragment>
   </WabiModal>
@@ -1339,6 +1529,30 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+  }
+
+  .payment-entry-card {
+    margin-top: 16px;
+    padding: 14px 16px;
+    border-radius: 16px;
+    background: rgba(15, 23, 42, 0.04);
+    border: 1px solid rgba(15, 23, 42, 0.08);
+  }
+
+  .payment-entry-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-body);
+    font-size: 14px;
+    color: var(--text-primary);
+  }
+
+  .payment-entry-note {
+    margin: 8px 0 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-secondary);
   }
 
   .header-embedded h2 {
@@ -1505,11 +1719,12 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
+    min-width: 0;
   }
 
   .form-row {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px;
   }
 
@@ -1582,8 +1797,17 @@
 
   .detail-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
+  }
+
+  :global(.supplier-invoices-container .data-table th),
+  :global(.supplier-invoices-container .data-table td) {
+    vertical-align: top;
+  }
+
+  :global(.supplier-invoices-container .data-table .text-right) {
+    white-space: nowrap;
   }
 
   .detail-item {
@@ -1615,6 +1839,7 @@
   .match-indicators {
     display: flex;
     gap: 16px;
+    flex-wrap: wrap;
     padding: 16px;
     background: var(--surface-elevated);
     border-radius: var(--border-radius);
@@ -1624,6 +1849,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    flex: 1 1 180px;
+    min-width: 0;
     padding: 8px 16px;
     background: var(--surface);
     border: 2px solid var(--border);
@@ -1692,7 +1919,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 12px;
+    padding: 10px;
     background: var(--surface-elevated, #f9f9f9);
     border-radius: var(--border-radius-sm, 6px);
     border: 1px solid var(--border, #e5e5e5);
@@ -1729,13 +1956,14 @@
   }
 
   .line-items-table {
-    display: flex;
-    flex-direction: column;
+    display: grid;
     gap: 4px;
+    min-width: 0;
   }
 
   .li-header-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 2.6fr) minmax(60px, 0.7fr) minmax(96px, 1fr) minmax(96px, 1fr) 28px;
     gap: 8px;
     padding: 4px 0;
     font-size: 11px;
@@ -1746,19 +1974,21 @@
   }
 
   .li-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 2.6fr) minmax(60px, 0.7fr) minmax(96px, 1fr) minmax(96px, 1fr) 28px;
     gap: 8px;
     align-items: center;
   }
 
-  .li-col-desc { flex: 3; }
-  .li-col-qty { flex: 0.7; min-width: 60px; }
-  .li-col-price { flex: 1; min-width: 80px; }
-  .li-col-total { flex: 1; min-width: 80px; text-align: right; }
+  .li-col-desc { min-width: 0; }
+  .li-col-qty { min-width: 0; }
+  .li-col-price { min-width: 0; }
+  .li-col-total { min-width: 0; text-align: right; }
   .li-col-action { width: 24px; }
 
   .li-input {
     width: 100%;
+    min-width: 0;
     padding: 6px 8px;
     font-size: 13px;
     font-family: var(--font-family, Inter, system-ui);
@@ -1864,6 +2094,11 @@
 
     .match-indicators {
       flex-direction: column;
+    }
+
+    .li-header-row,
+    .li-row {
+      grid-template-columns: minmax(0, 1.8fr) minmax(56px, 0.7fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr) 24px;
     }
   }
 </style>

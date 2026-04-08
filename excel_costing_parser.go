@@ -162,6 +162,32 @@ type ExcelBatchImportResult struct {
 	TotalValue     float64               `json:"total_value"`
 }
 
+type costingRowMap struct {
+	Supplier          int
+	Equipment         int
+	Model             int
+	Specification     int
+	Quantity          int
+	FobEUR            int
+	FreightEUR        int
+	ExchangeRate      int
+	FobBHD            int
+	FreightBHD        int
+	Cnf               int
+	Insurance         int
+	Customs           int
+	LandedCost        int
+	Handling          int
+	FinanceCharges    int
+	OtherCosts        int
+	TotalCost         int
+	Markup            int
+	SellingPrice      int
+	SuggestedPrice    int
+	TotalSuggested    int
+	SummaryTotal      int
+}
+
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
@@ -175,6 +201,35 @@ func isPlaceholder(s string) bool {
 // isEmpty checks if a string is empty or whitespace
 func isEmpty(s string) bool {
 	return strings.TrimSpace(s) == ""
+}
+
+func cleanProductCell(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" || isPlaceholder(trimmed) || isCostingSummaryLabel(trimmed) {
+		return ""
+	}
+	return trimmed
+}
+
+func firstNonEmptyCostingValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+// isCostingSummaryLabel skips summary columns that appear to the right of real
+// line items in several PH master files.
+func isCostingSummaryLabel(s string) bool {
+	normalized := strings.ToUpper(strings.Join(strings.Fields(strings.TrimSpace(s)), " "))
+	switch normalized {
+	case "TOTAL", "TOTAL FOR ORDER", "SUBTOTAL", "GRAND TOTAL", "TOTAL ORDER":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseFloat safely parses a float from a cell value
@@ -195,6 +250,219 @@ func parseExcelFloat(s string) float64 {
 		return 0
 	}
 	return val
+}
+
+func normalizeCostingLabel(s string) string {
+	replacer := strings.NewReplacer(
+		"\n", " ",
+		"\r", " ",
+		"\t", " ",
+		"-", " ",
+		"_", " ",
+		"/", " ",
+		"(", " ",
+		")", " ",
+		".", " ",
+		":", " ",
+		"@", " ",
+		"&", " ",
+	)
+	cleaned := strings.ToUpper(replacer.Replace(strings.TrimSpace(s)))
+	return strings.Join(strings.Fields(cleaned), "")
+}
+
+func metadataLabelLike(s string) bool {
+	switch normalizeCostingLabel(s) {
+	case "", "REFERENCE", "EMAIL", "DATE", "PREPAREDBY", "CUSTOMER", "CONTACTPERSON", "CHOOSECONTACTPERSON",
+		"ORDERTYPE", "PAYMENTTERMS", "COUNTRYOFORIGIN", "ESTDELIVERY", "DELIVERYTERMS", "FOLDERNUMBER":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeExcelDateValue(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	if value, err := strconv.ParseFloat(raw, 64); err == nil && value > 20000 && value < 60000 {
+		base := time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
+		return base.AddDate(0, 0, int(value)).Format("2006-01-02")
+	}
+
+	return raw
+}
+
+func getCellValue(f *excelize.File, sheetName string, col int, row int) string {
+	if row <= 0 || col <= 0 {
+		return ""
+	}
+	ref, err := excelize.CoordinatesToCellName(col, row)
+	if err != nil {
+		return ""
+	}
+	value, _ := f.GetCellValue(sheetName, ref)
+	return strings.TrimSpace(value)
+}
+
+func getFloatCellValue(f *excelize.File, sheetName string, col int, row int) float64 {
+	return parseExcelFloat(getCellValue(f, sheetName, col, row))
+}
+
+func getPositiveNumericRowValues(f *excelize.File, sheetName string, row int) []float64 {
+	if row <= 0 {
+		return nil
+	}
+
+	values := make([]float64, 0, 4)
+	for col := 1; col <= COL_MAX_PRODUCTS; col++ {
+		value := parseExcelFloat(getCellValue(f, sheetName, col, row))
+		if value > 0 {
+			values = append(values, value)
+		}
+	}
+
+	return values
+}
+
+func getRightmostPositiveNumericRowValue(f *excelize.File, sheetName string, row int) float64 {
+	if row <= 0 {
+		return 0
+	}
+
+	for col := COL_MAX_PRODUCTS; col >= 1; col-- {
+		value := parseExcelFloat(getCellValue(f, sheetName, col, row))
+		if value > 0 {
+			return value
+		}
+	}
+
+	return 0
+}
+
+func findCostingRows(f *excelize.File, sheetName string) costingRowMap {
+	rows := costingRowMap{}
+	for row := 1; row <= 80; row++ {
+		labelA := normalizeCostingLabel(getCellValue(f, sheetName, 1, row))
+		labelB := normalizeCostingLabel(getCellValue(f, sheetName, 2, row))
+
+		switch {
+		case labelA == "SUPPLIER":
+			rows.Supplier = row
+		case labelA == "EQUIPMENT":
+			rows.Equipment = row
+		case labelA == "MODEL":
+			rows.Model = row
+		case strings.Contains(labelA, "SPECIFICATION") || strings.Contains(labelA, "ORDERCODE"):
+			rows.Specification = row
+		case labelB == "QUANTITY" || labelA == "QUANTITY":
+			rows.Quantity = row
+		case labelA == "EUR" && labelB == "FOB":
+			rows.FobEUR = row
+		case labelA == "EUR" && strings.Contains(labelB, "FREIGHT"):
+			rows.FreightEUR = row
+		case strings.Contains(labelB, "EXCHANGERATE") && strings.Contains(labelB, "BHD"):
+			rows.ExchangeRate = row
+		case labelA == "BHD" && labelB == "FOB":
+			rows.FobBHD = row
+		case labelA == "BHD" && strings.Contains(labelB, "FREIGHT"):
+			rows.FreightBHD = row
+		case strings.Contains(labelB, "CF") || strings.Contains(labelB, "CNF"):
+			rows.Cnf = row
+		case strings.Contains(labelB, "INSURANCE"):
+			rows.Insurance = row
+		case strings.Contains(labelB, "CUSTOMS"):
+			rows.Customs = row
+		case strings.Contains(labelB, "LANDEDCOST"):
+			rows.LandedCost = row
+		case strings.Contains(labelB, "HANDLING"):
+			rows.Handling = row
+		case strings.Contains(labelB, "FINANCECHARGES"):
+			rows.FinanceCharges = row
+		case strings.Contains(labelB, "OTHERCOSTS"):
+			rows.OtherCosts = row
+		case strings.Contains(labelB, "TOTALCOST"):
+			rows.TotalCost = row
+		case strings.Contains(labelB, "MARKUP"):
+			rows.Markup = row
+		case strings.Contains(labelA, "SELLINGPRICE"):
+			rows.SellingPrice = row
+		case strings.Contains(labelA, "SUGGESTEDPRICEPERUNIT"):
+			rows.SuggestedPrice = row
+		case strings.Contains(labelA, "TOTALSUGGESTEDPRICE"):
+			rows.TotalSuggested = row
+		case strings.Contains(labelA, "TOTALPOVALUEEXPECTEDFROMCLIENT"):
+			rows.SummaryTotal = row
+		}
+	}
+
+	if rows.Supplier == 0 {
+		rows.Supplier = ROW_SUPPLIER
+	}
+	if rows.Equipment == 0 {
+		rows.Equipment = ROW_EQUIPMENT
+	}
+	if rows.Model == 0 {
+		rows.Model = ROW_MODEL
+	}
+	if rows.Specification == 0 {
+		rows.Specification = ROW_SPECIFICATION
+	}
+	if rows.Quantity == 0 {
+		rows.Quantity = ROW_QUANTITY
+	}
+	if rows.FobEUR == 0 {
+		rows.FobEUR = ROW_FOB_EUR
+	}
+	if rows.FreightEUR == 0 {
+		rows.FreightEUR = ROW_FREIGHT_EUR
+	}
+	if rows.ExchangeRate == 0 {
+		rows.ExchangeRate = ROW_EXCHANGE_RATE
+	}
+	if rows.FobBHD == 0 {
+		rows.FobBHD = ROW_FOB_BHD
+	}
+	if rows.FreightBHD == 0 {
+		rows.FreightBHD = ROW_FREIGHT_BHD
+	}
+	if rows.Cnf == 0 {
+		rows.Cnf = ROW_CNF
+	}
+	if rows.Insurance == 0 {
+		rows.Insurance = ROW_INSURANCE
+	}
+	if rows.Customs == 0 {
+		rows.Customs = ROW_CUSTOMS
+	}
+	if rows.LandedCost == 0 {
+		rows.LandedCost = ROW_LANDED_COST
+	}
+	if rows.Handling == 0 {
+		rows.Handling = ROW_HANDLING
+	}
+	if rows.FinanceCharges == 0 {
+		rows.FinanceCharges = ROW_FINANCE_CHARGES
+	}
+	if rows.OtherCosts == 0 {
+		rows.OtherCosts = ROW_OTHER_COSTS
+	}
+	if rows.TotalCost == 0 {
+		rows.TotalCost = ROW_TOTAL_COST
+	}
+	if rows.SellingPrice == 0 {
+		rows.SellingPrice = ROW_SELLING_PRICE
+	}
+	if rows.SuggestedPrice == 0 {
+		rows.SuggestedPrice = ROW_SUGGESTED_PRICE
+	}
+	if rows.TotalSuggested == 0 {
+		rows.TotalSuggested = ROW_TOTAL_SUGGESTED
+	}
+
+	return rows
 }
 
 // extractOfferNumber extracts offer number from folder name like "101 ENGIE AIT"
@@ -288,27 +556,30 @@ func extractMetadata(f *excelize.File, sheetName string) ExcelCostingMetadata {
 	meta := ExcelCostingMetadata{}
 
 	// Row 2: Date (B2), Folder Number (D2), Est Delivery (F2)
-	meta.Date, _ = f.GetCellValue(sheetName, "B2")
-	meta.FolderNumber, _ = f.GetCellValue(sheetName, "D2")
-	meta.EstDelivery, _ = f.GetCellValue(sheetName, "F2")
+	meta.Date = normalizeExcelDateValue(getCellValue(f, sheetName, 2, 2))
+	meta.FolderNumber = getCellValue(f, sheetName, 4, 2)
+	meta.EstDelivery = getCellValue(f, sheetName, 6, 2)
 
 	// Row 3: Prepared By (B3), Costing ID (D3), Delivery Terms (F3)
-	meta.PreparedBy, _ = f.GetCellValue(sheetName, "B3")
-	meta.CostingID, _ = f.GetCellValue(sheetName, "D3")
-	meta.DeliveryTerms, _ = f.GetCellValue(sheetName, "F3")
+	meta.PreparedBy = getCellValue(f, sheetName, 2, 3)
+	meta.CostingID = getCellValue(f, sheetName, 4, 3)
+	meta.DeliveryTerms = getCellValue(f, sheetName, 6, 3)
 
 	// Row 4: Customer (B4), Contact Person (D4), Order Type (F4)
-	meta.Customer, _ = f.GetCellValue(sheetName, "B4")
-	meta.ContactPerson, _ = f.GetCellValue(sheetName, "D4")
-	meta.OrderType, _ = f.GetCellValue(sheetName, "F4")
+	meta.Customer = getCellValue(f, sheetName, 2, 4)
+	meta.ContactPerson = getCellValue(f, sheetName, 4, 4)
+	meta.OrderType = getCellValue(f, sheetName, 6, 4)
 
 	// Row 5: Reference (B5), Payment Terms (D5), Country (F5)
-	meta.Reference, _ = f.GetCellValue(sheetName, "A5") // Reference is often in A5
-	if isEmpty(meta.Reference) {
-		meta.Reference, _ = f.GetCellValue(sheetName, "B5")
+	refA := getCellValue(f, sheetName, 1, 5)
+	refB := getCellValue(f, sheetName, 2, 5)
+	if !metadataLabelLike(refA) {
+		meta.Reference = refA
+	} else if !metadataLabelLike(refB) {
+		meta.Reference = refB
 	}
-	meta.PaymentTerms, _ = f.GetCellValue(sheetName, "D5")
-	meta.CountryOfOrigin, _ = f.GetCellValue(sheetName, "F5")
+	meta.PaymentTerms = getCellValue(f, sheetName, 4, 5)
+	meta.CountryOfOrigin = getCellValue(f, sheetName, 6, 5)
 
 	return meta
 }
@@ -316,24 +587,52 @@ func extractMetadata(f *excelize.File, sheetName string) ExcelCostingMetadata {
 // extractLineItems extracts product line items - HORIZONTAL iteration!
 func extractLineItems(f *excelize.File, sheetName string) []ExcelCostingLineItem {
 	items := []ExcelCostingLineItem{}
-
-	// Get shared quantity from B11 (applies to all products)
-	qtyStr, _ := f.GetCellValue(sheetName, "B11")
-	sharedQuantity := parseExcelFloat(qtyStr)
-	if sharedQuantity == 0 {
-		sharedQuantity = 1 // Default to 1 if not specified
-	}
+	rows := findCostingRows(f, sheetName)
 
 	productNum := 0
 
 	// Iterate COLUMNS from C (col 3) onwards
 	for col := COL_FIRST_PRODUCT; col <= COL_MAX_PRODUCTS; col++ {
-		// Get equipment name (Row 8) - this is the primary indicator of a valid product
-		cellRef, _ := excelize.CoordinatesToCellName(col, ROW_EQUIPMENT)
-		equipment, _ := f.GetCellValue(sheetName, cellRef)
+		rawSupplier := getCellValue(f, sheetName, col, rows.Supplier)
+		rawEquipment := getCellValue(f, sheetName, col, rows.Equipment)
+		rawModel := getCellValue(f, sheetName, col, rows.Model)
+		rawSpecification := getCellValue(f, sheetName, col, rows.Specification)
 
-		// Skip if empty or placeholder
-		if isEmpty(equipment) || isPlaceholder(equipment) {
+		supplier := cleanProductCell(rawSupplier)
+		equipment := cleanProductCell(rawEquipment)
+		model := cleanProductCell(rawModel)
+		specification := cleanProductCell(rawSpecification)
+
+		if isCostingSummaryLabel(rawSupplier) || isCostingSummaryLabel(rawEquipment) || isCostingSummaryLabel(rawModel) {
+			continue
+		}
+
+		quantity := getFloatCellValue(f, sheetName, col, rows.Quantity)
+		fobEUR := getFloatCellValue(f, sheetName, col, rows.FobEUR)
+		freightEUR := getFloatCellValue(f, sheetName, col, rows.FreightEUR)
+		exchangeRate := getFloatCellValue(f, sheetName, col, rows.ExchangeRate)
+		fobBHD := getFloatCellValue(f, sheetName, col, rows.FobBHD)
+		freightBHD := getFloatCellValue(f, sheetName, col, rows.FreightBHD)
+		cnfBHD := getFloatCellValue(f, sheetName, col, rows.Cnf)
+		insurance := getFloatCellValue(f, sheetName, col, rows.Insurance)
+		customs := getFloatCellValue(f, sheetName, col, rows.Customs)
+		landedCost := getFloatCellValue(f, sheetName, col, rows.LandedCost)
+		handling := getFloatCellValue(f, sheetName, col, rows.Handling)
+		financeCharges := getFloatCellValue(f, sheetName, col, rows.FinanceCharges)
+		otherCosts := getFloatCellValue(f, sheetName, col, rows.OtherCosts)
+		totalCost := getFloatCellValue(f, sheetName, col, rows.TotalCost)
+		markupPercent := getFloatCellValue(f, sheetName, col, rows.Markup)
+		sellingPrice := getFloatCellValue(f, sheetName, col, rows.SellingPrice)
+		suggestedPrice := getFloatCellValue(f, sheetName, col, rows.SuggestedPrice)
+		totalSuggested := getFloatCellValue(f, sheetName, col, rows.TotalSuggested)
+
+		hasDescriptor := firstNonEmptyCostingValue(equipment, model, specification) != ""
+		hasStrongNumericSignal := quantity > 0 || totalSuggested > 0 ||
+			(hasDescriptor && (fobEUR > 0 || freightEUR > 0 || fobBHD > 0 || freightBHD > 0 ||
+				cnfBHD > 0 || customs > 0 || landedCost > 0 || otherCosts > 0 ||
+				totalCost > 0 || sellingPrice > 0 || suggestedPrice > 0))
+
+		if !hasStrongNumericSignal {
 			continue
 		}
 
@@ -343,108 +642,52 @@ func extractLineItems(f *excelize.File, sheetName string) []ExcelCostingLineItem
 			ColumnIndex:   col,
 		}
 
-		// Extract all fields for this product column
-		item.Equipment = equipment
+		// Some real files leave the template placeholders in the Equipment row but
+		// populate the model/specification or just numeric values. Fall back so we
+		// still capture the commercial line instead of dropping the column.
+		item.Supplier = supplier
+		item.Equipment = firstNonEmptyCostingValue(equipment, model, specification, fmt.Sprintf("Line Item %d", productNum))
+		item.Model = model
+		item.Specification = specification
 
-		// Supplier (Row 7)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_SUPPLIER)
-		item.Supplier, _ = f.GetCellValue(sheetName, cellRef)
+		item.Quantity = quantity
+		if item.Quantity == 0 {
+			item.Quantity = 1
+		}
 
-		// Model (Row 9)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_MODEL)
-		item.Model, _ = f.GetCellValue(sheetName, cellRef)
+		item.FobEUR = fobEUR
+		item.FreightEUR = freightEUR
+		item.ExchangeRate = exchangeRate
+		item.FobBHD = fobBHD
+		item.FreightBHD = freightBHD
+		item.CnfBHD = cnfBHD
+		item.Insurance = insurance
+		item.Customs = customs
+		item.LandedCost = landedCost
+		item.Handling = handling
+		item.FinanceCharges = financeCharges
+		item.OtherCosts = otherCosts
+		item.TotalCost = totalCost
 
-		// Specification (Row 10)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_SPECIFICATION)
-		item.Specification, _ = f.GetCellValue(sheetName, cellRef)
+		item.MarkupPercent = 0
+		if item.TotalCost > 0 {
+			item.MarkupPercent = markupPercent
+		}
 
-		// Use shared quantity
-		item.Quantity = sharedQuantity
+		item.SellingPriceBHD = sellingPrice
 
-		// FOB EUR (Row 12)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_FOB_EUR)
-		val, _ := f.GetCellValue(sheetName, cellRef)
-		item.FobEUR = parseExcelFloat(val)
+		item.SuggestedPriceBHD = suggestedPrice
+		if item.SuggestedPriceBHD == 0 {
+			item.SuggestedPriceBHD = item.SellingPriceBHD
+		}
 
-		// Freight EUR (Row 13)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_FREIGHT_EUR)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.FreightEUR = parseExcelFloat(val)
-
-		// Exchange Rate (Row 14)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_EXCHANGE_RATE)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.ExchangeRate = parseExcelFloat(val)
-
-		// FOB BHD (Row 15)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_FOB_BHD)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.FobBHD = parseExcelFloat(val)
-
-		// Freight BHD (Row 16)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_FREIGHT_BHD)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.FreightBHD = parseExcelFloat(val)
-
-		// CNF BHD (Row 17)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_CNF)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.CnfBHD = parseExcelFloat(val)
-
-		// Insurance (Row 18)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_INSURANCE)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.Insurance = parseExcelFloat(val)
-
-		// Customs (Row 19)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_CUSTOMS)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.Customs = parseExcelFloat(val)
-
-		// Landed Cost (Row 20)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_LANDED_COST)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.LandedCost = parseExcelFloat(val)
-
-		// Handling (Row 21)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_HANDLING)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.Handling = parseExcelFloat(val)
-
-		// Finance Charges (Row 22)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_FINANCE_CHARGES)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.FinanceCharges = parseExcelFloat(val)
-
-		// Other Costs (Row 23)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_OTHER_COSTS)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.OtherCosts = parseExcelFloat(val)
-
-		// Total Cost (Row 24)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_TOTAL_COST)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.TotalCost = parseExcelFloat(val)
-
-		// Markup % (Row 25)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_MARKUP_PERCENT)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.MarkupPercent = parseExcelFloat(val)
-
-		// Selling Price BHD (Row 26)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_SELLING_PRICE)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.SellingPriceBHD = parseExcelFloat(val)
-
-		// Suggested Price BHD (Row 27)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_SUGGESTED_PRICE)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.SuggestedPriceBHD = parseExcelFloat(val)
-
-		// Total Suggested Price (Row 28)
-		cellRef, _ = excelize.CoordinatesToCellName(col, ROW_TOTAL_SUGGESTED)
-		val, _ = f.GetCellValue(sheetName, cellRef)
-		item.TotalSuggestedBHD = parseExcelFloat(val)
+		item.TotalSuggestedBHD = totalSuggested
+		if item.TotalSuggestedBHD == 0 && item.SuggestedPriceBHD > 0 {
+			item.TotalSuggestedBHD = item.SuggestedPriceBHD * item.Quantity
+		}
+		if item.MarkupPercent == 0 && item.TotalCost > 0 && item.TotalSuggestedBHD > 0 {
+			item.MarkupPercent = ((item.TotalSuggestedBHD - item.TotalCost) / item.TotalCost) * 100
+		}
 
 		items = append(items, item)
 	}
@@ -454,30 +697,74 @@ func extractLineItems(f *excelize.File, sheetName string) []ExcelCostingLineItem
 
 // extractTotals extracts the totals from the sheet
 func extractTotals(f *excelize.File, sheetName string, items []ExcelCostingLineItem) ExcelCostingTotals {
+	rows := findCostingRows(f, sheetName)
 	totals := ExcelCostingTotals{
 		VatPercent: 10.0, // Bahrain VAT default
 	}
 
-	// Try to get totals from column M (standard location)
-	// Subtotal usually in M28
-	val, _ := f.GetCellValue(sheetName, "M28")
-	totals.Subtotal = parseExcelFloat(val)
+	if rows.SummaryTotal > 0 {
+		// The client summary block is consistently laid out in columns C/D/E.
+		// Some templates also carry other numeric cells later in the same row
+		// (for internal cost/profit notes), so we should not treat the last
+		// numeric value on the row as the commercial grand total.
+		totals.Subtotal = getFloatCellValue(f, sheetName, 3, rows.SummaryTotal)
+		totals.VatAmount = getFloatCellValue(f, sheetName, 4, rows.SummaryTotal)
+		totals.GrandTotal = getFloatCellValue(f, sheetName, 5, rows.SummaryTotal)
+		if totals.Subtotal == 0 || totals.VatAmount == 0 || totals.GrandTotal == 0 {
+			summaryValues := getPositiveNumericRowValues(f, sheetName, rows.SummaryTotal)
+			if totals.Subtotal == 0 && len(summaryValues) > 0 {
+				totals.Subtotal = summaryValues[0]
+			}
+			if totals.VatAmount == 0 && len(summaryValues) > 1 {
+				totals.VatAmount = summaryValues[1]
+			}
+			if totals.GrandTotal == 0 && len(summaryValues) > 2 {
+				totals.GrandTotal = summaryValues[2]
+			}
+		}
+	}
 
-	// VAT in M29
-	val, _ = f.GetCellValue(sheetName, "M29")
-	totals.VatAmount = parseExcelFloat(val)
+	if totals.Subtotal == 0 && rows.TotalSuggested > 0 {
+		totals.Subtotal = getRightmostPositiveNumericRowValue(f, sheetName, rows.TotalSuggested)
+	}
 
-	// Grand Total in M30
-	val, _ = f.GetCellValue(sheetName, "M30")
-	totals.GrandTotal = parseExcelFloat(val)
-
-	// If totals not found, calculate from line items
-	if totals.Subtotal == 0 && len(items) > 0 {
+	if totals.Subtotal == 0 {
 		for _, item := range items {
 			totals.Subtotal += item.TotalSuggestedBHD
 		}
-		totals.VatAmount = totals.Subtotal * (totals.VatPercent / 100)
+	}
+
+	if totals.VatAmount == 0 && rows.TotalSuggested > 0 {
+		totals.VatAmount = getRightmostPositiveNumericRowValue(f, sheetName, rows.TotalSuggested+1)
+	}
+
+	if totals.VatAmount == 0 {
+		val, _ := f.GetCellValue(sheetName, "M29")
+		totals.VatAmount = parseExcelFloat(val)
+	}
+
+	if totals.GrandTotal == 0 && rows.TotalSuggested > 0 {
+		totals.GrandTotal = getRightmostPositiveNumericRowValue(f, sheetName, rows.TotalSuggested+2)
+	}
+
+	if totals.GrandTotal == 0 {
+		val, _ := f.GetCellValue(sheetName, "M30")
+		totals.GrandTotal = parseExcelFloat(val)
+	}
+
+	if totals.GrandTotal == 0 && totals.Subtotal > 0 {
 		totals.GrandTotal = totals.Subtotal + totals.VatAmount
+	}
+
+	if totals.VatAmount == 0 && totals.GrandTotal > totals.Subtotal && totals.Subtotal > 0 {
+		totals.VatAmount = totals.GrandTotal - totals.Subtotal
+	}
+
+	if totals.VatAmount == 0 && totals.Subtotal > 0 {
+		totals.VatAmount = totals.Subtotal * (totals.VatPercent / 100)
+		if totals.GrandTotal == 0 {
+			totals.GrandTotal = totals.Subtotal + totals.VatAmount
+		}
 	}
 
 	return totals

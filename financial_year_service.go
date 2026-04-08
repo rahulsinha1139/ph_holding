@@ -188,7 +188,7 @@ func (a *App) calculateFinancialYearFromTally(year int) (*FinancialYearSummary, 
 	// Get revenue from customer invoices (using SQLite strftime)
 	var totalRevenue float64
 	err := a.db.Model(&Invoice{}).
-		Where("strftime('%Y', invoice_date) = ? AND status NOT IN ('Cancelled')", fmt.Sprintf("%d", year)).
+		Where("strftime('%Y', invoice_date) = ? AND status NOT IN ('Cancelled', 'Void', 'Proforma', 'Draft')", fmt.Sprintf("%d", year)).
 		Select("COALESCE(SUM(grand_total_bhd), 0)").
 		Scan(&totalRevenue).Error
 	if err != nil {

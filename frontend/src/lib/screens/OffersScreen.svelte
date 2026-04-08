@@ -13,7 +13,7 @@
 
   import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
-  import type { main } from '../../../wailsjs/go/models';
+  import { main } from '../../../wailsjs/go/models';
   import {
     GetAllOffers,
     SaveCostingAsOffer,
@@ -28,7 +28,8 @@
     OpenExportedFile,
     AddOfferNote,
     GetOfferNotes,
-    DeleteOfferNote
+    DeleteOfferNote,
+    GetOffersWithNoItems
   } from '../../../wailsjs/go/main/App';
   import PageLayout from '$lib/components/layout/PageLayout.svelte';
   import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -95,6 +96,8 @@
   let filteredOffers: OfferDisplay[] = [];
   let loading = true;
   let selectedStage: OfferStage = 'all';
+  let offersWithNoItems: any[] = [];
+  let legacyOfferShells: any[] = [];
 
   // Modal state
   let showCreateModal = false;
@@ -206,8 +209,21 @@
   let formData = {
     customer_id: '',
     customer_name: '',
+    project_name: '',
+    folder_number: '',
     quotation_date: new Date().toISOString().split('T')[0],
     validity_date: '',
+    payment_terms: '',
+    delivery_terms: '',
+    delivery_weeks: '',
+    country_of_origin: '',
+    contact_phone: '',
+    customer_reference: '',
+    attention_person: '',
+    attention_company: '',
+    attention_phone: '',
+    attention_address: '',
+    issued_by: '',
     items: [] as EditableItem[]
   };
   let formLoading = false;
@@ -369,6 +385,9 @@
     stageTabs[4].count = offers.filter(o => o.stage === 'Lost').length;
   }
 
+  $: legacyOfferShells = offersWithNoItems.filter((item) => item?.is_legacy_shell);
+  $: actionableOffersWithNoItems = offersWithNoItems.filter((item) => !item?.is_legacy_shell);
+
   // Computed: Filter offers by selected stage
   $: {
     if (selectedStage === 'all') {
@@ -447,6 +466,34 @@
     };
   }
 
+  function normalizeName(value: string) {
+    return (value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  function resolveCustomerFromOffer(customerId: string, customerName: string) {
+    const byId = customerId ? customers.find(c => c.id === customerId) : null;
+    if (byId) {
+      return {
+        customer_id: byId.id,
+        customer_name: byId.business_name || customerName || ''
+      };
+    }
+
+    const normalizedCustomerName = normalizeName(customerName);
+    if (!normalizedCustomerName) {
+      return {
+        customer_id: customerId || '',
+        customer_name: customerName || ''
+      };
+    }
+
+    const byName = customers.find((c) => normalizeName(c.business_name || '') === normalizedCustomerName);
+    return {
+      customer_id: byName?.id || '',
+      customer_name: byName?.business_name || customerName || ''
+    };
+  }
+
   // Open create modal - REDIRECTS to Costing Sheet (Issue #7)
   // Offers MUST come from costing sheet to ensure proper line items and pricing
   function openCreateModal() {
@@ -466,12 +513,26 @@
     editingOffer = offer;
     const defaultDate = new Date().toISOString().split('T')[0];
     const defaultValidity = new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0];
+    const resolvedCustomer = resolveCustomerFromOffer((offer as any).customer_id || '', offer.customer_name || '');
 
     formData = {
-      customer_id: (offer as any).customer_id || '',
-      customer_name: offer.customer_name || '',
+      customer_id: resolvedCustomer.customer_id,
+      customer_name: resolvedCustomer.customer_name,
+      project_name: offer.project_name || '',
+      folder_number: offer.folder_number || '',
       quotation_date: offer.quotation_date ? new Date(offer.quotation_date).toISOString().split('T')[0] : defaultDate,
       validity_date: offer.validity_date ? new Date(offer.validity_date).toISOString().split('T')[0] : defaultValidity,
+      payment_terms: offer.payment_terms || '',
+      delivery_terms: offer.delivery_terms || '',
+      delivery_weeks: offer.delivery_weeks || '',
+      country_of_origin: offer.country_of_origin || '',
+      contact_phone: offer.contact_phone || '',
+      customer_reference: offer.customer_reference || '',
+      attention_person: offer.attention_person || '',
+      attention_company: offer.attention_company || '',
+      attention_phone: offer.attention_phone || '',
+      attention_address: offer.attention_address || '',
+      issued_by: offer.issued_by || '',
       items: (offer.items || []).map((item: any) => ({
         product_id: item.product_code || '',
         description: item.description || '',
@@ -604,7 +665,7 @@
     if (!editingOffer) return;
 
     // Same validations as create
-    if (!formData.customer_id || !formData.quotation_date || !formData.validity_date) {
+    if (!formData.customer_name || !formData.quotation_date || !formData.validity_date) {
       toast.warning('Please fill all required fields');
       return;
     }
@@ -650,11 +711,21 @@
       await UpdateOfferFull(editingOffer.id, {
         customer_id: formData.customer_id,
         customer_name: formData.customer_name,
-        project_name: '',
+        project_name: formData.project_name,
+        folder_number: formData.folder_number,
         quotation_date: formData.quotation_date,
         validity_date: formData.validity_date,
-        payment_terms: '',
-        delivery_terms: '',
+        payment_terms: formData.payment_terms,
+        delivery_terms: formData.delivery_terms,
+        delivery_weeks: formData.delivery_weeks,
+        country_of_origin: formData.country_of_origin,
+        contact_phone: formData.contact_phone,
+        customer_reference: formData.customer_reference,
+        attention_person: formData.attention_person,
+        attention_company: formData.attention_company,
+        attention_phone: formData.attention_phone,
+        attention_address: formData.attention_address,
+        issued_by: formData.issued_by,
         discount: 0,
         items: formData.items.map(item => ({
           description: item.description,
@@ -742,9 +813,11 @@
 
     try {
       // Open edit modal pre-filled with the lost offer's data for a new quote
+      const resolvedCustomer = resolveCustomerFromOffer((offer as any).customer_id || '', offer.customer_name || '');
       formData = {
-        customer_id: (offer as any).customer_id || '',
-        customer_name: offer.customer_name || '',
+        customer_id: resolvedCustomer.customer_id,
+        customer_name: resolvedCustomer.customer_name,
+        project_name: offer.project_name || '',
         quotation_date: new Date().toISOString().split('T')[0],
         validity_date: new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0],
         items: (offer.items || []).map((item: any) => ({
@@ -837,17 +910,27 @@
     viewSaving = true;
     try {
       await UpdateOfferFull(viewOffer.id, {
-        customer_id: viewOffer.customer_id || '',
+        customer_id: '',
         customer_name: viewOffer.customer_name || '',
         project_name: viewOffer.project_name || '',
-        quotation_date: '',
-        validity_date: '',
+        folder_number: viewOffer.folder_number || '',
+        quotation_date: viewOffer.quotation_date ? new Date(viewOffer.quotation_date).toISOString().split('T')[0] : '',
+        validity_date: viewOffer.validity_date ? new Date(viewOffer.validity_date).toISOString().split('T')[0] : '',
         payment_terms: viewOffer.payment_terms || '',
         delivery_terms: viewOffer.delivery_terms || '',
-        discount: viewOffer.discount || 0,
+        delivery_weeks: viewOffer.delivery_weeks || '',
+        country_of_origin: viewOffer.country_of_origin || '',
+        contact_phone: viewOffer.contact_phone || '',
+        customer_reference: viewOffer.customer_reference || '',
+        attention_person: viewOffer.attention_person || '',
+        attention_company: viewOffer.attention_company || '',
+        attention_phone: viewOffer.attention_phone || '',
+        attention_address: viewOffer.attention_address || '',
+        issued_by: viewOffer.issued_by || '',
+        discount: 0,
         stage: '',
         items: [],
-      });
+      } as any);
       toast.success('Offer details saved');
       await loadOffers();
     } catch (e) {
@@ -903,13 +986,18 @@
 
   // Customer selection handler
   function handleCustomerSelect(e: Event) {
-    const select = e.target as HTMLSelectElement;
-    const customerId = select.value;
-    const customer = customers.find(c => c.id === customerId);
+    const target = e.target as HTMLInputElement | HTMLSelectElement;
+    const selectedValue = target.value;
+    const customer = customers.find((c) =>
+      c.id === selectedValue || normalizeName(c.business_name || '') === normalizeName(selectedValue)
+    );
 
     if (customer) {
       formData.customer_id = customer.id;
       formData.customer_name = customer.business_name;
+    } else {
+      formData.customer_id = '';
+      formData.customer_name = selectedValue;
     }
   }
 
@@ -944,7 +1032,18 @@
   onMount(() => {
     loadOffers();
     loadPendingFollowUps();
+    loadOffersWithNoItems();
   });
+
+  async function loadOffersWithNoItems() {
+    try {
+      const data = await GetOffersWithNoItems();
+      offersWithNoItems = data || [];
+    } catch (err) {
+      // Non-critical — silently ignore
+      offersWithNoItems = [];
+    }
+  }
 </script>
 
 <PageLayout title="Offers" subtitle="Quotations & Proposals">
@@ -955,6 +1054,32 @@
   </svelte:fragment>
 
   <div class="offers-container">
+    <!-- Warning: Offers with no line items -->
+    {#if actionableOffersWithNoItems.length > 0}
+      <div class="no-items-warning">
+        <span class="warning-icon">&#9888;</span>
+        <div class="warning-content">
+          <strong>{actionableOffersWithNoItems.length} active operational offer{actionableOffersWithNoItems.length === 1 ? '' : 's'} still {actionableOffersWithNoItems.length === 1 ? 'has' : 'have'} no line items.</strong>
+          These records still need commercial line items before PDF or invoice workflows are reliable.
+          <div class="warning-list">
+            {#each actionableOffersWithNoItems as item}
+              <span class="warning-offer-number">{escapeHtml(item.offer_number || item.id)}</span>
+            {/each}
+          </div>
+        </div>
+      </div>
+    {/if}
+
+    {#if legacyOfferShells.length > 0}
+      <div class="legacy-shell-note">
+        <span class="warning-icon">&#9432;</span>
+        <div class="warning-content">
+          <strong>{legacyOfferShells.length} legacy quoted/RFQ shell{legacyOfferShells.length === 1 ? '' : 's'} {legacyOfferShells.length === 1 ? 'is' : 'are'} hidden from the default offer list.</strong>
+          Review these from the Deployment audit before release instead of treating them as live commercial records.
+        </div>
+      </div>
+    {/if}
+
     <!-- Stage Filter Tabs -->
     <Card padding="sm">
       <div class="stage-tabs" role="tablist" aria-label="Filter offers by stage">
@@ -1152,17 +1277,32 @@
   <form on:submit|preventDefault={handleEditOffer} class="offer-form">
     <!-- Customer & Dates -->
     <FormGroup label="Customer" required>
-      <select
-        class="select-input"
-        bind:value={formData.customer_id}
-        on:change={handleCustomerSelect}
+      <input
+        list="offer-customer-edit-list"
+        class="input-field"
+        bind:value={formData.customer_name}
+        on:input={handleCustomerSelect}
+        placeholder="Search customer..."
         required
-      >
-        <option value="">Select customer...</option>
+      />
+      <datalist id="offer-customer-edit-list">
         {#each customers as customer}
-          <option value={customer.id}>{customer.business_name}</option>
+          <option value={customer.business_name}>{customer.business_name}</option>
         {/each}
-      </select>
+      </datalist>
+      {#if formData.customer_name && !formData.customer_id}
+        <div class="date-hint date-hint-warning">
+          Using the stored customer name. Select a matching customer record if you want to relink it.
+        </div>
+      {/if}
+    </FormGroup>
+
+    <FormGroup label="Project / Reference">
+      <Input
+        type="text"
+        bind:value={formData.project_name}
+        placeholder="Project name or reference"
+      />
     </FormGroup>
 
     <div class="form-row">
@@ -2631,5 +2771,60 @@
     background: var(--ether, #F5F5F7);
     border-radius: 6px;
     color: var(--onyx, #1D1D1F);
+  }
+
+  /* Warning banner for offers with no line items */
+  .no-items-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 16px;
+    background: #fef9e7;
+    border: 1px solid #f0d050;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: #7a6200;
+  }
+
+  .no-items-warning .warning-icon {
+    font-size: 18px;
+    flex-shrink: 0;
+    line-height: 1.4;
+  }
+
+  .no-items-warning .warning-content {
+    flex: 1;
+    line-height: 1.5;
+  }
+
+  .no-items-warning .warning-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .no-items-warning .warning-offer-number {
+    display: inline-block;
+    padding: 2px 8px;
+    background: rgba(240, 208, 80, 0.3);
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 12px;
+    cursor: default;
+  }
+
+  .legacy-shell-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 16px;
+    background: rgba(21, 94, 117, 0.08);
+    border: 1px solid rgba(21, 94, 117, 0.18);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: #155e75;
   }
 </style>

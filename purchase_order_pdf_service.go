@@ -35,6 +35,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jung-kurt/gofpdf"
 )
@@ -47,6 +48,10 @@ import (
 func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	if err := a.requirePermission("po:view"); err != nil {
 		return "", err
+	}
+
+	if a.db == nil {
+		return "", fmt.Errorf("database not initialized")
 	}
 
 	if poID == "" {
@@ -108,10 +113,10 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	// Position for content start (below letterhead logo area)
 	pdf.SetY(52)
 
-	// "PURCHASE ORDER" title (top right)
+	// Centered document title
 	pdf.SetFont("Helvetica", "B", 20)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.CellFormat(0, 10, "PURCHASE ORDER", "", 0, "R", false, 0, "")
+	pdf.CellFormat(0, 10, "PURCHASE ORDER", "", 0, "C", false, 0, "")
 	pdf.Ln(12)
 
 	// ========================================================================
@@ -249,22 +254,29 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	// ========================================================================
 	// LINE ITEMS TABLE
 	// ========================================================================
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(255, 255, 255)
-	pdf.SetFillColor(29, 29, 31) // Carbon/Onyx header
+	tableColWidths := []float64{10, 88, 16, 30, 30}
+	tableLineHeight := 4.8
+	minRowHeight := 7.5
+	tableHeaderHeight := 8.0
+	tableStartY := pdf.GetY()
 
-	// Table headers
-	pdf.CellFormat(12, 7, "#", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(80, 7, "Description", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(20, 7, "Qty", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(30, 7, "Unit Price", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(32, 7, "Amount", "1", 0, "C", true, 0, "")
-	pdf.Ln(7)
+	drawTableHeader := func() {
+		pdf.SetFont("Helvetica", "B", 9)
+		pdf.SetTextColor(255, 255, 255)
+		pdf.SetFillColor(29, 29, 31)
+		pdf.CellFormat(tableColWidths[0], tableHeaderHeight, "#", "1", 0, "C", true, 0, "")
+		pdf.CellFormat(tableColWidths[1], tableHeaderHeight, "Description", "1", 0, "C", true, 0, "")
+		pdf.CellFormat(tableColWidths[2], tableHeaderHeight, "Qty", "1", 0, "C", true, 0, "")
+		pdf.CellFormat(tableColWidths[3], tableHeaderHeight, "Unit Price", "1", 0, "C", true, 0, "")
+		pdf.CellFormat(tableColWidths[4], tableHeaderHeight, "Amount", "1", 0, "C", true, 0, "")
+		pdf.Ln(tableHeaderHeight)
+		pdf.SetFont("Helvetica", "", 8.5)
+		pdf.SetTextColor(29, 29, 31)
+	}
+
+	drawTableHeader()
 
 	// Table rows
-	pdf.SetFont("Helvetica", "", 8)
-	pdf.SetTextColor(29, 29, 31)
-
 	// Determine if we're showing foreign currency
 	showForeignCurrency := (po.Currency != "BHD")
 	currencyLabel := po.Currency
@@ -290,23 +302,33 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 
 		subtotal += lineTotal
 
-		// Calculate row height based on description length
-		rowHeight := 6.0
-		if len(description) > 60 {
-			rowHeight = 10.0
+		descriptionLines := pdf.SplitLines([]byte(description), tableColWidths[1]-3)
+		lineCount := len(descriptionLines)
+		if lineCount == 0 {
+			lineCount = 1
+		}
+		rowHeight := float64(lineCount)*tableLineHeight + 1.8
+		if rowHeight < minRowHeight {
+			rowHeight = minRowHeight
 		}
 
-		pdf.CellFormat(12, rowHeight, fmt.Sprintf("%d", lineNum), "1", 0, "C", false, 0, "")
+		if pdf.GetY()+rowHeight > 235 {
+			pdf.AddPage()
+			pdf.SetY(tableStartY)
+			drawTableHeader()
+		}
 
-		// Description cell (multiline if needed)
-		x := pdf.GetX()
-		y := pdf.GetY()
-		pdf.MultiCell(80, 4, description, "1", "L", false)
-		pdf.SetXY(x+80, y)
+		rowX := pdf.GetX()
+		rowY := pdf.GetY()
+		pdf.CellFormat(tableColWidths[0], rowHeight, fmt.Sprintf("%d", lineNum), "1", 0, "C", false, 0, "")
 
-		pdf.CellFormat(20, rowHeight, fmt.Sprintf("%.0f", item.Quantity), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(30, rowHeight, fmt.Sprintf("%.3f %s", unitPrice, currencyLabel), "1", 0, "R", false, 0, "")
-		pdf.CellFormat(32, rowHeight, fmt.Sprintf("%.3f", lineTotal), "1", 0, "R", false, 0, "")
+		pdf.SetXY(rowX+tableColWidths[0], rowY)
+		pdf.MultiCell(tableColWidths[1], tableLineHeight, description, "1", "L", false)
+
+		pdf.SetXY(rowX+tableColWidths[0]+tableColWidths[1], rowY)
+		pdf.CellFormat(tableColWidths[2], rowHeight, fmt.Sprintf("%.0f", item.Quantity), "1", 0, "C", false, 0, "")
+		pdf.CellFormat(tableColWidths[3], rowHeight, fmt.Sprintf("%.3f %s", unitPrice, currencyLabel), "1", 0, "R", false, 0, "")
+		pdf.CellFormat(tableColWidths[4], rowHeight, fmt.Sprintf("%.3f", lineTotal), "1", 0, "R", false, 0, "")
 		pdf.Ln(rowHeight)
 	}
 
@@ -401,12 +423,27 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 		"Dispute Resolution: Any disputes to be resolved per Bahrain Commercial Law",
 	}
 
-	for _, term := range terms {
-		pdf.SetX(20)
-		pdf.Cell(5, 5, "•")
-		pdf.SetX(26)
-		pdf.MultiCell(0, 5, sanitizeForPDF(term), "", "", false)
-		pdf.Ln(2)
+	termNumberWidth := 8.0
+	termTextWidth := 160.0
+	termLineHeight := 5.5
+	for i, term := range terms {
+		if pdf.GetY()+termLineHeight > 238 {
+			pdf.AddPage()
+			pdf.SetY(52)
+			pdf.SetFont("Helvetica", "B", 14)
+			pdf.SetTextColor(0, 120, 80)
+			pdf.Cell(0, 8, "Terms and Conditions (Continued)")
+			pdf.Ln(10)
+			pdf.SetFont("Helvetica", "", 9)
+			pdf.SetTextColor(40, 40, 40)
+		}
+
+		termY := pdf.GetY()
+		pdf.SetXY(20, termY)
+		pdf.CellFormat(termNumberWidth, termLineHeight, fmt.Sprintf("%d.", i+1), "", 0, "R", false, 0, "")
+		pdf.SetXY(20+termNumberWidth+2, termY)
+		pdf.MultiCell(termTextWidth, termLineHeight, sanitizeForPDF(term), "", "L", false)
+		pdf.Ln(1.5)
 	}
 
 	pdf.Ln(6)
@@ -533,10 +570,6 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	// ========================================================================
 	// SAVE PDF
 	// ========================================================================
-	paths := a.getAppPaths()
-	exportDir := filepath.Join(paths.ProjectRoot, "exports", "purchase_orders")
-	os.MkdirAll(exportDir, 0755)
-
 	// Combined filename: {SystemNumber}_{UserReference}.pdf
 	cleanPONum := sanitizeFilename(po.PONumber)
 	userRef := ""
@@ -549,17 +582,11 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	}
 	filename = fmt.Sprintf("PO_%s.pdf", filename)
 
-	// Save to structured folder: <exports>/PH Trading/Suppliers/<SupplierName>/PO/
-	supplierDir := ""
-	if po.SupplierName != "" {
-		safeSupp := sanitizeFilename(po.SupplierName)
-		supplierDir = filepath.Join(exportDir, "..", "PH Trading", "Suppliers", safeSupp, "PO")
-		os.MkdirAll(supplierDir, 0755)
+	docYear := po.PODate.Year()
+	if docYear <= 0 {
+		docYear = time.Now().Year()
 	}
-	saveDir := exportDir
-	if supplierDir != "" {
-		saveDir = supplierDir
-	}
+	saveDir := a.getExportDir("supplier", po.SupplierName, "Orders", docYear)
 	filePath := filepath.Join(saveDir, filename)
 
 	if err := pdf.OutputFileAndClose(filePath); err != nil {

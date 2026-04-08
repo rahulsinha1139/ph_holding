@@ -33,9 +33,10 @@
   --breathing-freq: 0.500Hz;
 
   /* Typography */
-  --font-serif: 'Crimson Text', Georgia, serif;
-  --font-display: 'Crimson Text', Georgia, serif;
-  --font-mono: 'Ubuntu Mono', 'Courier New', monospace;
+  --font-serif: 'Rubik', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Space Grotesk', 'Rubik', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'Space Grotesk', 'Rubik', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-prose: 'Rubik', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
 
   /* Spacing (Fibonacci/φ-based) */
   --space-0: 8px;

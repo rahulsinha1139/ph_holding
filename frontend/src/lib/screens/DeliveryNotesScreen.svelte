@@ -946,7 +946,7 @@
     title={`Delivery Note ${selectedNote.dn_number}`}
     open={showDetailModal}
     on:close={() => showDetailModal = false}
-    size="lg"
+    size="md"
   >
     <div class="note-detail">
       <!-- Header Info -->
@@ -1020,28 +1020,30 @@
       {#if noteItems.length > 0}
         <div class="items-section">
           <h4>Delivery Items</h4>
-          <table class="items-table">
-            <thead>
-              <tr>
-                <th>Product Code</th>
-                <th>Description</th>
-                <th class="number-col">Ordered</th>
-                <th class="number-col">Delivered</th>
-                <th class="number-col">Remaining</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each noteItems as item}
+          <div class="items-table-wrap">
+            <table class="items-table">
+              <thead>
                 <tr>
-                  <td>{item.product_code}</td>
-                  <td>{item.description}</td>
-                  <td class="number-col">{item.quantity_ordered}</td>
-                  <td class="number-col">{item.quantity_delivered}</td>
-                  <td class="number-col">{item.quantity_remaining}</td>
+                  <th>Product Code</th>
+                  <th>Description</th>
+                  <th class="number-col">Ordered</th>
+                  <th class="number-col">Delivered</th>
+                  <th class="number-col">Remaining</th>
                 </tr>
-              {/each}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {#each noteItems as item}
+                  <tr>
+                    <td>{item.product_code}</td>
+                    <td>{item.description}</td>
+                    <td class="number-col">{item.quantity_ordered}</td>
+                    <td class="number-col">{item.quantity_delivered}</td>
+                    <td class="number-col">{item.quantity_remaining}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
         </div>
       {/if}
 
@@ -1325,7 +1327,7 @@
 
   .detail-header {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px;
     padding-bottom: 16px;
     border-bottom: 1px solid var(--border);
@@ -1355,7 +1357,7 @@
 
   .info-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
     padding: 12px;
     background: var(--bg-subtle);
@@ -1402,10 +1404,17 @@
     color: var(--text-primary);
   }
 
+  .items-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+
   .items-table {
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
+    min-width: 620px;
   }
 
   .items-table thead {
@@ -1440,6 +1449,7 @@
   .quick-actions {
     display: flex;
     gap: 8px;
+    flex-wrap: wrap;
     padding-top: 16px;
     border-top: 1px solid var(--border);
   }
@@ -1526,6 +1536,13 @@
     color: var(--text-secondary, #6e6e73);
     font-size: 13px;
     font-style: italic;
+  }
+
+  @media (max-width: 900px) {
+    .detail-header,
+    .info-grid {
+      grid-template-columns: 1fr;
+    }
   }
 
   /* Phase 23: Serial picker in DN create modal */

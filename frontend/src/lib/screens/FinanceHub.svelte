@@ -1,10 +1,12 @@
 <script>
+    import { onDestroy, onMount } from "svelte";
     import { fade } from "svelte/transition";
     import FinancialDashboard from "./FinancialDashboard.svelte";
     import InvoicesScreen from "./InvoicesScreen.svelte";
-    import SupplierInvoicesScreen from "./SupplierInvoicesScreen.svelte";
     import PaymentsScreen from "./PaymentsScreen.svelte";
     import SupplierPaymentsScreen from "./SupplierPaymentsScreen.svelte";
+    import ExpensesScreen from "./ExpensesScreen.svelte";
+    import PayrollScreen from "./PayrollScreen.svelte";
 
     // Bank Reconciliation Screens (Feature B)
     import BankReconciliationScreen from "./BankReconciliationScreen.svelte";
@@ -25,9 +27,11 @@
     const tabs = [
         { id: "dashboard", label: "Dashboard" },
         { id: "invoices", label: "Customer Invoices" },
-        { id: "supplier_invoices", label: "Supplier Invoices" },
         { id: "payments", label: "Payments Received" },
         { id: "payments_made", label: "Payments Made" },
+        { id: "expenses", label: "Expenses" },
+        { id: "expense_approvals", label: "Approvals" },
+        { id: "payroll_runs", label: "Payroll" },
         { id: "bank_recon", label: "Bank Recon" },
         // Developing later:
         // { id: "cheques", label: "Cheques" },
@@ -35,6 +39,28 @@
         // { id: "fx", label: "FX" },
         // { id: "audit", label: "Audit Trail" },
     ];
+
+    function handleNavigate(event) {
+        const nextTab = event?.detail?.tab;
+        if (nextTab && tabs.some((tab) => tab.id === nextTab)) {
+            activeTab = nextTab;
+        }
+    }
+
+    function handleFinanceNavigate(event) {
+        const nextTab = event?.detail?.tab;
+        if (nextTab && tabs.some((tab) => tab.id === nextTab)) {
+            activeTab = nextTab;
+        }
+    }
+
+    onMount(() => {
+        window.addEventListener("finance:navigate", handleFinanceNavigate);
+    });
+
+    onDestroy(() => {
+        window.removeEventListener("finance:navigate", handleFinanceNavigate);
+    });
 </script>
 
 <ErrorBoundary name="Finance Hub">
@@ -80,13 +106,17 @@
             {:else if activeTab === "dashboard"}
                 <FinancialDashboard embedded={true} />
             {:else if activeTab === "invoices"}
-                <InvoicesScreen embedded={true} />
-            {:else if activeTab === "supplier_invoices"}
-                <SupplierInvoicesScreen embedded={true} />
+                <InvoicesScreen embedded={true} on:navigate={handleNavigate} />
             {:else if activeTab === "payments"}
-                <PaymentsScreen embedded={true} />
+                <PaymentsScreen embedded={true} on:navigate={handleNavigate} />
             {:else if activeTab === "payments_made"}
-                <SupplierPaymentsScreen embedded={true} />
+                <SupplierPaymentsScreen embedded={true} on:navigate={handleNavigate} />
+            {:else if activeTab === "expenses"}
+                <ExpensesScreen embedded={true} mode="workspace" />
+            {:else if activeTab === "expense_approvals"}
+                <ExpensesScreen embedded={true} mode="approvals" />
+            {:else if activeTab === "payroll_runs"}
+                <PayrollScreen embedded={true} mode="workspace" />
             {:else if activeTab === "bank_recon"}
                 <BankReconciliationScreen embedded={true} />
             <!-- Developing later:
@@ -107,7 +137,8 @@
 <style>
     .hub {
         min-height: 100vh;
-        background: #fafafa;
+        background: var(--bg-base);
+        font-family: var(--font-body);
     }
 
     .header {
@@ -123,9 +154,9 @@
     }
 
     .header h1 {
-        font-family: "Arvo", "Georgia", serif;
+        font-family: var(--font-display);
         font-size: 24px;
-        font-weight: 400;
+        font-weight: 500;
         color: #1d1d1f;
         margin: 0;
         letter-spacing: -0.02em;
@@ -145,7 +176,7 @@
         background: transparent;
         border: none;
         border-right: 1px solid #e5e5e5;
-        font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-family: var(--font-body);
         font-size: 13px;
         font-weight: 500;
         color: #6e6e73;
@@ -177,11 +208,7 @@
         background: transparent;
         border: none;
         border-bottom: 2px solid transparent;
-        font-family:
-            "DM Sans",
-            -apple-system,
-            BlinkMacSystemFont,
-            sans-serif;
+        font-family: var(--font-body);
         font-size: 14px;
         font-weight: 500;
         color: #6e6e73;
@@ -211,7 +238,7 @@
     }
 
     .placeholder h2 {
-        font-family: "DM Sans", sans-serif;
+        font-family: var(--font-display);
         font-size: 18px;
         font-weight: 500;
         margin: 0 0 8px 0;

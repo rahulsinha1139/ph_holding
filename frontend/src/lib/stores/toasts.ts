@@ -1,7 +1,3 @@
-// ============================================================
-// WABI-SABI TOAST STORE - Imperfect Notifications with Grace
-// ============================================================
-
 import { writable } from 'svelte/store';
 
 export type ToastType = 'success' | 'warning' | 'danger' | 'info';
@@ -14,15 +10,12 @@ export interface Toast {
   showBrush: boolean;
 }
 
-// Generate unique ID with wabi-sabi imperfection
 function generateId(): string {
   return `toast-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// Create the writable store
 const { subscribe, update } = writable<Toast[]>([]);
 
-// Add a toast with full options
 function add(options: Partial<Toast> & { message: string }): string {
   const newToast: Toast = {
     id: generateId(),
@@ -32,27 +25,18 @@ function add(options: Partial<Toast> & { message: string }): string {
     showBrush: options.showBrush ?? true,
   };
 
-  console.log('Toast added:', newToast.message, newToast.type, newToast);
-  console.trace('Toast add called from:');
-  update(toasts => {
-    const newArray = [...toasts, newToast];
-    console.log('Toast array updated, new length:', newArray.length);
-    return newArray;
-  });
+  update((toasts) => [...toasts, newToast]);
   return newToast.id;
 }
 
-// Remove a toast by ID
 function dismiss(id: string): void {
   update(toasts => toasts.filter(t => t.id !== id));
 }
 
-// Clear all toasts
 function clear(): void {
   update(() => []);
 }
 
-// Singleton store with methods
 export const toasts = {
   subscribe,
   add,

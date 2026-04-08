@@ -69,8 +69,9 @@ func (a *App) ImportBankStatementPDF(filePath string, bankAccountID string) (*Ba
 		return nil, fmt.Errorf("bank account not found: %w", err)
 	}
 
-	// Step 1: OCR the PDF
-	ocrResult, err := a.QuickCaptureDocument(filePath)
+	// Step 1: OCR the PDF. Use the direct OCR pipeline so we always receive the
+	// extracted text payload instead of the lightweight quick-capture summary map.
+	ocrResult, err := a.ProcessDocumentWithOCR(filePath, "bank_statement")
 	if err != nil {
 		return nil, fmt.Errorf("OCR failed: %w", err)
 	}
@@ -79,30 +80,18 @@ func (a *App) ImportBankStatementPDF(filePath string, bankAccountID string) (*Ba
 		return nil, fmt.Errorf("OCR returned empty result")
 	}
 
-	// Extract text from OCR result (map[string]interface{})
-	extractedText := ""
-	if text, ok := ocrResult["extracted_text"].(string); ok {
-		extractedText = text
-	} else if text, ok := ocrResult["text"].(string); ok {
-		extractedText = text
-	}
+	extractedText := strings.TrimSpace(ocrResult.Text)
 
 	if extractedText == "" {
 		return nil, fmt.Errorf("OCR returned empty text")
 	}
 
-	// Step 2: Parse the bank statement format
-	var parsed *parsedStatement
-
-	// Try NBB format first (most common for PH Trading)
-	parsed, err = parseNBBFormat(extractedText)
-	if err != nil || parsed == nil {
-		// Fallback to generic format
-		parsed, err = parseGenericBankFormat(extractedText)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse statement: %w", err)
-		}
+	// Step 2: Parse and validate the bank statement.
+	parseOutcome, err := a.parseImportedPDFBankStatement(extractedText)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse statement: %w", err)
 	}
+	parsed := parseOutcome.Statement
 
 	// Step 3: Create the BankStatement
 	statementNumber := fmt.Sprintf("%s-%s", bankAccount.AccountNumber, parsed.PeriodEnd.Format("200601"))
@@ -118,6 +107,8 @@ func (a *App) ImportBankStatementPDF(filePath string, bankAccountID string) (*Ba
 		ClosingBalance:  parsed.ClosingBalance,
 		Status:          "Imported",
 		ImportedFrom:    filePath,
+		ImportMethod:    parseOutcome.ImportMethod,
+		OCRConfidence:   parseOutcome.OCRConfidence,
 		TotalDebits:     parsed.TotalDebits,
 		TotalCredits:    parsed.TotalCredits,
 		DebitCount:      parsed.DebitCount,

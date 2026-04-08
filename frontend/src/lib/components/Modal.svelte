@@ -138,8 +138,11 @@
 
     .modal-header h2 {
         margin: 0;
-        font-size: 1.125rem;
-        font-weight: 600;
+        font-family: var(--font-display);
+        font-size: var(--modal-title-size, 22px);
+        font-weight: var(--modal-title-weight, 500);
+        line-height: 1.2;
+        letter-spacing: -0.02em;
         color: var(--text-primary, #1d1d1f);
     }
 
@@ -168,6 +171,9 @@
 
     .modal-body {
         padding: 1.5rem;
+        font-family: var(--font-body);
+        font-size: var(--modal-body-size, 14px);
+        line-height: var(--modal-line-height, 1.6);
     }
 
     .modal-footer {

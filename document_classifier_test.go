@@ -289,6 +289,97 @@ func TestExtractStage(t *testing.T) {
 	}
 }
 
+func TestDocumentClassifierBusinessTypes(t *testing.T) {
+	classifier := NewDocumentClassifier()
+
+	tests := []struct {
+		name     string
+		filename string
+		text     string
+		expected string
+	}{
+		{
+			name:     "Bank Statement",
+			filename: "March_2026_Bank_Statement.pdf",
+			text:     "BANK STATEMENT\nAccount Number: 123456\nOpening Balance 1,000.000\nDebit Credit Balance\nClosing Balance 950.000",
+			expected: "BankStatement",
+		},
+		{
+			name:     "Supplier Invoice",
+			filename: "servomex_invoice_2811.pdf",
+			text:     "TAX INVOICE\nVendor: Servomex\nBill To: PH Trading WLL\nInvoice Number INV-2811\nPayment Terms Net 30",
+			expected: "SupplierInvoice",
+		},
+		{
+			name:     "Delivery Note",
+			filename: "DN_12345.pdf",
+			text:     "Delivery Note\nDN Number: 12345\nDispatch note for supplied items",
+			expected: "DeliveryNote",
+		},
+		{
+			name:     "Purchase Order",
+			filename: "PO_81_1234.pdf",
+			text:     "Purchase Order\nPO Number: 81-1234\nDelivery Date: 31/03/2026",
+			expected: "PurchaseOrder",
+		},
+		{
+			name:     "Report",
+			filename: "Q1_2026_management_report.pdf",
+			text:     "Management Report\nExecutive Summary\nKPI analysis report for Q1 2026",
+			expected: "Report",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classifier.Classify(tt.text, tt.filename)
+			if result == nil {
+				t.Fatalf("expected classification result for %s", tt.name)
+			}
+			if result.DocumentType != tt.expected {
+				t.Fatalf("expected %s, got %s (%s)", tt.expected, result.DocumentType, result.Explanation)
+			}
+		})
+	}
+}
+
+func TestDetectDocumentTypeFromText(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		expected string
+	}{
+		{
+			name:     "Bank Statement Text",
+			text:     "Account Statement\nOpening Balance 500.000\nDebit Credit Balance\nClosing Balance 750.000",
+			expected: "bank_statement",
+		},
+		{
+			name:     "Supplier Invoice Text",
+			text:     "Invoice\nVendor invoice\nBill To: PH Trading WLL\nInvoice Number 12345",
+			expected: "supplier_invoice",
+		},
+		{
+			name:     "Delivery Note Text",
+			text:     "Delivery Note\nPacking List\nConsignment Note",
+			expected: "delivery_note",
+		},
+		{
+			name:     "Report Text",
+			text:     "Management Report\nExecutive Summary\nPerformance report for March 2026",
+			expected: "report",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := detectDocumentTypeFromText(tt.text); got != tt.expected {
+				t.Fatalf("expected %s, got %s", tt.expected, got)
+			}
+		})
+	}
+}
+
 // mockFileInfo implements os.FileInfo for testing
 type mockFileInfo struct {
 	name    string

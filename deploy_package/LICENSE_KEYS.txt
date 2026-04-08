@@ -1,6 +1,6 @@
 ===============================================================================
                     ASYMMFLOW ERP - LICENSE KEYS
-                    Generated: 2026-02-19
+                    Generated: 2026-04-08
 ===============================================================================
 
 INSTRUCTIONS:
@@ -13,30 +13,30 @@ INSTRUCTIONS:
 ADMIN (Full Access - Dashboard, Finance, Operations, CRM, Intelligence)
 -------------------------------------------------------------------------------
 
-  Abhie (SPOC)     PH-ADM-ABH1E0
-  Stanley          PH-ADM-STNLY1
-  Daniel           PH-ADM-DAN1EL
-  Rishu            PH-ADM-37528F
+  Abhie            PH-ADM-4A0185
+  Daniel           PH-ADM-CD4680
+  Stanley          PH-ADM-E2E4C2
 
 -------------------------------------------------------------------------------
 MANAGER (Dashboard, Finance, Operations, CRM, Intelligence)
 -------------------------------------------------------------------------------
 
-  Sundar           PH-MGR-SUNDR1
+  Sundar           PH-MGR-CE8180
 
 -------------------------------------------------------------------------------
 SALES (Dashboard, Opportunities, CRM, Intelligence)
 -------------------------------------------------------------------------------
 
-  Peri             PH-SLS-PER1S0
-  Ebin             PH-SLS-EB1N01
-  Support          PH-SLS-SUPRT1
+  Ebin             PH-SLS-62C4D4
+  Peri             PH-SLS-9A70F9
+  Sales Test       PH-SLS-B4AA10
+  Support          PH-SLS-3C37C1
 
 -------------------------------------------------------------------------------
 OPERATIONS (Dashboard, Operations Hub, Intelligence)
 -------------------------------------------------------------------------------
 
-  Clinton          PH-OPS-CLNTN1
+  Clinton          PH-OPS-206C69
 
 ===============================================================================
                     ROLE ACCESS MATRIX

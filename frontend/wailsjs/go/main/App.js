@@ -14,6 +14,14 @@ export function ActivateLicense(arg1) {
   return window['go']['main']['App']['ActivateLicense'](arg1);
 }
 
+export function AddCollaborativeProjectMember(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AddCollaborativeProjectMember'](arg1, arg2, arg3);
+}
+
+export function AddCollaborativeTaskComment(arg1, arg2) {
+  return window['go']['main']['App']['AddCollaborativeTaskComment'](arg1, arg2);
+}
+
 export function AddCustomerContact(arg1) {
   return window['go']['main']['App']['AddCustomerContact'](arg1);
 }
@@ -32,6 +40,10 @@ export function AddOfferFollowUp(arg1, arg2, arg3) {
 
 export function AddOfferNote(arg1, arg2) {
   return window['go']['main']['App']['AddOfferNote'](arg1, arg2);
+}
+
+export function AddOpportunityComment(arg1, arg2) {
+  return window['go']['main']['App']['AddOpportunityComment'](arg1, arg2);
 }
 
 export function AddRFQComment(arg1, arg2, arg3) {
@@ -74,6 +86,14 @@ export function ApproveDevice(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['ApproveDevice'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function ApproveExpenseEntry(arg1, arg2) {
+  return window['go']['main']['App']['ApproveExpenseEntry'](arg1, arg2);
+}
+
+export function ApprovePayrollRun(arg1, arg2) {
+  return window['go']['main']['App']['ApprovePayrollRun'](arg1, arg2);
+}
+
 export function ApprovePurchaseOrder(arg1, arg2) {
   return window['go']['main']['App']['ApprovePurchaseOrder'](arg1, arg2);
 }
@@ -110,12 +130,24 @@ export function AutoMatchDepositsToStatement(arg1, arg2) {
   return window['go']['main']['App']['AutoMatchDepositsToStatement'](arg1, arg2);
 }
 
+export function BackfillBusinessCustomerIDs() {
+  return window['go']['main']['App']['BackfillBusinessCustomerIDs']();
+}
+
+export function BackfillInvoiceItemsFromOrders() {
+  return window['go']['main']['App']['BackfillInvoiceItemsFromOrders']();
+}
+
 export function BackfillOfferItemCostBreakdown() {
   return window['go']['main']['App']['BackfillOfferItemCostBreakdown']();
 }
 
 export function BackfillRFQDocumentTracking() {
   return window['go']['main']['App']['BackfillRFQDocumentTracking']();
+}
+
+export function BackfillWonOfferItemsFromOpportunityProductDetails() {
+  return window['go']['main']['App']['BackfillWonOfferItemsFromOpportunityProductDetails']();
 }
 
 export function BackupDatabase() {
@@ -216,6 +248,10 @@ export function CheckCompliance(arg1) {
 
 export function CheckDeviceStatus() {
   return window['go']['main']['App']['CheckDeviceStatus']();
+}
+
+export function CheckDuplicateOpportunity(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CheckDuplicateOpportunity'](arg1, arg2, arg3);
 }
 
 export function CheckDuplicateRFQ(arg1, arg2, arg3) {
@@ -334,6 +370,14 @@ export function CreateChequeRegister(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CreateChequeRegister'](arg1, arg2, arg3, arg4);
 }
 
+export function CreateCollaborativeProject(arg1) {
+  return window['go']['main']['App']['CreateCollaborativeProject'](arg1);
+}
+
+export function CreateCollaborativeTask(arg1) {
+  return window['go']['main']['App']['CreateCollaborativeTask'](arg1);
+}
+
 export function CreateConversation(arg1) {
   return window['go']['main']['App']['CreateConversation'](arg1);
 }
@@ -358,6 +402,10 @@ export function CreateCustomerFolder(arg1, arg2, arg3) {
   return window['go']['main']['App']['CreateCustomerFolder'](arg1, arg2, arg3);
 }
 
+export function CreateCustomerFromButler(arg1) {
+  return window['go']['main']['App']['CreateCustomerFromButler'](arg1);
+}
+
 export function CreateDNFromOrder(arg1, arg2) {
   return window['go']['main']['App']['CreateDNFromOrder'](arg1, arg2);
 }
@@ -376,6 +424,30 @@ export function CreateDeliveryNoteWithItems(arg1, arg2) {
 
 export function CreateDepositInTransit(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
   return window['go']['main']['App']['CreateDepositInTransit'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+}
+
+export function CreateEmployeeAccessLink(arg1) {
+  return window['go']['main']['App']['CreateEmployeeAccessLink'](arg1);
+}
+
+export function CreateEmployeeProfile(arg1) {
+  return window['go']['main']['App']['CreateEmployeeProfile'](arg1);
+}
+
+export function CreateExpenseCategory(arg1) {
+  return window['go']['main']['App']['CreateExpenseCategory'](arg1);
+}
+
+export function CreateExpenseEntry(arg1) {
+  return window['go']['main']['App']['CreateExpenseEntry'](arg1);
+}
+
+export function CreateExpenseFromBankCandidate(arg1, arg2) {
+  return window['go']['main']['App']['CreateExpenseFromBankCandidate'](arg1, arg2);
+}
+
+export function CreateExpenseVendor(arg1) {
+  return window['go']['main']['App']['CreateExpenseVendor'](arg1);
 }
 
 export function CreateFXRate(arg1, arg2, arg3, arg4, arg5) {
@@ -422,12 +494,20 @@ export function CreateOffer(arg1) {
   return window['go']['main']['App']['CreateOffer'](arg1);
 }
 
+export function CreateOfferDraftFromButler(arg1) {
+  return window['go']['main']['App']['CreateOfferDraftFromButler'](arg1);
+}
+
 export function CreateOrder(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['CreateOrder'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function CreatePOFromOrder(arg1, arg2, arg3) {
   return window['go']['main']['App']['CreatePOFromOrder'](arg1, arg2, arg3);
+}
+
+export function CreatePayrollPeriod(arg1) {
+  return window['go']['main']['App']['CreatePayrollPeriod'](arg1);
 }
 
 export function CreatePostSaleNote(arg1) {
@@ -448,6 +528,10 @@ export function CreateQuickCapture(arg1, arg2, arg3, arg4) {
 
 export function CreateRFQ(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CreateRFQ'](arg1, arg2, arg3, arg4);
+}
+
+export function CreateRecurringExpense(arg1) {
+  return window['go']['main']['App']['CreateRecurringExpense'](arg1);
 }
 
 export function CreateReportDraft(arg1, arg2, arg3) {
@@ -472,6 +556,10 @@ export function CreateSupplier(arg1) {
 
 export function CreateSupplierFolder(arg1, arg2, arg3) {
   return window['go']['main']['App']['CreateSupplierFolder'](arg1, arg2, arg3);
+}
+
+export function CreateSupplierFromButler(arg1) {
+  return window['go']['main']['App']['CreateSupplierFromButler'](arg1);
 }
 
 export function CreateSupplierInvoice(arg1) {
@@ -508,6 +596,10 @@ export function DeleteBankStatement(arg1) {
 
 export function DeleteBankStatementLine(arg1) {
   return window['go']['main']['App']['DeleteBankStatementLine'](arg1);
+}
+
+export function DeleteCollaborativeTask(arg1) {
+  return window['go']['main']['App']['DeleteCollaborativeTask'](arg1);
 }
 
 export function DeleteConversation(arg1) {
@@ -634,8 +726,24 @@ export function EnsureAssetsTable() {
   return window['go']['main']['App']['EnsureAssetsTable']();
 }
 
+export function EnsureCollaborativeFoundation() {
+  return window['go']['main']['App']['EnsureCollaborativeFoundation']();
+}
+
+export function EnsureExpenseFoundation() {
+  return window['go']['main']['App']['EnsureExpenseFoundation']();
+}
+
 export function EnsureLicenseTableExists() {
   return window['go']['main']['App']['EnsureLicenseTableExists']();
+}
+
+export function EnsurePayrollFoundation() {
+  return window['go']['main']['App']['EnsurePayrollFoundation']();
+}
+
+export function EnsurePhase7Rollout() {
+  return window['go']['main']['App']['EnsurePhase7Rollout']();
 }
 
 export function ExhaustChequeRegister(arg1) {
@@ -660,6 +768,14 @@ export function ExportEncryptionBackup() {
 
 export function ExportGraphJSON() {
   return window['go']['main']['App']['ExportGraphJSON']();
+}
+
+export function ExportPilotSignoffReport() {
+  return window['go']['main']['App']['ExportPilotSignoffReport']();
+}
+
+export function ExportPilotSupportBundle() {
+  return window['go']['main']['App']['ExportPilotSupportBundle']();
 }
 
 export function ExportReconciliationReport(arg1, arg2) {
@@ -758,6 +874,10 @@ export function GenerateDNNumber() {
   return window['go']['main']['App']['GenerateDNNumber']();
 }
 
+export function GenerateDailyBriefing(arg1) {
+  return window['go']['main']['App']['GenerateDailyBriefing'](arg1);
+}
+
 export function GenerateDashboardReport() {
   return window['go']['main']['App']['GenerateDashboardReport']();
 }
@@ -794,6 +914,10 @@ export function GeneratePONumber() {
   return window['go']['main']['App']['GeneratePONumber']();
 }
 
+export function GeneratePayrollRun(arg1) {
+  return window['go']['main']['App']['GeneratePayrollRun'](arg1);
+}
+
 export function GeneratePredictionHistoryReport(arg1) {
   return window['go']['main']['App']['GeneratePredictionHistoryReport'](arg1);
 }
@@ -804,6 +928,10 @@ export function GenerateProfitAndLoss(arg1) {
 
 export function GeneratePurchaseOrderPDF(arg1) {
   return window['go']['main']['App']['GeneratePurchaseOrderPDF'](arg1);
+}
+
+export function GenerateRecurringExpenses(arg1) {
+  return window['go']['main']['App']['GenerateRecurringExpenses'](arg1);
 }
 
 export function GenerateReportAsync(arg1, arg2, arg3, arg4) {
@@ -970,6 +1098,10 @@ export function GetBusinessVATRate() {
   return window['go']['main']['App']['GetBusinessVATRate']();
 }
 
+export function GetButlerDailyBriefing(arg1) {
+  return window['go']['main']['App']['GetButlerDailyBriefing'](arg1);
+}
+
 export function GetCRMCustomerDashboard() {
   return window['go']['main']['App']['GetCRMCustomerDashboard']();
 }
@@ -1030,6 +1162,10 @@ export function GetClassificationStats() {
   return window['go']['main']['App']['GetClassificationStats']();
 }
 
+export function GetCollaborativeTask(arg1) {
+  return window['go']['main']['App']['GetCollaborativeTask'](arg1);
+}
+
 export function GetCollectionPerformance() {
   return window['go']['main']['App']['GetCollectionPerformance']();
 }
@@ -1080,6 +1216,10 @@ export function GetCurrencyRateHistory(arg1) {
 
 export function GetCurrentDeviceInfo() {
   return window['go']['main']['App']['GetCurrentDeviceInfo']();
+}
+
+export function GetCurrentEmployeeContext() {
+  return window['go']['main']['App']['GetCurrentEmployeeContext']();
 }
 
 export function GetCurrentExchangeRate(arg1) {
@@ -1192,6 +1332,10 @@ export function GetDeliveryNotesByCustomer(arg1) {
 
 export function GetDeliveryNotesByOrder(arg1) {
   return window['go']['main']['App']['GetDeliveryNotesByOrder'](arg1);
+}
+
+export function GetDeploymentDataAudit() {
+  return window['go']['main']['App']['GetDeploymentDataAudit']();
 }
 
 export function GetDepositsInTransit(arg1) {
@@ -1430,6 +1574,10 @@ export function GetMarginAnalysisByProduct() {
   return window['go']['main']['App']['GetMarginAnalysisByProduct']();
 }
 
+export function GetMasterDataCleanupAudit() {
+  return window['go']['main']['App']['GetMasterDataCleanupAudit']();
+}
+
 export function GetMonthlyRevenueByCustomer() {
   return window['go']['main']['App']['GetMonthlyRevenueByCustomer']();
 }
@@ -1486,6 +1634,18 @@ export function GetOffers(arg1) {
   return window['go']['main']['App']['GetOffers'](arg1);
 }
 
+export function GetOffersWithNoItems() {
+  return window['go']['main']['App']['GetOffersWithNoItems']();
+}
+
+export function GetOpportunityComments(arg1) {
+  return window['go']['main']['App']['GetOpportunityComments'](arg1);
+}
+
+export function GetOpportunityLineItems(arg1) {
+  return window['go']['main']['App']['GetOpportunityLineItems'](arg1);
+}
+
 export function GetOrder(arg1) {
   return window['go']['main']['App']['GetOrder'](arg1);
 }
@@ -1504,6 +1664,10 @@ export function GetOrderFulfillmentStatus(arg1) {
 
 export function GetOrderWithItems(arg1) {
   return window['go']['main']['App']['GetOrderWithItems'](arg1);
+}
+
+export function GetOrdersWithNoItems() {
+  return window['go']['main']['App']['GetOrdersWithNoItems']();
 }
 
 export function GetOutstandingCheques(arg1) {
@@ -1550,12 +1714,28 @@ export function GetPaymentsByInvoice(arg1) {
   return window['go']['main']['App']['GetPaymentsByInvoice'](arg1);
 }
 
+export function GetPayrollRun(arg1) {
+  return window['go']['main']['App']['GetPayrollRun'](arg1);
+}
+
 export function GetPendingDeliveries() {
   return window['go']['main']['App']['GetPendingDeliveries']();
 }
 
 export function GetPendingFollowUps() {
   return window['go']['main']['App']['GetPendingFollowUps']();
+}
+
+export function GetPhase7RolloutStatus() {
+  return window['go']['main']['App']['GetPhase7RolloutStatus']();
+}
+
+export function GetPilotDeploymentChecklist() {
+  return window['go']['main']['App']['GetPilotDeploymentChecklist']();
+}
+
+export function GetPilotReadinessSummary() {
+  return window['go']['main']['App']['GetPilotReadinessSummary']();
 }
 
 export function GetPipelineOpportunities(arg1, arg2) {
@@ -1806,6 +1986,10 @@ export function GetUnpostedRevaluations() {
   return window['go']['main']['App']['GetUnpostedRevaluations']();
 }
 
+export function GetUnreadNotificationsCount() {
+  return window['go']['main']['App']['GetUnreadNotificationsCount']();
+}
+
 export function GetUser(arg1) {
   return window['go']['main']['App']['GetUser'](arg1);
 }
@@ -1946,6 +2130,46 @@ export function ListAssets() {
   return window['go']['main']['App']['ListAssets']();
 }
 
+export function ListBankExpenseCandidates(arg1) {
+  return window['go']['main']['App']['ListBankExpenseCandidates'](arg1);
+}
+
+export function ListCollaborativePendingOperations(arg1, arg2) {
+  return window['go']['main']['App']['ListCollaborativePendingOperations'](arg1, arg2);
+}
+
+export function ListCollaborativeProjectActivity(arg1) {
+  return window['go']['main']['App']['ListCollaborativeProjectActivity'](arg1);
+}
+
+export function ListCollaborativeProjectMembers(arg1) {
+  return window['go']['main']['App']['ListCollaborativeProjectMembers'](arg1);
+}
+
+export function ListCollaborativeProjectTasks(arg1, arg2) {
+  return window['go']['main']['App']['ListCollaborativeProjectTasks'](arg1, arg2);
+}
+
+export function ListCollaborativeProjects(arg1) {
+  return window['go']['main']['App']['ListCollaborativeProjects'](arg1);
+}
+
+export function ListCollaborativeTaskActivity(arg1) {
+  return window['go']['main']['App']['ListCollaborativeTaskActivity'](arg1);
+}
+
+export function ListCollaborativeTaskComments(arg1) {
+  return window['go']['main']['App']['ListCollaborativeTaskComments'](arg1);
+}
+
+export function ListCollaborativeTasksForEmployee(arg1, arg2) {
+  return window['go']['main']['App']['ListCollaborativeTasksForEmployee'](arg1, arg2);
+}
+
+export function ListCollaborativeTeamTasks(arg1) {
+  return window['go']['main']['App']['ListCollaborativeTeamTasks'](arg1);
+}
+
 export function ListConversations() {
   return window['go']['main']['App']['ListConversations']();
 }
@@ -1974,6 +2198,42 @@ export function ListCustomersPaginated(arg1, arg2) {
   return window['go']['main']['App']['ListCustomersPaginated'](arg1, arg2);
 }
 
+export function ListEmployeeAccessLinks() {
+  return window['go']['main']['App']['ListEmployeeAccessLinks']();
+}
+
+export function ListEmployeeCompensationProfiles(arg1) {
+  return window['go']['main']['App']['ListEmployeeCompensationProfiles'](arg1);
+}
+
+export function ListEmployeeContributionSummaries() {
+  return window['go']['main']['App']['ListEmployeeContributionSummaries']();
+}
+
+export function ListEmployeeProfiles(arg1) {
+  return window['go']['main']['App']['ListEmployeeProfiles'](arg1);
+}
+
+export function ListEmployeeProjectAssignments(arg1) {
+  return window['go']['main']['App']['ListEmployeeProjectAssignments'](arg1);
+}
+
+export function ListExpenseCategories(arg1) {
+  return window['go']['main']['App']['ListExpenseCategories'](arg1);
+}
+
+export function ListExpenseDashboardSummary() {
+  return window['go']['main']['App']['ListExpenseDashboardSummary']();
+}
+
+export function ListExpenseEntries(arg1, arg2) {
+  return window['go']['main']['App']['ListExpenseEntries'](arg1, arg2);
+}
+
+export function ListExpenseVendors(arg1) {
+  return window['go']['main']['App']['ListExpenseVendors'](arg1);
+}
+
 export function ListFollowUps(arg1) {
   return window['go']['main']['App']['ListFollowUps'](arg1);
 }
@@ -1994,6 +2254,14 @@ export function ListMSGFilesInDirectory(arg1) {
   return window['go']['main']['App']['ListMSGFilesInDirectory'](arg1);
 }
 
+export function ListMyCollaborativeTasks(arg1) {
+  return window['go']['main']['App']['ListMyCollaborativeTasks'](arg1);
+}
+
+export function ListNotificationFeed(arg1, arg2) {
+  return window['go']['main']['App']['ListNotificationFeed'](arg1, arg2);
+}
+
 export function ListOffersPaginated(arg1, arg2, arg3) {
   return window['go']['main']['App']['ListOffersPaginated'](arg1, arg2, arg3);
 }
@@ -2006,8 +2274,28 @@ export function ListOrdersPaginated(arg1, arg2, arg3) {
   return window['go']['main']['App']['ListOrdersPaginated'](arg1, arg2, arg3);
 }
 
+export function ListPayrollDashboardSummary() {
+  return window['go']['main']['App']['ListPayrollDashboardSummary']();
+}
+
+export function ListPayrollPayouts(arg1) {
+  return window['go']['main']['App']['ListPayrollPayouts'](arg1);
+}
+
+export function ListPayrollPeriods(arg1) {
+  return window['go']['main']['App']['ListPayrollPeriods'](arg1);
+}
+
+export function ListPayrollRuns(arg1) {
+  return window['go']['main']['App']['ListPayrollRuns'](arg1);
+}
+
 export function ListPendingDevices() {
   return window['go']['main']['App']['ListPendingDevices']();
+}
+
+export function ListPilotReadinessRows(arg1) {
+  return window['go']['main']['App']['ListPilotReadinessRows'](arg1);
 }
 
 export function ListProductsOptimized(arg1, arg2) {
@@ -2020,6 +2308,10 @@ export function ListProductsPaginated(arg1, arg2, arg3, arg4) {
 
 export function ListPurchaseOrdersPaginated(arg1, arg2, arg3) {
   return window['go']['main']['App']['ListPurchaseOrdersPaginated'](arg1, arg2, arg3);
+}
+
+export function ListRecurringExpenses(arg1) {
+  return window['go']['main']['App']['ListRecurringExpenses'](arg1);
 }
 
 export function ListRemoteReports() {
@@ -2048,6 +2340,10 @@ export function ListSuppliersOptimized(arg1) {
 
 export function ListSuppliersPaginated(arg1, arg2) {
   return window['go']['main']['App']['ListSuppliersPaginated'](arg1, arg2);
+}
+
+export function ListUnreconciledPayrollPayouts() {
+  return window['go']['main']['App']['ListUnreconciledPayrollPayouts']();
 }
 
 export function ListUsers() {
@@ -2102,8 +2398,16 @@ export function MarkCustomerInvoicePaid(arg1, arg2, arg3) {
   return window['go']['main']['App']['MarkCustomerInvoicePaid'](arg1, arg2, arg3);
 }
 
+export function MarkExpenseEntryPaid(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['MarkExpenseEntryPaid'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function MarkInboxDocumentProcessed(arg1, arg2) {
   return window['go']['main']['App']['MarkInboxDocumentProcessed'](arg1, arg2);
+}
+
+export function MarkNotificationAsRead(arg1) {
+  return window['go']['main']['App']['MarkNotificationAsRead'](arg1);
 }
 
 export function MarkOfferLost(arg1, arg2) {
@@ -2112,6 +2416,10 @@ export function MarkOfferLost(arg1, arg2) {
 
 export function MarkOfferWon(arg1, arg2) {
   return window['go']['main']['App']['MarkOfferWon'](arg1, arg2);
+}
+
+export function MarkPayrollRunPaid(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['MarkPayrollRunPaid'](arg1, arg2, arg3, arg4);
 }
 
 export function MarkSupplierInvoicePaid(arg1, arg2, arg3) {
@@ -2170,12 +2478,20 @@ export function PickFile(arg1) {
   return window['go']['main']['App']['PickFile'](arg1);
 }
 
+export function PostExpenseEntry(arg1) {
+  return window['go']['main']['App']['PostExpenseEntry'](arg1);
+}
+
 export function PostFXRevaluation(arg1, arg2) {
   return window['go']['main']['App']['PostFXRevaluation'](arg1, arg2);
 }
 
 export function PostJournalEntry(arg1) {
   return window['go']['main']['App']['PostJournalEntry'](arg1);
+}
+
+export function PostPayrollRun(arg1) {
+  return window['go']['main']['App']['PostPayrollRun'](arg1);
 }
 
 export function PredictPayment(arg1) {
@@ -2238,6 +2554,10 @@ export function PullChanges(arg1) {
   return window['go']['main']['App']['PullChanges'](arg1);
 }
 
+export function PurgeAllConversations() {
+  return window['go']['main']['App']['PurgeAllConversations']();
+}
+
 export function PushChanges() {
   return window['go']['main']['App']['PushChanges']();
 }
@@ -2256,6 +2576,18 @@ export function QuickMarkOrderDelivered(arg1) {
 
 export function RaiseGRNDiscrepancy(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['RaiseGRNDiscrepancy'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ReassignCollaborativeTask(arg1, arg2) {
+  return window['go']['main']['App']['ReassignCollaborativeTask'](arg1, arg2);
+}
+
+export function ReassignEmployeeLicenseAccess(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ReassignEmployeeLicenseAccess'](arg1, arg2, arg3);
+}
+
+export function ReassignEmployeeManager(arg1, arg2) {
+  return window['go']['main']['App']['ReassignEmployeeManager'](arg1, arg2);
 }
 
 export function RebuildEntityGraph() {
@@ -2310,6 +2642,10 @@ export function RefreshAuthWithSession(arg1) {
   return window['go']['main']['App']['RefreshAuthWithSession'](arg1);
 }
 
+export function RefreshCollaborativeWorkspace() {
+  return window['go']['main']['App']['RefreshCollaborativeWorkspace']();
+}
+
 export function RefreshToolsStatus() {
   return window['go']['main']['App']['RefreshToolsStatus']();
 }
@@ -2334,8 +2670,16 @@ export function RejectCostingSheet(arg1, arg2) {
   return window['go']['main']['App']['RejectCostingSheet'](arg1, arg2);
 }
 
+export function RejectExpenseEntry(arg1, arg2) {
+  return window['go']['main']['App']['RejectExpenseEntry'](arg1, arg2);
+}
+
 export function ReopenReconciliation(arg1, arg2, arg3) {
   return window['go']['main']['App']['ReopenReconciliation'](arg1, arg2, arg3);
+}
+
+export function RerunPhase7FollowUpBackfill() {
+  return window['go']['main']['App']['RerunPhase7FollowUpBackfill']();
 }
 
 export function ResetUserPassword(arg1, arg2) {
@@ -2352,6 +2696,14 @@ export function ResolveSupplierIssue(arg1, arg2) {
 
 export function RetrieveOriginalPDF(arg1) {
   return window['go']['main']['App']['RetrieveOriginalPDF'](arg1);
+}
+
+export function RetryCollaborativePendingOperation(arg1) {
+  return window['go']['main']['App']['RetryCollaborativePendingOperation'](arg1);
+}
+
+export function RetryCollaborativePendingOperations(arg1, arg2) {
+  return window['go']['main']['App']['RetryCollaborativePendingOperations'](arg1, arg2);
 }
 
 export function RetryFailedSyncs() {
@@ -2522,6 +2874,10 @@ export function SetActiveCostingRevision(arg1) {
   return window['go']['main']['App']['SetActiveCostingRevision'](arg1);
 }
 
+export function SetEmployeeEmploymentState(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetEmployeeEmploymentState'](arg1, arg2, arg3);
+}
+
 export function SetExchangeRate(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetExchangeRate'](arg1, arg2, arg3, arg4);
 }
@@ -2550,6 +2906,10 @@ export function StartBackgroundDBSync() {
   return window['go']['main']['App']['StartBackgroundDBSync']();
 }
 
+export function StartCollaborativeSyncLoop(arg1) {
+  return window['go']['main']['App']['StartCollaborativeSyncLoop'](arg1);
+}
+
 export function StartFileWatcher() {
   return window['go']['main']['App']['StartFileWatcher']();
 }
@@ -2566,6 +2926,10 @@ export function StopBackgroundDBSync() {
   return window['go']['main']['App']['StopBackgroundDBSync']();
 }
 
+export function StopCollaborativeSyncLoop() {
+  return window['go']['main']['App']['StopCollaborativeSyncLoop']();
+}
+
 export function StopFileWatcher() {
   return window['go']['main']['App']['StopFileWatcher']();
 }
@@ -2576,6 +2940,10 @@ export function StopPeriodicSync() {
 
 export function StoreCustomerGraph(arg1, arg2, arg3) {
   return window['go']['main']['App']['StoreCustomerGraph'](arg1, arg2, arg3);
+}
+
+export function SubmitExpenseEntry(arg1) {
+  return window['go']['main']['App']['SubmitExpenseEntry'](arg1);
 }
 
 export function SyncNowWithProgress() {
@@ -2604,6 +2972,10 @@ export function TrackLatePaymentHistory(arg1) {
 
 export function TriggerBackup() {
   return window['go']['main']['App']['TriggerBackup']();
+}
+
+export function TriggerCollaborativeSyncNow() {
+  return window['go']['main']['App']['TriggerCollaborativeSyncNow']();
 }
 
 export function TriggerManualSync() {
@@ -2642,6 +3014,18 @@ export function UpdateBookBankReconciliation(arg1, arg2, arg3, arg4, arg5, arg6,
   return window['go']['main']['App']['UpdateBookBankReconciliation'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
+export function UpdateCollaborativeTask(arg1) {
+  return window['go']['main']['App']['UpdateCollaborativeTask'](arg1);
+}
+
+export function UpdateCollaborativeTaskDueDate(arg1, arg2) {
+  return window['go']['main']['App']['UpdateCollaborativeTaskDueDate'](arg1, arg2);
+}
+
+export function UpdateCollaborativeTaskStatus(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpdateCollaborativeTaskStatus'](arg1, arg2, arg3);
+}
+
 export function UpdateCostingSheet(arg1, arg2) {
   return window['go']['main']['App']['UpdateCostingSheet'](arg1, arg2);
 }
@@ -2670,6 +3054,10 @@ export function UpdateDeliveryNote(arg1) {
   return window['go']['main']['App']['UpdateDeliveryNote'](arg1);
 }
 
+export function UpdateEmployeeProfile(arg1) {
+  return window['go']['main']['App']['UpdateEmployeeProfile'](arg1);
+}
+
 export function UpdateFolderPaths(arg1) {
   return window['go']['main']['App']['UpdateFolderPaths'](arg1);
 }
@@ -2690,12 +3078,24 @@ export function UpdateInventoryItem(arg1, arg2) {
   return window['go']['main']['App']['UpdateInventoryItem'](arg1, arg2);
 }
 
+export function UpdateLicenseDisplayName(arg1, arg2) {
+  return window['go']['main']['App']['UpdateLicenseDisplayName'](arg1, arg2);
+}
+
 export function UpdateOfferFull(arg1, arg2) {
   return window['go']['main']['App']['UpdateOfferFull'](arg1, arg2);
 }
 
 export function UpdateOfferStatus(arg1, arg2) {
   return window['go']['main']['App']['UpdateOfferStatus'](arg1, arg2);
+}
+
+export function UpdateOpportunityDetails(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpdateOpportunityDetails'](arg1, arg2, arg3);
+}
+
+export function UpdateOpportunityStage(arg1, arg2) {
+  return window['go']['main']['App']['UpdateOpportunityStage'](arg1, arg2);
 }
 
 export function UpdateOrder(arg1, arg2) {
@@ -2722,6 +3122,10 @@ export function UpdatePayment(arg1, arg2) {
   return window['go']['main']['App']['UpdatePayment'](arg1, arg2);
 }
 
+export function UpdatePilotDeploymentChecklistItem(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpdatePilotDeploymentChecklistItem'](arg1, arg2, arg3);
+}
+
 export function UpdatePostSaleNote(arg1) {
   return window['go']['main']['App']['UpdatePostSaleNote'](arg1);
 }
@@ -2736,6 +3140,10 @@ export function UpdateQuickCapture(arg1, arg2, arg3, arg4, arg5, arg6) {
 
 export function UpdateRFQ(arg1, arg2) {
   return window['go']['main']['App']['UpdateRFQ'](arg1, arg2);
+}
+
+export function UpdateRFQNotes(arg1, arg2) {
+  return window['go']['main']['App']['UpdateRFQNotes'](arg1, arg2);
 }
 
 export function UpdateRFQStage(arg1, arg2) {
@@ -2774,6 +3182,10 @@ export function UpdateSupplierInvoice(arg1) {
   return window['go']['main']['App']['UpdateSupplierInvoice'](arg1);
 }
 
+export function UpdateSupplierInvoiceWithPayment(arg1, arg2) {
+  return window['go']['main']['App']['UpdateSupplierInvoiceWithPayment'](arg1, arg2);
+}
+
 export function UpdateSupplierPayment(arg1, arg2) {
   return window['go']['main']['App']['UpdateSupplierPayment'](arg1, arg2);
 }
@@ -2788,6 +3200,10 @@ export function UploadAsset(arg1, arg2, arg3) {
 
 export function UploadReportToStorage(arg1) {
   return window['go']['main']['App']['UploadReportToStorage'](arg1);
+}
+
+export function UpsertEmployeeCompensationProfile(arg1) {
+  return window['go']['main']['App']['UpsertEmployeeCompensationProfile'](arg1);
 }
 
 export function ValidateCSRFToken(arg1) {
@@ -2824,4 +3240,8 @@ export function ValidateStatementContinuity(arg1, arg2) {
 
 export function WatchInboxForTestFile(arg1) {
   return window['go']['main']['App']['WatchInboxForTestFile'](arg1);
+}
+
+export function WriteMasterDataCleanupReport(arg1) {
+  return window['go']['main']['App']['WriteMasterDataCleanupReport'](arg1);
 }

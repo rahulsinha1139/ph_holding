@@ -10,6 +10,141 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+func isMalformedDraftPO(po PurchaseOrder) bool {
+	return po.Status == "Draft" &&
+		strings.TrimSpace(po.SupplierID) == "" &&
+		strings.TrimSpace(po.SupplierName) == "" &&
+		len(po.Items) == 0
+}
+
+func filterMalformedDraftPOs(pos []PurchaseOrder) []PurchaseOrder {
+	filtered := make([]PurchaseOrder, 0, len(pos))
+	for _, po := range pos {
+		if isMalformedDraftPO(po) {
+			log.Printf("⚠️ Skipping malformed draft PO %s from listings", po.PONumber)
+			continue
+		}
+		filtered = append(filtered, po)
+	}
+	return filtered
+}
+
+func (a *App) inferSupplierForOrderItems(order Order, itemIDs []string) (SupplierMaster, error) {
+	selectedItemIDs := make(map[string]struct{}, len(itemIDs))
+	for _, itemID := range itemIDs {
+		if trimmed := strings.TrimSpace(itemID); trimmed != "" {
+			selectedItemIDs[trimmed] = struct{}{}
+		}
+	}
+
+	supplierIDs := make(map[string]struct{})
+	for _, orderItem := range order.Items {
+		if len(selectedItemIDs) > 0 {
+			if _, ok := selectedItemIDs[orderItem.ID]; !ok {
+				continue
+			}
+		}
+
+		if strings.TrimSpace(orderItem.ProductID) == "" {
+			continue
+		}
+
+		var product ProductMaster
+		if err := a.db.Select("id", "supplier_id").First(&product, "id = ?", orderItem.ProductID).Error; err != nil {
+			continue
+		}
+		if trimmedSupplierID := strings.TrimSpace(product.SupplierID); trimmedSupplierID != "" {
+			supplierIDs[trimmedSupplierID] = struct{}{}
+		}
+	}
+
+	if len(supplierIDs) == 0 {
+		return SupplierMaster{}, newError("SUPPLIER_NOT_FOUND", "Unable to determine supplier from selected order items", "")
+	}
+	if len(supplierIDs) > 1 {
+		return SupplierMaster{}, newError("MULTIPLE_SUPPLIERS", "Selected order items belong to multiple suppliers. Please create supplier POs separately.", "")
+	}
+
+	var inferredSupplierID string
+	for supplierID := range supplierIDs {
+		inferredSupplierID = supplierID
+	}
+
+	var supplier SupplierMaster
+	if err := a.db.First(&supplier, "id = ?", inferredSupplierID).Error; err != nil {
+		return SupplierMaster{}, newError("SUPPLIER_NOT_FOUND", "Supplier not found", err.Error())
+	}
+
+	return supplier, nil
+}
+
+func (a *App) normalizePurchaseOrder(po *PurchaseOrder) error {
+	if strings.TrimSpace(po.SupplierID) == "" {
+		return newError("SUPPLIER_REQUIRED", "Supplier is required", "")
+	}
+
+	var supplier SupplierMaster
+	if err := a.db.First(&supplier, "id = ?", po.SupplierID).Error; err != nil {
+		return newError("SUPPLIER_NOT_FOUND", "Supplier not found", err.Error())
+	}
+	po.SupplierName = supplier.SupplierName
+
+	if strings.TrimSpace(po.Currency) == "" {
+		po.Currency = "BHD"
+	}
+	if po.ExchangeRate <= 0 {
+		po.ExchangeRate = 1
+	}
+	if po.Currency == "BHD" {
+		po.ExchangeRate = 1
+	}
+
+	if len(po.Items) == 0 {
+		return newError("ITEMS_REQUIRED", "At least one purchase order line item is required", "")
+	}
+
+	normalizedItems := make([]PurchaseOrderItem, 0, len(po.Items))
+	subtotalForeign := 0.0
+	for i := range po.Items {
+		item := po.Items[i]
+		item.Description = strings.TrimSpace(item.Description)
+		if item.Description == "" {
+			return newError("INVALID_ITEM", fmt.Sprintf("Line item %d is missing a description", i+1), "")
+		}
+		if item.Quantity <= 0 {
+			return newError("INVALID_ITEM", fmt.Sprintf("Line item %d must have quantity greater than zero", i+1), "")
+		}
+		if item.UnitPriceForeign <= 0 {
+			if item.UnitPriceBHD > 0 && po.ExchangeRate > 0 {
+				item.UnitPriceForeign = item.UnitPriceBHD / po.ExchangeRate
+			} else {
+				return newError("INVALID_ITEM", fmt.Sprintf("Line item %d must have a unit price greater than zero", i+1), "")
+			}
+		}
+
+		item.UnitPriceForeign = roundTo3(item.UnitPriceForeign)
+		item.TotalForeign = roundTo3(item.Quantity * item.UnitPriceForeign)
+		item.UnitPriceBHD = roundTo3(item.UnitPriceForeign * po.ExchangeRate)
+		item.TotalBHD = roundTo3(item.TotalForeign * po.ExchangeRate)
+
+		normalizedItems = append(normalizedItems, item)
+		subtotalForeign += item.TotalForeign
+	}
+
+	po.Items = normalizedItems
+	po.SubtotalForeign = roundTo3(subtotalForeign)
+	po.SubtotalBHD = roundTo3(po.SubtotalForeign * po.ExchangeRate)
+	po.VATAmount = roundTo3(po.SubtotalForeign * 0.10)
+	po.TotalForeign = roundTo3(po.SubtotalForeign + po.VATAmount)
+	po.TotalBHD = roundTo3(po.TotalForeign * po.ExchangeRate)
+
+	if po.PaymentDueDate.IsZero() && po.PaymentTerms != "" {
+		po.PaymentDueDate = calculatePaymentDueDate(po.PODate, po.PaymentTerms)
+	}
+
+	return nil
+}
+
 // =============================================================================
 // PURCHASE ORDER CRUD OPERATIONS
 // =============================================================================
@@ -37,33 +172,18 @@ func (a *App) CreatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
 		po.PODate = time.Now()
 	}
 
-	// Calculate payment due date based on payment terms if not set
-	if po.PaymentDueDate.IsZero() && po.PaymentTerms != "" {
-		po.PaymentDueDate = calculatePaymentDueDate(po.PODate, po.PaymentTerms)
+	if err := a.normalizePurchaseOrder(&po); err != nil {
+		return PurchaseOrder{}, err
 	}
 
-	// Calculate BHD amounts from foreign currency if exchange rate provided
-	if po.ExchangeRate > 0 {
-		po.SubtotalBHD = po.SubtotalForeign * po.ExchangeRate
-		po.TotalBHD = po.TotalForeign * po.ExchangeRate
-	}
+	// Store items separately and create them explicitly so malformed associations
+	// cannot leave behind half-baked draft POs.
+	items := po.Items
+	po.Items = nil
 
-	// Ensure VAT is calculated (10% standard rate in Bahrain)
-	if po.VATAmount == 0 && po.SubtotalBHD > 0 {
-		po.VATAmount = po.SubtotalBHD * 0.10
-	}
-	// Ensure total always includes VAT
-	if po.VATAmount > 0 && po.TotalBHD <= po.SubtotalBHD {
-		po.TotalBHD = po.SubtotalBHD + po.VATAmount
-	}
-
-	// Calculate item totals
-	for i := range po.Items {
-		item := &po.Items[i]
-		if po.ExchangeRate > 0 {
-			item.UnitPriceBHD = item.UnitPriceForeign * po.ExchangeRate
-			item.TotalBHD = item.TotalForeign * po.ExchangeRate
-		}
+	tx := a.db.Begin()
+	if tx.Error != nil {
+		return PurchaseOrder{}, newError("DB_TX_FAILED", "Failed to begin purchase order transaction", tx.Error.Error())
 	}
 
 	// Force initial status — caller cannot bypass workflow
@@ -85,10 +205,24 @@ func (a *App) CreatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
 		log.Printf("⚠️ PO %s requires approval (%.2f %s > %.2f %s threshold)", po.PONumber, po.TotalBHD, currency, approvalThreshold, currency)
 	}
 
-	// Create the PO with items
-	if err := a.db.Create(&po).Error; err != nil {
+	if err := tx.Create(&po).Error; err != nil {
+		tx.Rollback()
 		log.Printf("❌ Failed to create purchase order: %v", err)
 		return PurchaseOrder{}, newError("DB_CREATE_FAILED", "Failed to create purchase order", err.Error())
+	}
+
+	for i := range items {
+		items[i].PurchaseOrderID = po.ID
+		if err := tx.Create(&items[i]).Error; err != nil {
+			tx.Rollback()
+			log.Printf("❌ Failed to create purchase order item: %v", err)
+			return PurchaseOrder{}, newError("DB_CREATE_FAILED", "Failed to create purchase order item", err.Error())
+		}
+	}
+	po.Items = items
+
+	if err := tx.Commit().Error; err != nil {
+		return PurchaseOrder{}, newError("DB_COMMIT_FAILED", "Failed to commit purchase order", err.Error())
 	}
 
 	log.Printf("✅ Created Purchase Order %s for Supplier %s (%.2f %s)", po.PONumber, po.SupplierID, po.TotalBHD, currency)
@@ -112,7 +246,7 @@ func (a *App) GetPurchaseOrders() ([]PurchaseOrder, error) {
 	// Enrich with supplier names
 	a.enrichPOsWithSupplierNames(pos)
 
-	return pos, nil
+	return filterMalformedDraftPOs(pos), nil
 }
 
 // enrichPOsWithSupplierNames populates SupplierName for POs missing it
@@ -172,6 +306,9 @@ func (a *App) GetPurchaseOrderByID(id string) (PurchaseOrder, error) {
 	if err := a.db.Preload("Items").First(&po, "id = ?", id).Error; err != nil {
 		return PurchaseOrder{}, newError("PO_NOT_FOUND", "Purchase order not found", err.Error())
 	}
+	if isMalformedDraftPO(po) {
+		return PurchaseOrder{}, newError("PO_NOT_FOUND", "Purchase order not found", "malformed draft purchase order")
+	}
 
 	// Enrich with supplier name
 	if po.SupplierName == "" && po.SupplierID != "" {
@@ -201,7 +338,7 @@ func (a *App) GetPurchaseOrdersByOrder(orderID string) ([]PurchaseOrder, error) 
 	// Enrich with supplier names
 	a.enrichPOsWithSupplierNames(pos)
 
-	return pos, nil
+	return filterMalformedDraftPOs(pos), nil
 }
 
 // GetPurchaseOrdersBySupplier retrieves all purchase orders for a given supplier
@@ -218,7 +355,8 @@ func (a *App) GetPurchaseOrdersBySupplier(supplierID string) ([]PurchaseOrder, e
 		return nil, newError("DB_QUERY_FAILED", "Failed to retrieve purchase orders for supplier", err.Error())
 	}
 
-	return pos, nil
+	a.enrichPOsWithSupplierNames(pos)
+	return filterMalformedDraftPOs(pos), nil
 }
 
 // UpdatePurchaseOrder updates an existing purchase order
@@ -254,23 +392,12 @@ func (a *App) UpdatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
 		}
 	}
 
-	// Recalculate BHD amounts if exchange rate changed
-	if po.ExchangeRate > 0 {
-		po.SubtotalBHD = po.SubtotalForeign * po.ExchangeRate
-		po.TotalBHD = po.TotalForeign * po.ExchangeRate
-	}
-
-	// Ensure VAT is calculated (10% standard rate in Bahrain)
-	if po.VATAmount == 0 && po.SubtotalBHD > 0 {
-		po.VATAmount = po.SubtotalBHD * 0.10
-	}
-	// Ensure total always includes VAT
-	if po.VATAmount > 0 && po.TotalBHD <= po.SubtotalBHD {
-		po.TotalBHD = po.SubtotalBHD + po.VATAmount
+	if err := a.normalizePurchaseOrder(&po); err != nil {
+		return PurchaseOrder{}, err
 	}
 
 	// Update only the fields that should be editable
-	// This preserves: status, approved_by, approved_at, rfq_id, po_number, created_by, version
+	// This preserves: status, approved_by, approved_at, rfq_id, created_by, version
 	updates := map[string]interface{}{
 		"supplier_id":       po.SupplierID,
 		"supplier_name":     po.SupplierName,
@@ -285,6 +412,17 @@ func (a *App) UpdatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
 		"total_bhd":         po.TotalBHD,
 		"payment_terms":     po.PaymentTerms,
 		"updated_at":        time.Now(),
+	}
+
+	// Allow PO number edit only in Draft status
+	if existing.Status == "Draft" && po.PONumber != "" && po.PONumber != existing.PONumber {
+		// Uniqueness check: verify no other PO has the same number
+		var count int64
+		a.db.Model(&PurchaseOrder{}).Where("po_number = ? AND id != ?", po.PONumber, po.ID).Count(&count)
+		if count > 0 {
+			return PurchaseOrder{}, fmt.Errorf("PO number %s already exists", po.PONumber)
+		}
+		updates["po_number"] = po.PONumber
 	}
 
 	if err := a.db.Model(&PurchaseOrder{}).Where("id = ?", po.ID).Updates(updates).Error; err != nil {
@@ -341,15 +479,15 @@ func (a *App) UpdatePOStatus(id string, status string) error {
 
 	// Validate status transition
 	validTransitions := map[string][]string{
-		"Draft":               {"Pending Approval", "Approved", "Sent", "Cancelled"},
-		"Pending Approval":    {"Approved", "Draft", "Cancelled"},
-		"Approved":            {"Sent", "Cancelled"},
-		"Sent":                {"Acknowledged", "Partially Received", "Received", "Cancelled"},
-		"Acknowledged":        {"Partially Received", "Received", "Cancelled"},
-		"Partially Received":  {"Received", "Cancelled"},
-		"Received":            {}, // Terminal state
-		"Closed":              {}, // Terminal state
-		"Cancelled":           {}, // Terminal state
+		"Draft":              {"Pending Approval", "Approved", "Sent", "Cancelled"},
+		"Pending Approval":   {"Approved", "Draft", "Cancelled"},
+		"Approved":           {"Sent", "Cancelled"},
+		"Sent":               {"Acknowledged", "Partially Received", "Received", "Cancelled"},
+		"Acknowledged":       {"Partially Received", "Received", "Cancelled"},
+		"Partially Received": {"Received", "Cancelled"},
+		"Received":           {}, // Terminal state
+		"Closed":             {}, // Terminal state
+		"Cancelled":          {}, // Terminal state
 	}
 
 	// P2 FIX: Wrap SELECT + validation + UPDATE in a transaction with row lock
@@ -617,7 +755,14 @@ func (a *App) CreatePOFromOrder(orderID string, supplierID string, itemIDs []str
 
 	// Load supplier to get default currency and payment terms
 	var supplier SupplierMaster
-	if err := a.db.First(&supplier, "id = ?", supplierID).Error; err != nil {
+	if strings.TrimSpace(supplierID) == "" {
+		inferredSupplier, err := a.inferSupplierForOrderItems(order, itemIDs)
+		if err != nil {
+			return PurchaseOrder{}, err
+		}
+		supplier = inferredSupplier
+		supplierID = inferredSupplier.ID
+	} else if err := a.db.First(&supplier, "id = ?", supplierID).Error; err != nil {
 		return PurchaseOrder{}, newError("SUPPLIER_NOT_FOUND", "Supplier not found", err.Error())
 	}
 
@@ -625,6 +770,7 @@ func (a *App) CreatePOFromOrder(orderID string, supplierID string, itemIDs []str
 	po := PurchaseOrder{
 		OrderID:          orderID,
 		SupplierID:       supplierID,
+		SupplierName:     supplier.SupplierName,
 		PODate:           time.Now(),
 		ExpectedDelivery: order.RequiredDate, // Use order's required date as expected delivery
 		Currency:         "BHD",              // Default to BHD, can be changed based on supplier
@@ -780,18 +926,18 @@ func calculatePaymentDueDate(poDate time.Time, paymentTerms string) time.Time {
 
 // POAmendment tracks changes to purchase orders after creation
 type POAmendment struct {
-	ID              string    `json:"id"`
-	PurchaseOrderID string    `json:"purchase_order_id"`
-	AmendmentNumber int       `json:"amendment_number"`
-	AmendedBy       string    `json:"amended_by"`
-	AmendedAt       time.Time `json:"amended_at"`
-	ChangeType      string    `json:"change_type"` // "quantity", "price", "date", "items", "terms"
-	OldValue        string    `json:"old_value"`   // JSON of old values
-	NewValue        string    `json:"new_value"`   // JSON of new values
-	Reason          string    `json:"reason"`
-	RequiresReapproval bool   `json:"requires_reapproval"`
-	ReapprovedBy    string    `json:"reapproved_by"`
-	ReapprovedAt    *time.Time `json:"reapproved_at"`
+	ID                 string     `json:"id"`
+	PurchaseOrderID    string     `json:"purchase_order_id"`
+	AmendmentNumber    int        `json:"amendment_number"`
+	AmendedBy          string     `json:"amended_by"`
+	AmendedAt          time.Time  `json:"amended_at"`
+	ChangeType         string     `json:"change_type"` // "quantity", "price", "date", "items", "terms"
+	OldValue           string     `json:"old_value"`   // JSON of old values
+	NewValue           string     `json:"new_value"`   // JSON of new values
+	Reason             string     `json:"reason"`
+	RequiresReapproval bool       `json:"requires_reapproval"`
+	ReapprovedBy       string     `json:"reapproved_by"`
+	ReapprovedAt       *time.Time `json:"reapproved_at"`
 }
 
 // AmendPurchaseOrder creates an amendment record and optionally requires re-approval

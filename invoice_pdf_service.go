@@ -92,6 +92,10 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 		return "", err
 	}
 
+	if a.db == nil {
+		return "", fmt.Errorf("database not initialized")
+	}
+
 	log.Printf("📄 Generating customer invoice PDF: invoiceID=%s", invoiceID)
 
 	// 1. Fetch invoice with items from database
@@ -657,10 +661,6 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 	// ========================================================================
 	// SECTION 11: SAVE PDF
 	// ========================================================================
-	paths := a.getAppPaths()
-	exportDir := filepath.Join(paths.ProjectRoot, "exports", "invoices")
-	os.MkdirAll(exportDir, 0755)
-
 	cleanInvoiceNum := filepath.Base(strings.ReplaceAll(invoice.InvoiceNumber, "..", ""))
 	cleanInvoiceNum = strings.ReplaceAll(cleanInvoiceNum, "/", "_")
 	cleanInvoiceNum = strings.ReplaceAll(cleanInvoiceNum, "\\", "_")
@@ -677,21 +677,11 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 	}
 	filename = fmt.Sprintf("Invoice_%s.pdf", filename)
 
-	// Save to structured folder: <exports>/<division>/Customers/<CustomerName>/Invoices/
-	division := invoice.Division
-	if division == "" {
-		division = "PH Trading"
+	docYear := invoice.InvoiceDate.Year()
+	if docYear <= 0 {
+		docYear = time.Now().Year()
 	}
-	customerDir := ""
-	if invoice.CustomerName != "" {
-		safeCust := sanitizeFilename(invoice.CustomerName)
-		customerDir = filepath.Join(exportDir, "..", division, "Customers", safeCust, "Invoices")
-		os.MkdirAll(customerDir, 0755)
-	}
-	saveDir := exportDir
-	if customerDir != "" {
-		saveDir = customerDir
-	}
+	saveDir := a.getExportDir("customer", invoice.CustomerName, "Order", docYear)
 	filePath := filepath.Join(saveDir, filename)
 
 	if err := pdf.OutputFileAndClose(filePath); err != nil {
@@ -938,11 +928,6 @@ func (a *App) GenerateSupplierInvoicePDF(invoiceID string) (string, error) {
 	pdf.Cell(0, 5, fmt.Sprintf("Supplier Invoice Record  |  PH Trading W.L.L.  |  Generated %s", time.Now().Format("02 Jan 2006")))
 
 	// Save PDF
-	paths := a.getAppPaths()
-	exportDir := filepath.Join(paths.ProjectRoot, "exports", "invoices")
-	os.MkdirAll(exportDir, 0755)
-
-	// Combined filename: {SystemNumber}_{UserReference}.pdf
 	cleanInvoiceNum := filepath.Base(strings.ReplaceAll(invoice.InvoiceNumber, "..", ""))
 	cleanInvoiceNum = strings.ReplaceAll(cleanInvoiceNum, "/", "_")
 	cleanInvoiceNum = strings.ReplaceAll(cleanInvoiceNum, "\\", "_")
@@ -956,17 +941,11 @@ func (a *App) GenerateSupplierInvoicePDF(invoiceID string) (string, error) {
 	}
 	filename = fmt.Sprintf("SupplierInv_%s.pdf", filename)
 
-	// Save to structured folder: <exports>/PH Trading/Suppliers/<SupplierName>/Invoices/
-	supplierDir := ""
-	if invoice.SupplierName != "" {
-		safeSupp := sanitizeFilename(invoice.SupplierName)
-		supplierDir = filepath.Join(exportDir, "..", "PH Trading", "Suppliers", safeSupp, "Invoices")
-		os.MkdirAll(supplierDir, 0755)
+	docYear := invoice.InvoiceDate.Year()
+	if docYear <= 0 {
+		docYear = time.Now().Year()
 	}
-	saveDir := exportDir
-	if supplierDir != "" {
-		saveDir = supplierDir
-	}
+	saveDir := a.getExportDir("supplier", invoice.SupplierName, "MISC", docYear)
 	filePath := filepath.Join(saveDir, filename)
 
 	if err := pdf.OutputFileAndClose(filePath); err != nil {

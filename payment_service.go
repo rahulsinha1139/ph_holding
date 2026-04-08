@@ -26,12 +26,12 @@ const (
 // P0 FIX: Added SELECT FOR UPDATE transaction locking to prevent race conditions
 // P0 FIX: Ensures outstanding balance never goes negative (floors at zero)
 func (a *App) RecordPayment(invoiceID string, amount float64, method string, dateStr string, reference string) (*Payment, error) {
-	if err := a.requirePermission("payments:create"); err != nil {
-		return nil, err
-	}
-
 	if a.db == nil {
 		return nil, newError("DB_NOT_INITIALIZED", "database connection not available", "")
+	}
+
+	if err := a.requirePermission("payments:create"); err != nil {
+		return nil, err
 	}
 
 	// Validate amount (basic check before transaction)

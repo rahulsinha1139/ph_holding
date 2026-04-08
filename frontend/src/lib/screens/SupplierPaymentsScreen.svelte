@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { createEventDispatcher, onMount } from 'svelte';
   import { fade } from 'svelte/transition';
   import {
     GetAllSupplierPayments,
@@ -11,7 +11,9 @@
   import PageLayout from '$lib/components/layout/PageLayout.svelte';
   import DataTable from '$lib/components/ui/DataTable.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import { listExpenseEntries, type ExpenseEntry } from '$lib/api/expenses';
   import { toast } from '$lib/stores/toasts';
+  const dispatch = createEventDispatcher();
 
   export let embedded = false;
 
@@ -47,7 +49,27 @@
     return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
   }
 
+  function formatBHD(amount: number): string {
+    return new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 3,
+      maximumFractionDigits: 3
+    }).format(Number(amount) || 0);
+  }
+
+  function isCurrentYear(dateStr: any): boolean {
+    if (!dateStr) return false;
+    const dateVal = typeof dateStr === 'string' ? dateStr : String(dateStr);
+    const date = new Date(dateVal);
+    if (isNaN(date.getTime())) return false;
+    return date.getFullYear() === new Date().getFullYear();
+  }
+
+  function openBankReconciliation() {
+    dispatch('navigate', { tab: 'bank_recon', source: 'supplier_payments' });
+  }
+
   const columns = [
+    { key: 'source', label: 'Source', width: '120px' },
     {
       key: 'payment_date',
       label: 'Date',
@@ -61,7 +83,7 @@
       sortable: true,
       width: '200px',
       render: (row: any) => {
-        const name = row.supplier_name || row.SupplierName || row.supplierName ||
+        const name = row.supplier_name || row.counterparty_name || row.SupplierName || row.supplierName ||
                      row.SupplierInvoice?.supplier_name || row.supplier_invoice?.supplier_name || '';
         return `<span style="font-weight: 500;">${safeStr(name)}</span>`;
       }
@@ -98,12 +120,46 @@
   async function loadData() {
     loading = true;
     try {
-      const [paymentsRes, summaryRes] = await Promise.all([
+      const [paymentsRes, summaryRes, expenseEntries] = await Promise.all([
         GetAllSupplierPayments(),
-        GetSupplierPaymentsSummary()
+        GetSupplierPaymentsSummary(),
+        listExpenseEntries('', true)
       ]);
-      payments = paymentsRes || [];
-      summary = summaryRes || { total_paid_bhd: 0, outstanding_count: 0, overdue_count: 0 };
+      const paidExpenses = (expenseEntries || []).filter((entry: ExpenseEntry) => entry.payment_status === 'paid');
+      const expensePaymentRows = paidExpenses.map((entry: ExpenseEntry) => ({
+        id: `expense-${entry.id}`,
+        source: 'Expense',
+        payment_date: entry.paid_at || entry.expense_date,
+        supplier_name: entry.vendor_name || entry.category_name || 'Expense',
+        counterparty_name: entry.vendor_name || entry.category_name || 'Expense',
+        invoice_number: entry.entry_number,
+        amount_bhd: Number(entry.total_amount) || 0,
+        currency: entry.currency || 'BHD',
+        payment_method: entry.payment_method || 'NEFT',
+        reference: entry.payment_reference || '',
+      }));
+      const supplierPaymentRows = (paymentsRes || []).map((row: any) => ({
+        ...row,
+        source: row.source || 'Supplier Invoice',
+      }));
+      payments = [...supplierPaymentRows, ...expensePaymentRows].sort((left: any, right: any) => {
+        const leftTime = new Date(left.payment_date || 0).getTime();
+        const rightTime = new Date(right.payment_date || 0).getTime();
+        return rightTime - leftTime;
+      });
+
+      const paidExpenseTotal = paidExpenses.reduce((sum: number, entry: ExpenseEntry) => sum + (Number(entry.total_amount) || 0), 0);
+      const unpaidExpenseEntries = (expenseEntries || []).filter((entry: ExpenseEntry) => entry.payment_status !== 'paid' && ['approved', 'posted'].includes(entry.status));
+      const overdueExpenseCount = unpaidExpenseEntries.filter((entry: ExpenseEntry) => {
+        if (!entry.due_date) return false;
+        return new Date(entry.due_date).getTime() < Date.now();
+      }).length;
+
+      summary = {
+        total_paid_bhd: (summaryRes?.total_paid_bhd || 0) + paidExpenseTotal,
+        outstanding_count: (summaryRes?.outstanding_count || 0) + unpaidExpenseEntries.length,
+        overdue_count: (summaryRes?.overdue_count || 0) + overdueExpenseCount,
+      };
     } catch (e) {
       console.error('Failed to load supplier payments:', e);
     } finally {
@@ -157,17 +213,23 @@
   }
 
   onMount(loadData);
+
+  $: totalPaidYTD = payments
+    .filter((payment: any) => isCurrentYear(payment.payment_date))
+    .reduce((sum: number, payment: any) => sum + (Number(payment.amount_bhd) || 0), 0);
 </script>
 
 <div class="screen" in:fade={{ duration: 200 }}>
   {#if !embedded}
-    <PageLayout title="Supplier Payments" subtitle="Track payments made to suppliers">
+    <PageLayout title="Payments Made" subtitle="Track outgoing payments across supplier invoices and expense settlements">
       <svelte:fragment slot="actions">
+        <Button variant="secondary" on:click={openBankReconciliation}>Open Bank Recon</Button>
         <Button variant="primary" on:click={openPaymentModal}>Record Payment</Button>
       </svelte:fragment>
     </PageLayout>
   {:else}
     <div class="embedded-header">
+      <Button variant="secondary" size="sm" on:click={openBankReconciliation}>Open Bank Recon</Button>
       <Button variant="primary" size="sm" on:click={openPaymentModal}>Record Payment</Button>
     </div>
   {/if}
@@ -175,8 +237,8 @@
   <!-- KPI Summary -->
   <div class="kpis">
     <div class="kpi">
-      <span class="kpi-label">Total Paid</span>
-      <span class="kpi-value">{summary.total_paid_bhd?.toFixed(3) || '0.000'} BHD</span>
+      <span class="kpi-label">Total Paid (YTD)</span>
+      <span class="kpi-value">{formatBHD(totalPaidYTD)} BHD</span>
     </div>
     <div class="kpi">
       <span class="kpi-label">Outstanding Invoices</span>
@@ -193,7 +255,7 @@
     data={payments}
     {columns}
     {loading}
-    emptyMessage="No supplier payments recorded yet"
+    emptyMessage="No outgoing payments recorded yet"
   />
 </div>
 
@@ -209,7 +271,7 @@
           <option value="">Select invoice...</option>
           {#each invoices as inv}
             <option value={inv.id}>
-              {inv.invoice_number || inv.id?.slice(0,8)} - {inv.total_bhd?.toFixed(3)} BHD
+              {inv.invoice_number || inv.id?.slice(0,8)} - {formatBHD(inv.total_bhd)} BHD
             </option>
           {/each}
         </select>

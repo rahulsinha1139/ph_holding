@@ -111,7 +111,7 @@ func (m *DBManager) ConnectRemote() error {
 	if err != nil {
 		return fmt.Errorf("failed to get underlying sql.DB: %w", err)
 	}
-	sqlDB.SetMaxOpenConns(5)  // Lower for sync-only usage
+	sqlDB.SetMaxOpenConns(5) // Lower for sync-only usage
 	sqlDB.SetMaxIdleConns(2)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
@@ -208,8 +208,22 @@ func (m *DBManager) MigrateRemote() error {
 		&BankAccount{},
 		&BankStatement{},
 		&BankStatementLine{},
+		&BankExpenseEntry{},
 		&DBCostingSheet{},
 		&DBCostingItem{},
+		&ExpenseCategory{},
+		&ExpenseVendor{},
+		&ExpenseEntry{},
+		&ExpenseAllocation{},
+		&RecurringExpense{},
+		&ExpenseAttachment{},
+		&ExpenseApproval{},
+		&EmployeeCompensationProfile{},
+		&PayrollPeriod{},
+		&PayrollRun{},
+		&PayrollRunItem{},
+		&PayrollComponent{},
+		&PayrollPayout{},
 		// System
 		&SyncRecord{},
 		&Role{},
@@ -219,6 +233,16 @@ func (m *DBManager) MigrateRemote() error {
 		&Device{},
 		&DeviceUser{},
 		&LicenseKey{},
+		// Collaboration
+		&Employee{},
+		&EmployeeAccessLink{},
+		&Project{},
+		&ProjectMember{},
+		&Notification{},
+		&NotificationReceipt{},
+		&TaskItem{},
+		&TaskComment{},
+		&TaskActivity{},
 	)
 
 	if err != nil {
@@ -483,10 +507,9 @@ func (a *App) InitDBManager() {
 			if err := a.dbManager.ConnectRemote(); err != nil {
 				log.Printf("Supabase sync deferred: %v", err)
 			} else {
-				// Run migration if connected
-				if err := a.dbManager.MigrateRemote(); err != nil {
-					log.Printf("Supabase migration warning: %v", err)
-				}
+				// Schema migration is now manual — run MigrateRemote() explicitly from Settings
+				// or via the Supabase migration script. This prevents unexpected DDL at app launch.
+				log.Println("Supabase connected. Schema migration is manual — use Settings > Sync > Migrate if needed.")
 			}
 
 			// Start periodic sync (every 10 minutes for offline-first approach)
@@ -508,9 +531,9 @@ func (a *App) GetDBSyncStatus() map[string]interface{} {
 		return map[string]interface{}{"error": "permission denied"}
 	}
 	status := map[string]interface{}{
-		"configured":  false,
-		"online":      false,
-		"last_sync":   nil,
+		"configured":   false,
+		"online":       false,
+		"last_sync":    nil,
 		"sync_enabled": false,
 	}
 
@@ -532,14 +555,14 @@ func (a *App) GetDBSyncStatus() map[string]interface{} {
 
 // SyncHealth provides comprehensive health status for the sync system.
 type SyncHealth struct {
-	IsOnline       bool      `json:"is_online"`
-	LastSyncAt     string    `json:"last_sync_at"`
-	LastSyncStatus string    `json:"last_sync_status"`
-	TablesInSync   int       `json:"tables_in_sync"`
-	DBSizeBytes    int64     `json:"db_size_bytes"`
-	BackupCount    int       `json:"backup_count"`
-	LastBackupAt   string    `json:"last_backup_at"`
-	UptimeSeconds  int64     `json:"uptime_seconds"`
+	IsOnline       bool   `json:"is_online"`
+	LastSyncAt     string `json:"last_sync_at"`
+	LastSyncStatus string `json:"last_sync_status"`
+	TablesInSync   int    `json:"tables_in_sync"`
+	DBSizeBytes    int64  `json:"db_size_bytes"`
+	BackupCount    int    `json:"backup_count"`
+	LastBackupAt   string `json:"last_backup_at"`
+	UptimeSeconds  int64  `json:"uptime_seconds"`
 }
 
 // GetSyncHealth returns comprehensive health information about the sync system.
@@ -631,11 +654,11 @@ func (m *DBManager) DownloadFullDatabase() (int, error) {
 	// Use dbSyncTables as the canonical list, supplemented by system-only tables
 	// that aren't in the periodic sync but are needed for first-run bootstrap
 	systemTables := []string{
-		"assets",        // Letterhead, logos — needed immediately
-		"devices",       // Device registration
-		"users",         // User accounts
-		"device_users",  // Device-user bindings
-		"settings",      // App settings
+		"assets",       // Letterhead, logos — needed immediately
+		"devices",      // Device registration
+		"users",        // User accounts
+		"device_users", // Device-user bindings
+		"settings",     // App settings
 	}
 	tables := append(systemTables, dbSyncTables...)
 

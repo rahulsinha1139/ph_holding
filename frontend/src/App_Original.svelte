@@ -19,7 +19,7 @@
     isNavCollapsed = event.detail;
   }
 
-  onMount(async () => {
+  onMount(() => {
     // Initialize Smooth Scroll
     lenis = new Lenis({
       wrapper: mainContainer,

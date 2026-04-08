@@ -64,37 +64,37 @@ type FilesystemDocClassification struct {
 
 // FilesystemClassificationSummary provides aggregate statistics
 type FilesystemClassificationSummary struct {
-	TotalFiles    int                               `json:"total_files"`
-	ByType        map[string]int                    `json:"by_type"`
-	ByCustomer    map[string]int                    `json:"by_customer"`
-	ByOfferNumber map[string]int                    `json:"by_offer_number"`
-	ByStage       map[string]int                    `json:"by_stage"`
-	ByProductType map[string]int                    `json:"by_product_type"`
-	Documents     []FilesystemDocClassification     `json:"documents"`
-	ScanDuration  time.Duration                     `json:"scan_duration"`
+	TotalFiles    int                           `json:"total_files"`
+	ByType        map[string]int                `json:"by_type"`
+	ByCustomer    map[string]int                `json:"by_customer"`
+	ByOfferNumber map[string]int                `json:"by_offer_number"`
+	ByStage       map[string]int                `json:"by_stage"`
+	ByProductType map[string]int                `json:"by_product_type"`
+	Documents     []FilesystemDocClassification `json:"documents"`
+	ScanDuration  time.Duration                 `json:"scan_duration"`
 }
 
 // FilesystemDocumentClassifierService handles filesystem-based document classification
 type FilesystemDocumentClassifierService struct {
 	// Patterns for document type detection
-	invoicePatterns        []*regexp.Regexp
-	deliveryNotePatterns   []*regexp.Regexp
-	customerPOPatterns     []*regexp.Regexp
-	supplierPOAckPatterns  []*regexp.Regexp
-	internalPOPatterns     []*regexp.Regexp
-	rfqPatterns            []*regexp.Regexp
-	costingPatterns        []*regexp.Regexp
-	offerPatterns          []*regexp.Regexp
-	shippingPatterns       []*regexp.Regexp
-	technicalPatterns      []*regexp.Regexp
+	invoicePatterns       []*regexp.Regexp
+	deliveryNotePatterns  []*regexp.Regexp
+	customerPOPatterns    []*regexp.Regexp
+	supplierPOAckPatterns []*regexp.Regexp
+	internalPOPatterns    []*regexp.Regexp
+	rfqPatterns           []*regexp.Regexp
+	costingPatterns       []*regexp.Regexp
+	offerPatterns         []*regexp.Regexp
+	shippingPatterns      []*regexp.Regexp
+	technicalPatterns     []*regexp.Regexp
 
 	// Patterns for metadata extraction
-	offerNumberPattern     *regexp.Regexp
-	productTypePattern     *regexp.Regexp
-	albaPoPattern          *regexp.Regexp
-	bapcoPoPattern         *regexp.Regexp
-	ehOrderPattern         *regexp.Regexp
-	phPoPattern            *regexp.Regexp
+	offerNumberPattern *regexp.Regexp
+	productTypePattern *regexp.Regexp
+	albaPoPattern      *regexp.Regexp
+	bapcoPoPattern     *regexp.Regexp
+	ehOrderPattern     *regexp.Regexp
+	phPoPattern        *regexp.Regexp
 }
 
 // NewFilesystemDocumentClassifierService initializes the classifier with all patterns
@@ -112,33 +112,35 @@ func NewFilesystemDocumentClassifierService() *FilesystemDocumentClassifierServi
 		deliveryNotePatterns: []*regexp.Regexp{
 			regexp.MustCompile(`(?i)delivery`),
 			regexp.MustCompile(`(?i)\bDN\b`),
+			regexp.MustCompile(`(?i)^DN[_-]?\d+`),
 			regexp.MustCompile(`(?i)delivery\s*note`),
 		},
 
 		// Customer PO patterns (ALBA: 453XXXXX, BAPCO: PO_81_XXX)
 		customerPOPatterns: []*regexp.Regexp{
-			regexp.MustCompile(`453\d{5}`),                 // ALBA format
-			regexp.MustCompile(`PO_81_\d+`),                // BAPCO format
+			regexp.MustCompile(`453\d{5}`),  // ALBA format
+			regexp.MustCompile(`PO_81_\d+`), // BAPCO format
 			regexp.MustCompile(`(?i)purchase\s*order`),
 			regexp.MustCompile(`(?i)customer.*po`),
 		},
 
 		// Supplier PO acknowledgment (E+H: 601XXXXXXX)
 		supplierPOAckPatterns: []*regexp.Regexp{
-			regexp.MustCompile(`601\d{7}`),                 // E+H order confirmation
+			regexp.MustCompile(`601\d{7}`), // E+H order confirmation
 			regexp.MustCompile(`(?i)order.*confirmation`),
 			regexp.MustCompile(`(?i)po.*ack`),
 		},
 
 		// Internal PO (PH25-XXX.pdf)
 		internalPOPatterns: []*regexp.Regexp{
-			regexp.MustCompile(`(?i)^PH\d{2}-\d+`),        // PH25-XXX format
+			regexp.MustCompile(`(?i)^PH\d{2}-\d+`), // PH25-XXX format
 			regexp.MustCompile(`(?i)PH.*purchase.*order`),
 		},
 
 		// RFQ patterns
 		rfqPatterns: []*regexp.Regexp{
 			regexp.MustCompile(`(?i)\brfq\b`),
+			regexp.MustCompile(`(?i)^rfq[_-]`),
 			regexp.MustCompile(`(?i)request.*quote`),
 			regexp.MustCompile(`(?i)quotation.*request`),
 		},
@@ -178,7 +180,7 @@ func NewFilesystemDocumentClassifierService() *FilesystemDocumentClassifierServi
 		},
 
 		// Metadata extraction patterns
-		offerNumberPattern: regexp.MustCompile(`^(\d{3})\s+`),                    // "101 ENGIE AIT" -> "101"
+		offerNumberPattern: regexp.MustCompile(`^(\d{3})\s+`), // "101 ENGIE AIT" -> "101"
 		productTypePattern: regexp.MustCompile(`(?i)(AIT|FIT|LIT|PIT|TIT|SP|FT|LT|PT|TT|VALVE|TRANSMITTER|ANALYZER|FLOWMETER)`),
 		albaPoPattern:      regexp.MustCompile(`453\d{5}`),
 		bapcoPoPattern:     regexp.MustCompile(`PO_81_\d+`),
@@ -190,15 +192,19 @@ func NewFilesystemDocumentClassifierService() *FilesystemDocumentClassifierServi
 // DocumentClassifier classifies documents based on OCR text
 type DocumentClassifier struct {
 	// Keyword patterns for each document type
-	invoicePatterns    []*regexp.Regexp
-	rfqPatterns        []*regexp.Regexp
-	quotationPatterns  []*regexp.Regexp
-	contractPatterns   []*regexp.Regexp
-	poPatterns         []*regexp.Regexp
+	invoicePatterns         []*regexp.Regexp
+	supplierInvoicePatterns []*regexp.Regexp
+	rfqPatterns             []*regexp.Regexp
+	quotationPatterns       []*regexp.Regexp
+	contractPatterns        []*regexp.Regexp
+	poPatterns              []*regexp.Regexp
+	deliveryNotePatterns    []*regexp.Regexp
+	bankStatementPatterns   []*regexp.Regexp
+	reportPatterns          []*regexp.Regexp
 
 	// Confidence thresholds
-	highConfidenceKeywords int     // Number of keywords for high confidence
-	lowConfidenceKeywords  int     // Number of keywords for low confidence
+	highConfidenceKeywords int // Number of keywords for high confidence
+	lowConfidenceKeywords  int // Number of keywords for low confidence
 }
 
 // ClassificationResult represents the classification output
@@ -208,7 +214,7 @@ type ClassificationResult struct {
 	Method       string  `json:"method"`        // "keyword", "heuristic", "unknown"
 
 	// Routing information
-	RouteTo      string  `json:"route_to"`      // Which screen to route to
+	RouteTo         string `json:"route_to"`         // Which screen to route to
 	SuggestedAction string `json:"suggested_action"` // What action to suggest
 
 	// Evidence
@@ -245,10 +251,21 @@ func (c *DocumentClassifier) compilePatterns() {
 		regexp.MustCompile(`(?i)\bnet\s*\d+\s*days\b`),
 	}
 
+	c.supplierInvoicePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bsupplier\s*invoice\b`),
+		regexp.MustCompile(`(?i)\bvendor\s*invoice\b`),
+		regexp.MustCompile(`(?i)\bbill\s*to\s*:?\s*(?:p\.?\s*h\.?\s*trading|ph\s*trading)`),
+		regexp.MustCompile(`(?i)\bship\s*to\s*:?\s*(?:p\.?\s*h\.?\s*trading|ph\s*trading)`),
+		regexp.MustCompile(`(?i)\bissued\s*by\b`),
+		regexp.MustCompile(`(?i)\bseller\b`),
+		regexp.MustCompile(`(?i)\bvendor\b`),
+	}
+
 	// RFQ/Tender patterns (Icosahedron - complex, multi-faceted)
 	c.rfqPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\brequest\s*for\s*quotation\b`),
 		regexp.MustCompile(`(?i)\bRFQ\b`),
+		regexp.MustCompile(`(?i)^rfq[_-]`),
 		regexp.MustCompile(`(?i)\brequest\s*for\s*proposal\b`),
 		regexp.MustCompile(`(?i)\bRFP\b`),
 		regexp.MustCompile(`(?i)\brequest\s*for\s*tender\b`),
@@ -298,6 +315,36 @@ func (c *DocumentClassifier) compilePatterns() {
 		regexp.MustCompile(`(?i)\bitem\s*description\b`),
 		regexp.MustCompile(`(?i)\bquantity\s*ordered\b`),
 	}
+
+	c.deliveryNotePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bdelivery\s*note\b`),
+		regexp.MustCompile(`(?i)\bdispatch\s*note\b`),
+		regexp.MustCompile(`(?i)\bpacking\s*list\b`),
+		regexp.MustCompile(`(?i)\bconsignment\s*note\b`),
+		regexp.MustCompile(`(?i)\bdn\s*(?:no|number|#)\b`),
+	}
+
+	c.bankStatementPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bbank\s*statement\b`),
+		regexp.MustCompile(`(?i)\baccount\s*statement\b`),
+		regexp.MustCompile(`(?i)\bopening\s*balance\b`),
+		regexp.MustCompile(`(?i)\bclosing\s*balance\b`),
+		regexp.MustCompile(`(?i)\brunning\s*balance\b`),
+		regexp.MustCompile(`(?i)\baccount\s*number\b`),
+		regexp.MustCompile(`(?i)\bdebit\b`),
+		regexp.MustCompile(`(?i)\bcredit\b`),
+	}
+
+	c.reportPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bmonthly\s*report\b`),
+		regexp.MustCompile(`(?i)\bweekly\s*report\b`),
+		regexp.MustCompile(`(?i)\bmanagement\s*report\b`),
+		regexp.MustCompile(`(?i)\bexecutive\s*summary\b`),
+		regexp.MustCompile(`(?i)\banalysis\s*report\b`),
+		regexp.MustCompile(`(?i)\bdashboard\s*report\b`),
+		regexp.MustCompile(`(?i)\bsummary\s*report\b`),
+		regexp.MustCompile(`(?i)\bperformance\s*report\b`),
+	}
 }
 
 // Classify classifies a document based on OCR text and filename
@@ -328,11 +375,15 @@ func (c *DocumentClassifier) classifyByKeywords(text string, filename string) *C
 		docType  string
 		patterns []*regexp.Regexp
 	}{
+		{"BankStatement", c.bankStatementPatterns},
+		{"SupplierInvoice", c.supplierInvoicePatterns},
 		{"Invoice", c.invoicePatterns},
 		{"RFQ", c.rfqPatterns},
 		{"Quotation", c.quotationPatterns},
 		{"Contract", c.contractPatterns},
-		{"PO", c.poPatterns},
+		{"PurchaseOrder", c.poPatterns},
+		{"DeliveryNote", c.deliveryNotePatterns},
+		{"Report", c.reportPatterns},
 	}
 
 	var bestMatch *ClassificationResult
@@ -354,6 +405,16 @@ func (c *DocumentClassifier) classifyByKeywords(text string, filename string) *C
 		for _, pattern := range candidate.patterns {
 			if pattern.MatchString(lowerFilename) {
 				keywordsFound = append(keywordsFound, "filename:"+candidate.docType)
+			}
+		}
+
+		if candidate.docType == "SupplierInvoice" {
+			if strings.Contains(strings.ToLower(text), "ph trading") &&
+				(strings.Contains(strings.ToLower(text), "bill to") || strings.Contains(strings.ToLower(text), "ship to")) {
+				keywordsFound = append(keywordsFound, "recipient:ph_trading")
+			}
+			if strings.Contains(strings.ToLower(text), "vendor") || strings.Contains(strings.ToLower(text), "seller") {
+				keywordsFound = append(keywordsFound, "issuer:supplier")
 			}
 		}
 
@@ -404,6 +465,9 @@ func (c *DocumentClassifier) classifyByHeuristics(text string, filename string) 
 
 	// Heuristic 1: Filename contains document type
 	if strings.Contains(lowerFilename, "invoice") {
+		if strings.Contains(lowerText, "ph trading") && (strings.Contains(lowerText, "bill to") || strings.Contains(lowerText, "ship to") || strings.Contains(lowerText, "vendor")) {
+			return c.createHeuristicResult("SupplierInvoice", 0.65, "Invoice appears addressed to PH Trading by a supplier")
+		}
 		return c.createHeuristicResult("Invoice", 0.6, "Filename contains 'invoice'")
 	}
 	if strings.Contains(lowerFilename, "rfq") || strings.Contains(lowerFilename, "tender") {
@@ -415,11 +479,38 @@ func (c *DocumentClassifier) classifyByHeuristics(text string, filename string) 
 	if strings.Contains(lowerFilename, "contract") || strings.Contains(lowerFilename, "agreement") {
 		return c.createHeuristicResult("Contract", 0.6, "Filename contains 'contract' or 'agreement'")
 	}
+	if strings.Contains(lowerFilename, "statement") && strings.Contains(lowerFilename, "bank") {
+		return c.createHeuristicResult("BankStatement", 0.7, "Filename contains 'bank statement'")
+	}
+	if strings.Contains(lowerFilename, "report") || strings.Contains(lowerFilename, "summary") {
+		return c.createHeuristicResult("Report", 0.6, "Filename contains 'report' or 'summary'")
+	}
+	if strings.Contains(lowerFilename, "delivery") || strings.Contains(lowerFilename, "packing") {
+		return c.createHeuristicResult("DeliveryNote", 0.6, "Filename contains delivery/shipping terms")
+	}
 	if strings.Contains(lowerFilename, "po") || strings.Contains(lowerFilename, "purchase") {
-		return c.createHeuristicResult("PO", 0.6, "Filename contains 'po' or 'purchase'")
+		return c.createHeuristicResult("PurchaseOrder", 0.6, "Filename contains 'po' or 'purchase'")
 	}
 
 	// Heuristic 2: Text patterns
+
+	if regexp.MustCompile(`(?i)(bank statement|account statement|opening balance|closing balance|running balance)`).MatchString(lowerText) &&
+		regexp.MustCompile(`(?i)(debit|credit|balance)`).MatchString(lowerText) {
+		return c.createHeuristicResult("BankStatement", 0.85, "Contains bank statement balances and transaction columns")
+	}
+
+	if regexp.MustCompile(`(?i)(delivery note|dispatch note|packing list|consignment note)`).MatchString(lowerText) {
+		return c.createHeuristicResult("DeliveryNote", 0.75, "Contains delivery/shipping document markers")
+	}
+
+	if regexp.MustCompile(`(?i)(monthly report|weekly report|management report|executive summary|performance report|analysis report)`).MatchString(lowerText) {
+		return c.createHeuristicResult("Report", 0.7, "Contains report-style summary terminology")
+	}
+
+	if strings.Contains(lowerText, "invoice") && strings.Contains(lowerText, "ph trading") &&
+		regexp.MustCompile(`(?i)(bill to|ship to|vendor|seller|issued by)`).MatchString(lowerText) {
+		return c.createHeuristicResult("SupplierInvoice", 0.72, "Invoice appears to be received from a supplier")
+	}
 
 	// Look for currency symbols and amounts (likely Invoice or Quotation)
 	currencyPattern := regexp.MustCompile(`[$£€¥]\s*\d+|(?i)(amount|total|price):\s*\d+`)
@@ -484,13 +575,25 @@ func (c *DocumentClassifier) addRoutingInfo(result *ClassificationResult) {
 		result.RouteTo = "inbox"
 		result.SuggestedAction = "Flag for contract review (placeholder for future contract module)"
 
-	case "PO":
+	case "PurchaseOrder":
 		result.RouteTo = "orders"
 		result.SuggestedAction = "Create order in Orders screen"
+
+	case "SupplierInvoice":
+		result.RouteTo = "finance"
+		result.SuggestedAction = "Record supplier invoice and match to PO"
+
+	case "DeliveryNote":
+		result.RouteTo = "operations"
+		result.SuggestedAction = "Record delivery note and update fulfillment"
 
 	case "BankStatement":
 		result.RouteTo = "finance"
 		result.SuggestedAction = "Import bank statement for reconciliation"
+
+	case "Report":
+		result.RouteTo = "intelligence"
+		result.SuggestedAction = "Store as reference report for manual review"
 
 	default:
 		result.RouteTo = "inbox"
@@ -528,6 +631,7 @@ Classify the document into exactly ONE of these types:
 - DeliveryNote (delivery note, packing list, dispatch note)
 - BankStatement (bank account statement, transaction history, account summary)
 - Contract (agreement, terms & conditions, service contract)
+- Report (management report, summary report, analytical report, dashboard export)
 - Other (cannot determine type)
 
 IMPORTANT CLASSIFICATION RULES:
@@ -537,6 +641,7 @@ IMPORTANT CLASSIFICATION RULES:
 - RFQs contain: requests for pricing, item lists WITHOUT prices, submission deadlines
 - Quotations contain: offered prices, validity period, terms & conditions
 - Supplier invoices have PH Trading as the RECIPIENT (bill-to)
+- Reports contain summaries, analytics, charts, KPIs, dashboards, commentary, or executive/management headings rather than transactional line items
 
 Respond with ONLY a JSON object, no markdown fences or explanation:
 {"type": "BankStatement", "confidence": 0.95, "reason": "Contains account number, opening/closing balance, credit and debit columns"}`
@@ -573,7 +678,7 @@ Respond with ONLY a JSON object, no markdown fences or explanation:
 	validTypes := map[string]bool{
 		"RFQ": true, "Invoice": true, "SupplierInvoice": true,
 		"PurchaseOrder": true, "Quotation": true, "DeliveryNote": true,
-		"BankStatement": true, "Contract": true, "Other": true,
+		"BankStatement": true, "Contract": true, "Report": true, "Other": true,
 	}
 	if !validTypes[aiResult.Type] {
 		log.Printf("⚠️ AI returned unexpected type '%s', falling back to regex", aiResult.Type)
@@ -621,6 +726,9 @@ func addAIRoutingInfo(result *ClassificationResult) {
 	case "Contract":
 		result.RouteTo = "inbox"
 		result.SuggestedAction = "Flag for contract review"
+	case "Report":
+		result.RouteTo = "intelligence"
+		result.SuggestedAction = "Store report for reference and manual review"
 	default:
 		result.RouteTo = "inbox"
 		result.SuggestedAction = "Review document manually"
@@ -656,8 +764,8 @@ func (a *App) GetClassificationStats() (map[string]interface{}, error) {
 	}
 
 	var stats struct {
-		Total       int64
-		ByType      map[string]int64
+		Total        int64
+		ByType       map[string]int64
 		ByConfidence map[string]int64
 	}
 
@@ -692,9 +800,9 @@ func (a *App) GetClassificationStats() (map[string]interface{}, error) {
 	stats.ByConfidence["low (<50%)"] = lowConf
 
 	return map[string]interface{}{
-		"total":          stats.Total,
-		"by_type":        stats.ByType,
-		"by_confidence":  stats.ByConfidence,
+		"total":         stats.Total,
+		"by_type":       stats.ByType,
+		"by_confidence": stats.ByConfidence,
 	}, nil
 }
 
@@ -918,36 +1026,9 @@ func (s *FilesystemDocumentClassifierService) classifyDocument(fullPath string, 
 
 // determineDocumentType applies pattern matching to classify document
 func (s *FilesystemDocumentClassifierService) determineDocumentType(fileName, fileNameLower, ext, folderPath, parentFolder string) string {
-	// Check folder-based classification first (stronger signal)
-	folderPathLower := strings.ToLower(folderPath)
-	parentFolderLower := strings.ToLower(parentFolder)
-
-	// RFQ folder detection
-	if strings.Contains(folderPathLower, "rfq") || strings.Contains(parentFolderLower, "rfq") {
-		if ext == ".msg" || ext == ".eml" {
-			return "RFQ_EMAIL"
-		}
-		if ext == ".pdf" || ext == ".docx" || ext == ".doc" {
-			return "RFQ_DOCUMENT"
-		}
-	}
-
-	// Offer folder detection
-	if strings.Contains(folderPathLower, "offer") || strings.Contains(parentFolderLower, "offer") {
-		if ext == ".pdf" {
-			return "COMMERCIAL_OFFER"
-		}
-	}
-
-	// Execution/Shipment folder detection
-	if strings.Contains(folderPathLower, "execution") || strings.Contains(folderPathLower, "shipment") ||
-		strings.Contains(parentFolderLower, "execution") || strings.Contains(parentFolderLower, "shipment") {
-		if ext == ".pdf" {
-			return "SHIPPING_DOC"
-		}
-	}
-
-	// Pattern-based classification
+	// Strong filename/document-specific signals should win over generic stage folders.
+	// RFQ/OFFER/EXECUTION folders are useful context, but they should not override an
+	// invoice, PO acknowledgement, delivery note, or technical datasheet filename.
 
 	// Invoice detection
 	for _, pattern := range s.invoicePatterns {
@@ -993,6 +1074,45 @@ func (s *FilesystemDocumentClassifierService) determineDocumentType(fileName, fi
 		}
 	}
 
+	// Check folder-based classification next
+	folderPathLower := strings.ToLower(folderPath)
+	parentFolderLower := strings.ToLower(parentFolder)
+
+	// RFQ folder detection
+	if strings.Contains(folderPathLower, "rfq") || strings.Contains(parentFolderLower, "rfq") {
+		if ext == ".msg" || ext == ".eml" {
+			return "RFQ_EMAIL"
+		}
+		for _, pattern := range s.rfqPatterns {
+			if pattern.MatchString(fileName) {
+				return "RFQ_DOCUMENT"
+			}
+		}
+		for _, pattern := range s.technicalPatterns {
+			if pattern.MatchString(fileName) {
+				return "TECHNICAL_DOC"
+			}
+		}
+		if ext == ".pdf" || ext == ".docx" || ext == ".doc" {
+			return "RFQ_DOCUMENT"
+		}
+	}
+
+	// Offer folder detection
+	if strings.Contains(folderPathLower, "offer") || strings.Contains(parentFolderLower, "offer") {
+		if ext == ".pdf" {
+			return "COMMERCIAL_OFFER"
+		}
+	}
+
+	// Execution/Shipment folder detection
+	if strings.Contains(folderPathLower, "execution") || strings.Contains(folderPathLower, "shipment") ||
+		strings.Contains(parentFolderLower, "execution") || strings.Contains(parentFolderLower, "shipment") {
+		if ext == ".pdf" {
+			return "SHIPPING_DOC"
+		}
+	}
+
 	// RFQ documents
 	for _, pattern := range s.rfqPatterns {
 		if pattern.MatchString(fileName) {
@@ -1000,13 +1120,6 @@ func (s *FilesystemDocumentClassifierService) determineDocumentType(fileName, fi
 				return "RFQ_EMAIL"
 			}
 			return "RFQ_DOCUMENT"
-		}
-	}
-
-	// Commercial offers
-	for _, pattern := range s.offerPatterns {
-		if pattern.MatchString(fileName) {
-			return "COMMERCIAL_OFFER"
 		}
 	}
 
@@ -1021,6 +1134,13 @@ func (s *FilesystemDocumentClassifierService) determineDocumentType(fileName, fi
 	for _, pattern := range s.technicalPatterns {
 		if pattern.MatchString(fileName) {
 			return "TECHNICAL_DOC"
+		}
+	}
+
+	// Commercial offers
+	for _, pattern := range s.offerPatterns {
+		if pattern.MatchString(fileName) {
+			return "COMMERCIAL_OFFER"
 		}
 	}
 

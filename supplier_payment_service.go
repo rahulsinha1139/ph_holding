@@ -20,6 +20,9 @@ func (a *App) RecordSupplierPayment(invoiceID string, amount float64, currency, 
 	if err := a.requirePermission("payments:record"); err != nil {
 		return nil, err
 	}
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
 
 	// Validate invoice exists
 	var invoice SupplierInvoice

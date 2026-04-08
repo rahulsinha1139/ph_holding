@@ -69,7 +69,7 @@ type OCRResultSimple struct {
 	Confidence       float64                `json:"confidence"`
 	DocumentType     string                 `json:"document_type"`
 	ExtractedData    map[string]interface{} `json:"extracted_data"`
-	ExtractedFields  map[string]interface{} `json:"extracted_fields"`          // Alias for legacy compatibility
+	ExtractedFields  map[string]interface{} `json:"extracted_fields"` // Alias for legacy compatibility
 	ProcessingTime   int64                  `json:"processing_time_ms"`
 	ProcessingTimeMS int64                  `json:"processing_time_ms_legacy"` // Alias for legacy compatibility
 	Engine           string                 `json:"engine"`                    // "pymupdf" or "fly-runtime"
@@ -275,7 +275,7 @@ func (s *SimpleOCRService) ProcessDocument(filePath, docType string) (result *OC
 		return result, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported file type: %s (supported: .pdf, .xlsx, .docx, .rtf, .msg, .eml, .png, .jpg, .jpeg, .bmp, .tiff)", ext)
+		return nil, fmt.Errorf("unsupported file type: %s (supported: %s)", ext, strings.Join(supportedOCRFileExtensions(), ", "))
 	}
 }
 
@@ -1185,8 +1185,8 @@ func (s *SimpleOCRService) callFlyOCR(filePath, docType string) (*OCRResultSimpl
 
 	// Parse response from .NET Runtime - flexible structure to handle various response formats
 	var response struct {
-		Success   bool `json:"success"`
-		Data      struct {
+		Success bool `json:"success"`
+		Data    struct {
 			InvoiceNumber string  `json:"invoice_number"`
 			InvoiceDate   string  `json:"invoice_date"`
 			CustomerName  string  `json:"customer_name"`
@@ -1201,7 +1201,7 @@ func (s *SimpleOCRService) callFlyOCR(filePath, docType string) (*OCRResultSimpl
 			Text       string `json:"text"`
 		} `json:"pages"`
 		PageCount int    `json:"page_count"`
-		Text      string `json:"text"`  // Top-level text field
+		Text      string `json:"text"`     // Top-level text field
 		RawText   string `json:"raw_text"` // Top-level raw_text field
 		Error     string `json:"error"`
 	}
@@ -1412,34 +1412,34 @@ func extractFieldsFromText(text, docType string) map[string]interface{} {
 		// PO fields (common formats: PO 12345, P.O. #123, Purchase Order 4500019873)
 		"po_number": regexp.MustCompile(`(?i)(?:p\.?\s*o\.?|purchase\s*order|order\s*(?:no|number|#))[\s#:.\-]*(?:no\.?|number|#)?[\s#:.\-]*([A-Z0-9][\w\-/]{3,20})`),
 		// RFQ fields (formats: RFQ-5592, RFQ# 10951459, Enquiry 215-24, Request for Quotation Code rfq_56121)
-		"rfq_number":        regexp.MustCompile(`(?i)(?:rfq|enquiry|inquiry|tender|request\s*for\s*quot\w*|quotation\s*code)[\s#:.\-]*(?:no\.?|number|#|ref|code)?[\s#:.\-]*([A-Z0-9][\w\-/_]{2,25})`),
-		"rfq_reference":     regexp.MustCompile(`(?i)(?:ref\.?|reference|our\s*ref|your\s*ref)[\s#:.\-]*([A-Z0-9][\w\-/]{3,30})`),
-		"quotation_number":  regexp.MustCompile(`(?i)(?:quot(?:ation)?|offer|qtn)[\s#:.\-]*(?:no\.?|number|#|ref)?[\s#:.\-]*([A-Z0-9][\w\-/]{2,20})`),
-		"project":           regexp.MustCompile(`(?i)(?:project|subject|re[:\s]|regarding|description)[\s:.\-]*\n?\s*([A-Za-z0-9][A-Za-z0-9\s&.,'\-()]+?)(?:\n|$)`),
-		"delivery_date":     regexp.MustCompile(`(?i)(?:delivery\s*date|required\s*(?:date|by)|need\s*by|expected\s*delivery|target\s*date)[\s:.\-]*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}|\d{1,2}\s+\w+\s+\d{2,4})`),
-		"validity":          regexp.MustCompile(`(?i)(?:validity|valid\s*(?:for|until)|offer\s*valid)[\s:.\-]*(\d+\s*(?:days?|weeks?|months?)|until\s+\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})`),
-		"bid_deadline":      regexp.MustCompile(`(?i)(?:bid\s*deadline|submission\s*date|closing\s*date|submit\s*by)[\s:.\-]*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})`),
+		"rfq_number":       regexp.MustCompile(`(?i)(?:rfq|enquiry|inquiry|tender|request\s*for\s*quot\w*|quotation\s*code)[\s#:.\-]*(?:no\.?|number|#|ref|code)?[\s#:.\-]*([A-Z0-9][\w\-/_]{2,25})`),
+		"rfq_reference":    regexp.MustCompile(`(?i)(?:ref\.?|reference|our\s*ref|your\s*ref)[\s#:.\-]*([A-Z0-9][\w\-/]{3,30})`),
+		"quotation_number": regexp.MustCompile(`(?i)(?:quot(?:ation)?|offer|qtn)[\s#:.\-]*(?:no\.?|number|#|ref)?[\s#:.\-]*([A-Z0-9][\w\-/]{2,20})`),
+		"project":          regexp.MustCompile(`(?i)(?:project|subject|re[:\s]|regarding|description)[\s:.\-]*\n?\s*([A-Za-z0-9][A-Za-z0-9\s&.,'\-()]+?)(?:\n|$)`),
+		"delivery_date":    regexp.MustCompile(`(?i)(?:delivery\s*date|required\s*(?:date|by)|need\s*by|expected\s*delivery|target\s*date)[\s:.\-]*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}|\d{1,2}\s+\w+\s+\d{2,4})`),
+		"validity":         regexp.MustCompile(`(?i)(?:validity|valid\s*(?:for|until)|offer\s*valid)[\s:.\-]*(\d+\s*(?:days?|weeks?|months?)|until\s+\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})`),
+		"bid_deadline":     regexp.MustCompile(`(?i)(?:bid\s*deadline|submission\s*date|closing\s*date|submit\s*by)[\s:.\-]*(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4})`),
 		// Parties (Bahrain companies: BAPCO, Alba, GPIC, Arla, etc.)
-		"customer_name":     regexp.MustCompile(`(?i)(?:bill\s*to|customer|client|sold\s*to|attention|attn|dear\s+(?:sir|madam|mr|ms))[\s:.\-]*\n?\s*([A-Za-z0-9][A-Za-z0-9\s&.,'\-()]+?)(?:\n|$)`),
-		"supplier_name":     regexp.MustCompile(`(?i)(?:from|supplier|vendor|ship\s*from|manufacturer|oem)[\s:.\-]*\n?\s*([A-Za-z0-9][A-Za-z0-9\s&.,'\-()]+?)(?:\n|$)`),
-		"contact_person":    regexp.MustCompile(`(?i)(?:contact|attention|attn|contact\s*person)[\s:.\-]*\n?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})`),
-		"contact_email":     regexp.MustCompile(`(?i)([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})`),
-		"contact_phone":     regexp.MustCompile(`(?i)(?:tel|phone|mobile|fax)[\s:.\-]*([+\d][\d\s\-()]{7,20})`),
+		"customer_name":  regexp.MustCompile(`(?i)(?:bill\s*to|customer|client|sold\s*to|attention|attn|dear\s+(?:sir|madam|mr|ms))[\s:.\-]*\n?\s*([A-Za-z0-9][A-Za-z0-9\s&.,'\-()]+?)(?:\n|$)`),
+		"supplier_name":  regexp.MustCompile(`(?i)(?:from|supplier|vendor|ship\s*from|manufacturer|oem)[\s:.\-]*\n?\s*([A-Za-z0-9][A-Za-z0-9\s&.,'\-()]+?)(?:\n|$)`),
+		"contact_person": regexp.MustCompile(`(?i)(?:contact|attention|attn|contact\s*person)[\s:.\-]*\n?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})`),
+		"contact_email":  regexp.MustCompile(`(?i)([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})`),
+		"contact_phone":  regexp.MustCompile(`(?i)(?:tel|phone|mobile|fax)[\s:.\-]*([+\d][\d\s\-()]{7,20})`),
 		// Financials (BHD = Bahraini Dinar, 3 decimal places)
-		"total":             regexp.MustCompile(`(?i)(?:total|grand\s*total|amount\s*due|balance\s*due|net\s*amount|total\s*price)[\s:]*(?:BHD|BD|USD|\$|£|€)?\s*([\d,]+\.?\d{0,3})`),
-		"subtotal":          regexp.MustCompile(`(?i)(?:sub\s*total|net\s*total|total\s*before)[\s:]*(?:BHD|BD|USD|\$|£|€)?\s*([\d,]+\.?\d{0,3})`),
-		"vat":               regexp.MustCompile(`(?i)(?:vat|tax|gst)[\s:@]*(?:\d+%)?[\s:]*(?:BHD|BD|USD|\$|£|€)?\s*([\d,]+\.?\d{0,3})`),
-		"unit_price":        regexp.MustCompile(`(?i)(?:unit\s*price|price\s*each|rate)[\s:]*(?:BHD|BD|USD|\$|£|€)?\s*([\d,]+\.?\d{0,3})`),
-		"currency":          regexp.MustCompile(`(?i)\b(BHD|BD|USD|EUR|GBP|AED)\b`),
+		"total":      regexp.MustCompile(`(?i)(?:total|grand\s*total|amount\s*due|balance\s*due|net\s*amount|total\s*price)[\s:]*(?:BHD|BD|USD|\$|£|€)?\s*([\d,]+\.?\d{0,3})`),
+		"subtotal":   regexp.MustCompile(`(?i)(?:sub\s*total|net\s*total|total\s*before)[\s:]*(?:BHD|BD|USD|\$|£|€)?\s*([\d,]+\.?\d{0,3})`),
+		"vat":        regexp.MustCompile(`(?i)(?:vat|tax|gst)[\s:@]*(?:\d+%)?[\s:]*(?:BHD|BD|USD|\$|£|€)?\s*([\d,]+\.?\d{0,3})`),
+		"unit_price": regexp.MustCompile(`(?i)(?:unit\s*price|price\s*each|rate)[\s:]*(?:BHD|BD|USD|\$|£|€)?\s*([\d,]+\.?\d{0,3})`),
+		"currency":   regexp.MustCompile(`(?i)\b(BHD|BD|USD|EUR|GBP|AED)\b`),
 		// Delivery note fields
-		"dn_number":         regexp.MustCompile(`(?i)(?:delivery\s*note|dn|dispatch\s*note|packing\s*list)[\s#:.\-]*(?:no\.?|number|#)?[\s#:.\-]*([A-Z0-9][\w\-/]{2,15})`),
-		"tracking":          regexp.MustCompile(`(?i)(?:tracking|awb|waybill|shipment)[\s#:.\-]*(?:no\.?|number|#)?[\s#:.\-]*([A-Z0-9][\w\-]{5,25})`),
+		"dn_number": regexp.MustCompile(`(?i)(?:delivery\s*note|dn|dispatch\s*note|packing\s*list)[\s#:.\-]*(?:no\.?|number|#)?[\s#:.\-]*([A-Z0-9][\w\-/]{2,15})`),
+		"tracking":  regexp.MustCompile(`(?i)(?:tracking|awb|waybill|shipment)[\s#:.\-]*(?:no\.?|number|#)?[\s#:.\-]*([A-Z0-9][\w\-]{5,25})`),
 		// Product/Item fields (common in instrumentation: Endress+Hauser, Servomex codes)
-		"part_number":       regexp.MustCompile(`(?i)(?:part\s*(?:no\.?|number|#)|item\s*(?:no\.?|code)|model|sku|material)[\s#:.\-]*([A-Z0-9][\w\-+/]{3,30})`),
-		"quantity":          regexp.MustCompile(`(?i)(?:qty\.?|quantity|nos\.?|pcs\.?)[\s:.\-]*(\d+)`),
+		"part_number": regexp.MustCompile(`(?i)(?:part\s*(?:no\.?|number|#)|item\s*(?:no\.?|code)|model|sku|material)[\s#:.\-]*([A-Z0-9][\w\-+/]{3,30})`),
+		"quantity":    regexp.MustCompile(`(?i)(?:qty\.?|quantity|nos\.?|pcs\.?)[\s:.\-]*(\d+)`),
 		// Bahrain-specific (CR number, VAT number)
-		"cr_number":         regexp.MustCompile(`(?i)(?:cr|c\.r\.|commercial\s*registration)[\s#:.\-]*(\d{4,10})`),
-		"vat_number":        regexp.MustCompile(`(?i)(?:vat\s*(?:no\.?|number|reg)|tax\s*(?:no\.?|id))[\s#:.\-]*(\d{9,15})`),
+		"cr_number":  regexp.MustCompile(`(?i)(?:cr|c\.r\.|commercial\s*registration)[\s#:.\-]*(\d{4,10})`),
+		"vat_number": regexp.MustCompile(`(?i)(?:vat\s*(?:no\.?|number|reg)|tax\s*(?:no\.?|id))[\s#:.\-]*(\d{9,15})`),
 	}
 
 	// Extract each field
@@ -1492,6 +1492,9 @@ func detectDocumentTypeFromText(text string) string {
 		"purchase_order":   0,
 		"delivery_note":    0,
 		"supplier_invoice": 0,
+		"bank_statement":   0,
+		"report":           0,
+		"other":            0,
 	}
 
 	// Invoice keywords
@@ -1574,8 +1577,30 @@ func detectDocumentTypeFromText(text string) string {
 		scores["supplier_invoice"] += scores["invoice"]
 	}
 
+	// Bank statement keywords
+	bankKeywords := []string{"bank statement", "account statement", "opening balance", "closing balance", "running balance", "available balance", "account number", "value date"}
+	for _, kw := range bankKeywords {
+		if strings.Contains(lower, kw) {
+			scores["bank_statement"] += 2
+		}
+	}
+	if strings.Contains(lower, "debit") && strings.Contains(lower, "credit") && strings.Contains(lower, "balance") {
+		scores["bank_statement"] += 4
+	}
+
+	// Report keywords
+	reportKeywords := []string{"monthly report", "weekly report", "management report", "executive summary", "analysis report", "summary report", "performance report", "dashboard report"}
+	for _, kw := range reportKeywords {
+		if strings.Contains(lower, kw) {
+			scores["report"] += 2
+		}
+	}
+	if strings.Contains(lower, "kpi") && (strings.Contains(lower, "summary") || strings.Contains(lower, "analysis")) {
+		scores["report"] += 3
+	}
+
 	// Find highest scoring type
-	best := "invoice" // Default
+	best := "other"
 	bestScore := 0
 	for docType, score := range scores {
 		if score > bestScore {

@@ -40,9 +40,19 @@ func setupPaymentTestApp(t *testing.T) *App {
 	app := &App{
 		db:               db,
 		cache:            NewCache(),
-		startupImporting: true, // Bypass RBAC for testing
+		startupImporting: false,
+		startupImportStartTime: time.Now(),
 		currentUserID:    "test-user",
-		currentUser:      &User{Base: Base{ID: "test-user"}, Username: "test-admin"},
+		currentUser: &User{
+			Base:     Base{ID: "test-user"},
+			Username: "test-admin",
+			RoleName: "admin",
+			Role: Role{
+				Name:        "admin",
+				DisplayName: "Administrator",
+				Permissions: `["*"]`,
+			},
+		},
 	}
 	return app
 }

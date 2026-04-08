@@ -67,7 +67,7 @@ func (a *App) GenerateButlerReport(reportType string, query string) (string, err
 
 	if requiresFinanceAccess {
 		userRole := a.GetCurrentUserRole()
-		hasFinanceAccess := a.CheckPermissionByRole(userRole, "finance:view")
+		hasFinanceAccess := a.currentSessionHasPermission("finance:view")
 
 		if !hasFinanceAccess {
 			log.Printf("🔒 Butler report generation blocked: type=%s user_role=%s lacks finance:view", reportType, userRole)
@@ -333,9 +333,7 @@ func (a *App) generateIntelligenceReportPDF(reportType, query string, context ma
 	}
 
 	// Save
-	paths := a.getAppPaths()
-	exportDir := filepath.Join(paths.ProjectRoot, "exports", "intelligence")
-	os.MkdirAll(exportDir, 0755)
+	exportDir := a.getExportDir("report", "", "", time.Now().Year())
 
 	timestamp := time.Now().Format("20060102_150405")
 	// Sanitize query: only allow alphanumeric, underscore, and hyphen (prevent path traversal)

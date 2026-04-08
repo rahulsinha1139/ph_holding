@@ -219,6 +219,16 @@ func (a *App) UpdateDeliveryNote(dn DeliveryNote) (DeliveryNote, error) {
 	// Strip Status from input — status changes must go through DispatchDeliveryNote/ConfirmDeliveryNote
 	dn.Status = ""
 
+	// Allow DN number edit in Prepared status with uniqueness check
+	if dn.DNNumber != "" && dn.DNNumber != existing.DNNumber {
+		var count int64
+		a.db.Model(&DeliveryNote{}).Where("dn_number = ? AND id != ?", dn.DNNumber, dn.ID).Count(&count)
+		if count > 0 {
+			return DeliveryNote{}, newError("DN_NUMBER_EXISTS",
+				fmt.Sprintf("Delivery note number %s already exists", dn.DNNumber), "")
+		}
+	}
+
 	// Update with transaction to handle items
 	tx := a.db.Begin()
 	defer func() {

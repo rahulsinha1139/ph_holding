@@ -2,7 +2,7 @@
     import { onMount, onDestroy } from 'svelte';
     import { fade } from 'svelte/transition';
     import { toast } from '$lib/stores/toasts';
-    import { currentUser } from '../stores/authContext';
+    import { currentUser, permissions } from '../stores/authContext';
     import { devLog } from '$lib/utils/devLog';
     import {
         GetDashboardStats,
@@ -39,7 +39,10 @@
     // KPI Stats - mapped from backend DashboardStats
     let stats = {
         totalRevenue: 0,
+        revenueMeta: "Live business value",
         revenueGrowth: 0,
+        activityYear: new Date().getFullYear(),
+        activeRFQs: 0,
         activeOrders: 0,
         outstandingAR: 0,
         arDaysOverdue: 0,
@@ -52,6 +55,7 @@
 
     let todaysTasks: main.FollowUpTask[] = [];
     let focusCardTasks: UITask[] = [];
+    $: canViewTasks = $permissions.includes('*') || $permissions.includes('tasks:view');
 
     // Action Items data
     interface ActionItem {
@@ -62,13 +66,7 @@
         urgent: boolean;
     }
 
-    let actionItems: ActionItem[] = [
-        { icon: '', title: 'Overdue Invoices', count: 12, screen: 'invoices', urgent: true },
-        { icon: '', title: 'Pending RFQ Responses', count: 5, screen: 'rfqs', urgent: false },
-        { icon: '', title: 'GRN Pending QC', count: 3, screen: 'grns', urgent: false },
-        { icon: '', title: 'Contracts Expiring', count: 2, screen: 'contracts', urgent: true },
-        { icon: '', title: 'Low Stock Alerts', count: 8, screen: 'products', urgent: false },
-    ];
+    let actionItems: ActionItem[] = [];
 
     async function loadData() {
         loading = true;
@@ -76,7 +74,10 @@
             const dashStats = await GetDashboardStats();
             if (dashStats) {
                 stats.totalRevenue = dashStats.total_revenue || 0;
+                stats.revenueMeta = dashStats.revenue_meta || `Live business value FY${dashStats.activity_year || new Date().getFullYear()}`;
                 stats.revenueGrowth = dashStats.month_growth || 0;
+                stats.activityYear = dashStats.activity_year || new Date().getFullYear();
+                stats.activeRFQs = dashStats.active_rfqs || 0;
                 stats.activeOrders = dashStats.active_orders || 0;
                 stats.outstandingAR = dashStats.outstanding_ar || 0;
                 stats.arDaysOverdue = dashStats.ar_days_overdue || 0;
@@ -85,13 +86,26 @@
                 stats.winRate = dashStats.win_rate || 0;
             }
 
-            const tasks = await ListFollowUps(50);
-            if (tasks) {
-                todaysTasks = tasks;
-                mapTasksToFocusCard(tasks);
-                stats.tasksTotal = todaysTasks.length;
-                stats.tasksCompleted = todaysTasks.filter(t => t.status === 'completed').length;
+            if (canViewTasks) {
+                const tasks = await ListFollowUps(50);
+                if (tasks) {
+                    todaysTasks = tasks;
+                    mapTasksToFocusCard(tasks);
+                    stats.tasksTotal = todaysTasks.length;
+                    stats.tasksCompleted = todaysTasks.filter(t => t.status === 'completed').length;
+                }
+            } else {
+                todaysTasks = [];
+                focusCardTasks = [];
+                stats.tasksTotal = 0;
+                stats.tasksCompleted = 0;
             }
+
+            actionItems = [
+                { icon: '', title: 'Overdue Invoices', count: stats.pendingInvoices, screen: 'finance', urgent: stats.arDaysOverdue > 30 || stats.pendingInvoices > 0 },
+                { icon: '', title: 'Open Opportunities', count: stats.activeRFQs, screen: 'opportunities', urgent: false },
+                { icon: '', title: 'Active Orders', count: stats.activeOrders, screen: 'operations', urgent: false },
+            ];
         } catch (err) {
             const errorMsg = err?.message || String(err);
             toast.danger(`Failed to load dashboard data: ${errorMsg}`);
@@ -232,7 +246,7 @@
         if (ocrSaving) return;
         ocrSaving = true;
 
-        const { type, screen, result, fileName, documentData, customerName, projectName, estimatedValue, lineItems, butlerInsights } = event.detail;
+        const { type, screen, result, fileName, documentData, customerName, projectName, estimatedValue, lineItems, butlerInsights, customerId, supplierId } = event.detail;
         devLog.info('Saving OCR document:', { type, fileName, customerName, projectName });
 
         try {
@@ -240,6 +254,8 @@
             const extractedData = {
                 customer_name: customerName || documentData?.customer_name || '',
                 supplier_name: documentData?.supplier_name || '',
+                customer_id: customerId || documentData?.customer_id || '',
+                supplier_id: supplierId || documentData?.supplier_id || '',
                 project: projectName || documentData?.project || fileName,
                 total: estimatedValue || documentData?.total || 0,
                 notes: documentData?.notes || '',
@@ -249,11 +265,14 @@
                 // Include other fields for specific doc types
                 invoice_number: documentData?.invoice_number || '',
                 po_number: documentData?.po_number || '',
+                rfq_number: documentData?.rfq_number || '',
                 invoice_date: documentData?.invoice_date || '',
                 delivery_date: documentData?.delivery_date || '',
                 due_date: documentData?.due_date || '',
                 vat: documentData?.vat || '',
                 currency: documentData?.currency || 'BHD',
+                payment_terms: documentData?.payment_terms || '',
+                delivery_terms: documentData?.delivery_terms || '',
                 // Bank statement specific fields
                 bank_name: documentData?.bank_name || '',
                 account_number: documentData?.account_number || '',
@@ -263,8 +282,7 @@
                 period_end: documentData?.period_end || '',
             };
 
-            // Use SaveDocumentToEntity to route to correct domain table (RFQ, Invoice, etc.)
-            const saveResult = await SaveDocumentToEntity(
+            const runSave = () => SaveDocumentToEntity(
                 fileName,
                 '',
                 type,
@@ -274,6 +292,24 @@
                 result?.engine || 'unknown',
                 JSON.stringify(extractedData)
             );
+
+            let saveResult;
+            try {
+                saveResult = await runSave();
+            } catch (err) {
+                const errorMsg = err?.message || String(err);
+                if (type === 'bank_statement' && errorMsg.toLowerCase().includes('duplicate bank statement exists')) {
+                    const shouldReplace = confirm(`${errorMsg}\n\nDo you want to replace the existing bank statement?`);
+                    if (!shouldReplace) {
+                        toast.info('Bank statement save cancelled');
+                        return;
+                    }
+                    extractedData.replace_existing = true;
+                    saveResult = await runSave();
+                } else {
+                    throw err;
+                }
+            }
 
             const entityName = type.charAt(0).toUpperCase() + type.slice(1).replace(/_/g, ' ');
             if (saveResult?.routed) {
@@ -302,6 +338,14 @@
         ocrResult = null;
         ocrFileName = '';
         ocrProcessing = false;
+    }
+
+    function handleViewExistingOCRRecord() {
+        showOCRModal = false;
+        ocrResult = null;
+        ocrFileName = '';
+        ocrProcessing = false;
+        window.location.hash = '/opportunities';
     }
 
     function navigateToScreen(screen: string) {
@@ -402,9 +446,16 @@
                 <KPICard
                     label="Total Revenue (YTD)"
                     value={formatCurrency(stats.totalRevenue)}
-                    meta="Paid Invoices"
+                    meta={stats.revenueMeta}
                     trend={stats.revenueGrowth > 0 ? 'up' : stats.revenueGrowth < 0 ? 'down' : 'neutral'}
                     accent
+                />
+
+                <!-- Open Opportunities -->
+                <KPICard
+                    label="Open Opportunities"
+                    value={String(stats.activeRFQs)}
+                    meta="Live Pipeline"
                 />
 
                 <!-- Active Orders -->
@@ -524,6 +575,7 @@
     ocrResult={ocrResult}
     fileName={ocrFileName}
     on:save={handleOCRSave}
+    on:viewRFQ={handleViewExistingOCRRecord}
     on:close={handleOCRModalClose}
 />
 
@@ -562,13 +614,22 @@
     /* KPI GRID - Responsive 6-column layout */
     .kpi-grid {
         display: grid;
-        grid-template-columns: repeat(6, 1fr);
-        gap: var(--grid-gap);
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: calc(var(--grid-gap) + 2px);
+        align-items: stretch;
+    }
+
+    .kpi-grid :global(.kpi-card) {
+        min-height: clamp(112px, 13vh, 132px);
+    }
+
+    .kpi-grid :global(.card) {
+        padding: 14px 16px;
     }
 
     @media (max-width: 1600px) {
         .kpi-grid {
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(4, 1fr);
         }
     }
 
@@ -585,6 +646,7 @@
         gap: var(--grid-gap);
         flex: 1;
         min-height: 0;
+        align-items: stretch;
     }
 
     .grid-col {
@@ -592,6 +654,11 @@
         flex-direction: column;
         gap: var(--grid-gap);
         min-height: 0;
+    }
+
+    .grid-col :global(.focus-card),
+    .grid-col :global(.card) {
+        min-height: 320px;
     }
 
     /* CUSTOM ELEMENTS INSIDE COMPONENTS */

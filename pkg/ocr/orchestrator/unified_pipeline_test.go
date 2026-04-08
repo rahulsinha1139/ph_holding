@@ -12,8 +12,11 @@ import (
 // skipIfNoOCRAPI skips tests that require external OCR APIs
 func skipIfNoOCRAPI(t *testing.T) {
 	t.Helper()
-	// Skip if FLY_OCR_URL or AIMLAPI_KEY is not set
-	// These tests require external API access
+	// These tests hit real external OCR services and should only run when
+	// explicitly enabled in an environment with network access.
+	if os.Getenv("RUN_EXTERNAL_OCR_TESTS") != "1" {
+		t.Skip("Skipping test: set RUN_EXTERNAL_OCR_TESTS=1 to run external OCR integration tests")
+	}
 	if os.Getenv("FLY_OCR_URL") == "" && os.Getenv("AIMLAPI_KEY") == "" {
 		t.Skip("Skipping test: OCR API not configured (set FLY_OCR_URL or AIMLAPI_KEY)")
 	}

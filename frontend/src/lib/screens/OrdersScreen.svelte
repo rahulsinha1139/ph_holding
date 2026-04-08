@@ -13,7 +13,8 @@
     CreateInvoiceFromOrder,
     CreateProformaInvoice,
     CreatePOFromOrder,
-    QuickMarkOrderDelivered
+    QuickMarkOrderDelivered,
+    GetOrdersWithNoItems
   } from '../../../wailsjs/go/main/App';
   import { toast } from '$lib/stores/toasts';
   import { pendingDNCreate } from '$lib/stores/navigation';
@@ -28,6 +29,7 @@
   import FormGroup from '$lib/components/ui/FormGroup.svelte';
   import Input from '$lib/components/ui/Input.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
+  import ContextTaskModal from '$lib/components/ContextTaskModal.svelte';
 
   // Props
   export let embedded = false;
@@ -51,6 +53,7 @@
   let selectedCustomer = 'All';
   let availableYears: string[] = [];
   let availableCustomers: string[] = [];
+  let ordersWithNoItems: any[] = [];
 
   // Create/Edit modal
   let showModal = false;
@@ -73,16 +76,191 @@
     paymentTerms: 'Net 30',
     deliveryTerms: 'Ex-Works'
   };
+  interface EditableOrderItem {
+    id?: string;
+    product_id?: string;
+    product_code: string;
+    description: string;
+    quantity: number;
+    unit_price_bhd: number;
+    total_price: number;
+    quantity_shipped?: number;
+    quantity_invoiced?: number;
+    equipment?: string;
+    model?: string;
+    specification?: string;
+    detailed_description?: string;
+    currency?: string;
+    fob?: number;
+    freight?: number;
+    total_cost?: number;
+    margin_percent?: number;
+    line_number?: number;
+  }
+  let formItems: EditableOrderItem[] = [];
 
   // Helper data
   let customers: any[] = [];
 
+  function normalizeCustomerName(value: string) {
+    return (value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  function resolveCustomerId(customerId: string, customerName: string) {
+    if (customerId && customers.some((customer) => customer.id === customerId)) {
+      return customerId;
+    }
+    const normalizedName = normalizeCustomerName(customerName);
+    if (!normalizedName) return '';
+    const match = customers.find((customer) => normalizeCustomerName(customer.business_name || '') === normalizedName);
+    return match?.id || '';
+  }
+
   // Detail modal
   let showDetailModal = false;
   let selectedOrder: main.Order | null = null;
+  let showTaskModal = false;
   let orderItems: main.OrderItem[] = [];
   let deliveryProgress = { delivered: 0, total: 0, percentage: 0 };
   let fulfillmentStatus: any = null;
+
+  function getOrderDateValue(value: any): Date | null {
+    if (!value) return null;
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    if (typeof value === 'string' || typeof value === 'number') {
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+    if (typeof value === 'object' && typeof value.toString === 'function') {
+      const parsed = new Date(value.toString());
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+    return null;
+  }
+
+  function createEmptyFormItem(lineNumber: number): EditableOrderItem {
+    return {
+      line_number: lineNumber,
+      product_code: '',
+      description: '',
+      quantity: 1,
+      unit_price_bhd: 0,
+      total_price: 0,
+      quantity_shipped: 0,
+      quantity_invoiced: 0,
+      equipment: '',
+      model: '',
+      specification: '',
+      detailed_description: '',
+      currency: 'BHD',
+      fob: 0,
+      freight: 0,
+      total_cost: 0,
+      margin_percent: 0
+    };
+  }
+
+  function roundMoney(value: number): number {
+    const numeric = Number(value) || 0;
+    return Math.round(numeric * 1000) / 1000;
+  }
+
+  function safeTrim(value: unknown): string {
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  function isSummaryLineItem(item: Partial<EditableOrderItem>): boolean {
+    const description = safeTrim(item.description).toLowerCase().replace(/\s+/g, ' ');
+    const productCode = safeTrim(item.product_code).toLowerCase().replace(/\s+/g, ' ');
+    return description.startsWith('total for order') || productCode === 'total for order';
+  }
+
+  function sanitizeFormItems(items: EditableOrderItem[], targetTotal = 0): EditableOrderItem[] {
+    const cleaned = items
+      .filter((item) => !isSummaryLineItem(item))
+      .map((item) => {
+        const quantity = Number(item.quantity) || 0;
+        const incomingTotal = Number(item.total_price) || 0;
+        let unitPrice = Number(item.unit_price_bhd) || 0;
+        if (unitPrice <= 0 && quantity > 0 && incomingTotal > 0) {
+          unitPrice = roundMoney(incomingTotal / quantity);
+        }
+        const totalPrice = incomingTotal > 0 ? roundMoney(incomingTotal) : roundMoney(quantity * unitPrice);
+        return {
+          ...item,
+          quantity,
+          unit_price_bhd: roundMoney(unitPrice),
+          total_price: totalPrice
+        };
+      })
+      .filter((item) => {
+        const hasIdentity = safeTrim(item.description) || safeTrim(item.product_code) || safeTrim(item.equipment) || safeTrim(item.model);
+        const hasValue = (item.quantity || 0) > 0 && ((item.unit_price_bhd || 0) > 0 || (item.total_price || 0) > 0);
+        return Boolean(hasIdentity || hasValue);
+      });
+
+    const deduped: EditableOrderItem[] = [];
+    const seen = new Set<string>();
+    for (const item of cleaned) {
+      const signature = [
+        safeTrim(item.product_code).toLowerCase(),
+        safeTrim(item.description).toLowerCase(),
+        roundMoney(item.quantity || 0),
+        roundMoney(item.unit_price_bhd || 0),
+        roundMoney(item.total_price || 0),
+      ].join("|");
+      if (seen.has(signature)) continue;
+      seen.add(signature);
+      deduped.push(item);
+    }
+
+    const normalizedTarget = roundMoney(targetTotal || 0);
+    if (normalizedTarget > 0) {
+      const exactMatch = deduped.find((item) => Math.abs(roundMoney(item.total_price || 0) - normalizedTarget) <= 0.01);
+      if (exactMatch) {
+        return [{ ...exactMatch, line_number: 1 }];
+      }
+    }
+
+    return deduped.map((item, index) => ({
+      ...item,
+      line_number: index + 1,
+    }));
+  }
+
+  function recalculateFormItems() {
+    formItems = sanitizeFormItems(formItems);
+    const hasMeaningfulItems = formItems.some(item =>
+      item.description.trim() || item.product_code.trim() || item.quantity > 0 || item.unit_price_bhd > 0
+    );
+    if (hasMeaningfulItems) {
+      formData.totalValue = roundMoney(formItems.reduce((sum, item) => sum + (item.total_price || 0), 0));
+    }
+  }
+
+  function addFormItem() {
+    formItems = [...formItems, createEmptyFormItem(formItems.length + 1)];
+    recalculateFormItems();
+  }
+
+  function removeFormItem(index: number) {
+    formItems = formItems.filter((_, itemIndex) => itemIndex !== index);
+    if (formItems.length === 0) {
+      formItems = [createEmptyFormItem(1)];
+    }
+    recalculateFormItems();
+  }
+
+  function getLineItemIssues(items: Array<{ quantity?: number; unit_price_bhd?: number; total_price?: number; description?: string; product_code?: string }>) {
+    const normalized = items || [];
+    return {
+      missingItems: normalized.length === 0,
+      zeroPriceItems: normalized.filter(item =>
+        ((item.quantity || 0) > 0 || (item.description || '').trim() || (item.product_code || '').trim()) &&
+        ((item.unit_price_bhd || 0) <= 0 || (item.total_price || 0) <= 0)
+      ).length
+    };
+  }
 
   // DataTable columns
   const columns = [
@@ -166,8 +344,9 @@
       const yearsSet = new Set<string>();
       const customersSet = new Set<string>();
       orders.forEach(o => {
-        if (o.order_date) {
-          yearsSet.add(new Date(o.order_date).getFullYear().toString());
+        const orderDate = getOrderDateValue(o.order_date);
+        if (orderDate) {
+          yearsSet.add(orderDate.getFullYear().toString());
         }
         if (o.customer_name) {
           customersSet.add(o.customer_name);
@@ -197,8 +376,9 @@
     // Year filter
     if (selectedYear !== 'All') {
       result = result.filter(o => {
-        if (!o.order_date) return false;
-        return new Date(o.order_date).getFullYear().toString() === selectedYear;
+        const orderDate = getOrderDateValue(o.order_date);
+        if (!orderDate) return false;
+        return orderDate.getFullYear().toString() === selectedYear;
       });
     }
 
@@ -237,6 +417,8 @@
     totalValue: orders.reduce((sum, o) => sum + (o.total_value_bhd || 0), 0)
   };
 
+  $: zeroValueOrders = orders.filter((order) => (order.total_value_bhd || 0) <= 0);
+
   // Open create modal
   function openCreateModal() {
     modalMode = 'create';
@@ -253,25 +435,32 @@
       paymentTerms: 'Net 30',
       deliveryTerms: 'Ex-Works'
     };
+    formItems = [createEmptyFormItem(1)];
     showModal = true;
   }
 
   // Open edit modal
-  function openEditModal(order: main.Order) {
+  async function openEditModal(order: main.Order) {
     modalMode = 'edit';
-    editingOrder = order;
+    const fullOrder = (order.items && order.items.length > 0) ? order : await GetOrder(order.id);
+    editingOrder = fullOrder;
+    const resolvedCustomerId = resolveCustomerId(fullOrder.customer_id || '', fullOrder.customer_name || '');
     formData = {
-      orderNumber: order.order_number || '',
-      customerPONumber: order.customer_po_number || '',
-      customerId: order.customer_id || '',
-      customerName: order.customer_name || '',
-      orderDate: order.order_date ? new Date(order.order_date as any).toISOString().split('T')[0] : '',
-      requiredDate: order.required_date ? new Date(order.required_date as any).toISOString().split('T')[0] : '',
-      totalValue: order.total_value_bhd || 0,
-      status: order.status || 'Confirmed',
-      paymentTerms: order.payment_terms || 'Net 30',
-      deliveryTerms: order.delivery_terms || 'Ex-Works'
+      orderNumber: fullOrder.order_number || '',
+      customerPONumber: fullOrder.customer_po_number || '',
+      customerId: resolvedCustomerId,
+      customerName: fullOrder.customer_name || '',
+      orderDate: fullOrder.order_date ? new Date(fullOrder.order_date as any).toISOString().split('T')[0] : '',
+      requiredDate: fullOrder.required_date ? new Date(fullOrder.required_date as any).toISOString().split('T')[0] : '',
+      totalValue: fullOrder.total_value_bhd || 0,
+      status: fullOrder.status || 'Confirmed',
+      paymentTerms: fullOrder.payment_terms || 'Net 30',
+      deliveryTerms: fullOrder.delivery_terms || 'Ex-Works'
     };
+    formItems = fullOrder.items && fullOrder.items.length > 0
+      ? sanitizeFormItems(fullOrder.items.map((item) => ({ ...item } as EditableOrderItem)), fullOrder.total_value_bhd || fullOrder.grand_total_bhd || 0)
+      : [createEmptyFormItem(1)];
+    showDetailModal = false;
     showModal = true;
   }
 
@@ -294,6 +483,26 @@
       return;
     }
 
+    const normalizedItems = sanitizeFormItems(formItems).filter(item =>
+      safeTrim(item.description) || safeTrim(item.product_code) || item.quantity > 0 || item.unit_price_bhd > 0
+    );
+
+    if (modalMode === 'edit' && normalizedItems.length === 0 && formData.totalValue <= 0) {
+      toast.warning('Add at least one line item with quantity and price before saving this order');
+      return;
+    }
+
+    for (const item of normalizedItems) {
+      if (item.quantity <= 0) {
+        toast.warning('Each line item must have a quantity greater than zero');
+        return;
+      }
+      if (item.unit_price_bhd <= 0) {
+        toast.warning('Each line item must have a unit price greater than zero');
+        return;
+      }
+    }
+
     // Validate dates
     const orderDate = new Date(formData.orderDate);
     const today = new Date();
@@ -314,6 +523,14 @@
 
     saving = true;
     try {
+      const resolvedCustomerId = resolveCustomerId(formData.customerId, formData.customerName);
+      const computedTotalValue = roundMoney(normalizedItems.reduce((sum, item) => {
+        const lineTotal = roundMoney((Number(item.quantity) || 0) * (Number(item.unit_price_bhd) || 0));
+        return sum + lineTotal;
+      }, 0));
+      formData.customerId = resolvedCustomerId;
+      formData.totalValue = computedTotalValue;
+
       if (modalMode === 'create') {
         // Create new order
         await CreateOrder(
@@ -330,23 +547,29 @@
           ...editingOrder,
           order_number: formData.orderNumber,
           customer_po_number: formData.customerPONumber,
-          customer_id: formData.customerId,
+          customer_id: resolvedCustomerId,
           customer_name: formData.customerName,
           order_date: formData.orderDate,
           required_date: formData.requiredDate,
-          total_value_bhd: formData.totalValue,
+          total_value_bhd: computedTotalValue,
           status: formData.status,
           payment_terms: formData.paymentTerms,
           delivery_terms: formData.deliveryTerms,
+          items: normalizedItems.map((item, index) => ({
+            ...item,
+            line_number: index + 1,
+            total_price: roundMoney(item.quantity * item.unit_price_bhd)
+          }))
         };
         await UpdateOrder(editingOrder.id, updatedOrder as any);
         toast.success('Order updated successfully');
       }
 
       showModal = false;
-      await loadOrders();
+      await Promise.all([loadOrders(), loadOrdersWithNoItems()]);
     } catch (err) {
-      toast.danger('Failed to save order: ' + (err as Error).message);
+      const errorMsg = err?.message || String(err);
+      toast.danger('Failed to save order: ' + errorMsg);
     } finally {
       saving = false;
     }
@@ -363,7 +586,10 @@
       ]);
 
       selectedOrder = fullOrder;
-      orderItems = fullOrder.items || [];
+      orderItems = sanitizeFormItems(
+        (fullOrder.items || []).map((item) => ({ ...item } as EditableOrderItem)),
+        fullOrder.total_value_bhd || fullOrder.grand_total_bhd || 0,
+      );
       fulfillmentStatus = fulfillment;
 
       if (orderItems.length > 0) {
@@ -386,6 +612,7 @@
   async function handleCreateDeliveryNote(order: main.Order) {
     // Set pending DN creation in store (DeliveryNotesScreen will consume on mount)
     pendingDNCreate.request(order.id, order.order_number || '', order.customer_name || '');
+    showDetailModal = false;
     // Navigate to operations screen with delivery-notes tab
     window.dispatchEvent(new CustomEvent('navigateToScreen', {
       detail: { screen: 'operations', tab: 'delivery-notes' }
@@ -403,6 +630,13 @@
     try {
       const invoice = await CreateInvoiceFromOrder(order.id);
       toast.success(`Invoice ${invoice.invoice_number} created`);
+      showDetailModal = false;
+      window.dispatchEvent(new CustomEvent('navigateToScreen', {
+        detail: { screen: 'finance' }
+      }));
+      window.dispatchEvent(new CustomEvent('finance:navigate', {
+        detail: { tab: 'invoices' }
+      }));
       await loadOrders();
     } catch (err) {
       toast.danger('Failed to create invoice: ' + (err as Error).message);
@@ -422,6 +656,13 @@
     try {
       const invoice = await CreateProformaInvoice(order.id);
       toast.success(`Proforma Invoice ${invoice.invoice_number} created`);
+      showDetailModal = false;
+      window.dispatchEvent(new CustomEvent('navigateToScreen', {
+        detail: { screen: 'finance' }
+      }));
+      window.dispatchEvent(new CustomEvent('finance:navigate', {
+        detail: { tab: 'invoices' }
+      }));
       await loadOrders();
     } catch (err) {
       toast.danger('Failed to create proforma: ' + (err as Error).message);
@@ -443,6 +684,10 @@
       const itemIDs = orderItems.map(item => item.id);
       const po = await CreatePOFromOrder(order.id, '', itemIDs);
       toast.success(`PO ${po.po_number} created`);
+      showDetailModal = false;
+      window.dispatchEvent(new CustomEvent('navigateToScreen', {
+        detail: { screen: 'operations', tab: 'pos' }
+      }));
     } catch (err) {
       toast.danger('Failed to create PO: ' + (err as Error).message);
     } finally {
@@ -527,7 +772,18 @@
 
   onMount(() => {
     loadOrders();
+    loadOrdersWithNoItems();
   });
+
+  async function loadOrdersWithNoItems() {
+    try {
+      const data = await GetOrdersWithNoItems();
+      ordersWithNoItems = data || [];
+    } catch (err) {
+      // Non-critical — silently ignore
+      ordersWithNoItems = [];
+    }
+  }
 </script>
 
 {#if embedded}
@@ -568,7 +824,10 @@
     {:else}
       <!-- Group orders by year -->
       {#each availableYears as year}
-        {@const yearOrders = filteredOrders.filter(o => o.order_date && new Date(o.order_date).getFullYear().toString() === year)}
+        {@const yearOrders = filteredOrders.filter(o => {
+          const orderDate = getOrderDateValue(o.order_date);
+          return orderDate ? orderDate.getFullYear().toString() === year : false;
+        })}
         {#if yearOrders.length > 0}
           <div class="year-group">
             <div class="year-header">
@@ -642,6 +901,37 @@
         + New Order
       </Button>
     </div>
+
+    <!-- Warning: Orders with no line items -->
+    {#if ordersWithNoItems.length > 0}
+      <div class="no-items-warning">
+        <span class="warning-icon">&#9888;</span>
+        <div class="warning-content">
+          <strong>{ordersWithNoItems.length} order{ordersWithNoItems.length === 1 ? '' : 's'} ha{ordersWithNoItems.length === 1 ? 's' : 've'} no line items.</strong>
+          Edit these orders to add items before invoicing.
+          <div class="warning-list">
+            {#each ordersWithNoItems as item}
+              <span class="warning-order-number">{escapeHtml(item.order_number || item.id)}</span>
+            {/each}
+          </div>
+        </div>
+      </div>
+    {/if}
+
+    {#if zeroValueOrders.length > 0}
+      <div class="no-items-warning no-items-warning-critical">
+        <span class="warning-icon">&#9888;</span>
+        <div class="warning-content">
+          <strong>{zeroValueOrders.length} order{zeroValueOrders.length === 1 ? '' : 's'} currently have zero total value.</strong>
+          Review the line items and unit prices before using them for delivery, invoicing, or procurement.
+          <div class="warning-list">
+            {#each zeroValueOrders.slice(0, 10) as item}
+              <span class="warning-order-number">{escapeHtml(item.order_number || item.id)}</span>
+            {/each}
+          </div>
+        </div>
+      </div>
+    {/if}
 
     <!-- Filters -->
     <div class="controls-bar">
@@ -783,6 +1073,7 @@
             min="0"
             bind:value={formData.totalValue}
             placeholder="0.000"
+            readonly={modalMode === 'edit'}
           />
         </FormGroup>
 
@@ -818,6 +1109,83 @@
         </FormGroup>
       </div>
 
+      {#if modalMode === 'edit'}
+        <div class="line-items-panel">
+          <div class="line-items-panel-header">
+            <div>
+              <h4>Order Line Items</h4>
+              <p>Update each line separately so order totals, delivery notes, and invoices stay accurate.</p>
+            </div>
+            <Button variant="ghost" type="button" on:click={addFormItem}>
+              + Add Line
+            </Button>
+          </div>
+
+          {#if getLineItemIssues(formItems).missingItems}
+            <div class="line-item-alert">
+              This order has no line items yet. Add them now so downstream documents carry the right quantities and values.
+            </div>
+          {:else if getLineItemIssues(formItems).zeroPriceItems > 0}
+            <div class="line-item-alert">
+              {getLineItemIssues(formItems).zeroPriceItems} line item{getLineItemIssues(formItems).zeroPriceItems === 1 ? '' : 's'} still have zero pricing. Please complete them before saving.
+            </div>
+          {/if}
+
+          <div class="line-items-grid">
+            <div class="line-items-grid-header">
+              <span>Code</span>
+              <span>Description</span>
+              <span class="number-col">Qty</span>
+              <span class="number-col">Unit Price</span>
+              <span class="number-col">Line Total</span>
+              <span></span>
+            </div>
+            {#each formItems as item, index}
+              <div class="line-items-grid-row">
+                <input
+                  class="form-input compact"
+                  bind:value={formItems[index].product_code}
+                  placeholder="Code"
+                  on:blur={recalculateFormItems}
+                />
+                <input
+                  class="form-input compact"
+                  bind:value={formItems[index].description}
+                  placeholder="Description"
+                  on:blur={recalculateFormItems}
+                />
+                <input
+                  class="form-input compact number-input"
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  bind:value={formItems[index].quantity}
+                  on:input={recalculateFormItems}
+                />
+                <input
+                  class="form-input compact number-input"
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  bind:value={formItems[index].unit_price_bhd}
+                  on:input={recalculateFormItems}
+                />
+                <div class="line-total-cell">{formatCurrency(roundMoney((item.quantity || 0) * (item.unit_price_bhd || 0)))}</div>
+                <button
+                  type="button"
+                  class="line-remove-btn"
+                  on:click={() => removeFormItem(index)}
+                  disabled={formItems.length <= 1}
+                  aria-label="Remove order line"
+                >
+                  Remove
+                </button>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
       <div class="modal-actions">
         <Button variant="ghost" on:click={() => showModal = false} disabled={saving}>
           Cancel
@@ -835,10 +1203,23 @@
   <Modal
     title={`Order ${selectedOrder.order_number}`}
     open={showDetailModal}
-    on:close={() => showDetailModal = false}
+    on:close={() => { showDetailModal = false; showTaskModal = false; }}
     size="lg"
   >
     <div class="order-detail">
+      {#if getLineItemIssues(orderItems).missingItems || getLineItemIssues(orderItems).zeroPriceItems > 0 || (selectedOrder.total_value_bhd || 0) <= 0}
+        <div class="line-item-alert detail-alert">
+          {#if getLineItemIssues(orderItems).missingItems}
+            This order does not have any saved line items yet.
+          {:else if getLineItemIssues(orderItems).zeroPriceItems > 0}
+            {getLineItemIssues(orderItems).zeroPriceItems} line item{getLineItemIssues(orderItems).zeroPriceItems === 1 ? '' : 's'} still have zero pricing.
+          {:else}
+            This order total is zero and should be reviewed.
+          {/if}
+          Use <strong>Edit Order</strong> to correct the commercial data before creating downstream documents.
+        </div>
+      {/if}
+
       <!-- Header Info -->
       <div class="detail-header">
         <div class="detail-section">
@@ -925,7 +1306,7 @@
                   <td class="number-col">{item.quantity_shipped || 0}</td>
                   <td class="number-col">{item.quantity_invoiced || 0}</td>
                   <td class="number-col">{formatCurrency(item.unit_price_bhd)}</td>
-                  <td class="number-col">{formatCurrency(item.quantity * item.unit_price_bhd)}</td>
+                  <td class="number-col">{formatCurrency(item.total_price || (item.quantity * item.unit_price_bhd))}</td>
                 </tr>
               {/each}
             </tbody>
@@ -958,7 +1339,10 @@
             Proforma
           </Button>
         {/if}
-        <Button variant="ghost" on:click={() => openEditModal(selectedOrder)} disabled={isProcessingAction || isDeleting}>
+        <Button variant="secondary" on:click={() => showTaskModal = true} disabled={isProcessingAction}>
+          Create Task
+        </Button>
+        <Button variant="ghost" on:click={() => void openEditModal(selectedOrder)} disabled={isProcessingAction || isDeleting}>
           Edit Order
         </Button>
         <Button variant="ghost" on:click={() => handleDeleteOrder(selectedOrder)} disabled={isDeleting || isProcessingAction} style="color: #EF4444;">
@@ -967,6 +1351,21 @@
       </div>
     </div>
   </Modal>
+{/if}
+
+{#if selectedOrder}
+  <ContextTaskModal
+    open={showTaskModal}
+    title="Create Order Task"
+    subtitle={`Link work to order ${selectedOrder.order_number}`}
+    defaults={{
+      customer_id: selectedOrder.customer_id,
+      order_id: selectedOrder.id,
+      seed_title: `Order task: ${selectedOrder.order_number}`,
+    }}
+    on:close={() => showTaskModal = false}
+    on:created={() => showTaskModal = false}
+  />
 {/if}
 
 <style>
@@ -1318,6 +1717,109 @@
     border-top: 1px solid var(--border);
   }
 
+  .line-items-panel {
+    margin-top: 20px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .line-items-panel-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .line-items-panel-header h4 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .line-items-panel-header p {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .line-items-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .line-items-grid-header,
+  .line-items-grid-row {
+    display: grid;
+    grid-template-columns: minmax(100px, 0.9fr) minmax(220px, 2fr) minmax(80px, 0.7fr) minmax(110px, 0.9fr) minmax(120px, 0.9fr) auto;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .line-items-grid-header {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    padding: 0 2px;
+  }
+
+  .line-items-grid-row {
+    background: var(--surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+  }
+
+  .compact {
+    min-width: 0;
+  }
+
+  .number-input {
+    text-align: right;
+    font-family: var(--font-mono);
+  }
+
+  .line-total-cell {
+    text-align: right;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+  }
+
+  .line-remove-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .line-remove-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .line-item-alert {
+    padding: 10px 12px;
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.28);
+    border-radius: var(--radius-sm);
+    color: #92400e;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
   /* Order Detail */
   .order-detail {
     display: flex;
@@ -1485,5 +1987,69 @@
     gap: 8px;
     padding-top: 16px;
     border-top: 1px solid var(--border);
+  }
+
+  /* Warning banner for orders with no line items */
+  .no-items-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 16px;
+    background: #fef9e7;
+    border: 1px solid #f0d050;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: #7a6200;
+  }
+
+  .no-items-warning-critical {
+    background: rgba(239, 68, 68, 0.08);
+    border-color: rgba(239, 68, 68, 0.24);
+    color: #991b1b;
+  }
+
+  .no-items-warning .warning-icon {
+    font-size: 18px;
+    flex-shrink: 0;
+    line-height: 1.4;
+  }
+
+  .no-items-warning .warning-content {
+    flex: 1;
+    line-height: 1.5;
+  }
+
+  .no-items-warning .warning-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .no-items-warning .warning-order-number {
+    display: inline-block;
+    padding: 2px 8px;
+    background: rgba(240, 208, 80, 0.3);
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 12px;
+    cursor: default;
+  }
+
+  .detail-alert {
+    margin-top: -4px;
+  }
+
+  @media (max-width: 920px) {
+    .line-items-grid-header,
+    .line-items-grid-row {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .line-total-cell,
+    .number-input {
+      text-align: left;
+    }
   }
 </style>

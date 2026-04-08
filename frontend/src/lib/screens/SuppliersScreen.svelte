@@ -15,6 +15,7 @@
   // Wails API imports
   import {
     ListSuppliers,
+    CreateSupplier,
     GetPurchaseOrdersBySupplier,
     GetSupplierInvoicesBySupplier
   } from '../../../wailsjs/go/main/App';
@@ -44,6 +45,41 @@
   let searchQuery = '';
   let selectedStatus: SupplierStatus = 'all';
 
+  // Create supplier state
+  let showCreateModal = false;
+  let creating = false;
+  let newSupplier: any = {
+    supplier_name: '', supplier_code: '', supplier_type: 'Manufacturer',
+    primary_contact: '', email: '', phone: '', country: 'Bahrain',
+    address: '', tax_id: '', brands_handled: '', lead_time_days: 14,
+  };
+
+  async function handleCreateSupplier() {
+    if (!newSupplier.supplier_name?.trim()) {
+      toast.danger('Supplier name is required');
+      return;
+    }
+    creating = true;
+    try {
+      const prefix = newSupplier.supplier_name.substring(0, 4).toUpperCase().replace(/[^A-Z]/g, '');
+      const suffix = Date.now().toString().slice(-4);
+      newSupplier.supplier_code = newSupplier.supplier_code || `SUP-${prefix}${suffix}`;
+      await CreateSupplier(newSupplier);
+      toast.success(`Created supplier: ${newSupplier.supplier_name}`);
+      showCreateModal = false;
+      newSupplier = {
+        supplier_name: '', supplier_code: '', supplier_type: 'Manufacturer',
+        primary_contact: '', email: '', phone: '', country: 'Bahrain',
+        address: '', tax_id: '', brands_handled: '', lead_time_days: 14,
+      };
+      await loadSuppliers();
+    } catch (e) {
+      toast.danger(`Create failed: ${String(e)}`);
+    } finally {
+      creating = false;
+    }
+  }
+
   // Detail modal state
   let showDetailModal = false;
   let selectedSupplier: any = null;
@@ -64,12 +100,12 @@
       }
     },
     {
-      key: 'business_name',
-      label: 'Business Name',
+      key: 'supplier_name',
+      label: 'Supplier Name',
       sortable: true
     },
     {
-      key: 'contact_person',
+      key: 'primary_contact',
       label: 'Contact Person',
       sortable: true,
       width: '180px'
@@ -86,11 +122,11 @@
       width: '200px'
     },
     {
-      key: 'vat_number',
+      key: 'tax_id',
       label: 'VAT/TRN',
       width: '140px',
       render: (row: any) => {
-        const vat = row.vat_number || row.trn || '-';
+        const vat = row.tax_id || '-';
         return `<span style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${vat}</span>`;
       }
     },
@@ -156,9 +192,9 @@
       // Search filter
       const matchSearch =
         !searchQuery ||
-        s.business_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        s.supplier_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         s.supplier_code?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        s.contact_person?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        s.primary_contact?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         s.email?.toLowerCase().includes(searchQuery.toLowerCase());
 
       // Status filter
@@ -247,7 +283,9 @@
 
 <PageLayout title="Suppliers" subtitle="Vendor & Partner Directory" {embedded}>
   <svelte:fragment slot="header-actions">
-    <!-- Future: Add "New Supplier" button when create API is available -->
+    <Button variant="primary" on:click={() => showCreateModal = true}>
+      + New Supplier
+    </Button>
     <Button variant="secondary" on:click={loadSuppliers}>
       Refresh
     </Button>
@@ -345,7 +383,7 @@
         <div class="info-grid">
           <div class="info-item">
             <div class="info-label">Business Name</div>
-            <div class="info-value">{selectedSupplier.business_name || '-'}</div>
+            <div class="info-value">{selectedSupplier.supplier_name || '-'}</div>
           </div>
           <div class="info-item">
             <div class="info-label">Supplier Code</div>
@@ -353,7 +391,7 @@
           </div>
           <div class="info-item">
             <div class="info-label">Contact Person</div>
-            <div class="info-value">{selectedSupplier.contact_person || '-'}</div>
+            <div class="info-value">{selectedSupplier.primary_contact || '-'}</div>
           </div>
           <div class="info-item">
             <div class="info-label">Phone</div>
@@ -365,7 +403,7 @@
           </div>
           <div class="info-item">
             <div class="info-label">VAT Number</div>
-            <div class="info-value code">{selectedSupplier.vat_number || selectedSupplier.trn || '-'}</div>
+            <div class="info-value code">{selectedSupplier.tax_id || '-'}</div>
           </div>
           <div class="info-item">
             <div class="info-label">Address</div>
@@ -463,6 +501,67 @@
   <svelte:fragment slot="footer">
     <Button variant="ghost" on:click={() => showDetailModal = false}>
       Close
+    </Button>
+  </svelte:fragment>
+</WabiModal>
+
+<!-- Create Supplier Modal -->
+<WabiModal bind:open={showCreateModal} title="New Supplier" size="lg">
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+    <div style="grid-column: 1 / -1;">
+      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Supplier Name *</label>
+      <input type="text" bind:value={newSupplier.supplier_name} placeholder="Company name" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Supplier Code</label>
+      <input type="text" bind:value={newSupplier.supplier_code} placeholder="Auto-generated if empty" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Supplier Type</label>
+      <select bind:value={newSupplier.supplier_type} style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;">
+        <option>Manufacturer</option>
+        <option>Distributor</option>
+        <option>Agent</option>
+        <option>Service Provider</option>
+      </select>
+    </div>
+    <div>
+      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Contact Person</label>
+      <input type="text" bind:value={newSupplier.primary_contact} placeholder="Primary contact name" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Email</label>
+      <input type="email" bind:value={newSupplier.email} placeholder="supplier@example.com" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Phone</label>
+      <input type="text" bind:value={newSupplier.phone} placeholder="+973 1234 5678" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Country</label>
+      <input type="text" bind:value={newSupplier.country} placeholder="Bahrain" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Tax ID / TRN</label>
+      <input type="text" bind:value={newSupplier.tax_id} placeholder="VAT registration number" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Lead Time (days)</label>
+      <input type="number" bind:value={newSupplier.lead_time_days} min="0" max="365" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+    </div>
+    <div style="grid-column: 1 / -1;">
+      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Address</label>
+      <input type="text" bind:value={newSupplier.address} placeholder="Full address" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+    </div>
+    <div style="grid-column: 1 / -1;">
+      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Brands Handled</label>
+      <input type="text" bind:value={newSupplier.brands_handled} placeholder="Endress+Hauser, Servomex, etc." style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+    </div>
+  </div>
+  <svelte:fragment slot="footer">
+    <Button variant="ghost" on:click={() => showCreateModal = false}>Cancel</Button>
+    <Button variant="primary" on:click={handleCreateSupplier} disabled={creating || !newSupplier.supplier_name?.trim()}>
+      {creating ? 'Creating...' : 'Create Supplier'}
     </Button>
   </svelte:fragment>
 </WabiModal>

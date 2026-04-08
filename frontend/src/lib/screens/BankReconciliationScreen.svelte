@@ -38,6 +38,10 @@
     CreateBankStatementLine,
     UpdateBankStatementLine,
     DeleteBankStatementLine,
+    ListCustomerInvoices,
+    GetSupplierInvoices,
+    GetAllSupplierPayments,
+    ListUnreconciledPayrollPayouts,
   } from '../../../wailsjs/go/main/App';
 
   // Design system components
@@ -128,6 +132,14 @@
   let showAddLineModal = false;
   let importLoading = false;
   let matchingLine: BankStatementLine | null = null;
+  let matchingType = 'CUSTOMER_INVOICE';
+  let matchingCandidateId = '';
+  let matchingSearch = '';
+  let matchLoading = false;
+  let customerInvoiceCandidates: any[] = [];
+  let supplierInvoiceCandidates: any[] = [];
+  let supplierPaymentCandidates: any[] = [];
+  let payrollPayoutCandidates: any[] = [];
 
   // Bank account management state
   let editingAccount: BankAccount | null = null;
@@ -292,7 +304,10 @@
 
   // Formatters
   function formatBHD(value: number): string {
-    return value?.toFixed(3) || '0.000';
+    return new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 3,
+      maximumFractionDigits: 3
+    }).format(Number(value) || 0);
   }
 
   function formatDate(dateValue: any): string {
@@ -393,8 +408,101 @@
   }
 
   function openMatchModal(line: BankStatementLine) {
-    // Changed to open edit modal instead
-    openEditLineModal(line);
+    matchingLine = line;
+    matchingSearch = '';
+    matchingCandidateId = '';
+    matchingType = line.credit > 0 ? 'CUSTOMER_INVOICE' : 'SUPPLIER_INVOICE';
+    showMatchModal = true;
+    void loadMatchCandidates(line);
+  }
+
+  async function loadMatchCandidates(line: BankStatementLine) {
+    matchLoading = true;
+    try {
+      const [allCustomerInvoices, allSupplierInvoices, supplierPayments] = await Promise.all([
+        ListCustomerInvoices(1000, 0).catch(() => []),
+        GetSupplierInvoices().catch(() => []),
+        GetAllSupplierPayments().catch(() => [])
+      ]);
+
+      customerInvoiceCandidates = (allCustomerInvoices || []).filter((invoice: any) => {
+        const status = String(invoice?.status || '').toLowerCase();
+        return Number(invoice?.outstanding_bhd || 0) > 0 && !['cancelled', 'void', 'draft'].includes(status);
+      });
+      supplierInvoiceCandidates = (allSupplierInvoices || []).filter((invoice: any) => {
+        const status = String(invoice?.status || '').toLowerCase();
+        const paymentStatus = String(invoice?.payment_status || '').toLowerCase();
+        return paymentStatus !== 'paid' && !['cancelled', 'void', 'rejected'].includes(status);
+      });
+      supplierPaymentCandidates = supplierPayments || [];
+      payrollPayoutCandidates = await ListUnreconciledPayrollPayouts().catch(() => []);
+    } finally {
+      matchLoading = false;
+    }
+  }
+
+  function formatMatchAmount(line: BankStatementLine) {
+    return line.credit > 0 ? line.credit : line.debit;
+  }
+
+  function buildMatchCandidateLabel(candidate: any, type: string) {
+    if (type === 'CUSTOMER_INVOICE') {
+      return `${candidate.invoice_number || 'Invoice'} • ${candidate.customer_name || 'Customer'} • ${formatBHD(candidate.grand_total_bhd || 0)} BHD`;
+    }
+    if (type === 'SUPPLIER_PAYMENT') {
+      return `${candidate.reference || candidate.invoice_number || 'Payment'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.amount_bhd || 0)} BHD`;
+    }
+    if (type === 'PAYROLL_PAYOUT') {
+      return `${candidate.run_number || 'Payroll'} • ${candidate.employee_name || 'Employee'} • ${formatBHD(candidate.amount || 0)} BHD${candidate.payment_reference ? ` • ${candidate.payment_reference}` : ''}`;
+    }
+    return `${candidate.invoice_number || 'Invoice'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.total_bhd || 0)} BHD`;
+  }
+
+  function getFilteredMatchCandidates() {
+    const search = matchingSearch.trim().toLowerCase();
+    const source = matchingType === 'CUSTOMER_INVOICE'
+      ? customerInvoiceCandidates
+      : matchingType === 'SUPPLIER_PAYMENT'
+        ? supplierPaymentCandidates
+        : matchingType === 'PAYROLL_PAYOUT'
+          ? payrollPayoutCandidates
+        : supplierInvoiceCandidates;
+
+    return (source || []).filter((candidate) => {
+      if (!search) return true;
+      const haystack = [
+        candidate.invoice_number,
+        candidate.customer_name,
+        candidate.supplier_name,
+        candidate.reference,
+        candidate.employee_name,
+        candidate.run_number,
+        candidate.payment_reference
+      ].filter(Boolean).join(' ').toLowerCase();
+      return haystack.includes(search);
+    }).slice(0, 200);
+  }
+
+  async function handleManualMatch() {
+    if (!matchingLine || !matchingCandidateId) {
+      toast.warning('Select a transaction target to match');
+      return;
+    }
+
+    matchLoading = true;
+    try {
+      await ManualMatchLine(matchingLine.id, matchingType, matchingCandidateId, 'admin');
+      toast.success('Transaction matched successfully');
+      showMatchModal = false;
+      if (selectedStatement) {
+        await loadStatementLines(selectedStatement);
+      }
+    } catch (err) {
+      console.error('Manual match failed:', err);
+      toast.danger(`Manual match failed: ${err}`);
+    } finally {
+      matchLoading = false;
+    }
   }
 
   async function handleUnmatch(line: BankStatementLine) {
@@ -884,7 +992,7 @@
 </Modal>
 
 <!-- Match Modal -->
-<Modal bind:open={showMatchModal} title="Match Transaction" size="lg">
+<Modal bind:open={showMatchModal} title="Match Transaction" size="xl">
   {#if matchingLine}
     <div class="match-details">
       <div class="match-row">
@@ -920,11 +1028,52 @@
           Unmatch
         </Button>
       {:else}
-        <p class="match-hint">Manual matching coming soon. Use Auto-Match for automatic matching.</p>
+        <div class="manual-match-form">
+          <div class="form-row two-col">
+            <FormGroup label="Match To">
+              <select bind:value={matchingType} class="form-select">
+                {#if matchingLine.credit > 0}
+                  <option value="CUSTOMER_INVOICE">Customer Invoice</option>
+                {:else}
+                  <option value="SUPPLIER_INVOICE">Supplier Invoice</option>
+                  <option value="SUPPLIER_PAYMENT">Supplier Payment</option>
+                  <option value="PAYROLL_PAYOUT">Payroll Payout</option>
+                {/if}
+              </select>
+            </FormGroup>
+            <FormGroup label="Search">
+              <Input bind:value={matchingSearch} placeholder="Search number, customer, supplier..." />
+            </FormGroup>
+          </div>
+
+          {#if matchLoading}
+            <div class="loading-container small">
+              <WabiSpinner size="sm" />
+            </div>
+          {:else}
+            <div class="candidate-list">
+              {#if getFilteredMatchCandidates().length > 0}
+                {#each getFilteredMatchCandidates() as candidate}
+                  <label class="candidate-option">
+                    <input type="radio" bind:group={matchingCandidateId} value={candidate.id} />
+                    <span>{buildMatchCandidateLabel(candidate, matchingType)}</span>
+                  </label>
+                {/each}
+              {:else}
+                <p class="match-hint">No matching records found for this filter.</p>
+              {/if}
+            </div>
+          {/if}
+        </div>
       {/if}
     </div>
   {/if}
   <svelte:fragment slot="footer">
+    {#if matchingLine && !matchingLine.is_matched}
+      <Button variant="primary" on:click={handleManualMatch} loading={matchLoading} disabled={!matchingCandidateId}>
+        Match Selected
+      </Button>
+    {/if}
     <Button variant="secondary" on:click={() => showMatchModal = false}>Close</Button>
   </svelte:fragment>
 </Modal>
@@ -1306,9 +1455,9 @@
   }
 
   .match-details {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 18px;
     padding: 16px;
     background: var(--surface-elevated);
     border-radius: var(--radius-md);
@@ -1336,6 +1485,48 @@
     margin-top: 12px;
     display: flex;
     gap: 12px;
+  }
+
+  .manual-match-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .candidate-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    max-height: 320px;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  .candidate-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px;
+    border-radius: 14px;
+    border: 1px solid var(--border-subtle);
+    background: rgba(255, 255, 255, 0.92);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-primary);
+  }
+
+  .candidate-option input {
+    margin-top: 2px;
+    flex-shrink: 0;
+  }
+
+  @media (max-width: 900px) {
+    .match-details,
+    .candidate-list {
+      grid-template-columns: 1fr;
+    }
   }
 
   .match-hint {

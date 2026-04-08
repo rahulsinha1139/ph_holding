@@ -1,8 +1,9 @@
 // ============================================================================
-// ONEDRIVE IMPORT SERVICE - Scan local OneDrive folders and import offer deals
+// ONEDRIVE IMPORT SERVICE - Scan local OneDrive folders and import deal folders
 //
-// MISSION: Walk locally-synced OneDrive deal folders, detect FINAL subfolders,
-// classify documents, fuzzy-match customers, and import as Offer records.
+// MISSION: Walk locally-synced OneDrive deal folders, detect either legacy
+// FINAL subfolders or the PH-style RFQ/OFFER/EXECUTION layout, classify
+// documents, fuzzy-match customers, and import into opportunities/offers/orders.
 //
 // Typical folder structure:
 //   <OneDrive root>/
@@ -11,10 +12,14 @@
 //         RFQ from EWA.pdf
 //         Costing Sheet v2.xlsx
 //         Quotation QT-2025-045.pdf
-//     BAPCO PIT Spares/
-//       FINAL/
-//         BAPCO RFQ.pdf
-//         Costing.xlsx
+//     EH-37-26 BAPCO UPSTREAM TIT/
+//       RFQ/
+//         enquiry.msg
+//       OFFER/
+//         PH Trading Costing 37-26-R0.xlsx
+//         Techno-Commercial Offer 37-26-R1.pdf
+//       EXECUTION/
+//         PO_BU2650000335_0.pdf
 // ============================================================================
 
 package main
@@ -27,10 +32,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"gorm.io/gorm"
 )
 
@@ -40,19 +47,19 @@ import (
 
 // DiscoveredDeal represents one deal folder found during the OneDrive scan.
 type DiscoveredDeal struct {
-	LocalID         string                `json:"local_id"`          // client-side UUID for UI tracking
-	FolderPath      string                `json:"folder_path"`       // full path to the parent folder (not FINAL)
-	FolderName      string                `json:"folder_name"`       // just the folder name e.g. "EWA LIT Q3 2025"
-	FinalPath       string                `json:"final_path"`        // full path to the FINAL subfolder
-	RootPath        string                `json:"root_path"`         // which root path this came from
-	CustomerMatches []CustomerMatchResult `json:"customer_matches"`
-	Files           []DiscoveredFile      `json:"files"`
-	InstrumentType  string                `json:"instrument_type"`   // e.g. "Level (LIT)", "Pressure (PIT)"
-	YearHint        string                `json:"year_hint"`         // e.g. "2025"
-	Status          string                `json:"status"`            // "pending", "confirmed", "importing", "imported", "skipped", "error"
-	ErrorMsg        string                `json:"error_msg,omitempty"`
-	ConfirmedCustomerID string            `json:"confirmed_customer_id,omitempty"`
-	ImportedOfferID     string            `json:"imported_offer_id,omitempty"`
+	LocalID             string                `json:"local_id"`    // client-side UUID for UI tracking
+	FolderPath          string                `json:"folder_path"` // full path to the parent folder (not FINAL)
+	FolderName          string                `json:"folder_name"` // just the folder name e.g. "EWA LIT Q3 2025"
+	FinalPath           string                `json:"final_path"`  // full path to the FINAL subfolder
+	RootPath            string                `json:"root_path"`   // which root path this came from
+	CustomerMatches     []CustomerMatchResult `json:"customer_matches"`
+	Files               []DiscoveredFile      `json:"files"`
+	InstrumentType      string                `json:"instrument_type"` // e.g. "Level (LIT)", "Pressure (PIT)"
+	YearHint            string                `json:"year_hint"`       // e.g. "2025"
+	Status              string                `json:"status"`          // "pending", "confirmed", "importing", "imported", "skipped", "error"
+	ErrorMsg            string                `json:"error_msg,omitempty"`
+	ConfirmedCustomerID string                `json:"confirmed_customer_id,omitempty"`
+	ImportedOfferID     string                `json:"imported_offer_id,omitempty"`
 }
 
 // CustomerMatchResult is a single fuzzy-match candidate for a deal folder.
@@ -92,6 +99,29 @@ type OneDriveImportResult struct {
 	Message               string `json:"message"`
 	CostingSheetsImported int    `json:"costing_sheets_imported"`
 	PDFsQueued            int    `json:"pdfs_queued"`
+}
+
+type oneDriveFolderMeta struct {
+	FolderNumber string
+	OppNumber    int
+	Year         int
+	Title        string
+}
+
+type oneDriveImportIdentity struct {
+	RawFolderNumber       string
+	CanonicalFolderNumber string
+	Prefix                string
+	SequenceToken         string
+	Year                  int
+	Title                 string
+}
+
+type parsedOneDriveCosting struct {
+	File       DiscoveredFile
+	Parsed     *ExcelCostingData
+	Revision   int
+	OptionName string
 }
 
 // ============================================================================
@@ -137,6 +167,16 @@ var acronymSkipWords = map[string]bool{
 	"W.L.L.": true, "B.S.C.": true, "CO": true, "LLC": true,
 }
 
+var oneDriveCustomerAliases = map[string][]string{
+	"ALUMINIUM BAHRAIN B.S.C":          {"ALBA"},
+	"ALMOAYYED INDUSTRIAL CONTRACTING": {"ALMOAYYED", "MOAYYED"},
+	"ALDUR":                            {"ALDUR"},
+	"VEOLIA WATER TECHNOLOGIES & SOLUTIONS BAHRAIN W.L.L": {"VWT"},
+	"MUHARRAQ WASTEWATER SERVICES":                        {"MWW"},
+	"JETHRO TRADING":                                      {"JETHROW"},
+	"KOOHEJI TECHNICAL SERVICES":                          {"KJ"},
+}
+
 // ============================================================================
 // PURE HELPER FUNCTIONS
 // ============================================================================
@@ -146,16 +186,24 @@ var acronymSkipWords = map[string]bool{
 func classifyDiscoveredFile(fileName string) string {
 	lower := strings.ToLower(fileName)
 	ext := strings.ToLower(filepath.Ext(fileName))
+	base := strings.TrimSuffix(filepath.Base(lower), ext)
 
 	switch ext {
 	case ".xlsx", ".xls":
-		if strings.Contains(lower, "costing") || strings.Contains(lower, "masterfile") {
+		if strings.Contains(lower, "costing") ||
+			strings.Contains(lower, "masterfile") ||
+			strings.Contains(base, "cost ") ||
+			strings.Contains(base, "cost-") ||
+			strings.Contains(base, "cost_") ||
+			strings.HasPrefix(base, "cost") {
 			return "costing_sheet"
 		}
 		return "document"
 
 	case ".pdf":
 		switch {
+		case strings.Contains(lower, "invoice"):
+			return "invoice"
 		case strings.Contains(lower, "rfq") ||
 			strings.Contains(lower, "enquiry") ||
 			strings.Contains(lower, "inquiry"):
@@ -169,8 +217,11 @@ func classifyDiscoveredFile(fileName string) string {
 		case strings.Contains(lower, "order") ||
 			strings.Contains(lower, "po ") ||
 			strings.Contains(lower, "po-") ||
+			strings.Contains(lower, "po_") ||
 			strings.Contains(lower, "purchase"):
 			return "order"
+		case regexp.MustCompile(`^ph\d{2,6}[-_/]\d{2,4}$`).MatchString(base):
+			return "invoice"
 		default:
 			return "document"
 		}
@@ -345,6 +396,22 @@ func matchCustomerToFolder(folderName string, customers []CustomerMaster) []Cust
 			}
 		}
 
+		// Rule 3b: Known business aliases used in PH folder naming
+		if score < 0.92 {
+			customerNameUpper = strings.ToUpper(c.BusinessName)
+			for pattern, aliases := range oneDriveCustomerAliases {
+				if !strings.Contains(customerNameUpper, pattern) {
+					continue
+				}
+				for _, alias := range aliases {
+					if sliceContains(folderTokens, alias) {
+						score = maxFloat64(score, 0.92)
+						reason = "known_alias"
+					}
+				}
+			}
+		}
+
 		// Rule 4: Customer name token is in folder tokens (length >= 3)
 		if score < 1.0 {
 			customerTokens := tokenizeName(c.BusinessName)
@@ -432,6 +499,701 @@ func generateOneDriveOfferRef(folderName string) string {
 	return fmt.Sprintf("OD-%s-%s", sanitised, ts)
 }
 
+func isOneDriveSectionDir(name string) bool {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "RFQ", "OFFER", "WORKING", "EXECUTION", "FINAL":
+		return true
+	default:
+		return false
+	}
+}
+
+func extractDealSectionPaths(folderPath string) (map[string]string, error) {
+	entries, err := os.ReadDir(folderPath)
+	if err != nil {
+		return nil, err
+	}
+
+	sections := make(map[string]string)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := strings.ToUpper(strings.TrimSpace(entry.Name()))
+		if !isOneDriveSectionDir(name) {
+			continue
+		}
+		sections[name] = filepath.Join(folderPath, entry.Name())
+	}
+	return sections, nil
+}
+
+func inferYearFromPath(paths ...string) int {
+	re := regexp.MustCompile(`\b(20\d{2})\b`)
+	for _, path := range paths {
+		if m := re.FindStringSubmatch(path); len(m) == 2 {
+			return parseMetaYear(m[1])
+		}
+	}
+	return 0
+}
+
+func hasStructuredOneDriveDealIdentity(folderName string) bool {
+	meta := parseOneDriveFolderMeta(folderName)
+	return meta.OppNumber > 0
+}
+
+func collectDealFiles(sectionPath string) []DiscoveredFile {
+	var files []DiscoveredFile
+
+	_ = filepath.Walk(sectionPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		name := info.Name()
+		if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "~$") {
+			return nil
+		}
+		files = append(files, DiscoveredFile{
+			FileName:  name,
+			FilePath:  path,
+			FileType:  classifyDiscoveredFile(name),
+			Extension: strings.ToLower(filepath.Ext(name)),
+			SizeBytes: info.Size(),
+			ModTime:   info.ModTime(),
+		})
+		return nil
+	})
+
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].FilePath < files[j].FilePath
+	})
+	return files
+}
+
+func parseOneDriveFolderMeta(folderName string) oneDriveFolderMeta {
+	trimmed := strings.TrimSpace(folderName)
+	meta := oneDriveFolderMeta{Title: trimmed}
+	if trimmed == "" {
+		return meta
+	}
+
+	patterns := []struct {
+		re     *regexp.Regexp
+		build  func([]string) string
+		yearAt int
+		oppAt  int
+	}{
+		{
+			re: regexp.MustCompile(`(?i)\b([A-Z]{1,8})(?:[-\s]+)(\d{1,3}[A-Z]?)[-\s/]+(\d{2})(?:\b|[^A-Z0-9])`),
+			build: func(m []string) string {
+				return strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%s-%d-%s", m[1], mustAtoi(m[2]), m[3])))
+			},
+			yearAt: 3,
+			oppAt:  2,
+		},
+		{
+			re: regexp.MustCompile(`\b(20\d{2})[-_/](\d{1,3})(?:\b|[^A-Z0-9])`),
+			build: func(m []string) string {
+				return fmt.Sprintf("%s-%d", m[1], mustAtoi(m[2]))
+			},
+			yearAt: 1,
+			oppAt:  2,
+		},
+	}
+
+	for _, pattern := range patterns {
+		if loc := pattern.re.FindStringSubmatchIndex(trimmed); loc != nil {
+			matches := pattern.re.FindStringSubmatch(trimmed)
+			meta.FolderNumber = pattern.build(matches)
+			meta.Year = parseMetaYear(matches[pattern.yearAt])
+			meta.OppNumber = mustAtoi(matches[pattern.oppAt])
+
+			title := strings.TrimSpace(trimmed[loc[1]:])
+			title = strings.TrimLeft(title, "-_/ ")
+			if title != "" {
+				meta.Title = title
+			}
+			return meta
+		}
+	}
+
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return meta
+	}
+
+	// Some 2026 folders omit the trailing year and instead look like
+	// "EH-07-EWA- HAMALA-EH". Capture the sequence so callers can still infer a
+	// canonical key from the parent root path.
+	if m := regexp.MustCompile(`(?i)^([A-Z]{1,8})(?:\s*-\s*|\s+)(\d{1,3}[A-Z]?)(?:\s*-\s*([A-Z]{2,8}))?(.*)$`).FindStringSubmatch(trimmed); len(m) == 5 {
+		prefix := strings.ToUpper(strings.TrimSpace(m[1]))
+		seqToken := strings.ToUpper(strings.TrimSpace(m[2]))
+		third := strings.ToUpper(strings.TrimSpace(m[3]))
+		remainder := strings.TrimSpace(strings.TrimLeft(m[4], "-_/ "))
+		if !regexp.MustCompile(`^\d{2}$`).MatchString(third) {
+			meta.FolderNumber = fmt.Sprintf("%s-%s", prefix, seqToken)
+			if third != "" {
+				meta.FolderNumber = fmt.Sprintf("%s-%s-%s", prefix, seqToken, third)
+			}
+			meta.OppNumber = mustAtoi(regexp.MustCompile(`\d+`).FindString(seqToken))
+			if remainder != "" && third != "" {
+				meta.Title = strings.TrimSpace(third + " " + remainder)
+			} else if remainder != "" {
+				meta.Title = remainder
+			}
+			return meta
+		}
+	}
+
+	meta.FolderNumber = strings.TrimSpace(fields[0])
+	if len(fields) > 1 {
+		meta.Title = strings.TrimSpace(strings.Join(fields[1:], " "))
+	}
+
+	if m := regexp.MustCompile(`\b(20\d{2})[-_/](\d{1,3})\b`).FindStringSubmatch(meta.FolderNumber); len(m) == 3 {
+		meta.Year = parseMetaYear(m[1])
+		meta.OppNumber = mustAtoi(m[2])
+		return meta
+	}
+
+	if m := regexp.MustCompile(`(?i)^([A-Z]{1,8})[-_]?(\d{1,3})[-_/](\d{2})$`).FindStringSubmatch(strings.ToUpper(strings.ReplaceAll(meta.FolderNumber, " ", "-"))); len(m) == 4 {
+		meta.FolderNumber = fmt.Sprintf("%s-%d-%s", m[1], mustAtoi(m[2]), m[3])
+		meta.Year = parseMetaYear(m[3])
+		meta.OppNumber = mustAtoi(m[2])
+	}
+
+	return meta
+}
+
+func deriveOneDriveImportIdentity(folderName string) oneDriveImportIdentity {
+	trimmed := strings.Join(strings.Fields(strings.TrimSpace(folderName)), " ")
+	identity := oneDriveImportIdentity{Title: trimmed}
+
+	re := regexp.MustCompile(`(?i)^([A-Z]{1,8})(?:\s*-\s*|\s+)(\d{1,3}[A-Z]?)\s*-\s*(\d{2})(.*)$`)
+	if m := re.FindStringSubmatch(trimmed); len(m) == 5 {
+		prefix := strings.ToUpper(strings.TrimSpace(m[1]))
+		seqToken := strings.ToUpper(strings.TrimSpace(m[2]))
+		yy := strings.TrimSpace(m[3])
+		title := strings.TrimSpace(strings.TrimLeft(m[4], "-_/ "))
+		if title == "" {
+			title = trimmed
+		}
+		year := parseMetaYear(yy)
+		identity.RawFolderNumber = fmt.Sprintf("%s-%s-%s", prefix, seqToken, yy)
+		identity.Prefix = prefix
+		identity.SequenceToken = seqToken
+		identity.Year = year
+		identity.Title = title
+		identity.CanonicalFolderNumber = deriveCanonicalOneDriveFolderNumber(prefix, seqToken, year)
+		return identity
+	}
+
+	meta := parseOneDriveFolderMeta(folderName)
+	identity.RawFolderNumber = strings.TrimSpace(meta.FolderNumber)
+	identity.Year = meta.Year
+	if strings.TrimSpace(meta.Title) != "" {
+		identity.Title = strings.TrimSpace(meta.Title)
+	}
+	if m := regexp.MustCompile(`(?i)^([A-Z]{1,8})-(\d{1,3}[A-Z]?)-(\d{2})$`).FindStringSubmatch(strings.ToUpper(strings.ReplaceAll(identity.RawFolderNumber, " ", "-"))); len(m) == 4 {
+		identity.Prefix = strings.ToUpper(strings.TrimSpace(m[1]))
+		identity.SequenceToken = strings.ToUpper(strings.TrimSpace(m[2]))
+		if identity.Year == 0 {
+			identity.Year = parseMetaYear(m[3])
+		}
+		identity.CanonicalFolderNumber = deriveCanonicalOneDriveFolderNumber(identity.Prefix, identity.SequenceToken, identity.Year)
+	} else if m := regexp.MustCompile(`(?i)^([A-Z]{1,8})-(\d{1,3}[A-Z]?)(?:-([A-Z]{2,8}))?$`).FindStringSubmatch(strings.ToUpper(strings.ReplaceAll(identity.RawFolderNumber, " ", "-"))); len(m) >= 3 {
+		identity.Prefix = strings.ToUpper(strings.TrimSpace(m[1]))
+		identity.SequenceToken = strings.ToUpper(strings.TrimSpace(m[2]))
+	}
+	return identity
+}
+
+func deriveCanonicalOneDriveFolderNumber(prefix string, sequenceToken string, year int) string {
+	prefix = strings.ToUpper(strings.TrimSpace(prefix))
+	sequenceToken = strings.ToUpper(strings.TrimSpace(sequenceToken))
+	if year == 0 || sequenceToken == "" {
+		return ""
+	}
+
+	numberPart := regexp.MustCompile(`\d+`).FindString(sequenceToken)
+	if numberPart == "" {
+		return ""
+	}
+	suffix := strings.TrimPrefix(sequenceToken, numberPart)
+	seq := mustAtoi(numberPart)
+
+	switch prefix {
+	case "EH":
+		return fmt.Sprintf("%d-%d%s", year, seq, suffix)
+	case "OTH":
+		return fmt.Sprintf("%d-%d%s", year, 300+seq, suffix)
+	case "SA":
+		return fmt.Sprintf("%d-%d%s", year, 250+seq, suffix)
+	default:
+		return fmt.Sprintf("%d-%d%s", year, seq, suffix)
+	}
+}
+
+func extractPathRevisionNumber(path string) int {
+	re := regexp.MustCompile(`(?i)(?:^|[^A-Z0-9])REV(?:ISION)?[-_\s]?(\d{1,2})(?:[^A-Z0-9]|$)|(?:^|[^A-Z0-9])R[-_\s]?(\d{1,2})(?:[^A-Z0-9]|$)`)
+	matches := re.FindStringSubmatch(strings.ToUpper(path))
+	if len(matches) < 2 {
+		return 0
+	}
+	for _, match := range matches[1:] {
+		if strings.TrimSpace(match) == "" {
+			continue
+		}
+		return mustAtoi(match)
+	}
+	return 0
+}
+
+func extractPathOptionName(path string) string {
+	re := regexp.MustCompile(`(?i)OPTION[-_\s]?(\d+)`)
+	if m := re.FindStringSubmatch(path); len(m) == 2 {
+		return fmt.Sprintf("option-%d", mustAtoi(m[1]))
+	}
+	return ""
+}
+
+func scoreOneDriveCostingCandidate(candidate parsedOneDriveCosting) int {
+	score := candidate.Revision * 1000
+	switch strings.ToLower(strings.TrimSpace(candidate.OptionName)) {
+	case "option-1":
+		score += 40
+	case "option-2":
+		score += 30
+	case "":
+		score += 20
+	default:
+		score += 10
+	}
+	score += len(candidate.Parsed.LineItems)
+	if candidate.Parsed.Totals.GrandTotal > 0 {
+		score += 5
+	}
+	return score
+}
+
+func selectPrimaryOneDriveCosting(costings []parsedOneDriveCosting) *parsedOneDriveCosting {
+	if len(costings) == 0 {
+		return nil
+	}
+	best := costings[0]
+	bestScore := scoreOneDriveCostingCandidate(best)
+	for _, candidate := range costings[1:] {
+		score := scoreOneDriveCostingCandidate(candidate)
+		if score > bestScore || (score == bestScore && strings.ToUpper(candidate.File.FilePath) < strings.ToUpper(best.File.FilePath)) {
+			best = candidate
+			bestScore = score
+		}
+	}
+	return &best
+}
+
+func rankExistingOpportunityForImport(opp Opportunity, canonicalKey string, rawKey string, dealFolderName string) int {
+	score := 0
+	switch {
+	case canonicalKey != "" && strings.EqualFold(strings.TrimSpace(opp.FolderNumber), canonicalKey):
+		score += 1000
+	case rawKey != "" && strings.EqualFold(strings.TrimSpace(opp.FolderNumber), rawKey):
+		score += 700
+	case strings.EqualFold(strings.TrimSpace(opp.FolderName), strings.TrimSpace(dealFolderName)):
+		score += 500
+	}
+	score += opportunitySourcePriority(opp.Source) * 100
+	score += opportunityRichnessScore(opp) * 10
+	if strings.TrimSpace(opp.OfferID) != "" {
+		score += 25
+	}
+	if opp.RevenueBHD > 0 {
+		score += 5
+	}
+	return score
+}
+
+func (a *App) findOneDriveOpportunityCandidates(identity oneDriveImportIdentity, dealFolderName string) ([]Opportunity, error) {
+	seen := map[string]bool{}
+	var candidates []Opportunity
+
+	tryLookup := func(field string, value string) error {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil
+		}
+		var rows []Opportunity
+		if err := a.db.Where(field+" = ?", value).Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if seen[row.ID] {
+				continue
+			}
+			seen[row.ID] = true
+			candidates = append(candidates, row)
+		}
+		return nil
+	}
+
+	if err := tryLookup("folder_number", identity.CanonicalFolderNumber); err != nil {
+		return nil, err
+	}
+	if err := tryLookup("folder_number", identity.RawFolderNumber); err != nil {
+		return nil, err
+	}
+	if err := tryLookup("folder_name", dealFolderName); err != nil {
+		return nil, err
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return rankExistingOpportunityForImport(candidates[i], identity.CanonicalFolderNumber, identity.RawFolderNumber, dealFolderName) >
+			rankExistingOpportunityForImport(candidates[j], identity.CanonicalFolderNumber, identity.RawFolderNumber, dealFolderName)
+	})
+	return candidates, nil
+}
+
+func softDeleteDuplicateOpportunity(tx *gorm.DB, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return nil
+	}
+	return tx.Table("opportunities").
+		Where("id = ? AND deleted_at IS NULL", id).
+		Update("deleted_at", time.Now()).
+		Error
+}
+
+func parseMetaYear(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	year, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	if year < 100 {
+		return 2000 + year
+	}
+	return year
+}
+
+func mustAtoi(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func detectOneDriveStage(files []DiscoveredFile) string {
+	hasCosting := false
+	hasQuotation := false
+	hasExecution := false
+
+	for _, f := range files {
+		switch f.FileType {
+		case "costing_sheet":
+			hasCosting = true
+		case "quotation":
+			hasQuotation = true
+		case "order", "invoice":
+			hasExecution = true
+		default:
+			if strings.Contains(strings.ToUpper(f.FilePath), string(filepath.Separator)+"EXECUTION"+string(filepath.Separator)) {
+				hasExecution = true
+			}
+		}
+	}
+
+	switch {
+	case hasExecution:
+		return "Won"
+	case hasCosting || hasQuotation:
+		return "Quoted"
+	default:
+		return "Qualified"
+	}
+}
+
+func parseTimeWithLayouts(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	layouts := []string{
+		"02/01/2006", "2006-01-02", "01/02/2006", "02-Jan-06", "02-Jan-2006", "2-Jan-2006",
+		"2/1/2006", "02.01.2006", "2 Jan 2006", "02 Jan 2006",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+func maxModTime(files []DiscoveredFile, fileType string, mustContainDir string) time.Time {
+	var latest time.Time
+	dirNeedle := strings.ToUpper(mustContainDir)
+	for _, f := range files {
+		if fileType != "" && f.FileType != fileType {
+			continue
+		}
+		if dirNeedle != "" && !strings.Contains(strings.ToUpper(f.FilePath), dirNeedle) {
+			continue
+		}
+		if f.ModTime.After(latest) {
+			latest = f.ModTime
+		}
+	}
+	return latest
+}
+
+func deriveOfferNumber(deal DiscoveredDeal) string {
+	meta := parseOneDriveFolderMeta(deal.FolderName)
+	if meta.FolderNumber != "" {
+		return meta.FolderNumber
+	}
+	return generateOneDriveOfferRef(deal.FolderName)
+}
+
+func normalizeImportedOfferNumber(raw string) string {
+	raw = strings.ToUpper(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+	raw = strings.ReplaceAll(raw, " ", "-")
+	raw = regexp.MustCompile(`-+`).ReplaceAllString(raw, "-")
+	return strings.Trim(raw, "-")
+}
+
+func deriveImportedOfferNumber(identity oneDriveImportIdentity, deal DiscoveredDeal) string {
+	if normalized := normalizeImportedOfferNumber(identity.RawFolderNumber); normalized != "" {
+		return normalized
+	}
+	if normalized := normalizeImportedOfferNumber(identity.CanonicalFolderNumber); normalized != "" {
+		return normalized
+	}
+	if normalized := normalizeImportedOfferNumber(deriveOfferNumber(deal)); normalized != "" {
+		return normalized
+	}
+	return generateOneDriveOfferRef(deal.FolderName)
+}
+
+func importedOfferMatchesDeal(offer Offer, desiredOfferNumber string, customerID string) bool {
+	if strings.TrimSpace(offer.ID) == "" {
+		return false
+	}
+	if desiredOfferNumber != "" && normalizeImportedOfferNumber(offer.OfferNumber) != normalizeImportedOfferNumber(desiredOfferNumber) {
+		return false
+	}
+	if strings.TrimSpace(customerID) != "" && strings.TrimSpace(offer.CustomerID) != "" && strings.TrimSpace(offer.CustomerID) != strings.TrimSpace(customerID) {
+		return false
+	}
+	return true
+}
+
+func (a *App) softDeleteOfferIfUnlinked(offerID string) error {
+	offerID = strings.TrimSpace(offerID)
+	if offerID == "" {
+		return nil
+	}
+
+	var refCount int64
+	if err := a.db.Model(&Opportunity{}).
+		Where("offer_id = ? AND deleted_at IS NULL", offerID).
+		Count(&refCount).Error; err != nil {
+		return err
+	}
+	if refCount > 0 {
+		return nil
+	}
+
+	now := time.Now()
+	if err := a.db.Model(&Offer{}).
+		Where("id = ? AND deleted_at IS NULL", offerID).
+		Update("deleted_at", now).Error; err != nil {
+		return err
+	}
+	return a.db.Model(&OfferItem{}).
+		Where("offer_id = ? AND deleted_at IS NULL", offerID).
+		Update("deleted_at", now).Error
+}
+
+func (a *App) clearPlaceholderCommercialChain(opportunityID string, offerID string) error {
+	offerID = strings.TrimSpace(offerID)
+	if offerID == "" {
+		return nil
+	}
+
+	var offer Offer
+	if err := a.db.Unscoped().Where("id = ?", offerID).First(&offer).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			if opportunityID != "" {
+				return a.db.Model(&Opportunity{}).
+					Where("id = ?", opportunityID).
+					Update("offer_id", "").Error
+			}
+			return nil
+		}
+		return err
+	}
+
+	var offerItemCount int64
+	if err := a.db.Model(&OfferItem{}).
+		Where("offer_id = ? AND deleted_at IS NULL", offerID).
+		Count(&offerItemCount).Error; err != nil {
+		return err
+	}
+	if offer.TotalValueBHD > 0 || offerItemCount > 0 {
+		return nil
+	}
+
+	var order Order
+	err := a.db.Unscoped().Where("offer_id = ?", offerID).First(&order).Error
+	hasOrder := err == nil
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return err
+	}
+	if hasOrder {
+		var orderItemCount int64
+		if err := a.db.Model(&OrderItem{}).
+			Where("order_id = ? AND deleted_at IS NULL", order.ID).
+			Count(&orderItemCount).Error; err != nil {
+			return err
+		}
+		if order.TotalValueBHD > 0 || order.GrandTotalBHD > 0 || orderItemCount > 0 {
+			return nil
+		}
+		var invoiceCount int64
+		if err := a.db.Model(&Invoice{}).
+			Where("order_id = ? AND deleted_at IS NULL", order.ID).
+			Count(&invoiceCount).Error; err != nil {
+			return err
+		}
+		if invoiceCount > 0 {
+			return nil
+		}
+	}
+
+	now := time.Now()
+	return a.db.Transaction(func(tx *gorm.DB) error {
+		if opportunityID != "" {
+			if err := tx.Model(&Opportunity{}).
+				Where("id = ?", opportunityID).
+				Update("offer_id", "").Error; err != nil {
+				return err
+			}
+		}
+		if hasOrder {
+			if err := tx.Model(&OrderItem{}).
+				Where("order_id = ? AND deleted_at IS NULL", order.ID).
+				Update("deleted_at", now).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&Order{}).
+				Where("id = ? AND deleted_at IS NULL", order.ID).
+				Update("deleted_at", now).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Model(&OfferItem{}).
+			Where("offer_id = ? AND deleted_at IS NULL", offerID).
+			Update("deleted_at", now).Error; err != nil {
+			return err
+		}
+		return tx.Model(&Offer{}).
+			Where("id = ? AND deleted_at IS NULL", offerID).
+			Update("deleted_at", now).Error
+	})
+}
+
+func extractRevisionNumber(files []DiscoveredFile) int {
+	maxRev := 1
+	re := regexp.MustCompile(`(?i)(?:^|[^A-Z0-9])R(?:EV)?[-_\s]?(\d{1,2})(?:[^A-Z0-9]|$)`)
+	for _, f := range files {
+		for _, text := range []string{f.FileName, f.FilePath} {
+			if m := re.FindStringSubmatch(text); len(m) == 2 {
+				if n, err := strconv.Atoi(m[1]); err == nil && n > maxRev {
+					maxRev = n
+				}
+			}
+		}
+	}
+	return maxRev
+}
+
+func extractPONumber(files []DiscoveredFile) string {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bPO[-_ ]?([A-Z0-9][A-Z0-9/_-]{4,})`),
+		regexp.MustCompile(`(?i)\bPurchase\s+Order[-_ ]?([A-Z0-9][A-Z0-9/_-]{4,})`),
+		regexp.MustCompile(`(?i)\b([A-Z]{2,6}\d{6,})\b`),
+	}
+	for _, f := range files {
+		if f.FileType != "order" && !strings.Contains(strings.ToUpper(f.FilePath), string(filepath.Separator)+"EXECUTION"+string(filepath.Separator)) {
+			continue
+		}
+		base := strings.TrimSuffix(filepath.Base(f.FileName), filepath.Ext(f.FileName))
+		for _, re := range patterns {
+			if m := re.FindStringSubmatch(base); len(m) == 2 {
+				return strings.Trim(m[1], "_- ")
+			}
+		}
+	}
+	return ""
+}
+
+func extractInvoiceNumber(files []DiscoveredFile) string {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)invoice(?:\s+no\.?)?[-_\s]*([A-Z0-9][A-Z0-9/_-]{2,})`),
+		regexp.MustCompile(`(?i)\b(PH\d{2,6}[-_/]\d{2,4})\b`),
+	}
+	for _, f := range files {
+		if f.FileType != "invoice" {
+			continue
+		}
+		base := strings.TrimSuffix(filepath.Base(f.FileName), filepath.Ext(f.FileName))
+		for _, re := range patterns {
+			if m := re.FindStringSubmatch(base); len(m) == 2 {
+				return strings.Trim(m[1], "_- ")
+			}
+		}
+	}
+	return ""
+}
+
+func buildOrderItemsFromOfferItems(offerItems []OfferItem, orderID string) []OrderItem {
+	items := make([]OrderItem, 0, len(offerItems))
+	for _, item := range offerItems {
+		items = append(items, OrderItem{
+			Base:                Base{ID: uuid.New().String()},
+			OrderID:             orderID,
+			LineNumber:          item.LineNumber,
+			ProductID:           item.ProductID,
+			ProductCode:         item.ProductCode,
+			Description:         item.Description,
+			Quantity:            item.Quantity,
+			UnitPrice:           item.UnitPrice,
+			Equipment:           item.Equipment,
+			Model:               item.Model,
+			Specification:       item.Specification,
+			DetailedDescription: item.DetailedDescription,
+			Currency:            item.Currency,
+			FOB:                 item.FOB,
+			Freight:             item.Freight,
+			TotalCost:           item.TotalCost,
+			MarginPercent:       item.MarginPercent,
+			TotalPrice:          item.TotalPrice,
+		})
+	}
+	return items
+}
+
 // ============================================================================
 // APP METHODS — Wails-bound
 // ============================================================================
@@ -455,12 +1217,6 @@ func (a *App) ValidateOneDrivePath(path string) (map[string]interface{}, error) 
 		return map[string]interface{}{"valid": false, "error": "path is not a directory"}, nil
 	}
 
-	// Quick estimate: walk max 3 levels deep and count FINAL dirs
-	type walkState struct {
-		count int
-		depth int
-	}
-
 	estimatedDeals := 0
 	rootDepth := strings.Count(filepath.ToSlash(path), "/")
 
@@ -477,6 +1233,12 @@ func (a *App) ValidateOneDrivePath(path string) (map[string]interface{}, error) 
 		}
 		if strings.EqualFold(filepath.Base(p), "final") {
 			estimatedDeals++
+			return filepath.SkipDir
+		}
+		sections, err := extractDealSectionPaths(p)
+		if err == nil && (sections["RFQ"] != "" || sections["OFFER"] != "" || sections["WORKING"] != "" || sections["EXECUTION"] != "") {
+			estimatedDeals++
+			return filepath.SkipDir
 		}
 		return nil
 	})
@@ -527,52 +1289,55 @@ func (a *App) ScanOneDrivePaths(paths []string) (OneDriveScanResult, error) {
 				return nil
 			}
 
-			// We only care about directories named "FINAL" (case-insensitive)
-			if !strings.EqualFold(filepath.Base(path), "final") {
-				return nil
-			}
+			var (
+				finalPath  string
+				folderPath string
+				folderName string
+				files      []DiscoveredFile
+				isDeal     bool
+			)
 
-			finalPath := path
-			folderPath := filepath.Dir(finalPath)
-			folderName := filepath.Base(folderPath)
-
-			// List direct children of the FINAL dir (non-recursive)
-			entries, err := os.ReadDir(finalPath)
-			if err != nil {
-				scanErrors = append(scanErrors, fmt.Sprintf("cannot read FINAL dir %s: %v", finalPath, err))
-				return nil
-			}
-
-			var files []DiscoveredFile
-			for _, entry := range entries {
-				if entry.IsDir() {
-					continue
-				}
-				name := entry.Name()
-				// Skip hidden files and Office temp files
-				if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "~$") {
-					continue
-				}
-
-				fi, err := entry.Info()
+			switch {
+			case strings.EqualFold(filepath.Base(path), "final"):
+				finalPath = path
+				folderPath = filepath.Dir(finalPath)
+				folderName = filepath.Base(folderPath)
+				files = collectDealFiles(finalPath)
+				isDeal = true
+			default:
+				sections, err := extractDealSectionPaths(path)
 				if err != nil {
-					continue
+					return nil
 				}
-
-				result.TotalFiles++
-				files = append(files, DiscoveredFile{
-					FileName:  name,
-					FilePath:  filepath.Join(finalPath, name),
-					FileType:  classifyDiscoveredFile(name),
-					Extension: strings.ToLower(filepath.Ext(name)),
-					SizeBytes: fi.Size(),
-					ModTime:   fi.ModTime(),
-				})
+				if sections["RFQ"] == "" && sections["OFFER"] == "" && sections["WORKING"] == "" && sections["EXECUTION"] == "" {
+					return nil
+				}
+				parentFolderName := filepath.Base(filepath.Dir(path))
+				if hasStructuredOneDriveDealIdentity(parentFolderName) && !hasStructuredOneDriveDealIdentity(filepath.Base(path)) {
+					return filepath.SkipDir
+				}
+				folderPath = path
+				folderName = filepath.Base(folderPath)
+				finalPath = sections["OFFER"]
+				if finalPath == "" {
+					finalPath = sections["WORKING"]
+				}
+				for _, sectionName := range []string{"RFQ", "OFFER", "WORKING", "EXECUTION"} {
+					sectionPath := sections[sectionName]
+					if sectionPath == "" {
+						continue
+					}
+					files = append(files, collectDealFiles(sectionPath)...)
+				}
+				isDeal = true
 			}
 
-			// Match customers to this folder
-			matches := matchCustomerToFolder(folderName, customers)
+			if !isDeal {
+				return nil
+			}
+			result.TotalFiles += len(files)
 
+			matches := matchCustomerToFolder(folderName, customers)
 			deal := DiscoveredDeal{
 				LocalID:         uuid.New().String(),
 				FolderPath:      folderPath,
@@ -598,6 +1363,9 @@ func (a *App) ScanOneDrivePaths(paths []string) (OneDriveScanResult, error) {
 				return filepath.SkipAll
 			}
 
+			if !strings.EqualFold(filepath.Base(path), "final") {
+				return filepath.SkipDir
+			}
 			return nil
 		})
 
@@ -644,8 +1412,8 @@ func (a *App) ConfirmOneDriveDeal(localID string, customerID string) (map[string
 	}, nil
 }
 
-// ImportOneDriveDeals processes a slice of confirmed deals, creating Offer
-// records (with items from any costing sheets) for each.
+// ImportOneDriveDeals processes confirmed deals, upserting opportunities and
+// then creating/updating offers plus downstream execution records when present.
 func (a *App) ImportOneDriveDeals(deals []DiscoveredDeal) ([]OneDriveImportResult, error) {
 	if err := a.requirePermission("finance:create"); err != nil {
 		return nil, err
@@ -653,6 +1421,7 @@ func (a *App) ImportOneDriveDeals(deals []DiscoveredDeal) ([]OneDriveImportResul
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
+	a.ensureOneDriveImportSchema()
 
 	var results []OneDriveImportResult
 
@@ -671,7 +1440,20 @@ func (a *App) ImportOneDriveDeals(deals []DiscoveredDeal) ([]OneDriveImportResul
 	}
 
 	log.Printf("✅ OneDrive import complete: %d deals processed", len(results))
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "data:refresh", map[string]interface{}{
+			"source": "onedrive_import",
+			"count":  len(results),
+		})
+	}
 	return results, nil
+}
+
+func (a *App) ensureOneDriveImportSchema() {
+	// Older runtime databases may predate the canonical pipeline columns added
+	// during startup migrations. Import needs these fields available even when it
+	// is run from a test helper or maintenance path that bypasses full startup.
+	a.addColumnIfNotExists("opportunities", "product_details", "TEXT")
 }
 
 // importSingleDeal handles the DB work for one confirmed DiscoveredDeal.
@@ -679,6 +1461,26 @@ func (a *App) ImportOneDriveDeals(deals []DiscoveredDeal) ([]OneDriveImportResul
 // duplicating the DB-nil guard.
 func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 	res := OneDriveImportResult{DealLocalID: deal.LocalID}
+	identity := deriveOneDriveImportIdentity(deal.FolderName)
+	folderMeta := parseOneDriveFolderMeta(deal.FolderName)
+	if identity.Year == 0 {
+		identity.Year = inferYearFromPath(deal.RootPath, deal.FolderPath)
+	}
+	if folderMeta.Year == 0 {
+		folderMeta.Year = identity.Year
+	}
+	if identity.CanonicalFolderNumber == "" && identity.Prefix != "" && identity.SequenceToken != "" && identity.Year != 0 {
+		identity.CanonicalFolderNumber = deriveCanonicalOneDriveFolderNumber(identity.Prefix, identity.SequenceToken, identity.Year)
+	}
+	if identity.Year != 0 {
+		folderMeta.Year = identity.Year
+	}
+	if identity.Title != "" {
+		folderMeta.Title = identity.Title
+	}
+	if identity.RawFolderNumber != "" {
+		folderMeta.FolderNumber = identity.RawFolderNumber
+	}
 
 	// Resolve the customer
 	var customer CustomerMaster
@@ -690,7 +1492,7 @@ func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 	}
 
 	// Collect costing sheets and parse them
-	var costingData []*ExcelCostingData
+	var costingData []parsedOneDriveCosting
 	for _, f := range deal.Files {
 		if f.FileType != "costing_sheet" {
 			continue
@@ -700,7 +1502,12 @@ func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 			log.Printf("⚠️ OneDrive import: failed to parse costing sheet %s: %v", f.FilePath, err)
 			continue
 		}
-		costingData = append(costingData, parsed)
+		costingData = append(costingData, parsedOneDriveCosting{
+			File:       f,
+			Parsed:     parsed,
+			Revision:   extractPathRevisionNumber(f.FilePath),
+			OptionName: extractPathOptionName(f.FilePath),
+		})
 		res.CostingSheetsImported++
 	}
 
@@ -716,10 +1523,29 @@ func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 	var estimatedMargin float64
 	var quotationDate time.Time
 	var offerItems []OfferItem
+	var subtotalBHD float64
+	var vatAmountBHD float64
+	var vatPercent float64
+	paymentTerms := ""
+	deliveryTerms := ""
+	customerReference := ""
+	contactPerson := ""
+	countryOfOrigin := ""
+	deliveryWeeks := ""
 
-	if len(costingData) > 0 {
-		primary := costingData[0]
+	primaryCosting := selectPrimaryOneDriveCosting(costingData)
+	if primaryCosting != nil {
+		primary := primaryCosting.Parsed
 		totalValueBHD = primary.Totals.GrandTotal
+		subtotalBHD = primary.Totals.Subtotal
+		vatAmountBHD = primary.Totals.VatAmount
+		vatPercent = primary.Totals.VatPercent
+		paymentTerms = strings.TrimSpace(primary.Metadata.PaymentTerms)
+		deliveryTerms = strings.TrimSpace(primary.Metadata.DeliveryTerms)
+		customerReference = strings.TrimSpace(primary.Metadata.Reference)
+		contactPerson = strings.TrimSpace(primary.Metadata.ContactPerson)
+		countryOfOrigin = strings.TrimSpace(primary.Metadata.CountryOfOrigin)
+		deliveryWeeks = strings.TrimSpace(primary.Metadata.EstDelivery)
 
 		// Compute margin using the same logic as calculateMargin in excel_costing_parser.go
 		if primary.Totals.Subtotal > 0 {
@@ -733,81 +1559,433 @@ func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 		}
 
 		// Try to parse the date from the costing sheet metadata
-		if primary.Metadata.Date != "" {
-			for _, layout := range []string{"02/01/2006", "2006-01-02", "01/02/2006", "02-Jan-06"} {
-				if t, err := time.Parse(layout, primary.Metadata.Date); err == nil {
-					quotationDate = t
-					break
-				}
-			}
-		}
+		quotationDate = parseTimeWithLayouts(primary.Metadata.Date)
 
 		// Build offer items
 		for i, item := range primary.LineItems {
 			oi := OfferItem{
-				Base:        Base{ID: uuid.New().String()},
-				LineNumber:  i + 1,
-				ProductCode: item.Model,
-				Model:       item.Model,
-				Description: fmt.Sprintf("%s - %s", item.Equipment, item.Model),
-				Quantity:    item.Quantity,
-				UnitPrice:   item.SuggestedPriceBHD,
-				Equipment:   item.Equipment,
+				Base:          Base{ID: uuid.New().String()},
+				LineNumber:    i + 1,
+				ProductCode:   item.Model,
+				Model:         item.Model,
+				Description:   fmt.Sprintf("%s - %s", item.Equipment, item.Model),
+				Quantity:      item.Quantity,
+				UnitPrice:     item.SuggestedPriceBHD,
+				Equipment:     item.Equipment,
 				Specification: item.Specification,
-				Currency:    "",
-				FOB:         item.FobBHD,
-				Freight:     item.FreightBHD,
-				TotalCost:   item.TotalCost,
+				Currency:      "",
+				FOB:           item.FobBHD,
+				Freight:       item.FreightBHD,
+				TotalCost:     item.TotalCost,
 				MarginPercent: item.MarkupPercent,
-				TotalPrice:  item.TotalSuggestedBHD,
-				FobBHD:      item.FobBHD,
-				FreightBHD:  item.FreightBHD,
-				Insurance:   item.Insurance,
-				CustomsBHD:  item.Customs,
-				OtherCosts:  item.OtherCosts,
+				TotalPrice:    item.TotalSuggestedBHD,
+				FobBHD:        item.FobBHD,
+				FreightBHD:    item.FreightBHD,
+				Insurance:     item.Insurance,
+				CustomsBHD:    item.Customs,
+				OtherCosts:    item.OtherCosts,
 			}
 			offerItems = append(offerItems, oi)
 		}
 	}
 
 	if quotationDate.IsZero() {
+		quotationDate = maxModTime(deal.Files, "quotation", "")
+	}
+	if quotationDate.IsZero() {
+		quotationDate = maxModTime(deal.Files, "costing_sheet", "")
+	}
+	if quotationDate.IsZero() {
 		quotationDate = time.Now()
 	}
 
-	offerNumber := generateOneDriveOfferRef(deal.FolderName)
-
-	offer := &Offer{
-		Base:            Base{ID: uuid.New().String()},
-		OfferNumber:     offerNumber,
-		RevisionNumber:  1,
-		CustomerID:      customer.ID,
-		CustomerName:    customer.BusinessName,
-		QuotationDate:   quotationDate,
-		ValidityDate:    quotationDate.AddDate(0, 3, 0), // 3-month default validity
-		TotalValueBHD:   totalValueBHD,
-		EstimatedMargin: estimatedMargin,
-		Stage:           "Quoted",
+	stage := detectOneDriveStage(deal.Files)
+	if paymentTerms == "" {
+		if customer.PaymentTermsDays > 0 {
+			paymentTerms = fmt.Sprintf("%d days", customer.PaymentTermsDays)
+		}
 	}
 
-	// Wire up OfferID on each item now that offer.ID is set
-	for i := range offerItems {
-		offerItems[i].OfferID = offer.ID
+	opportunityFolderNumber := strings.TrimSpace(identity.CanonicalFolderNumber)
+	if opportunityFolderNumber == "" {
+		opportunityFolderNumber = strings.TrimSpace(identity.RawFolderNumber)
 	}
-	offer.Items = offerItems
 
-	if err := a.db.Create(offer).Error; err != nil {
-		log.Printf("❌ OneDrive import: failed to save offer for %s: %v", deal.FolderName, err)
+	candidates, err := a.findOneDriveOpportunityCandidates(identity, deal.FolderName)
+	if err != nil {
 		res.Success = false
-		res.Message = fmt.Sprintf("failed to save offer record. Please try again or contact support")
+		res.Message = fmt.Sprintf("failed to load opportunity: %v", err)
 		return res
 	}
 
-	log.Printf("✅ OneDrive import: created offer %s for %s (%d items, %.3f BHD)",
-		offerNumber, customer.BusinessName, len(offerItems), totalValueBHD)
+	var opportunity Opportunity
+	var duplicateOpportunities []Opportunity
+	isNewOpportunity := len(candidates) == 0
+	if isNewOpportunity {
+		opportunity = Opportunity{
+			Base:         Base{ID: uuid.New().String()},
+			FolderNumber: opportunityFolderNumber,
+		}
+	} else {
+		opportunity = candidates[0]
+		if len(candidates) > 1 {
+			duplicateOpportunities = candidates[1:]
+		}
+	}
+
+	opportunity.FolderNumber = opportunityFolderNumber
+	opportunity.CustomerID = customer.ID
+	opportunity.CustomerName = customer.BusinessName
+	opportunity.CustomerGrade = customer.CustomerGrade
+	opportunity.Year = folderMeta.Year
+	opportunity.OppNumber = folderMeta.OppNumber
+	opportunity.FolderName = deal.FolderName
+	opportunity.Title = folderMeta.Title
+	opportunity.Source = "2026_onedrive"
+	opportunity.ProductType = deal.InstrumentType
+	opportunity.OfferDate = quotationDate
+	opportunity.PaymentTerms = paymentTerms
+	opportunity.DeliveryTerms = deliveryTerms
+	if strings.TrimSpace(identity.RawFolderNumber) != "" {
+		opportunity.EHRef = identity.RawFolderNumber
+	}
+	opportunity.RevenueBHD = totalValueBHD
+	opportunity.CostBHD = totalValueBHD - (estimatedMargin * totalValueBHD / 100.0)
+	opportunity.ProfitBHD = totalValueBHD - opportunity.CostBHD
+	opportunity.Stage = stage
+	if stage == "Won" {
+		closedAt := maxModTime(deal.Files, "", string(filepath.Separator)+"EXECUTION"+string(filepath.Separator))
+		if closedAt.IsZero() {
+			closedAt = quotationDate
+		}
+		opportunity.ClosedDate = &closedAt
+		opportunity.OrderDate = &closedAt
+	}
+	productDetails := serializeOpportunityProductDetailsFromOfferItems(offerItems)
+
+	opportunityValues := map[string]interface{}{
+		"folder_number":   opportunity.FolderNumber,
+		"customer_id":     opportunity.CustomerID,
+		"customer_name":   opportunity.CustomerName,
+		"customer_grade":  opportunity.CustomerGrade,
+		"year":            opportunity.Year,
+		"opp_number":      opportunity.OppNumber,
+		"folder_name":     opportunity.FolderName,
+		"title":           opportunity.Title,
+		"eh_ref":          opportunity.EHRef,
+		"source":          opportunity.Source,
+		"product_type":    opportunity.ProductType,
+		"offer_date":      opportunity.OfferDate,
+		"payment_terms":   opportunity.PaymentTerms,
+		"delivery_terms":  opportunity.DeliveryTerms,
+		"product_details": productDetails,
+		"revenue_bhd":     opportunity.RevenueBHD,
+		"cost_bhd":        opportunity.CostBHD,
+		"profit_bhd":      opportunity.ProfitBHD,
+		"stage":           opportunity.Stage,
+		"closed_date":     opportunity.ClosedDate,
+		"order_date":      opportunity.OrderDate,
+		"updated_at":      time.Now(),
+	}
+
+	if isNewOpportunity {
+		opportunityValues["id"] = opportunity.ID
+		opportunityValues["created_at"] = time.Now()
+		opportunityValues["version"] = 1
+		opportunityValues["created_by"] = a.getCurrentUserID()
+		if err := a.db.Table("opportunities").Create(opportunityValues).Error; err != nil {
+			res.Success = false
+			res.Message = fmt.Sprintf("failed to create opportunity: %v", err)
+			return res
+		}
+	} else {
+		if err := a.db.Table("opportunities").Where("id = ?", opportunity.ID).Updates(opportunityValues).Error; err != nil {
+			res.Success = false
+			res.Message = fmt.Sprintf("failed to update opportunity: %v", err)
+			return res
+		}
+	}
+
+	var offer *Offer
+	offerNumber := deriveImportedOfferNumber(identity, deal)
+	if primaryCosting != nil {
+		var existingOffer Offer
+		staleOfferID := ""
+		switch {
+		case opportunity.OfferID != "":
+			err = a.db.Unscoped().Preload("Items").Where("id = ?", opportunity.OfferID).First(&existingOffer).Error
+			if err == nil && !importedOfferMatchesDeal(existingOffer, offerNumber, customer.ID) {
+				staleOfferID = existingOffer.ID
+				err = gorm.ErrRecordNotFound
+			}
+		default:
+			err = gorm.ErrRecordNotFound
+		}
+		if err == gorm.ErrRecordNotFound {
+			existingOffer = Offer{}
+			err = a.db.Unscoped().Preload("Items").Where("offer_number = ?", offerNumber).First(&existingOffer).Error
+			if err == nil && !importedOfferMatchesDeal(existingOffer, offerNumber, "") {
+				staleOfferID = existingOffer.ID
+				err = gorm.ErrRecordNotFound
+			}
+		}
+
+		isNewOffer := err == gorm.ErrRecordNotFound
+		if err != nil && err != gorm.ErrRecordNotFound {
+			res.Success = false
+			res.Message = fmt.Sprintf("failed to load offer: %v", err)
+			return res
+		}
+		if isNewOffer {
+			existingOffer = Offer{
+				Base:        Base{ID: uuid.New().String()},
+				OfferNumber: offerNumber,
+			}
+		}
+
+		existingOffer.RevisionNumber = extractRevisionNumber(deal.Files)
+		existingOffer.CustomerID = customer.ID
+		existingOffer.CustomerName = customer.BusinessName
+		existingOffer.QuotationDate = quotationDate
+		existingOffer.ValidityDate = quotationDate.AddDate(0, 3, 0)
+		existingOffer.TotalValueBHD = totalValueBHD
+		existingOffer.EstimatedMargin = estimatedMargin
+		existingOffer.Stage = stage
+		existingOffer.PaymentTerms = paymentTerms
+		existingOffer.DeliveryTerms = deliveryTerms
+		existingOffer.DeliveryWeeks = deliveryWeeks
+		existingOffer.CountryOfOrigin = countryOfOrigin
+		existingOffer.CustomerReference = customerReference
+		existingOffer.AttentionPerson = contactPerson
+		if vatPercent > 0 {
+			existingOffer.VatRate = vatPercent
+		}
+		existingOffer.DeletedAt = gorm.DeletedAt{}
+
+		if isNewOffer {
+			if err := a.db.Create(&existingOffer).Error; err != nil {
+				res.Success = false
+				res.Message = fmt.Sprintf("failed to create offer for %s (%s): %v", deal.FolderName, offerNumber, err)
+				return res
+			}
+		} else {
+			if err := a.db.Unscoped().Save(&existingOffer).Error; err != nil {
+				res.Success = false
+				res.Message = fmt.Sprintf("failed to update offer for %s (%s): %v", deal.FolderName, offerNumber, err)
+				return res
+			}
+		}
+
+		if len(offerItems) > 0 {
+			if err := a.db.Where("offer_id = ?", existingOffer.ID).Delete(&OfferItem{}).Error; err != nil {
+				res.Success = false
+				res.Message = fmt.Sprintf("failed to refresh offer items: %v", err)
+				return res
+			}
+			for i := range offerItems {
+				offerItems[i].OfferID = existingOffer.ID
+			}
+			if err := a.db.Create(&offerItems).Error; err != nil {
+				res.Success = false
+				res.Message = fmt.Sprintf("failed to create offer items: %v", err)
+				return res
+			}
+		}
+
+		offer = &existingOffer
+		opportunity.OfferID = existingOffer.ID
+		opportunity.Stage = stage
+		if err := a.db.Model(&Opportunity{}).Where("id = ?", opportunity.ID).Updates(map[string]interface{}{
+			"offer_id": offer.ID,
+			"stage":    opportunity.Stage,
+		}).Error; err != nil {
+			res.Success = false
+			res.Message = fmt.Sprintf("failed to link opportunity to offer: %v", err)
+			return res
+		}
+		res.OfferID = offer.ID
+		if staleOfferID != "" && staleOfferID != offer.ID {
+			if err := a.softDeleteOfferIfUnlinked(staleOfferID); err != nil {
+				log.Printf("⚠️ OneDrive import: failed to soft-delete stale offer %s: %v", staleOfferID, err)
+			}
+		}
+	} else if strings.TrimSpace(opportunity.OfferID) != "" {
+		if err := a.clearPlaceholderCommercialChain(opportunity.ID, opportunity.OfferID); err != nil {
+			log.Printf("⚠️ OneDrive import: failed to clear placeholder commercial chain for %s: %v", deal.FolderName, err)
+		}
+		opportunity.OfferID = ""
+	}
+
+	if len(duplicateOpportunities) > 0 {
+		for _, duplicate := range duplicateOpportunities {
+			if duplicate.ID == opportunity.ID {
+				continue
+			}
+			if err := softDeleteDuplicateOpportunity(a.db, duplicate.ID); err != nil {
+				log.Printf("⚠️ OneDrive import: failed to soft-delete duplicate opportunity %s: %v", duplicate.ID, err)
+			}
+		}
+	}
+
+	if stage == "Won" && offer != nil {
+		customerPONumber := extractPONumber(deal.Files)
+		orderNumber := strings.TrimSpace(offer.OfferNumber)
+		if orderNumber == "" {
+			orderNumber = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(folderMeta.FolderNumber), " ", "-"))
+		}
+		if orderNumber == "" && len(deal.LocalID) >= 8 {
+			orderNumber = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(deal.LocalID[:8]), " ", "-"))
+		}
+		if orderNumber == "" {
+			orderNumber = fmt.Sprintf("ORD-%d", time.Now().Unix())
+		}
+
+		var order Order
+		err := a.db.Preload("Items").Where("offer_id = ?", offer.ID).First(&order).Error
+		isNewOrder := err == gorm.ErrRecordNotFound
+		if err != nil && err != gorm.ErrRecordNotFound {
+			res.Success = false
+			res.Message = fmt.Sprintf("failed to load order: %v", err)
+			return res
+		}
+		if isNewOrder {
+			var reusedOrder Order
+			reuseErr := a.db.Unscoped().
+				Preload("Items").
+				Where("order_number = ?", orderNumber).
+				First(&reusedOrder).Error
+			if reuseErr == nil {
+				order = reusedOrder
+				isNewOrder = false
+			} else if reuseErr != nil && reuseErr != gorm.ErrRecordNotFound {
+				res.Success = false
+				res.Message = fmt.Sprintf("failed to load reusable order: %v", reuseErr)
+				return res
+			}
+		}
+		orderDate := maxModTime(deal.Files, "", string(filepath.Separator)+"EXECUTION"+string(filepath.Separator))
+		if orderDate.IsZero() {
+			orderDate = quotationDate
+		}
+		if isNewOrder {
+			order = Order{
+				Base:        Base{ID: uuid.New().String()},
+				OrderNumber: orderNumber,
+			}
+		}
+		order.CustomerPONumber = customerPONumber
+		order.CustomerID = customer.ID
+		order.CustomerName = customer.BusinessName
+		order.OrderDate = orderDate
+		order.RequiredDate = orderDate
+		order.TotalValueBHD = subtotalBHD
+		if order.TotalValueBHD == 0 {
+			order.TotalValueBHD = totalValueBHD
+		}
+		order.GrandTotalBHD = totalValueBHD
+		order.Status = "Confirmed"
+		order.PaymentTerms = paymentTerms
+		order.DeliveryTerms = deliveryTerms
+		order.OfferID = offer.ID
+		order.OfferNumber = offer.OfferNumber
+		order.RFQID = opportunity.ID
+		order.CustomerReference = customerReference
+		order.AttentionPerson = contactPerson
+		order.DeliveryWeeks = deliveryWeeks
+		order.CountryOfOrigin = countryOfOrigin
+		order.DeletedAt = gorm.DeletedAt{}
+
+		if isNewOrder {
+			if err := a.db.Create(&order).Error; err != nil {
+				res.Success = false
+				res.Message = fmt.Sprintf("failed to create order: %v", err)
+				return res
+			}
+		} else {
+			if err := a.db.Save(&order).Error; err != nil {
+				res.Success = false
+				res.Message = fmt.Sprintf("failed to update order: %v", err)
+				return res
+			}
+		}
+
+		if len(offerItems) > 0 {
+			orderItems := buildOrderItemsFromOfferItems(offerItems, order.ID)
+			if err := a.db.Where("order_id = ?", order.ID).Delete(&OrderItem{}).Error; err != nil {
+				res.Success = false
+				res.Message = fmt.Sprintf("failed to refresh order items: %v", err)
+				return res
+			}
+			if err := a.db.Create(&orderItems).Error; err != nil {
+				res.Success = false
+				res.Message = fmt.Sprintf("failed to create order items: %v", err)
+				return res
+			}
+		}
+
+		invoiceNumber := extractInvoiceNumber(deal.Files)
+		if invoiceNumber != "" {
+			var invoice Invoice
+			err := a.db.Where("invoice_number = ?", invoiceNumber).First(&invoice).Error
+			isNewInvoice := err == gorm.ErrRecordNotFound
+			if err != nil && err != gorm.ErrRecordNotFound {
+				res.Success = false
+				res.Message = fmt.Sprintf("failed to load invoice: %v", err)
+				return res
+			}
+			if isNewInvoice {
+				invoice = Invoice{
+					Base:          Base{ID: uuid.New().String()},
+					InvoiceNumber: invoiceNumber,
+				}
+			}
+			invoiceDate := maxModTime(deal.Files, "invoice", "")
+			if invoiceDate.IsZero() {
+				invoiceDate = orderDate
+			}
+			invoice.InvoiceDate = invoiceDate
+			invoice.CustomerID = customer.ID
+			invoice.CustomerName = customer.BusinessName
+			invoice.OrderID = order.ID
+			invoice.CustomerPONumber = customerPONumber
+			invoice.GrandTotalBHD = order.GrandTotalBHD
+			invoice.OutstandingBHD = order.GrandTotalBHD
+			invoice.SubtotalBHD = order.TotalValueBHD
+			invoice.DueDate = invoiceDate.AddDate(0, 0, 30)
+			invoice.Status = "Draft"
+			invoice.RfqID = opportunity.ID
+			invoice.OfferID = offer.ID
+			invoice.OfferNumber = offer.OfferNumber
+			invoice.PaymentTerms = paymentTerms
+			invoice.DeliveryTerms = deliveryTerms
+			invoice.CustomerReference = customerReference
+			invoice.AttentionPerson = contactPerson
+			invoice.CountryOfOrigin = countryOfOrigin
+			invoice.DeliveryWeeks = deliveryWeeks
+			invoice.VATBHD = vatAmountBHD
+			invoice.VATPercent = vatPercent
+
+			if isNewInvoice {
+				if err := a.db.Create(&invoice).Error; err != nil {
+					res.Success = false
+					res.Message = fmt.Sprintf("failed to create invoice: %v", err)
+					return res
+				}
+			} else {
+				if err := a.db.Save(&invoice).Error; err != nil {
+					res.Success = false
+					res.Message = fmt.Sprintf("failed to update invoice: %v", err)
+					return res
+				}
+			}
+		}
+	}
+
+	log.Printf("✅ OneDrive import: processed %s for %s (stage=%s, %d items, %.3f BHD)",
+		deal.FolderName, customer.BusinessName, stage, len(offerItems), totalValueBHD)
 
 	res.Success = true
-	res.OfferID = offer.ID
-	res.Message = fmt.Sprintf("imported as offer %s (%d costing items, %d PDFs noted)",
-		offerNumber, len(offerItems), res.PDFsQueued)
+	res.Message = fmt.Sprintf("imported %s as %s (%d costing items, %d PDFs noted)",
+		deal.FolderName, stage, len(offerItems), res.PDFsQueued)
 	return res
 }

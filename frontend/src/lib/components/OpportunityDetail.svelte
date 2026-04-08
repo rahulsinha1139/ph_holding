@@ -1,27 +1,23 @@
 <script lang="ts">
-    import { createEventDispatcher } from 'svelte';
-    import { onMount } from 'svelte';
-    import { GetRFQTraceability, GetPurchaseOrdersByOrder, GetRFQ, AddRFQComment, GetRFQComments, UpdateRFQStage } from '../../../wailsjs/go/main/App';
-    import { devLog } from '$lib/utils/devLog';
-    import { toast } from '$lib/stores/toasts';
+    import { createEventDispatcher, onMount } from "svelte";
+    import {
+        AddOpportunityComment,
+        AddRFQComment,
+        GetCurrentUserRole,
+        GetOpportunityComments,
+        GetOpportunityLineItems,
+        GetPurchaseOrdersByOrder,
+        GetRFQ,
+        GetRFQComments,
+        GetRFQTraceability,
+        UpdateOpportunityDetails,
+        UpdateOpportunityStage,
+        UpdateRFQNotes,
+        UpdateRFQStage,
+    } from "../../../wailsjs/go/main/App";
+    import { devLog } from "$lib/utils/devLog";
+    import { toast } from "$lib/stores/toasts";
 
-    type Opportunity = {
-        id?: number;
-        rfq_number?: string;  // RFQData rfq_number field
-        stage?: string;       // RFQData stage field (9-stage pipeline)
-        status?: keyof typeof statusPalette;
-        title?: string;
-        project?: string;  // RFQData uses 'project' field
-        customer?: string;
-        client?: string;   // RFQData uses 'client' field
-        value?: number;
-        notes?: string;    // Description/notes field
-        product_details?: string;  // JSON line items from OCR
-        created_at?: any;  // time.Time from Go
-        updated_at?: any;  // time.Time from Go
-    };
-
-    // Parse product_details JSON into an array
     interface LineItem {
         description?: string;
         quantity?: number;
@@ -31,229 +27,319 @@
         unit?: string;
     }
 
-    function parseProductDetails(productDetails?: string): LineItem[] {
-        if (!productDetails) return [];
-        try {
-            const parsed = JSON.parse(productDetails);
-            // Handle both array and single object formats
-            if (Array.isArray(parsed)) return parsed;
-            if (typeof parsed === 'object') return [parsed];
-            return [];
-        } catch {
-            return [];
-        }
-    }
-
-    $: lineItems = parseProductDetails(opportunity?.product_details);
-
     type HistoryEntry = {
-        status?: keyof typeof statusPalette;
+        status?: string;
         note?: string;
         createdAt?: string | number | Date | null;
     };
 
-    type Capture = {
-        text?: string;
-    };
-
-    // Compatible with Wails-generated main.PurchaseOrder
     interface PurchaseOrder {
         id: string;
-        created_at?: any;
-        updated_at?: any;
-        version?: number;
-        created_by?: string;
-        order_id?: string;
-        rfq_id?: string;
-        supplier_id?: string;
         supplier_name: string;
         po_number: string;
         po_date: any;
         expected_delivery: any;
-        currency?: string;
-        exchange_rate?: number;
-        subtotal_foreign?: number;
-        subtotal_bhd?: number;
-        vat_amount?: number;
-        total_foreign?: number;
         total_bhd: number;
-        payment_terms?: string;
-        payment_due_date?: any;
         status: string;
-        approved_by?: string;
-        approved_at?: any;
-        updated_by?: string;
-        items?: any[];
     }
 
-    // Using any to accommodate Wails RFQData which has additional fields
     export let opportunity: any = null;
     export let history: HistoryEntry[] = [];
-    export let quickCaptures: Capture[] = [];
+    export let quickCaptures: any[] = [];
     export let loading = false;
-    export let error = '';
+    export let error = "";
 
     const dispatch = createEventDispatcher();
 
-    // Tab state
-    let activeTab: 'details' | 'purchase-orders' = 'details';
-
-    // PO state
-    let purchaseOrders: PurchaseOrder[] = [];
-    let loadingPOs = false;
-    let poError = '';
-    let orderId = '';
-
-    // Comments state (Phase 3)
-    let comments: any[] = [];
-    let newComment = '';
-    let addingComment = false;
-    let updatingStage = false;
-
-    // Guard: track which opportunity ID we've already loaded to prevent infinite loops
-    let lastLoadedOpportunityId: number | null = null;
-    let lastLoadedTab: string = '';
-
-    // 9-stage pipeline options (Phase 2)
-    const stageOptions = [
-        'RFQ Received', 'Offer Sent', 'Follow-up/Eval',
-        'PO/LOI Received', 'Order Placed', 'In Process',
-        'Delivered', 'Closed (Payment)', 'Closed (Lost)'
+    const rfqStageOptions = [
+        "RFQ Received",
+        "Offer Sent",
+        "Follow-up/Eval",
+        "PO/LOI Received",
+        "Order Placed",
+        "In Process",
+        "Delivered",
+        "Closed (Payment)",
+        "Closed (Lost)",
     ];
 
-    // Load POs when tab is activated and we have an opportunity
+    const pipelineStageOptions = ["New", "Qualified", "Proposal", "Quoted", "Won", "Lost", "On Hold"];
+    const managementRoles = new Set(["admin", "manager", "management"]);
+
+    let activeTab: "details" | "purchase-orders" = "details";
+    let purchaseOrders: PurchaseOrder[] = [];
+    let loadingPOs = false;
+    let poError = "";
+    let orderId = "";
+
+    let comments: any[] = [];
+    let newComment = "";
+    let addingComment = false;
+    let updatingStage = false;
+    let savingNotes = false;
+    let currentUserRole = "";
+    let lastLoadedOpportunityKey = "";
+    let lastLoadedTabKey = "";
+    let offerLineItems: any[] = [];
+    let editableNotes = "";
+    let editableManagementNotes = "";
+
+    function parseProductDetails(productDetails?: string): LineItem[] {
+        if (!productDetails) return [];
+        try {
+            const parsed = JSON.parse(productDetails);
+            if (Array.isArray(parsed)) return parsed;
+            if (typeof parsed === "object" && parsed) return [parsed];
+        } catch {
+            return [];
+        }
+        return [];
+    }
+
+    $: lineItems = offerLineItems.length > 0
+        ? offerLineItems
+        : parseProductDetails(opportunity?.product_details);
+    $: isPipelineOpportunity = opportunity?._source === "pipeline" || typeof opportunity?.id === "string";
+    $: currentStageOptions = isPipelineOpportunity ? pipelineStageOptions : rfqStageOptions;
+    $: canViewManagementComments = managementRoles.has((currentUserRole || "").toLowerCase());
+    $: notesDirty = editableNotes !== (opportunity?.notes || opportunity?.comment || "");
+    $: managementNotesDirty = editableManagementNotes !== (opportunity?.owner_notes || "");
+
+    const formatter = new Intl.NumberFormat("en-BH", {
+        style: "currency",
+        currency: "BHD",
+        maximumFractionDigits: 0,
+    });
+
+    async function loadUserRole() {
+        try {
+            currentUserRole = (await GetCurrentUserRole()) || "";
+        } catch (err) {
+            devLog.error("Failed to load current user role:", err);
+            currentUserRole = "";
+        }
+    }
+
     async function loadPurchaseOrders() {
-        if (!opportunity?.id) return;
+        if (!opportunity?.id || isPipelineOpportunity) {
+            purchaseOrders = [];
+            return;
+        }
 
         loadingPOs = true;
-        poError = '';
+        poError = "";
 
         try {
-            // First, get the order_id from RFQ traceability
             const traceability = await GetRFQTraceability(opportunity.id.toString());
-
             if (traceability && traceability.order_id) {
                 orderId = traceability.order_id;
-
-                // Then fetch POs for that order
-                const pos = await GetPurchaseOrdersByOrder(orderId);
-                purchaseOrders = pos || [];
+                purchaseOrders = (await GetPurchaseOrdersByOrder(orderId)) || [];
             } else {
+                orderId = "";
                 purchaseOrders = [];
-                orderId = '';
             }
         } catch (err) {
-            devLog.error('Failed to load purchase orders:', err);
-            poError = 'Failed to load purchase orders';
+            devLog.error("Failed to load purchase orders:", err);
+            poError = "Failed to load purchase orders";
             purchaseOrders = [];
         } finally {
             loadingPOs = false;
         }
     }
 
-    // Watch for opportunity changes - only reload when the ID actually changes
-    $: if (opportunity?.id && opportunity.id !== lastLoadedOpportunityId) {
-        lastLoadedOpportunityId = opportunity.id;
-        lastLoadedTab = '';
-        purchaseOrders = [];
-        loadComments();
-        refreshOpportunityData();
-    }
-
-    // Watch for tab changes - only load POs once per opportunity
-    $: if (activeTab === 'purchase-orders' && opportunity?.id && lastLoadedTab !== 'purchase-orders-' + opportunity.id) {
-        lastLoadedTab = 'purchase-orders-' + opportunity.id;
-        loadPurchaseOrders();
-    }
-
-    // Refresh opportunity data (updates fields in-place to avoid triggering reactive loops)
     async function refreshOpportunityData() {
-        if (!opportunity?.id) return;
-        // Pipeline opportunities use UUID strings — GetRFQ expects uint (RFQ IDs only)
-        if (opportunity._source === 'pipeline' || typeof opportunity.id === 'string') return;
+        if (!opportunity?.id || isPipelineOpportunity) return;
         try {
-            const fresh = await GetRFQ(opportunity.id);
+            const fresh = await GetRFQ(Number(opportunity.id));
             if (fresh) {
-                Object.assign(opportunity, fresh);
-                opportunity = opportunity;
+                opportunity = { ...opportunity, ...fresh };
             }
         } catch (err) {
-            devLog.error('Failed to refresh opportunity:', err);
+            devLog.error("Failed to refresh opportunity:", err);
         }
     }
 
-    // Load comments for this opportunity
-    async function loadComments() {
-        if (!opportunity?.id) return;
-        // Pipeline opportunities don't have RFQ comments
-        if (opportunity._source === 'pipeline' || typeof opportunity.id === 'string') return;
+    async function loadOpportunityLineItems() {
+        offerLineItems = [];
+        if (!opportunity?.id || !isPipelineOpportunity) return;
         try {
-            comments = await GetRFQComments(opportunity.id) || [];
+            const items = (await GetOpportunityLineItems(String(opportunity.id))) || [];
+            offerLineItems = items
+                .filter((item: any) => {
+                    const raw = `${item.description || ""} ${item.equipment || ""} ${item.model || ""}`.toLowerCase();
+                    return !raw.includes("total for order");
+                })
+                .map((item: any) => ({
+                    description: item.description || item.equipment || item.model || item.product_code || "Line item",
+                    quantity: item.quantity || 1,
+                    unit_price: item.unit_price_bhd || item.unit_price || item.total_price || 0,
+                    total_price: item.total_price || ((item.quantity || 1) * (item.unit_price_bhd || item.unit_price || 0)),
+                    part_number: item.model || item.product_code || "",
+                    unit: item.currency || "",
+                    specification: item.specification || item.detailed_description || "",
+                }));
         } catch (err) {
-            devLog.error('Failed to load comments:', err);
+            devLog.error("Failed to load opportunity line items:", err);
+            offerLineItems = [];
+        }
+    }
+
+    async function loadComments() {
+        comments = [];
+        if (!opportunity?.id) return;
+
+        try {
+            if (isPipelineOpportunity) {
+                if (!canViewManagementComments) return;
+                comments = (await GetOpportunityComments(String(opportunity.id))) || [];
+                return;
+            }
+            comments = (await GetRFQComments(Number(opportunity.id))) || [];
+        } catch (err) {
+            devLog.error("Failed to load comments:", err);
             comments = [];
         }
     }
 
-    // Add a new comment
     async function handleAddComment() {
         if (!newComment.trim() || !opportunity?.id) return;
+
         addingComment = true;
         try {
-            await AddRFQComment(opportunity.id, newComment.trim(), 'User');
-            newComment = '';
+            if (isPipelineOpportunity) {
+                await AddOpportunityComment(String(opportunity.id), newComment.trim());
+            } else {
+                await AddRFQComment(Number(opportunity.id), newComment.trim(), "");
+            }
+            newComment = "";
             await loadComments();
-            toast.success('Comment added');
+            toast.success("Comment added");
         } catch (err) {
-            devLog.error('Failed to add comment:', err);
-            toast.danger('Failed to add comment');
+            devLog.error("Failed to add comment:", err);
+            toast.danger("Failed to add comment");
         } finally {
             addingComment = false;
         }
     }
 
-    // Update stage
     async function handleStageChange(event: Event) {
         const newStage = (event.target as HTMLSelectElement).value;
         if (!opportunity?.id || !newStage) return;
+
         updatingStage = true;
         try {
-            await UpdateRFQStage(opportunity.id, newStage);
-            opportunity = { ...opportunity, stage: newStage };
-            dispatch('updated');
+            if (isPipelineOpportunity) {
+                await UpdateOpportunityStage(String(opportunity.id), newStage);
+            } else {
+                await UpdateRFQStage(Number(opportunity.id), newStage);
+            }
+            opportunity = { ...opportunity, stage: newStage, status: newStage };
+            dispatch("updated");
             toast.success(`Stage updated to ${newStage}`);
         } catch (err) {
-            devLog.error('Failed to update stage:', err);
-            toast.danger('Failed to update stage');
+            devLog.error("Failed to update stage:", err);
+            toast.danger("Failed to update stage");
         } finally {
             updatingStage = false;
         }
     }
 
-    const statusPalette = {
-        New: 'var(--color-ink)',
-        Quoted: 'var(--color-gold)',
-        Won: 'var(--color-safe)',
-        Lost: 'var(--color-danger)',
-    };
+    async function handleSaveNotes() {
+        if (!opportunity?.id) return;
 
-    const formatter = new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency: 'USD',
-        maximumFractionDigits: 0,
-    });
-
-    $: allowed = opportunity && opportunity.status
-        ? opportunity.status === 'New'
-            ? ['Quoted', 'Won', 'Lost']
-            : opportunity.status === 'Quoted'
-                ? ['Won', 'Lost']
-                : []
-        : [];
-
-    function requestStatusChange(next) {
-        dispatch('statuschange', next);
+        savingNotes = true;
+        try {
+            if (isPipelineOpportunity) {
+                await UpdateOpportunityDetails(String(opportunity.id), editableNotes, editableManagementNotes);
+                opportunity = {
+                    ...opportunity,
+                    comment: editableNotes,
+                    owner_notes: editableManagementNotes,
+                };
+            } else {
+                const updated = await UpdateRFQNotes(Number(opportunity.id), editableNotes);
+                opportunity = {
+                    ...opportunity,
+                    ...updated,
+                    notes: updated?.notes ?? editableNotes,
+                };
+            }
+            dispatch("updated");
+            toast.success("Notes updated");
+        } catch (err) {
+            devLog.error("Failed to update notes:", err);
+            toast.danger("Failed to update notes");
+        } finally {
+            savingNotes = false;
+        }
     }
+
+    function handleCreateCosting() {
+        if (!opportunity?.id) return;
+
+        sessionStorage.setItem("asymmflow.pendingCostingOpportunity", JSON.stringify({
+            id: String(opportunity.id),
+            customer_name: opportunity.client || opportunity.customer || "",
+            folder_number: opportunity.folder_number || opportunity.rfq_number || "",
+            title: opportunity.project || opportunity.project_name || opportunity.title || "",
+        }));
+
+        window.dispatchEvent(new CustomEvent("navigateToScreen", {
+            detail: { screen: "costing" }
+        }));
+    }
+
+    function formatDate(value: any) {
+        if (!value) return "Not set";
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return "Not set";
+        return parsed.toLocaleDateString();
+    }
+
+    function formatDateTime(value: any) {
+        if (!value) return "";
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return "";
+        return parsed.toLocaleString();
+    }
+
+    function infoRows() {
+        if (!opportunity) return [];
+        return [
+            { label: "Reference", value: opportunity.folder_number || opportunity.rfq_number || "Manual" },
+            { label: "Year", value: opportunity.year || formatDate(opportunity.created_at).split("/").pop() },
+            { label: "Source", value: opportunity._source === "rfq" ? "RFQ" : (opportunity.source || "Pipeline") },
+            { label: "Expected Close", value: formatDate(opportunity.expected_date) },
+            { label: "Payment Terms", value: opportunity.payment_terms || "Not captured" },
+            { label: "Delivery Terms", value: opportunity.delivery_terms || "Not captured" },
+        ];
+    }
+
+    $: opportunityKey = opportunity?.id ? `${opportunity.id}:${opportunity._source || ""}` : "";
+    $: if (opportunityKey && opportunityKey !== lastLoadedOpportunityKey) {
+        lastLoadedOpportunityKey = opportunityKey;
+        lastLoadedTabKey = "";
+        activeTab = "details";
+        purchaseOrders = [];
+        editableNotes = opportunity?.notes || opportunity?.comment || "";
+        editableManagementNotes = opportunity?.owner_notes || "";
+        void loadComments();
+        void loadOpportunityLineItems();
+        void refreshOpportunityData();
+    }
+
+    $: if (activeTab === "purchase-orders" && opportunityKey && !isPipelineOpportunity) {
+        const tabKey = `purchase-orders:${opportunityKey}`;
+        if (tabKey !== lastLoadedTabKey) {
+            lastLoadedTabKey = tabKey;
+            void loadPurchaseOrders();
+        }
+    }
+
+    onMount(async () => {
+        await loadUserRole();
+        await loadComments();
+    });
 </script>
 
 <div class="detail">
@@ -265,64 +351,98 @@
         <p class="error">{error}</p>
     {:else if opportunity}
         <header class="header">
-            <div>
+            <div class="header-copy">
                 <div class="header-meta">
-                    {#if opportunity.rfq_number}
-                        <span class="rfq-number">{opportunity.rfq_number}</span>
-                    {/if}
+                    <span class="reference-pill">{opportunity.folder_number || opportunity.rfq_number || "Opportunity"}</span>
                     <select
                         class="stage-select"
-                        value={opportunity.stage || 'RFQ Received'}
+                        value={opportunity.stage || opportunity.status || currentStageOptions[0]}
                         on:change={handleStageChange}
                         disabled={updatingStage}
                     >
-                        {#each stageOptions as stage}
+                        {#each currentStageOptions as stage}
                             <option value={stage}>{stage}</option>
                         {/each}
                     </select>
                 </div>
-                <h2>{opportunity.project || opportunity.title || 'Untitled'}</h2>
-                <p class="subtitle">{opportunity.client || opportunity.customer || 'Unknown'}</p>
+                <h2>{opportunity.project || opportunity.title || "Untitled"}</h2>
+                <p class="subtitle">{opportunity.client || opportunity.customer || "Unknown Customer"}</p>
             </div>
-            <div class="value">{formatter.format(opportunity.value || 0)}</div>
+            <div class="header-actions">
+                <button class="comment-btn" on:click={handleCreateCosting}>
+                    Create Costing Sheet
+                </button>
+                <div class="value">{formatter.format(opportunity.value || opportunity.revenue_bhd || 0)}</div>
+            </div>
         </header>
 
-        <!-- Description/Notes Section -->
-        {#if opportunity.notes}
-            <div class="description">
-                <p class="mono">Description</p>
-                <div class="description-content">
-                    {opportunity.notes}
+        <section class="info-grid">
+            {#each infoRows() as row}
+                <div class="info-card">
+                    <span class="mono">{row.label}</span>
+                    <strong>{row.value}</strong>
                 </div>
+            {/each}
+        </section>
+
+        <section class="notes-grid">
+            <div class="note-card">
+                <div class="note-card-header">
+                    <p class="mono">Notes</p>
+                    {#if notesDirty}
+                        <span class="note-status">Unsaved</span>
+                    {/if}
+                </div>
+                <textarea
+                    class="note-editor"
+                    bind:value={editableNotes}
+                    rows="4"
+                    placeholder="Add notes for this opportunity..."
+                />
+            </div>
+            {#if isPipelineOpportunity && canViewManagementComments}
+                <div class="note-card">
+                    <div class="note-card-header">
+                        <p class="mono">Management Notes</p>
+                        {#if managementNotesDirty}
+                            <span class="note-status">Unsaved</span>
+                        {/if}
+                    </div>
+                    <textarea
+                        class="note-editor"
+                        bind:value={editableManagementNotes}
+                        rows="4"
+                        placeholder="Add internal management notes..."
+                    />
+                </div>
+            {/if}
+        </section>
+
+        {#if notesDirty || managementNotesDirty}
+            <div class="note-actions">
+                <button class="comment-btn" on:click={handleSaveNotes} disabled={savingNotes}>
+                    {savingNotes ? "Saving..." : "Save Notes"}
+                </button>
             </div>
         {/if}
 
-        <!-- Tabs Navigation -->
         <div class="tabs-nav">
-            <button
-                class="tab-btn"
-                class:active={activeTab === 'details'}
-                on:click={() => activeTab = 'details'}
-            >
+            <button class="tab-btn" class:active={activeTab === "details"} on:click={() => (activeTab = "details")}>
                 Details
             </button>
-            <button
-                class="tab-btn"
-                class:active={activeTab === 'purchase-orders'}
-                on:click={() => activeTab = 'purchase-orders'}
-            >
-                Purchase Orders
-                {#if purchaseOrders.length > 0}
-                    <span class="tab-count">{purchaseOrders.length}</span>
-                {/if}
-            </button>
+            {#if !isPipelineOpportunity}
+                <button class="tab-btn" class:active={activeTab === "purchase-orders"} on:click={() => (activeTab = "purchase-orders")}>
+                    Purchase Orders
+                    {#if purchaseOrders.length > 0}
+                        <span class="tab-count">{purchaseOrders.length}</span>
+                    {/if}
+                </button>
+            {/if}
         </div>
 
-        <!-- Tab Content -->
-        {#if activeTab === 'details'}
-            <!-- Line Items from OCR (product_details) -->
+        {#if activeTab === "details"}
             {#if lineItems.length > 0}
-                <div class="line-items-section">
+                <section class="line-items-section">
                     <p class="mono">Line Items ({lineItems.length})</p>
                     <div class="items-table">
                         <div class="items-header">
@@ -331,148 +451,119 @@
                             <span class="item-col-price">Unit Price</span>
                             <span class="item-col-total">Total</span>
                         </div>
-                        {#each lineItems as item, i}
+                        {#each lineItems as item, index}
                             <div class="items-row">
                                 <span class="item-col-desc">
-                                    {item.description || `Item ${i + 1}`}
+                                    {item.description || `Item ${index + 1}`}
                                     {#if item.part_number}
                                         <span class="part-number">{item.part_number}</span>
                                     {/if}
                                 </span>
-                                <span class="item-col-qty">{item.quantity || 1}{item.unit ? ` ${item.unit}` : ''}</span>
-                                <span class="item-col-price">{(item.unit_price || 0).toFixed(2)}</span>
-                                <span class="item-col-total">{(item.total_price || 0).toFixed(2)}</span>
+                                <span class="item-col-qty">{item.quantity || 1}{item.unit ? ` ${item.unit}` : ""}</span>
+                                <span class="item-col-price">{formatter.format(item.unit_price || 0)}</span>
+                                <span class="item-col-total">{formatter.format(item.total_price || 0)}</span>
                             </div>
                         {/each}
                     </div>
-                </div>
+                </section>
+            {:else}
+                <p class="muted">No structured line items captured for this opportunity yet.</p>
             {/if}
-        {:else if activeTab === 'purchase-orders'}
-            <!-- Purchase Orders Tab Content -->
+        {:else}
             <div class="po-tab-content">
                 {#if loadingPOs}
-                    <div class="po-loading">
-                        <div class="skeleton line"></div>
-                        <div class="skeleton line"></div>
-                        <div class="skeleton line short"></div>
-                    </div>
+                    <div class="skeleton line"></div>
+                    <div class="skeleton line"></div>
+                    <div class="skeleton line short"></div>
                 {:else if poError}
                     <p class="error">{poError}</p>
                 {:else if purchaseOrders.length === 0}
-                    <div class="po-empty">
-                        <p class="mono">No Purchase Orders</p>
-                        <p class="muted">No purchase orders have been created for this opportunity yet.</p>
-                        {#if orderId}
-                            <p class="info-text">Order ID: {orderId}</p>
-                        {/if}
-                    </div>
+                    <p class="muted">No purchase orders have been created for this opportunity yet.</p>
                 {:else}
                     <div class="po-list">
-                        <p class="mono">Purchase Orders ({purchaseOrders.length})</p>
                         {#each purchaseOrders as po}
                             <div class="po-card">
                                 <div class="po-header">
-                                    <div class="po-number">
-                                        <span class="mono">{po.po_number}</span>
-                                        <span class="po-status" data-status={po.status}>{po.status}</span>
+                                    <div>
+                                        <strong>{po.po_number}</strong>
+                                        <p class="muted">{po.supplier_name || "Unknown Supplier"}</p>
                                     </div>
-                                    <div class="po-amount">
-                                        {po.total_bhd.toFixed(3)} BHD
-                                    </div>
+                                    <div class="po-amount">{formatter.format(po.total_bhd || 0)}</div>
                                 </div>
-                                <div class="po-details">
-                                    <div class="po-detail-row">
-                                        <span class="label">Supplier:</span>
-                                        <span class="value">{po.supplier_name || 'Unknown'}</span>
-                                    </div>
-                                    <div class="po-detail-row">
-                                        <span class="label">PO Date:</span>
-                                        <span class="value">{new Date(po.po_date).toLocaleDateString()}</span>
-                                    </div>
-                                    <div class="po-detail-row">
-                                        <span class="label">Expected Delivery:</span>
-                                        <span class="value">{new Date(po.expected_delivery).toLocaleDateString()}</span>
-                                    </div>
+                                <div class="po-meta">
+                                    <span>{po.status}</span>
+                                    <span>PO {formatDate(po.po_date)}</span>
+                                    <span>Expected {formatDate(po.expected_delivery)}</span>
                                 </div>
                             </div>
                         {/each}
                     </div>
                 {/if}
+                {#if orderId}
+                    <p class="mono">Order ID: {orderId}</p>
+                {/if}
             </div>
         {/if}
 
-        <div class="status-actions">
-            {#if allowed.length === 0}
-                <p class="mono">Status locked.</p>
-            {:else}
-                {#each allowed as next}
-                    <button class="status-btn" on:click={() => requestStatusChange(next)}>
-                        <span class="dot" style={`background:${statusPalette[next]}`}></span>
-                        {next}
-                    </button>
-                {/each}
-            {/if}
-        </div>
-
-        <div class="timeline">
-            <p class="mono">Timeline</p>
-            {#if history.length === 0}
-                <p class="muted">No history yet.</p>
-            {:else}
+        {#if history.length > 0}
+            <section class="timeline">
+                <p class="mono">Timeline</p>
                 {#each history as event}
                     <div class="event">
                         <div class="event-head">
-                            <span class="dot" style={`background:${statusPalette[event.status || 'New'] || 'var(--color-ink)'}`}></span>
-                            <strong>{event.status || 'Unknown'}</strong>
-                            <span class="mono small">{event.createdAt ? new Date(event.createdAt).toLocaleString() : ''}</span>
+                            <strong>{event.status || "Update"}</strong>
+                            <span class="event-time">{formatDateTime(event.createdAt)}</span>
                         </div>
                         {#if event.note}
                             <p class="note">{event.note}</p>
                         {/if}
                     </div>
                 {/each}
-            {/if}
-        </div>
+            </section>
+        {/if}
 
-        <div class="comments-section">
-            <p class="mono">Comments & Notes</p>
-
-            <!-- Comment input -->
-            <div class="comment-input">
-                <textarea
-                    bind:value={newComment}
-                    placeholder="Add a comment..."
-                    class="comment-textarea"
-                    rows="2"
-                />
-                <button
-                    class="comment-btn"
-                    on:click={handleAddComment}
-                    disabled={!newComment.trim() || addingComment}
-                >
-                    {addingComment ? 'Posting...' : 'Post'}
-                </button>
+        <section class="comments-section">
+            <div class="comments-header">
+                <div>
+                    <p class="mono">Comments</p>
+                    {#if isPipelineOpportunity}
+                        <p class="comments-hint">Shared management thread with timestamps.</p>
+                    {/if}
+                </div>
             </div>
 
-            <!-- Comment list -->
-            <div class="comment-list">
-                {#if comments.length === 0}
-                    <p class="muted">No comments yet.</p>
-                {:else}
-                    {#each comments as comment}
-                        <div class="comment-item">
-                            <div class="comment-header">
-                                <span class="comment-author">{comment.created_by || 'User'}</span>
-                                <span class="comment-time">
-                                    {comment.created_at ? new Date(comment.created_at).toLocaleString() : ''}
-                                </span>
+            {#if isPipelineOpportunity && !canViewManagementComments}
+                <p class="muted">Management comments are visible to manager and admin roles.</p>
+            {:else}
+                <div class="comment-input">
+                    <textarea
+                        bind:value={newComment}
+                        placeholder={isPipelineOpportunity ? "Add a management comment..." : "Add a comment..."}
+                        class="comment-textarea"
+                        rows="3"
+                    />
+                    <button class="comment-btn" on:click={handleAddComment} disabled={!newComment.trim() || addingComment}>
+                        {addingComment ? "Posting..." : "Post"}
+                    </button>
+                </div>
+
+                <div class="comment-list">
+                    {#if comments.length === 0}
+                        <p class="muted">No comments yet.</p>
+                    {:else}
+                        {#each comments as comment}
+                            <div class="comment-item">
+                                <div class="comment-header">
+                                    <span class="comment-author">{comment.created_by || "User"}</span>
+                                    <span class="comment-time">{formatDateTime(comment.created_at)}</span>
+                                </div>
+                                <p class="comment-text">{comment.comment || comment.content}</p>
                             </div>
-                            <p class="comment-text">{comment.comment || comment.content}</p>
-                        </div>
-                    {/each}
-                {/if}
-            </div>
-        </div>
+                        {/each}
+                    {/if}
+                </div>
+            {/if}
+        </section>
     {:else}
         <p class="muted">Select an opportunity to view details.</p>
     {/if}
@@ -480,532 +571,321 @@
 
 <style>
     .detail {
-        background: rgba(255, 255, 255, 0.6);
-        border: 1px solid rgba(0, 0, 0, 0.08);
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        border-radius: 20px;
         padding: 1.5rem;
-        min-height: 320px;
     }
 
-    .header {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 1rem;
-        border-bottom: 2px solid var(--color-ink);
-        padding-bottom: 1rem;
-        margin-bottom: 1rem;
-    }
-
-    .mono {
-        font-family: var(--font-mono, 'Courier New', monospace);
-        text-transform: uppercase;
-        letter-spacing: 2px;
-        font-size: 0.7rem;
-        margin: 0 0 0.25rem;
-        color: var(--color-ink-light);
-    }
-
-    h2 {
-        margin: 0;
-        font-weight: 500;
-        letter-spacing: -0.5px;
-        color: var(--color-ink);
-    }
-
-    .subtitle {
-        margin: 0.2rem 0 0;
-        color: var(--color-ink-light);
-        font-family: var(--font-serif, Georgia, serif);
-    }
-
-    .value {
-        font-family: var(--font-mono, 'Courier New', monospace);
-        background: var(--color-ink);
-        color: var(--color-paper);
-        padding: 0.5rem 0.75rem;
-        letter-spacing: 1px;
-    }
-
-    .description {
-        margin-bottom: 1.25rem;
-        padding: 1rem;
-        background: rgba(0, 0, 0, 0.02);
-        border: 1px solid rgba(0, 0, 0, 0.06);
-        border-radius: 4px;
-    }
-
-    .description-content {
-        white-space: pre-wrap;
-        font-family: var(--font-sans, system-ui, sans-serif);
-        font-size: 0.9rem;
-        line-height: 1.6;
-        color: var(--color-ink);
-        max-height: 300px;
-        overflow-y: auto;
-    }
-
-    .status-actions {
-        display: flex;
-        gap: 0.5rem;
-        margin-bottom: 1.25rem;
-        flex-wrap: wrap;
-    }
-
-    .status-btn {
-        background: rgba(0, 0, 0, 0.04);
-        border: 1px solid rgba(0, 0, 0, 0.1);
-        padding: 0.45rem 0.75rem;
-        display: inline-flex;
-        align-items: center;
-        gap: 0.4rem;
-        cursor: pointer;
-        font-family: var(--font-mono, 'Courier New', monospace);
-        letter-spacing: 1px;
-        text-transform: uppercase;
-    }
-
-    .status-btn:hover {
-        background: rgba(0, 0, 0, 0.08);
-    }
-
-    .dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        display: inline-block;
-        border: 1px solid rgba(0, 0, 0, 0.08);
-    }
-
-    .dot.small { width: 8px; height: 8px; }
-
-    .timeline, .captures {
-        margin-bottom: 1.25rem;
-    }
-
-    .timeline .event {
-        padding: 0.65rem 0;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
-    }
-
+    .header,
+    .header-meta,
+    .po-header,
+    .comment-header,
+    .comments-header,
+    .comment-input,
     .event-head {
         display: flex;
         align-items: center;
-        gap: 0.5rem;
-        font-family: var(--font-serif, Georgia, serif);
+        justify-content: space-between;
+        gap: 0.75rem;
     }
 
-    .event-head .small {
-        font-size: 0.7rem;
-        color: var(--color-ink-light);
-        margin-left: auto;
+    .header {
+        align-items: flex-start;
+        margin-bottom: 1rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid rgba(15, 23, 42, 0.08);
     }
 
-    .note { margin: 0.25rem 0 0; color: var(--color-ink-light); }
-
-    .captures ul {
-        list-style: none;
-        padding: 0;
-        margin: 0;
-        display: grid;
-        gap: 0.4rem;
+    .header-copy {
+        flex: 1;
+        min-width: 0;
     }
 
-    .captures li {
+    .header-actions {
         display: flex;
         align-items: center;
-        gap: 0.4rem;
-        font-family: var(--font-serif, Georgia, serif);
+        gap: 0.75rem;
     }
 
-    .muted { color: var(--color-ink-light); margin: 0; }
-    .error { color: var(--color-danger); }
+    .reference-pill,
+    .value,
+    .tab-count,
+    .comment-btn {
+        border-radius: 999px;
+        padding: 0.45rem 0.8rem;
+    }
 
-    /* Line Items Table */
-    .line-items-section {
-        margin-bottom: 1.25rem;
+    .reference-pill {
+        background: rgba(15, 23, 42, 0.08);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+    }
+
+    .stage-select,
+    .comment-textarea,
+    .comment-btn {
+        border: 1px solid rgba(15, 23, 42, 0.12);
+        border-radius: 12px;
+    }
+
+    .stage-select,
+    .comment-textarea {
+        padding: 0.7rem 0.8rem;
+        background: white;
+    }
+
+    h2 {
+        margin: 0.45rem 0 0.15rem;
+        font-size: 1.5rem;
+    }
+
+    .subtitle,
+    .muted,
+    .comments-hint,
+    .event-time,
+    .comment-time,
+    .po-meta {
+        color: var(--text-muted);
+    }
+
+    .value {
+        background: var(--color-ink);
+        color: var(--color-paper);
+        font-weight: 800;
+        white-space: nowrap;
+    }
+
+    .mono {
+        margin: 0 0 0.25rem;
+        font-size: 0.72rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+    }
+
+    .info-grid,
+    .notes-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 0.85rem;
+        margin-bottom: 1rem;
+    }
+
+    .info-card,
+    .note-card,
+    .po-card,
+    .comment-item {
         padding: 1rem;
-        background: rgba(0, 0, 0, 0.02);
-        border: 1px solid rgba(0, 0, 0, 0.06);
-        border-radius: 4px;
+        border-radius: 16px;
+        background: rgba(248, 250, 252, 0.9);
+        border: 1px solid rgba(15, 23, 42, 0.06);
+    }
+
+    .note-card-header,
+    .note-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+    }
+
+    .note-status {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--text-muted);
+    }
+
+    .note-editor {
+        width: 100%;
+        min-height: 110px;
+        resize: vertical;
+        border: 1px solid rgba(15, 23, 42, 0.12);
+        border-radius: 14px;
+        padding: 0.85rem 0.95rem;
+        font: inherit;
+        line-height: 1.55;
+        color: var(--text-primary);
+        background: rgba(255, 255, 255, 0.92);
+        box-sizing: border-box;
+    }
+
+    .tabs-nav {
+        display: flex;
+        gap: 0.6rem;
+        margin: 1rem 0;
+    }
+
+    .tab-btn {
+        border: 1px solid rgba(15, 23, 42, 0.12);
+        background: white;
+        color: var(--text-primary);
+        border-radius: 999px;
+        padding: 0.55rem 0.95rem;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+    }
+
+    .tab-btn.active {
+        background: rgba(37, 99, 235, 0.1);
+        border-color: rgba(37, 99, 235, 0.25);
+        color: #1d4ed8;
+    }
+
+    .tab-count {
+        background: rgba(37, 99, 235, 0.12);
+        color: #1d4ed8;
+        font-size: 0.72rem;
     }
 
     .items-table {
-        margin-top: 0.75rem;
-        font-size: 0.85rem;
+        display: flex;
+        flex-direction: column;
+        border-radius: 16px;
+        overflow: hidden;
+        border: 1px solid rgba(15, 23, 42, 0.08);
+    }
+
+    .items-header,
+    .items-row,
+    .po-meta {
+        display: grid;
+        grid-template-columns: minmax(0, 1.8fr) 0.6fr 0.8fr 0.8fr;
+        gap: 0.75rem;
+        align-items: center;
+    }
+
+    .items-header,
+    .items-row {
+        padding: 0.85rem 1rem;
     }
 
     .items-header {
-        display: grid;
-        grid-template-columns: 2fr 0.5fr 0.75fr 0.75fr;
-        gap: 0.5rem;
-        padding: 0.5rem;
-        background: rgba(0, 0, 0, 0.04);
-        font-weight: 600;
-        font-size: 0.7rem;
+        background: rgba(15, 23, 42, 0.06);
+        font-size: 0.78rem;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
-        border-radius: 4px 4px 0 0;
+        letter-spacing: 0.06em;
     }
 
-    .items-row {
-        display: grid;
-        grid-template-columns: 2fr 0.5fr 0.75fr 0.75fr;
-        gap: 0.5rem;
-        padding: 0.5rem;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
-    }
-
-    .items-row:last-child {
-        border-bottom: none;
-    }
-
-    .item-col-desc {
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    .item-col-qty,
-    .item-col-price,
-    .item-col-total {
-        text-align: right;
-        font-family: var(--font-mono, 'Courier New', monospace);
+    .items-row:nth-child(even) {
+        background: rgba(248, 250, 252, 0.9);
     }
 
     .part-number {
         display: block;
-        font-size: 0.7rem;
-        color: var(--color-ink-light);
-        font-family: var(--font-mono, 'Courier New', monospace);
+        margin-top: 0.25rem;
+        font-size: 0.78rem;
+        color: var(--text-muted);
     }
 
-    .skeleton {
-        background: rgba(0,0,0,0.05);
-        border-radius: 4px;
-        animation: pulse 1.5s ease-in-out infinite;
-    }
-
-    .skeleton.title { height: 22px; width: 70%; }
-    .skeleton.line { height: 14px; width: 60%; margin-top: 0.5rem; }
-    .skeleton.short { width: 40%; }
-
-    @keyframes pulse {
-        0% { opacity: 0.55; }
-        50% { opacity: 1; }
-        100% { opacity: 0.55; }
-    }
-
-    /* Tabs Navigation */
-    .tabs-nav {
-        display: flex;
-        gap: 0.5rem;
-        margin-bottom: 1.25rem;
-        border-bottom: 2px solid rgba(0, 0, 0, 0.1);
-        padding-bottom: 0.5rem;
-    }
-
-    .tab-btn {
-        background: transparent;
-        border: none;
-        padding: 0.5rem 1rem;
-        font-family: var(--font-mono, 'Courier New', monospace);
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        font-size: 0.75rem;
-        cursor: pointer;
-        color: var(--color-ink-light);
-        border-bottom: 2px solid transparent;
-        transition: all 0.2s ease;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        position: relative;
-        margin-bottom: -2px;
-    }
-
-    .tab-btn:hover {
-        color: var(--color-ink);
-        background: rgba(0, 0, 0, 0.02);
-    }
-
-    .tab-btn.active {
-        color: var(--color-ink);
-        border-bottom-color: var(--color-ink);
-        font-weight: 600;
-    }
-
-    .tab-count {
-        background: var(--color-ink);
-        color: var(--color-paper);
-        padding: 0.1rem 0.4rem;
-        border-radius: 10px;
-        font-size: 0.7rem;
-        min-width: 1.2rem;
-        text-align: center;
-    }
-
-    /* PO Tab Content */
-    .po-tab-content {
-        margin-top: 1rem;
-    }
-
-    .po-loading,
-    .po-empty {
-        padding: 2rem 1rem;
-        text-align: center;
-    }
-
-    .po-empty .info-text {
-        margin-top: 0.5rem;
-        font-family: var(--font-mono, 'Courier New', monospace);
-        font-size: 0.75rem;
-        color: var(--color-ink-light);
-    }
-
-    .po-list {
+    .po-list,
+    .timeline,
+    .comment-list {
         display: flex;
         flex-direction: column;
-        gap: 1rem;
+        gap: 0.75rem;
     }
 
-    .po-card {
-        background: rgba(0, 0, 0, 0.02);
-        border: 1px solid rgba(0, 0, 0, 0.08);
-        border-radius: 4px;
-        padding: 1rem;
-        transition: all 0.2s ease;
-    }
-
-    .po-card:hover {
-        background: rgba(0, 0, 0, 0.04);
-        border-color: rgba(0, 0, 0, 0.12);
-        transform: translateY(-1px);
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-    }
-
-    .po-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        margin-bottom: 0.75rem;
-        padding-bottom: 0.75rem;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-    }
-
-    .po-number {
-        display: flex;
-        flex-direction: column;
-        gap: 0.4rem;
-    }
-
-    .po-number .mono {
-        font-size: 0.9rem;
-        font-weight: 600;
-        letter-spacing: 0.5px;
-    }
-
-    .po-status {
-        display: inline-block;
-        padding: 0.2rem 0.5rem;
-        font-size: 0.7rem;
-        font-family: var(--font-mono, 'Courier New', monospace);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        border-radius: 3px;
-        background: rgba(0, 0, 0, 0.08);
-        color: var(--color-ink);
-    }
-
-    .po-status[data-status="Draft"] {
-        background: rgba(100, 100, 100, 0.15);
-        color: #666;
-    }
-
-    .po-status[data-status="Sent"] {
-        background: rgba(100, 149, 237, 0.15);
-        color: #4682B4;
-    }
-
-    .po-status[data-status="Acknowledged"] {
-        background: rgba(70, 130, 180, 0.15);
-        color: #4682B4;
-    }
-
-    .po-status[data-status="PartiallyReceived"] {
-        background: rgba(255, 165, 0, 0.15);
-        color: #FF8C00;
-    }
-
-    .po-status[data-status="FullyReceived"] {
-        background: rgba(34, 139, 34, 0.15);
-        color: #228B22;
-    }
-
-    .po-status[data-status="Closed"] {
-        background: rgba(0, 0, 0, 0.1);
-        color: #333;
-    }
-
-    .po-amount {
-        font-family: var(--font-mono, 'Courier New', monospace);
-        font-size: 1rem;
-        font-weight: 600;
-        color: var(--color-ink);
-    }
-
-    .po-details {
-        display: flex;
-        flex-direction: column;
-        gap: 0.4rem;
-    }
-
-    .po-detail-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
+    .po-meta {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 0.75rem;
         font-size: 0.85rem;
     }
 
-    .po-detail-row .label {
-        color: var(--color-ink-light);
-        font-family: var(--font-mono, 'Courier New', monospace);
-        text-transform: uppercase;
-        font-size: 0.7rem;
-        letter-spacing: 0.5px;
+    .po-amount {
+        font-weight: 800;
     }
 
-    .po-detail-row .value {
-        color: var(--color-ink);
-        font-family: var(--font-serif, Georgia, serif);
-    }
-
-    /* Header meta (RFQ number + Stage) */
-    .header-meta {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        margin-bottom: 0.5rem;
-    }
-
-    .rfq-number {
-        font-family: var(--font-mono, 'Courier New', monospace);
-        font-size: 0.8rem;
-        font-weight: 600;
-        color: var(--brand-indigo, #4F46E5);
-        background: rgba(79, 70, 229, 0.1);
-        padding: 0.25rem 0.5rem;
-        border-radius: 4px;
-    }
-
-    .stage-select {
-        font-family: var(--font-mono, 'Courier New', monospace);
-        font-size: 0.7rem;
-        padding: 0.3rem 0.5rem;
-        border: 1px solid rgba(0, 0, 0, 0.15);
-        border-radius: 4px;
-        background: rgba(0, 0, 0, 0.02);
-        color: var(--color-ink);
-        cursor: pointer;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-
-    .stage-select:hover:not(:disabled) {
-        border-color: var(--brand-indigo, #4F46E5);
-    }
-
-    .stage-select:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-    }
-
-    /* Comments Section */
+    .timeline,
     .comments-section {
-        margin-bottom: 1.25rem;
+        margin-top: 1rem;
+    }
+
+    .event {
+        padding-bottom: 0.8rem;
+        border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+    }
+
+    .note {
+        margin: 0.35rem 0 0;
     }
 
     .comment-input {
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-        margin-top: 0.75rem;
+        align-items: stretch;
+        margin-bottom: 0.9rem;
     }
 
     .comment-textarea {
         width: 100%;
-        padding: 0.5rem;
-        border: 1px solid rgba(0, 0, 0, 0.1);
-        border-radius: 4px;
-        font-family: inherit;
-        font-size: 0.85rem;
         resize: vertical;
-        min-height: 50px;
-    }
-
-    .comment-textarea:focus {
-        outline: none;
-        border-color: var(--brand-indigo, #4F46E5);
+        min-height: 92px;
     }
 
     .comment-btn {
-        align-self: flex-start;
-        padding: 0.4rem 0.75rem;
-        background: var(--color-ink);
-        color: var(--color-paper);
-        border: none;
-        border-radius: 4px;
-        font-family: var(--font-mono, 'Courier New', monospace);
-        font-size: 0.7rem;
-        text-transform: uppercase;
-        letter-spacing: 1px;
+        background: rgba(37, 99, 235, 0.12);
+        color: #1d4ed8;
         cursor: pointer;
-    }
-
-    .comment-btn:hover:not(:disabled) {
-        background: rgba(0, 0, 0, 0.8);
-    }
-
-    .comment-btn:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-    }
-
-    .comment-list {
-        margin-top: 1rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.75rem;
-    }
-
-    .comment-item {
-        padding: 0.75rem;
-        background: rgba(0, 0, 0, 0.02);
-        border: 1px solid rgba(0, 0, 0, 0.06);
-        border-radius: 4px;
-    }
-
-    .comment-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 0.4rem;
+        font-weight: 700;
+        white-space: nowrap;
     }
 
     .comment-author {
-        font-weight: 600;
-        font-size: 0.8rem;
-        color: var(--color-ink);
-    }
-
-    .comment-time {
-        font-family: var(--font-mono, 'Courier New', monospace);
-        font-size: 0.65rem;
-        color: var(--color-ink-light);
+        font-weight: 700;
     }
 
     .comment-text {
-        margin: 0;
-        font-size: 0.85rem;
-        line-height: 1.5;
-        color: var(--color-ink);
+        margin: 0.45rem 0 0;
+        white-space: pre-wrap;
+        line-height: 1.55;
+    }
+
+    .skeleton {
+        background: rgba(15, 23, 42, 0.06);
+        border-radius: 8px;
+        animation: pulse 1.6s ease-in-out infinite;
+    }
+
+    .skeleton.title {
+        height: 24px;
+        width: 70%;
+    }
+
+    .skeleton.line {
+        height: 16px;
+        width: 100%;
+        margin-top: 0.7rem;
+    }
+
+    .skeleton.line.short {
+        width: 55%;
+    }
+
+    .error {
+        color: var(--color-danger);
+    }
+
+    @keyframes pulse {
+        0% { opacity: 0.5; }
+        50% { opacity: 0.95; }
+        100% { opacity: 0.5; }
+    }
+
+    @media (max-width: 860px) {
+        .header,
+        .header-meta,
+        .comment-input {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .items-header,
+        .items-row,
+        .po-meta {
+            grid-template-columns: 1fr;
+        }
     }
 </style>

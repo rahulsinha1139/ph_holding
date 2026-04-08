@@ -91,11 +91,11 @@ import { validateFile } from "$lib/utils/fileValidation";
     const fileName = filePath.split(/[\\/]/).pop() || 'document';
 
     // Validate file type
-    const validExts = ['.pdf', '.docx', '.msg', '.eml', '.xlsx', '.png', '.jpg', '.jpeg'];
+    const validExts = ['.pdf', '.xlsx', '.xls', '.docx', '.rtf', '.msg', '.eml', '.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.webp'];
     const fileExt = '.' + fileName.split('.').pop()?.toLowerCase();
 
     if (!validExts.includes(fileExt)) {
-      toast.danger(`Unsupported file type: ${fileExt}. Please upload PDF, DOCX, MSG, EML, XLSX, or image files.`);
+      toast.danger(`Unsupported file type: ${fileExt}. Please upload PDF, Excel, Word, RTF, Outlook, Email, or image files.`);
       return;
     }
 

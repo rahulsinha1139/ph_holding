@@ -26,6 +26,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -275,16 +276,11 @@ func (s *ContractService) GenerateContractNumber() (string, error) {
 
 	var nextNum int
 
-	// Use a transaction with EXCLUSIVE lock to prevent race conditions
-	// SQLite's BEGIN EXCLUSIVE ensures only one process can generate a number at a time
+	// Use a GORM transaction to prevent race conditions
+	// GORM already starts the transaction — do NOT call BEGIN EXCLUSIVE inside it
+	// (double-BEGIN was a bug fixed in Phase 33 for generateOfferNumber/generateRFQNumber)
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		// Lock the table for exclusive access during this transaction
-		// This prevents concurrent GenerateContractNumber calls from reading the same maxContract
-		if err := tx.Exec("BEGIN EXCLUSIVE").Error; err != nil {
-			return err
-		}
-
-		// Find highest contract number for this year within the locked transaction
+		// Find highest contract number for this year within the transaction
 		var maxContract Contract
 		err := tx.Where("contract_no LIKE ?", prefix+"%").
 			Order("contract_no DESC").
@@ -337,15 +333,24 @@ func (s *ContractService) GenerateContractNumber() (string, error) {
 
 // GenerateContractPDF generates PDF document for contract
 func (s *ContractService) GenerateContractPDF(contract *Contract, customer *CustomerMaster, clauses []ContractClauseSelection) (string, error) {
-	// Create contracts directory if doesn't exist
-	contractsDir := "contracts"
+	// Build export directory: EXPORTS/{Year}/Customers/{CustomerName}/Contracts/
+	// Uses executable directory as base (consistent with getExportDir pattern)
+	yearStr := fmt.Sprintf("%d", time.Now().Year())
+	safeName := strings.ReplaceAll(strings.TrimSpace(customer.BusinessName), " ", "_")
+	if safeName == "" {
+		safeName = "Unassigned"
+	}
+	// Sanitize: keep only alphanumeric, underscore, hyphen, dot
+	safeName = filepath.Base(safeName) // prevent path traversal
+	contractsDir := filepath.Join(".", "EXPORTS", yearStr, "Customers", safeName, "Contracts")
 	if err := os.MkdirAll(contractsDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create contracts directory: %v", err)
 	}
 
 	// Generate PDF filename
+	safeContractNo := strings.ReplaceAll(contract.ContractNo, "/", "-")
 	filename := fmt.Sprintf("contract_%s_%s.pdf",
-		contract.ContractNo,
+		safeContractNo,
 		strings.ReplaceAll(customer.BusinessName, " ", "_"))
 	pdfPath := filepath.Join(contractsDir, filename)
 
@@ -369,17 +374,72 @@ func (s *ContractService) GenerateContractPDF(contract *Contract, customer *Cust
 	return pdfPath, nil
 }
 
+// systemFontEntry maps a font name to a file path for system font fallback
+type systemFontEntry struct {
+	name string
+	path string
+}
+
+// getSystemFontPaths returns candidate system font paths ordered by platform preference
+func getSystemFontPaths() []systemFontEntry {
+	switch runtime.GOOS {
+	case "darwin":
+		return []systemFontEntry{
+			{"helvetica", "/System/Library/Fonts/Helvetica.ttc"},
+			{"arial", "/Library/Fonts/Arial.ttf"},
+			{"dejavu", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"},
+		}
+	case "windows":
+		return []systemFontEntry{
+			{"arial", filepath.Join(os.Getenv("WINDIR"), "Fonts", "arial.ttf")},
+			{"calibri", filepath.Join(os.Getenv("WINDIR"), "Fonts", "calibri.ttf")},
+			{"arial", `C:\Windows\Fonts\arial.ttf`},
+		}
+	default: // Linux and others
+		return []systemFontEntry{
+			{"dejavu", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"},
+			{"liberation", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"},
+			{"arial", "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf"},
+		}
+	}
+}
+
 // RenderContractPDF renders contract content to PDF
 func (s *ContractService) RenderContractPDF(gen *PDFGenerator, contract *Contract, customer *CustomerMaster, clauses []ContractClauseSelection) error {
 	gen.pdf.AddPage()
 
-	// Add DejaVuSans font for Unicode support
-	if err := gen.pdf.AddTTFFont("dejavu", "./fonts/DejaVuSans.ttf"); err != nil {
-		// Fallback to basic font if DejaVu not available
-		gen.pdf.AddTTFFont("arial", "./fonts/arial.ttf")
+	// Add DejaVuSans font for Unicode support, with cross-platform system font fallback
+	fontLoaded := false
+	fontName := "dejavu"
+
+	// Try local fonts directory first
+	if err := gen.pdf.AddTTFFont("dejavu", "./fonts/DejaVuSans.ttf"); err == nil {
+		fontLoaded = true
+	} else if err := gen.pdf.AddTTFFont("arial", "./fonts/arial.ttf"); err == nil {
+		fontName = "arial"
+		fontLoaded = true
 	}
 
-	gen.pdf.SetFont("dejavu", "", 14)
+	// Fallback to system fonts if local fonts directory doesn't have what we need
+	if !fontLoaded {
+		systemFontPaths := getSystemFontPaths()
+		for _, sfp := range systemFontPaths {
+			if _, statErr := os.Stat(sfp.path); statErr == nil {
+				if err := gen.pdf.AddTTFFont(sfp.name, sfp.path); err == nil {
+					fontName = sfp.name
+					fontLoaded = true
+					log.Printf("Contract PDF: using system font %s from %s", sfp.name, sfp.path)
+					break
+				}
+			}
+		}
+	}
+
+	if !fontLoaded {
+		log.Printf("Warning: no TTF fonts available for contract PDF, using built-in font")
+	}
+
+	gen.pdf.SetFont(fontName, "", 14)
 
 	// Header
 	gen.pdf.SetXY(50, 50)
@@ -518,23 +578,35 @@ func (s *ContractService) RenderContractPDF(gen *PDFGenerator, contract *Contrac
 
 // Helper: wrapText wraps text to specified width
 func wrapText(text string, width int) []string {
-	words := strings.Fields(text)
-	if len(words) == 0 {
-		return []string{}
-	}
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
 
+	paragraphs := strings.Split(text, "\n")
 	var lines []string
-	currentLine := words[0]
 
-	for _, word := range words[1:] {
-		if len(currentLine)+1+len(word) <= width {
-			currentLine += " " + word
-		} else {
-			lines = append(lines, currentLine)
-			currentLine = word
+	for _, paragraph := range paragraphs {
+		if strings.TrimSpace(paragraph) == "" {
+			lines = append(lines, "")
+			continue
 		}
+
+		words := strings.Fields(paragraph)
+		if len(words) == 0 {
+			lines = append(lines, "")
+			continue
+		}
+
+		currentLine := words[0]
+		for _, word := range words[1:] {
+			if len(currentLine)+1+len(word) <= width {
+				currentLine += " " + word
+			} else {
+				lines = append(lines, currentLine)
+				currentLine = word
+			}
+		}
+		lines = append(lines, currentLine)
 	}
-	lines = append(lines, currentLine)
 
 	return lines
 }

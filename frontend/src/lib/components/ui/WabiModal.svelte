@@ -28,10 +28,10 @@
   }
 
   const sizes = {
-    sm: '400px',
-    md: '550px',
-    lg: '750px',
-    xl: '950px',
+    sm: '380px',
+    md: '500px',
+    lg: '680px',
+    xl: '820px',
   };
 </script>
 
@@ -90,41 +90,46 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: var(--space-3, 34px);
+    padding: clamp(14px, 2vw, 24px);
     z-index: 1000;
   }
 
   .modal-container {
-    background: var(--color-paper, #fdfbf7);
+    background: var(--surface, #ffffff);
     border: 1px solid rgba(0, 0, 0, 0.08);
-    border-radius: var(--space-1, 13px);
+    border-radius: 18px;
     width: 100%;
-    max-height: 90vh;
+    max-height: calc(100vh - 48px);
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    box-shadow: 
+    box-shadow:
       0 var(--space-2, 21px) var(--space-4, 55px) rgba(0, 0, 0, 0.15),
       0 0 0 1px rgba(0, 0, 0, 0.05);
-    
-    /* Rice paper texture */
-    background-image: url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100' height='100' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+    font-family: var(--font-body);
   }
 
   .modal-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--space-2, 21px) var(--space-3, 34px);
+    gap: 16px;
+    padding: 16px 18px 14px;
     border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface, #ffffff);
   }
 
   .modal-title {
-    font-family: var(--font-prose, Georgia, serif);
-    font-size: var(--text-xl, 26px);
-    font-weight: normal;
+    font-family: var(--font-display);
+    font-size: var(--modal-title-size, 22px);
+    font-weight: var(--modal-title-weight, 500);
+    line-height: 1.2;
+    letter-spacing: -0.02em;
     margin: 0;
-    color: var(--color-ink, #1c1c1c);
+    color: var(--text-primary, #1c1c1c);
   }
 
   .modal-close {
@@ -133,7 +138,7 @@
     border: none;
     background: transparent;
     font-size: 24px;
-    color: var(--color-ink-light, #57534e);
+    color: var(--text-secondary, #57534e);
     cursor: pointer;
     border-radius: 50%;
     display: flex;
@@ -143,14 +148,16 @@
   }
 
   .modal-close:hover {
-    background: rgba(0, 0, 0, 0.05);
-    color: var(--color-ink, #1c1c1c);
+    color: var(--text-primary, #1c1c1c);
   }
 
   .modal-body {
-    padding: var(--space-3, 34px);
+    padding: 16px 18px 18px;
     overflow-y: auto;
     flex: 1;
+    font-family: var(--font-body);
+    font-size: var(--modal-body-size, 14px);
+    line-height: var(--modal-line-height, 1.6);
   }
 
   .modal-footer {
@@ -158,8 +165,13 @@
     align-items: center;
     justify-content: flex-end;
     gap: var(--space-1, 13px);
-    padding: var(--space-2, 21px) var(--space-3, 34px);
+    padding: 14px 18px 16px;
     border-top: 1px solid rgba(0, 0, 0, 0.08);
     background: rgba(0, 0, 0, 0.02);
+  }
+
+  :global(.modal-container .card:hover) {
+    transform: none !important;
+    box-shadow: var(--shadow-sm) !important;
   }
 </style>

@@ -566,12 +566,15 @@ func (a *App) GenerateCreditNotePDF(id string) (string, error) {
 	if paths == nil {
 		return "", fmt.Errorf("application paths not available")
 	}
-	exportDir := filepath.Join(paths.ProjectRoot, "exports", "credit_notes")
-	os.MkdirAll(exportDir, 0750)
-
 	cleanNum := strings.ReplaceAll(cn.CreditNoteNumber, "/", "_")
 	cleanNum = strings.ReplaceAll(cleanNum, "\\", "_")
 	filename := fmt.Sprintf("CreditNote_%s.pdf", filepath.Base(cleanNum))
+
+	docYear := cn.CreditNoteDate.Year()
+	if docYear <= 0 {
+		docYear = time.Now().Year()
+	}
+	exportDir := a.getExportDir("customer", customer.BusinessName, "MISC", docYear)
 	filePath := filepath.Join(exportDir, filename)
 
 	if err := pdf.OutputFileAndClose(filePath); err != nil {

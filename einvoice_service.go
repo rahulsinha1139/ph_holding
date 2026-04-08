@@ -216,13 +216,16 @@ func (a *App) GenerateEInvoiceXML(invoiceID string) (string, error) {
 	if paths == nil {
 		return "", fmt.Errorf("application paths not available")
 	}
-	exportDir := filepath.Join(paths.ProjectRoot, "exports", "invoices")
-	os.MkdirAll(exportDir, 0755)
-
 	cleanNum := filepath.Base(strings.ReplaceAll(invoice.InvoiceNumber, "..", ""))
 	cleanNum = strings.ReplaceAll(cleanNum, "/", "_")
 	cleanNum = strings.ReplaceAll(cleanNum, "\\", "_")
 	xmlFilename := fmt.Sprintf("%s.xml", cleanNum)
+
+	docYear := invoice.InvoiceDate.Year()
+	if docYear <= 0 {
+		docYear = time.Now().Year()
+	}
+	exportDir := a.getExportDir("customer", customer.BusinessName, "MISC", docYear)
 	xmlPath := filepath.Join(exportDir, xmlFilename)
 
 	if err := os.WriteFile(xmlPath, []byte(sb.String()), 0640); err != nil {
@@ -297,9 +300,7 @@ func (a *App) ExportVATReturnData(year, quarter int) (string, error) {
 	if paths == nil {
 		return "", fmt.Errorf("application paths not available")
 	}
-	exportDir := filepath.Join(paths.ProjectRoot, "exports", "vat_returns")
-	os.MkdirAll(exportDir, 0750)
-
+	exportDir := a.getExportDir("report", "", "", year)
 	filename := fmt.Sprintf("VAT_Return_Q%d_%d.csv", quarter, year)
 	csvPath := filepath.Join(exportDir, filename)
 
@@ -310,7 +311,6 @@ func (a *App) ExportVATReturnData(year, quarter int) (string, error) {
 	defer file.Close()
 
 	writer := csv.NewWriter(file)
-	defer writer.Flush()
 
 	// Header
 	writer.Write([]string{"Category", "Amount (BHD)", "VAT (BHD)", "Notes"})
@@ -326,6 +326,15 @@ func (a *App) ExportVATReturnData(year, quarter int) (string, error) {
 	writer.Write([]string{"", "", "", ""})
 	writer.Write([]string{"TRN", phTradingTRN, "", phTradingName})
 	writer.Write([]string{"Period", fmt.Sprintf("Q%d %d", quarter, year), fmt.Sprintf("%s to %s", startDate.Format("2006-01-02"), endDate.AddDate(0, 0, -1).Format("2006-01-02")), ""})
+
+	// Flush CSV writer and check for write errors
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return "", fmt.Errorf("CSV write error: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return "", fmt.Errorf("failed to sync CSV file: %w", err)
+	}
 
 	log.Printf("✅ VAT Return CSV exported: %s (Q%d %d: %d invoices, %d credit notes)",
 		csvPath, quarter, year, len(invoices), len(creditNotes))

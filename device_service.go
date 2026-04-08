@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -37,7 +38,7 @@ func GetMachineID() string {
 	log.Println("🖥️ GetMachineID: Getting hostname...")
 	hostname, err := os.Hostname()
 	if err == nil {
-		identifiers = append(identifiers, hostname)
+		identifiers = append(identifiers, strings.TrimSpace(strings.ToLower(hostname)))
 		log.Printf("🖥️ GetMachineID: Hostname=%s", hostname)
 	} else {
 		log.Printf("🖥️ GetMachineID: Hostname error: %v", err)
@@ -69,6 +70,7 @@ func GetMachineID() string {
 	// Wait for interfaces with 2 second timeout
 	select {
 	case result := <-ifaceChan:
+		sort.Strings(result.addrs)
 		log.Printf("🖥️ GetMachineID: Got %d MAC addresses", len(result.addrs))
 		identifiers = append(identifiers, result.addrs...)
 	case <-time.After(2 * time.Second):
@@ -80,12 +82,15 @@ func GetMachineID() string {
 	identifiers = append(identifiers, runtime.GOOS, runtime.GOARCH)
 	log.Printf("🖥️ GetMachineID: Building hash from %d identifiers", len(identifiers))
 
-	// Create SHA-256 hash
-	combined := strings.Join(identifiers, "|")
-	hash := sha256.Sum256([]byte(combined))
-	result := hex.EncodeToString(hash[:])
+	result := buildMachineIDHash(identifiers)
 	log.Printf("🖥️ GetMachineID: Complete, hash=%s...", result[:16])
 	return result
+}
+
+func buildMachineIDHash(identifiers []string) string {
+	combined := strings.Join(identifiers, "|")
+	hash := sha256.Sum256([]byte(combined))
+	return hex.EncodeToString(hash[:])
 }
 
 // GetDeviceInfo returns information about the current device
@@ -548,12 +553,15 @@ func (a *App) LoginDevice(username, password string) (*DeviceRegistrationResult,
 
 	// Find user
 	var user User
-	if err := a.db.Preload("Role").Where("username = ? AND is_active = ?", username, true).First(&user).Error; err != nil {
+	if err := a.db.Where("username = ? AND is_active = ?", username, true).First(&user).Error; err != nil {
 		// P1 FIX: Audit failed login attempt
 		if GlobalAuditLogger != nil {
 			GlobalAuditLogger.LogPermissionChange("system", username, "login_attempt", "", "", false, "user not found or inactive")
 		}
 		return nil, fmt.Errorf("invalid username or password")
+	}
+	if err := a.hydrateUserRole(&user); err != nil {
+		return nil, fmt.Errorf("failed to load role for user: %w", err)
 	}
 
 	// Verify password

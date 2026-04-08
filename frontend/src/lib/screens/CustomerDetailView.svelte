@@ -3,6 +3,7 @@
   import Card from '$lib/components/ui/Card.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
+  import ContextTaskModal from '$lib/components/ContextTaskModal.svelte';
   import { toast } from '$lib/stores/toasts';
   import { GetCustomerFullProfile, AddCustomerNote, UpdateCustomer, AddCustomerContact, DeleteCustomer } from '../../../wailsjs/go/main/App';
   import type { main } from '../../../wailsjs/go/models';
@@ -26,10 +27,12 @@
   let showDeleteConfirm = false;
   let deleteLoading = false;
   let customerDeleted = false;
+  let showTaskModal = false;
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       if (showDeleteConfirm) showDeleteConfirm = false;
+      else if (showTaskModal) showTaskModal = false;
       else if (showNoteModal) showNoteModal = false;
       else if (showContactModal) showContactModal = false;
     }
@@ -165,6 +168,7 @@
           <span class="grade-badge grade-{profile.payment_grade?.toLowerCase()}">{profile.payment_grade}</span>
           <span class="type-badge">{profile.customer_type}</span>
           {#if !editMode}
+            <Button variant="secondary" size="sm" on:click={() => showTaskModal = true}>Create Task</Button>
             <Button variant="secondary" size="sm" on:click={startEdit}>Edit</Button>
             {#if !customerDeleted}
               <Button variant="secondary" size="sm" on:click={() => showDeleteConfirm = true} style="color: #e74c3c; border-color: #e74c3c;">Delete</Button>
@@ -333,7 +337,8 @@
               <Card padding="md">
                 <div class="metric">
                   <span class="metric-label">Total Revenue</span>
-                  <span class="metric-value">{formatCurrency(profile.total_revenue)} BHD</span>
+                  <span class="metric-value">{formatCurrency(profile.total_revenue)}</span>
+                  <span class="metric-currency">BHD</span>
                 </div>
               </Card>
               <Card padding="md">
@@ -345,7 +350,8 @@
               <Card padding="md">
                 <div class="metric">
                   <span class="metric-label">Avg Order Value</span>
-                  <span class="metric-value">{formatCurrency(profile.avg_order_value)} BHD</span>
+                  <span class="metric-value">{formatCurrency(profile.avg_order_value)}</span>
+                  <span class="metric-currency">BHD</span>
                 </div>
               </Card>
               <Card padding="md">
@@ -361,19 +367,23 @@
               <div class="aging-grid">
                 <div class="aging-item">
                   <span class="aging-label">Current</span>
-                  <span class="aging-value">{formatCurrency(profile.ar_aging_buckets?.current)} BHD</span>
+                  <span class="aging-value">{formatCurrency(profile.ar_aging_buckets?.current)}</span>
+                  <span class="aging-currency">BHD</span>
                 </div>
                 <div class="aging-item">
                   <span class="aging-label">31-60 Days</span>
-                  <span class="aging-value">{formatCurrency(profile.ar_aging_buckets?.days_30_60)} BHD</span>
+                  <span class="aging-value">{formatCurrency(profile.ar_aging_buckets?.days_30_60)}</span>
+                  <span class="aging-currency">BHD</span>
                 </div>
                 <div class="aging-item">
                   <span class="aging-label">61-90 Days</span>
-                  <span class="aging-value">{formatCurrency(profile.ar_aging_buckets?.days_60_90)} BHD</span>
+                  <span class="aging-value">{formatCurrency(profile.ar_aging_buckets?.days_60_90)}</span>
+                  <span class="aging-currency">BHD</span>
                 </div>
                 <div class="aging-item">
                   <span class="aging-label">90+ Days</span>
-                  <span class="aging-value danger">{formatCurrency((profile.ar_aging_buckets?.days_90_120 || 0) + (profile.ar_aging_buckets?.days_120_plus || 0))} BHD</span>
+                  <span class="aging-value danger">{formatCurrency((profile.ar_aging_buckets?.days_90_120 || 0) + (profile.ar_aging_buckets?.days_120_plus || 0))}</span>
+                  <span class="aging-currency danger">BHD</span>
                 </div>
               </div>
             </Card>
@@ -556,6 +566,20 @@
       </div>
     </div>
   </div>
+{/if}
+
+{#if profile}
+  <ContextTaskModal
+    open={showTaskModal}
+    title="Create Customer Task"
+    subtitle={`Link work directly to ${profile.business_name}`}
+    defaults={{
+      customer_id: customerId,
+      seed_title: `Customer follow-up: ${profile.business_name}`,
+    }}
+    on:close={() => showTaskModal = false}
+    on:created={() => showTaskModal = false}
+  />
 {/if}
 
 <style>
@@ -746,17 +770,20 @@
   .tab.active { color: var(--text-primary); border-bottom-color: var(--brand-indigo); }
 
   .metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 16px; }
-  .metric { text-align: center; }
+  .metric { text-align: center; display: flex; flex-direction: column; align-items: center; }
   .metric-label { display: block; font-size: 11px; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 4px; }
   .metric-value { font-size: 24px; font-weight: 600; }
+  .metric-currency { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); margin-top: 4px; }
 
   .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin: 0 0 16px 0; }
 
   .aging-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
-  .aging-item { text-align: center; padding: 12px; background: var(--surface-elevated); border-radius: 8px; }
+  .aging-item { text-align: center; padding: 12px; background: var(--surface-elevated); border-radius: 8px; display: flex; flex-direction: column; align-items: center; }
   .aging-label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
   .aging-value { font-size: 16px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
   .aging-value.danger { color: #EF4444; }
+  .aging-currency { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); margin-top: 4px; }
+  .aging-currency.danger { color: #EF4444; }
 
   .list { display: flex; flex-direction: column; gap: 8px; }
   .list-item { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: var(--surface-elevated); border-radius: 6px; transition: all var(--transition-fast); }

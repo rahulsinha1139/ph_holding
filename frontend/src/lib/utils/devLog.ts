@@ -3,21 +3,29 @@
  * Automatically strips logs in production builds
  */
 
+const isDev = (): boolean => {
+  try {
+    return Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
+  } catch {
+    return false;
+  }
+};
+
 export const devLog = {
   log: (...args: any[]) => {
-    if (import.meta.env.DEV) {
+    if (isDev()) {
       console.log(...args);
     }
   },
 
   info: (...args: any[]) => {
-    if (import.meta.env.DEV) {
+    if (isDev()) {
       console.info(...args);
     }
   },
 
   warn: (...args: any[]) => {
-    if (import.meta.env.DEV) {
+    if (isDev()) {
       console.warn(...args);
     }
   },
@@ -28,7 +36,7 @@ export const devLog = {
   },
 
   debug: (...args: any[]) => {
-    if (import.meta.env.DEV) {
+    if (isDev()) {
       console.debug(...args);
     }
   }

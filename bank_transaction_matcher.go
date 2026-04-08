@@ -13,6 +13,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // =============================================================================
@@ -102,11 +103,11 @@ func (a *App) AutoMatchBankLines(statementID string) (*BankReconciliationMatchRe
 
 		// Update line with extracted data
 		updates := map[string]interface{}{
-			"transaction_type":    txType,
-			"extracted_invoices":  toJSONArray(invoiceNumbers),
+			"transaction_type":     txType,
+			"extracted_invoices":   toJSONArray(invoiceNumbers),
 			"extracted_po_numbers": toJSONArray(poNumbers),
-			"extracted_customer":  customerName,
-			"extracted_supplier":  supplierName,
+			"extracted_customer":   customerName,
+			"extracted_supplier":   supplierName,
 		}
 
 		// Step 3: Attempt matching based on transaction type
@@ -244,7 +245,7 @@ func extractInvoiceNumbers(description string) []string {
 	var invoices []string
 
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`(?i)/INV/([A-Z0-9/-]+)`),          // /INV/PH25/091
+		regexp.MustCompile(`(?i)/INV/([A-Z0-9/-]+)`),           // /INV/PH25/091
 		regexp.MustCompile(`(?i)PH(\d{2})[/-]?(\d{3,4})`),      // PH25/091, PH25-091, PH24159
 		regexp.MustCompile(`(?i)INV[/-]?(\d{4})[/-](\d{3,4})`), // INV-2026-001
 	}
@@ -273,7 +274,7 @@ func extractPONumbers(description string) []string {
 
 	patterns := []*regexp.Regexp{
 		regexp.MustCompile(`(?i)PO[/-]?(\d{4})[/-](\d{3,4})`), // PO-2025-001
-		regexp.MustCompile(`(?i)PUR[/-]?(\d+)`),                // PUR-12345
+		regexp.MustCompile(`(?i)PUR[/-]?(\d+)`),               // PUR-12345
 	}
 
 	for _, pattern := range patterns {
@@ -447,6 +448,16 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 		if err := a.db.First(&sinv, "id = ?", entityID).Error; err == nil {
 			entityAmount = sinv.TotalBHD
 		}
+	case "SUPPLIER_PAYMENT":
+		var payment SupplierPayment
+		if err := a.db.First(&payment, "id = ?", entityID).Error; err == nil {
+			entityAmount = payment.AmountBHD
+		}
+	case "PAYROLL_PAYOUT":
+		var payout PayrollPayout
+		if err := a.db.First(&payout, "id = ?", entityID).Error; err == nil {
+			entityAmount = payout.Amount
+		}
 	}
 	// Reject zero-amount entities — a zero-value invoice skips all ratio checks,
 	// allowing any bank line to reconcile against a phantom or draft invoice.
@@ -477,8 +488,26 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 		updates["matched_invoice_ids"] = entityID
 	case "SUPPLIER_INVOICE":
 		updates["matched_payment_ids"] = entityID
+	case "SUPPLIER_PAYMENT":
+		updates["matched_payment_id"] = entityID
 	case "EXPENSE":
 		updates["matched_expense_id"] = entityID
+	case "PAYROLL_PAYOUT":
+		var payout PayrollPayout
+		if err := a.db.First(&payout, "id = ?", entityID).Error; err != nil {
+			return fmt.Errorf("payroll payout not found: %w", err)
+		}
+		var run PayrollRun
+		if err := a.db.First(&run, "id = ?", payout.PayrollRunID).Error; err == nil && run.PayoutJournalEntryID != nil {
+			updates["matched_journal_id"] = *run.PayoutJournalEntryID
+		}
+		lineIDRef := line.ID
+		if err := a.db.Model(&payout).Updates(map[string]interface{}{
+			"bank_statement_line_id": &lineIDRef,
+			"updated_at":             time.Now(),
+		}).Error; err != nil {
+			return fmt.Errorf("failed to link payroll payout to bank line: %w", err)
+		}
 	}
 
 	if err := a.db.Model(&line).Updates(updates).Error; err != nil {
@@ -524,6 +553,17 @@ func (a *App) UnmatchLine(lineID, user, reason string) error {
 		"matched_invoice_ids": "",
 		"matched_payment_ids": "",
 		"matched_expense_id":  nil,
+		"matched_journal_id":  "",
+	}
+
+	var payout PayrollPayout
+	if err := a.db.Where("bank_statement_line_id = ?", lineID).First(&payout).Error; err == nil {
+		if updateErr := a.db.Model(&payout).Updates(map[string]interface{}{
+			"bank_statement_line_id": nil,
+			"updated_at":             time.Now(),
+		}).Error; updateErr != nil {
+			return fmt.Errorf("failed to unlink payroll payout from bank line: %w", updateErr)
+		}
 	}
 
 	if err := a.db.Model(&line).Updates(updates).Error; err != nil {
@@ -660,11 +700,11 @@ func (a *App) CategorizeTransactions(statementID string) error {
 		customer, supplier := extractBankEntityName(line.Description, customerNames, supplierNames)
 
 		a.db.Model(&line).Updates(map[string]interface{}{
-			"transaction_type":    txType,
-			"extracted_invoices":  toJSONArray(invoices),
+			"transaction_type":     txType,
+			"extracted_invoices":   toJSONArray(invoices),
 			"extracted_po_numbers": toJSONArray(pos),
-			"extracted_customer":  customer,
-			"extracted_supplier":  supplier,
+			"extracted_customer":   customer,
+			"extracted_supplier":   supplier,
 		})
 		categorizedCount++
 	}

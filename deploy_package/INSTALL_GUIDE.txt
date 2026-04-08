@@ -1,6 +1,6 @@
 ===============================================================================
                 ASYMMFLOW ERP - INSTALLATION GUIDE
-                Version: 2026-02-19 | Phase 19
+                Version: 2026-04-08 | Deployment Package
 ===============================================================================
 
 QUICK START (3 Steps)
@@ -29,8 +29,9 @@ FOLDER STRUCTURE
   ├── AsymmFlow.exe          <- The application (Windows)
   ├── .env                   <- Cloud sync configuration
   ├── data/
-  │   └── ph_holdings.db     <- Database with all company data
-  ├── LICENSE_KEYS.txt       <- Your license key
+  │   ├── ph_holdings.db     <- Database with all company data
+  │   └── PH Trading Quotation Template.png
+  ├── LICENSE_KEYS.txt       <- Employee license keys
   └── INSTALL_GUIDE.txt      <- This file
 
 
@@ -38,37 +39,7 @@ WINDOWS REQUIREMENTS
 --------------------
 
   - WebView2 Runtime: Pre-installed on Windows 10 21H2+ and Windows 11
-    If your PC has an older Windows version, download WebView2 from:
-    https://developer.microsoft.com/en-us/microsoft-edge/webview2/
   - No other dependencies needed
-
-
-FEATURES BY ROLE
------------------
-
-  ADMIN (Abhie, Stanley, Daniel, Rishu):
-    - Full access to all modules
-    - User management and license administration
-    - Finance Hub with bank reconciliation
-    - All reports and AI queries
-
-  MANAGER (Sundar):
-    - Dashboard with KPIs
-    - Finance Hub (invoices, payments, bank recon)
-    - Operations Hub (POs, supplier invoices)
-    - CRM (customers and suppliers)
-    - Butler AI for business intelligence
-
-  SALES (Peri, Ebin, Support):
-    - Dashboard with pipeline metrics
-    - Opportunities (RFQ, Costing, Offers, Orders)
-    - CRM (customer profiles and contacts)
-    - Butler AI for sales queries
-
-  OPERATIONS (Clinton):
-    - Dashboard
-    - Operations Hub (Purchase Orders, GRN, Deliveries)
-    - Butler AI for operations queries
 
 
 CLOUD SYNC
@@ -85,7 +56,7 @@ TROUBLESHOOTING
 
   Problem                     Solution
   -------                     --------
-  App won't start (Windows)   Install WebView2 Runtime (see above)
+  App won't start (Windows)   Install WebView2 Runtime
   App won't start             Make sure .env file is in same folder
   "Invalid license key"       Check LICENSE_KEYS.txt for correct key
   "Already activated"         Each key works on ONE PC only

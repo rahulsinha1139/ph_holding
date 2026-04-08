@@ -1,3 +1,83 @@
+@font-face {
+  font-family: 'Rubik';
+  src: url('./assets/fonts/google/Rubik-Light.ttf') format('truetype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Rubik';
+  src: url('./assets/fonts/google/Rubik-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Rubik';
+  src: url('./assets/fonts/google/Rubik-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Rubik';
+  src: url('./assets/fonts/google/Rubik-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Rubik';
+  src: url('./assets/fonts/google/Rubik-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('./assets/fonts/google/SpaceGrotesk-Light.ttf') format('truetype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('./assets/fonts/google/SpaceGrotesk-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('./assets/fonts/google/SpaceGrotesk-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('./assets/fonts/google/SpaceGrotesk-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('./assets/fonts/google/SpaceGrotesk-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ================================================================
    ENTERPRISE ERP/CRM DESIGN SYSTEM
    Applied to PH Holdings Sovereign UI
@@ -23,12 +103,13 @@ html {
   scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-synthesis: none;
 }
 
 body {
   margin: 0;
   padding: 0;
-  font-family: var(--font-family);
+  font-family: var(--font-body);
   font-size: 14px; /* Base size for enterprise density */
   line-height: var(--line-height-base);
   color: var(--text-primary);
@@ -39,8 +120,8 @@ body {
 
 /* HEADINGS - CLEAN & PROFESSIONAL */
 h1, h2, h3, h4, h5, h6 {
-  font-family: var(--font-family);
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-weight: 500;
   line-height: var(--line-height-tight);
   color: var(--text-primary);
   margin: 0 0 var(--section-spacing);
@@ -54,6 +135,7 @@ h4 { font-size: 16px; }
 
 p {
   margin: 0 0 12px;
+  font-family: var(--font-reading);
 }
 
 a {
@@ -64,6 +146,65 @@ a {
 
 a:hover {
   color: var(--brand-indigo-hover);
+}
+
+.card,
+.kpi-card,
+.modal,
+.modal-card,
+.modal-container,
+.modal-content {
+  font-family: var(--font-body);
+}
+
+.modal h1,
+.modal h2,
+.modal h3,
+.modal-card h1,
+.modal-card h2,
+.modal-card h3,
+.modal-title {
+  font-family: var(--font-display);
+  font-weight: var(--modal-title-weight, 500);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.modal p,
+.modal label,
+.modal input,
+.modal textarea,
+.modal select,
+.modal button,
+.modal-card p,
+.modal-card label,
+.modal-card input,
+.modal-card textarea,
+.modal-card select,
+.modal-card button,
+.modal-container p,
+.modal-container label,
+.modal-container input,
+.modal-container textarea,
+.modal-container select,
+.modal-container button {
+  font-family: var(--font-body);
+  font-size: var(--modal-body-size, 14px);
+  line-height: var(--modal-line-height, 1.6);
+}
+
+.modal label,
+.modal-card label,
+.modal-container label {
+  font-size: var(--modal-label-size, 12px);
+  font-weight: var(--modal-label-weight, 500);
+}
+
+.kpi-value,
+[data-numeric] {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.03em;
 }
 
 /* ========================================

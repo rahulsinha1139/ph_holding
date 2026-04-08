@@ -171,6 +171,9 @@ func (a *App) GetRFQsDueSoon(days int) ([]OpportunityDueData, error) {
 
 // BulkUpdateOfferStage updates multiple offers to a new stage
 func (a *App) BulkUpdateOfferStage(offerIDs []string, stage string) error {
+	if err := a.requirePermission("offers:edit"); err != nil {
+		return err
+	}
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}

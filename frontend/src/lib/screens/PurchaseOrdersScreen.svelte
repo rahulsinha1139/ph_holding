@@ -52,6 +52,104 @@
   // Types
   type POStatus = 'all' | 'Draft' | 'Sent' | 'Acknowledged' | 'PartiallyReceived' | 'FullyReceived' | 'Closed' | 'Cancelled';
 
+  function getErrorMessage(err: unknown): string {
+    if (!err) return 'Unknown error';
+    if (err instanceof Error && err.message) return err.message;
+    if (typeof err === 'string') return err;
+    if (typeof err === 'object') {
+      const candidate = (err as any).message || (err as any).error || (err as any).cause;
+      if (candidate) return String(candidate);
+    }
+    return String(err);
+  }
+
+  function padDatePart(value: number): string {
+    return String(value).padStart(2, '0');
+  }
+
+  function formatDateInput(value: string | Date | null | undefined): string {
+    if (!value) return '';
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return '';
+
+      const isoDateMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (isoDateMatch) {
+        return `${isoDateMatch[1]}-${isoDateMatch[2]}-${isoDateMatch[3]}`;
+      }
+
+      const localDateMatch = trimmed.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+      if (localDateMatch) {
+        return `${localDateMatch[3]}-${localDateMatch[2]}-${localDateMatch[1]}`;
+      }
+
+      const slashDateMatch = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+      if (slashDateMatch) {
+        return `${slashDateMatch[3]}-${slashDateMatch[2]}-${slashDateMatch[1]}`;
+      }
+
+      const parsed = new Date(trimmed);
+      if (!Number.isNaN(parsed.getTime())) {
+        return `${parsed.getFullYear()}-${padDatePart(parsed.getMonth() + 1)}-${padDatePart(parsed.getDate())}`;
+      }
+
+      return '';
+    }
+
+    return `${value.getFullYear()}-${padDatePart(value.getMonth() + 1)}-${padDatePart(value.getDate())}`;
+  }
+
+  function parseLocalDate(value: string): Date | null {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    const isoDateMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoDateMatch) {
+      return new Date(Number(isoDateMatch[1]), Number(isoDateMatch[2]) - 1, Number(isoDateMatch[3]));
+    }
+
+    const localDateMatch = trimmed.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    if (localDateMatch) {
+      return new Date(Number(localDateMatch[3]), Number(localDateMatch[2]) - 1, Number(localDateMatch[1]));
+    }
+
+    const slashDateMatch = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (slashDateMatch) {
+      return new Date(Number(slashDateMatch[3]), Number(slashDateMatch[2]) - 1, Number(slashDateMatch[1]));
+    }
+
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime())) {
+      return null;
+    }
+
+    return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  }
+
+  function addDaysLocal(baseDate: Date, days: number): Date {
+    const nextDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
+    nextDate.setDate(nextDate.getDate() + days);
+    return nextDate;
+  }
+
+  function toLocalDateISOString(value: string): string {
+    const parsed = parseLocalDate(value);
+    if (!parsed) {
+      return '';
+    }
+
+    return new Date(
+      parsed.getFullYear(),
+      parsed.getMonth(),
+      parsed.getDate(),
+      0,
+      0,
+      0,
+      0
+    ).toISOString();
+  }
+
   interface PODisplay {
     id: string;
     po_number: string;
@@ -97,8 +195,8 @@
   let formData = {
     order_id: '',
     supplier_id: '',
-    po_date: new Date().toISOString().split('T')[0],
-    expected_delivery: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // +14 days
+    po_date: formatDateInput(new Date()),
+    expected_delivery: formatDateInput(addDaysLocal(new Date(), 14)), // +14 days
     currency: 'BHD',
     exchange_rate: 1.0,
     payment_terms: 'Net 30',
@@ -161,19 +259,19 @@
       }
     },
     {
-      key: 'total_foreign',
-      label: 'Total (Foreign)',
+      key: 'subtotal_foreign',
+      label: 'Net Amount',
       type: 'currency' as const,
       align: 'right' as const,
       sortable: true,
       width: '140px',
       render: (row: PODisplay) => {
-        return `<span style="font-family: var(--font-mono); font-weight: 500;">${row.total_foreign.toFixed(3)} ${row.currency}</span>`;
+        return `<span style="font-family: var(--font-mono); font-weight: 500;">${row.subtotal_foreign.toFixed(3)} ${row.currency}</span>`;
       }
     },
     {
       key: 'total_bhd',
-      label: 'Total (BHD)',
+      label: 'Total incl. VAT',
       type: 'currency' as const,
       align: 'right' as const,
       sortable: true,
@@ -282,7 +380,7 @@
       console.log(`Loaded ${purchaseOrders.length} POs, ${orders.length} orders, ${suppliers.length} suppliers`);
     } catch (err) {
       console.error('Failed to load purchase orders:', err);
-      const errorMsg = err?.message || String(err);
+      const errorMsg = getErrorMessage(err);
       toast.danger(`Failed to load purchase orders: ${errorMsg}`);
       purchaseOrders = [];
     } finally {
@@ -292,26 +390,47 @@
 
   // Enrich PO with supplier name
   function enrichPO(po: any): PODisplay {
+    const exchangeRate = Number(po.exchange_rate || 1) || 1;
+    const subtotalForeign = Number(po.subtotal_foreign || 0) || 0;
+    const vatAmount = Number(po.vat_amount || 0) || 0;
+    const normalizedTotalForeign = Number(po.total_foreign || 0) > subtotalForeign
+      ? Number(po.total_foreign || 0)
+      : subtotalForeign + vatAmount;
+    const normalizedTotalBHD = Number(po.total_bhd || 0) || (normalizedTotalForeign * exchangeRate);
+
     // If PO already has supplier_name from backend, use it
     if (po.supplier_name) {
-      return po;
+      return {
+        ...po,
+        exchange_rate: exchangeRate,
+        subtotal_foreign: subtotalForeign,
+        vat_amount: vatAmount,
+        total_foreign: normalizedTotalForeign,
+        total_bhd: normalizedTotalBHD
+      };
     }
 
     // Otherwise, lookup from suppliers array
     const supplier = suppliers.find(s => s.id === po.supplier_id);
     return {
       ...po,
+      exchange_rate: exchangeRate,
+      subtotal_foreign: subtotalForeign,
+      vat_amount: vatAmount,
+      total_foreign: normalizedTotalForeign,
+      total_bhd: normalizedTotalBHD,
       supplier_name: supplier?.supplier_name || 'Unknown Supplier'
     };
   }
 
   // Open create modal
   function openCreateModal() {
+    const today = new Date();
     formData = {
       order_id: '',
       supplier_id: '',
-      po_date: new Date().toISOString().split('T')[0],
-      expected_delivery: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      po_date: formatDateInput(today),
+      expected_delivery: formatDateInput(addDaysLocal(today, 14)),
       currency: 'BHD',
       exchange_rate: 1.0,
       payment_terms: 'Net 30',
@@ -329,8 +448,8 @@
       formData = {
         order_id: po.order_id || '',
         supplier_id: po.supplier_id || '',
-        po_date: po.po_date ? new Date(po.po_date as any).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
-        expected_delivery: po.expected_delivery ? new Date(po.expected_delivery as any).toISOString().split('T')[0] : '',
+        po_date: po.po_date ? formatDateInput(po.po_date as any) : formatDateInput(new Date()),
+        expected_delivery: po.expected_delivery ? formatDateInput(po.expected_delivery as any) : '',
         currency: po.currency || 'BHD',
         exchange_rate: po.exchange_rate || 1.0,
         payment_terms: po.payment_terms || 'Net 30',
@@ -345,7 +464,7 @@
       showEditModal = true;
     } catch (err) {
       console.error('Failed to load PO for editing:', err);
-      const errorMsg = err?.message || String(err);
+      const errorMsg = getErrorMessage(err);
       toast.danger(`Failed to load purchase order: ${errorMsg}`);
     }
   }
@@ -358,7 +477,7 @@
       showViewModal = true;
     } catch (err) {
       console.error('Failed to load PO for viewing:', err);
-      const errorMsg = err?.message || String(err);
+      const errorMsg = getErrorMessage(err);
       toast.danger(`Failed to load purchase order: ${errorMsg}`);
     }
   }
@@ -371,17 +490,22 @@
     }
 
     // Validate dates
-    const poDate = new Date(formData.po_date);
-    const expectedDelivery = new Date(formData.expected_delivery);
+    const poDate = parseLocalDate(formData.po_date);
+    const expectedDelivery = parseLocalDate(formData.expected_delivery);
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
-    if (poDate > today) {
+    if (!poDate || !expectedDelivery) {
+      toast.warning('Please provide valid PO and expected delivery dates');
+      return;
+    }
+
+    if (poDate.getTime() > todayDate.getTime()) {
       toast.warning('PO date cannot be in the future');
       return;
     }
 
-    if (expectedDelivery <= poDate) {
+    if (expectedDelivery.getTime() <= poDate.getTime()) {
       toast.warning('Expected delivery must be after PO date');
       return;
     }
@@ -417,11 +541,13 @@
 
     formLoading = true;
     try {
+      const selectedSupplier = suppliers.find((supplier) => supplier.id === formData.supplier_id);
       const poData: any = {
         order_id: formData.order_id || undefined,
         supplier_id: formData.supplier_id,
-        po_date: new Date(formData.po_date).toISOString(),
-        expected_delivery: new Date(formData.expected_delivery).toISOString(),
+        supplier_name: selectedSupplier?.supplier_name || '',
+        po_date: toLocalDateISOString(formData.po_date),
+        expected_delivery: toLocalDateISOString(formData.expected_delivery),
         currency: formData.currency,
         exchange_rate: formData.exchange_rate,
         payment_terms: formData.payment_terms,
@@ -446,7 +572,7 @@
       await loadPurchaseOrders();
     } catch (err) {
       console.error('Failed to create PO:', err);
-      toast.danger('Failed to create purchase order: ' + (err as Error).message);
+      toast.danger('Failed to create purchase order: ' + getErrorMessage(err));
     } finally {
       formLoading = false;
     }
@@ -462,17 +588,22 @@
       return;
     }
 
-    const poDate = new Date(formData.po_date);
-    const expectedDelivery = new Date(formData.expected_delivery);
+    const poDate = parseLocalDate(formData.po_date);
+    const expectedDelivery = parseLocalDate(formData.expected_delivery);
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
-    if (poDate > today) {
+    if (!poDate || !expectedDelivery) {
+      toast.warning('Please provide valid PO and expected delivery dates');
+      return;
+    }
+
+    if (poDate.getTime() > todayDate.getTime()) {
       toast.warning('PO date cannot be in the future');
       return;
     }
 
-    if (expectedDelivery <= poDate) {
+    if (expectedDelivery.getTime() <= poDate.getTime()) {
       toast.warning('Expected delivery must be after PO date');
       return;
     }
@@ -505,12 +636,14 @@
 
     formLoading = true;
     try {
+      const selectedSupplier = suppliers.find((supplier) => supplier.id === formData.supplier_id);
       const poData: any = {
         ...editingPO,
         order_id: formData.order_id || undefined,
         supplier_id: formData.supplier_id,
-        po_date: new Date(formData.po_date).toISOString(),
-        expected_delivery: new Date(formData.expected_delivery).toISOString(),
+        supplier_name: selectedSupplier?.supplier_name || editingPO?.supplier_name || '',
+        po_date: toLocalDateISOString(formData.po_date),
+        expected_delivery: toLocalDateISOString(formData.expected_delivery),
         currency: formData.currency,
         exchange_rate: formData.exchange_rate,
         payment_terms: formData.payment_terms,
@@ -535,7 +668,7 @@
       await loadPurchaseOrders();
     } catch (err) {
       console.error('Failed to update PO:', err);
-      toast.danger('Failed to update purchase order: ' + (err as Error).message);
+      toast.danger('Failed to update purchase order: ' + getErrorMessage(err));
     } finally {
       formLoading = false;
     }
@@ -557,7 +690,7 @@
       await loadPurchaseOrders();
     } catch (err) {
       console.error('Failed to update PO status:', err);
-      const errorMsg = err?.message || String(err);
+      const errorMsg = getErrorMessage(err);
       toast.danger(`Failed to update status: ${errorMsg}`);
     } finally {
       statusLoading = false;
@@ -586,7 +719,7 @@
       console.log(`PO PDF saved: ${filePath}`);
     } catch (err) {
       console.error('Failed to generate PDF:', err);
-      const errorMsg = err?.message || String(err);
+      const errorMsg = getErrorMessage(err);
       toast.danger(`Failed to generate PDF: ${errorMsg}`);
     } finally {
       pdfLoading = false;
@@ -826,7 +959,7 @@
         <Input
           type="date"
           bind:value={formData.po_date}
-          max={new Date().toISOString().split('T')[0]}
+          max={formatDateInput(new Date())}
           required
         />
       </FormGroup>
@@ -1011,6 +1144,7 @@
         <Input
           type="date"
           bind:value={formData.po_date}
+          max={formatDateInput(new Date())}
           required
         />
       </FormGroup>
@@ -1019,6 +1153,7 @@
         <Input
           type="date"
           bind:value={formData.expected_delivery}
+          min={formData.po_date}
           required
         />
       </FormGroup>
@@ -1155,7 +1290,7 @@
 
 <!-- View PO Modal -->
 {#if viewingPO}
-  <WabiModal bind:open={showViewModal} title="Purchase Order Details" size="lg">
+  <WabiModal bind:open={showViewModal} title="Purchase Order Details" size="md">
     <div class="po-details">
       <!-- Header Info -->
       <div class="details-grid">
@@ -1194,8 +1329,8 @@
               <tr>
                 <th>Description</th>
                 <th class="right">Quantity</th>
-                <th class="right">Unit Price</th>
-                <th class="right">Total</th>
+                <th class="right">Unit Price ({viewingPO.currency})</th>
+                <th class="right">Total ({viewingPO.currency})</th>
               </tr>
             </thead>
             <tbody>
@@ -1203,8 +1338,8 @@
                 <tr>
                   <td>{item.description}</td>
                   <td class="right mono">{item.quantity}</td>
-                  <td class="right mono">{item.unit_price_foreign.toFixed(3)} {viewingPO.currency}</td>
-                  <td class="right mono">{item.total_foreign.toFixed(3)} {viewingPO.currency}</td>
+                  <td class="right mono">{item.unit_price_foreign.toFixed(3)}</td>
+                  <td class="right mono">{item.total_foreign.toFixed(3)}</td>
                 </tr>
               {/each}
             </tbody>
@@ -1215,7 +1350,7 @@
       <!-- Totals -->
       <div class="view-totals">
         <div class="total-row">
-          <div class="label">Subtotal:</div>
+          <div class="label">Net Amount:</div>
           <div class="value mono">{viewingPO.subtotal_foreign.toFixed(3)} {viewingPO.currency}</div>
         </div>
         <div class="total-row">
@@ -1223,7 +1358,7 @@
           <div class="value mono">{viewingPO.vat_amount.toFixed(3)} {viewingPO.currency}</div>
         </div>
         <div class="total-row grand">
-          <div class="label">Total ({viewingPO.currency}):</div>
+          <div class="label">Total incl. VAT ({viewingPO.currency}):</div>
           <div class="value mono">{viewingPO.total_foreign.toFixed(3)} {viewingPO.currency}</div>
         </div>
         {#if viewingPO.currency !== 'BHD'}
@@ -1585,13 +1720,13 @@
   .po-details {
     display: flex;
     flex-direction: column;
-    gap: 24px;
+    gap: 18px;
   }
 
   .details-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 16px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
   }
 
   .detail-item {
@@ -1620,7 +1755,8 @@
   .items-section {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
+    min-width: 0;
   }
 
   .items-section h4 {
@@ -1636,6 +1772,7 @@
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
+    table-layout: fixed;
   }
 
   .items-table th {
@@ -1654,6 +1791,7 @@
     padding: 8px 12px;
     border-bottom: 1px solid var(--border);
     color: var(--text-primary);
+    overflow-wrap: anywhere;
   }
 
   .items-table .right {
@@ -1664,9 +1802,27 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 16px;
+    padding: 14px;
     background: var(--surface-elevated);
     border-radius: var(--border-radius-sm);
+  }
+
+  .status-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .status-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  @media (max-width: 900px) {
+    .details-grid {
+      grid-template-columns: 1fr;
+    }
   }
 
   .view-totals .total-row {

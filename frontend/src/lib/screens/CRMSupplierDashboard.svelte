@@ -92,7 +92,8 @@
     return value.toFixed(0);
   }
 
-  function renderStars(rating: number): string {
+  function renderRating(rating: number): string {
+    if (!rating || rating <= 0) return '';
     return rating + '/5';
   }
 
@@ -168,7 +169,9 @@
               <span class="rank">{i + 1}</span>
               <div class="supplier-info">
                 <span class="name">{supplier.supplier_name}</span>
-                <span class="rating">{renderStars(supplier.rating)}</span>
+                {#if renderRating(supplier.rating)}
+                  <span class="rating">{renderRating(supplier.rating)}</span>
+                {/if}
               </div>
               <span class="amount">{formatCurrency(supplier.total_purchases)} BHD</span>
             </div>
@@ -210,7 +213,9 @@
           <div class="supplier-card" on:click={() => selectSupplier(supplier.id)}>
             <div class="card-header">
               <span class="supplier-name">{supplier.supplier_name}</span>
-              <span class="rating-stars">{renderStars(supplier.rating)}</span>
+              {#if renderRating(supplier.rating)}
+                <span class="rating-stars">{renderRating(supplier.rating)}</span>
+              {/if}
             </div>
             <div class="card-type">{supplier.supplier_type || 'Supplier'}</div>
             <div class="card-metrics">

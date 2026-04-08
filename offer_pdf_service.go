@@ -39,6 +39,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jung-kurt/gofpdf"
 )
@@ -140,14 +141,14 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	// Position for content start (below letterhead logo area)
 	pdf.SetY(52)
 
-	// "Quotation" title (top right)
+	// Centered document title
 	pdf.SetFont("Helvetica", "B", 20)
 	pdf.SetTextColor(29, 29, 31)
 	quoteTitle := "Quotation"
 	if offer.QuoteType != "" {
 		quoteTitle = offer.QuoteType
 	}
-	pdf.CellFormat(0, 10, quoteTitle, "", 0, "R", false, 0, "")
+	pdf.CellFormat(0, 10, quoteTitle, "", 0, "C", false, 0, "")
 	pdf.Ln(12)
 
 	// Metadata block (2 columns)
@@ -295,21 +296,20 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	pdf.Ln(6)
 
 	// Line items table
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(255, 255, 255)
-	pdf.SetFillColor(29, 29, 31) // Carbon/Onyx header
-
-	// Table headers
-	pdf.CellFormat(12, 7, "Sr. No.", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(92, 7, "Item Description, Long Code*", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(22, 7, "Unit cost", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(15, 7, "Qty", "1", 0, "C", true, 0, "")
-	pdf.CellFormat(33, 7, "Amount (BHD)", "1", 0, "C", true, 0, "")
-	pdf.Ln(7)
-
-	// Table rows
-	pdf.SetFont("Helvetica", "", 8)
-	pdf.SetTextColor(29, 29, 31)
+	drawOfferTableHeader := func() {
+		pdf.SetFont("Helvetica", "B", 9)
+		pdf.SetTextColor(255, 255, 255)
+		pdf.SetFillColor(29, 29, 31)
+		pdf.CellFormat(12, 7, "Sr. No.", "1", 0, "C", true, 0, "")
+		pdf.CellFormat(92, 7, "Item Description, Long Code*", "1", 0, "C", true, 0, "")
+		pdf.CellFormat(22, 7, "Unit cost", "1", 0, "C", true, 0, "")
+		pdf.CellFormat(15, 7, "Qty", "1", 0, "C", true, 0, "")
+		pdf.CellFormat(33, 7, "Amount (BHD)", "1", 0, "C", true, 0, "")
+		pdf.Ln(7)
+		pdf.SetFont("Helvetica", "", 8)
+		pdf.SetTextColor(29, 29, 31)
+	}
+	drawOfferTableHeader()
 
 	// Column widths (must match header widths above)
 	colSrNo := 12.0
@@ -341,6 +341,12 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 		rowHeight := float64(len(lines)) * lineHeight
 		if rowHeight < minRowHeight {
 			rowHeight = minRowHeight
+		}
+
+		if pdf.GetY()+rowHeight > 255 {
+			pdf.AddPage()
+			pdf.SetY(52)
+			drawOfferTableHeader()
 		}
 
 		// Store starting position for the row
@@ -377,16 +383,18 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	pdf.Ln(3)
 
 	// Totals Section (right-aligned)
-	totalsX := 141.0 // X position for totals labels
+	totalsX := 136.0
+	totalsLabelW := 30.0
+	totalsValueW := 34.0
 
 	// Subtotal
 	pdf.SetFont("Helvetica", "", 9)
 	pdf.SetTextColor(80, 80, 80)
-	pdf.SetX(totalsX)
-	pdf.Cell(24, 6, "SUBTOTAL:")
+	pdf.SetXY(totalsX, pdf.GetY())
+	pdf.CellFormat(totalsLabelW, 6, "SUBTOTAL:", "", 0, "L", false, 0, "")
 	pdf.SetFont("Helvetica", "B", 9)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(27, 6, fmt.Sprintf("%.3f BHD", subtotal))
+	pdf.CellFormat(totalsValueW, 6, fmt.Sprintf("%.3f BHD", subtotal), "", 0, "R", false, 0, "")
 	pdf.Ln(7)
 
 	// Discount (if applicable)
@@ -395,11 +403,11 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 		discount = subtotal * (offer.DiscountPercent / 100.0)
 		pdf.SetFont("Helvetica", "", 9)
 		pdf.SetTextColor(80, 80, 80)
-		pdf.SetX(totalsX)
-		pdf.Cell(24, 6, fmt.Sprintf("DISCOUNT (%.1f%%):", offer.DiscountPercent))
+		pdf.SetXY(totalsX, pdf.GetY())
+		pdf.CellFormat(totalsLabelW, 6, fmt.Sprintf("DISCOUNT (%.1f%%):", offer.DiscountPercent), "", 0, "L", false, 0, "")
 		pdf.SetFont("Helvetica", "B", 9)
 		pdf.SetTextColor(29, 29, 31)
-		pdf.Cell(27, 6, fmt.Sprintf("-%.3f BHD", discount))
+		pdf.CellFormat(totalsValueW, 6, fmt.Sprintf("-%.3f BHD", discount), "", 0, "R", false, 0, "")
 		pdf.Ln(7)
 	}
 
@@ -412,21 +420,21 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	vatAmount := subtotalAfterDiscount * (vatPercent / 100.0)
 	pdf.SetFont("Helvetica", "", 9)
 	pdf.SetTextColor(80, 80, 80)
-	pdf.SetX(totalsX)
-	pdf.Cell(24, 6, fmt.Sprintf("VAT %.0f%%:", vatPercent))
+	pdf.SetXY(totalsX, pdf.GetY())
+	pdf.CellFormat(totalsLabelW, 6, fmt.Sprintf("VAT %.0f%%:", vatPercent), "", 0, "L", false, 0, "")
 	pdf.SetFont("Helvetica", "B", 9)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(27, 6, fmt.Sprintf("%.3f BHD", vatAmount))
+	pdf.CellFormat(totalsValueW, 6, fmt.Sprintf("%.3f BHD", vatAmount), "", 0, "R", false, 0, "")
 	pdf.Ln(7)
 
 	// Grand Total (bold, larger)
 	grandTotal := subtotalAfterDiscount + vatAmount
 	pdf.SetFont("Helvetica", "B", 11)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.SetX(totalsX)
-	pdf.Cell(24, 7, "TOTAL (BHD):")
+	pdf.SetXY(totalsX, pdf.GetY())
+	pdf.CellFormat(totalsLabelW, 7, "TOTAL (BHD):", "", 0, "L", false, 0, "")
 	pdf.SetFont("Helvetica", "B", 11)
-	pdf.Cell(27, 7, fmt.Sprintf("%.3f BHD", grandTotal))
+	pdf.CellFormat(totalsValueW, 7, fmt.Sprintf("%.3f BHD", grandTotal), "", 0, "R", false, 0, "")
 	pdf.Ln(10)
 
 	// ========================================================================
@@ -551,6 +559,40 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 		pdf.SetFont("Helvetica", "", 8)
 		pdf.SetTextColor(29, 29, 31)
 
+		wrapAnnexureText := func(text string, width float64) []string {
+			text = strings.ReplaceAll(text, "\r\n", "\n")
+			text = strings.ReplaceAll(text, "\r", "\n")
+			var wrapped []string
+			for _, paragraph := range strings.Split(text, "\n") {
+				if paragraph == "" {
+					wrapped = append(wrapped, "")
+					continue
+				}
+				lines := pdf.SplitText(paragraph, width)
+				if len(lines) == 0 {
+					wrapped = append(wrapped, "")
+					continue
+				}
+				wrapped = append(wrapped, lines...)
+			}
+			return wrapped
+		}
+
+		drawAnnexureHeader := func() {
+			pdf.SetFont("Helvetica", "B", 9)
+			pdf.SetTextColor(255, 255, 255)
+			pdf.SetFillColor(29, 29, 31)
+			pdf.CellFormat(15, 7, "Item", "1", 0, "C", true, 0, "")
+			pdf.CellFormat(20, 7, "QTY", "1", 0, "C", true, 0, "")
+			pdf.CellFormat(139, 7, "Order code / Description", "1", 0, "C", true, 0, "")
+			pdf.Ln(7)
+			pdf.SetFont("Helvetica", "", 8)
+			pdf.SetTextColor(29, 29, 31)
+		}
+
+		descLineHeight := 4.5
+		minAnnexureRowHeight := 7.0
+
 		for i, item := range offer.Items {
 			// Only include items that have LongCode or DetailedDescription
 			if item.LongCode == "" && item.DetailedDescription == "" {
@@ -575,35 +617,32 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 				fullSpec = fullSpec + "\n\n" + sanitizeForPDF(item.DetailedDescription)
 			}
 
-			pdf.CellFormat(15, 6, fmt.Sprintf("%d", lineNum), "1", 0, "C", false, 0, "")
-			pdf.CellFormat(20, 6, fmt.Sprintf("%.0f PC", item.Quantity), "1", 0, "C", false, 0, "")
-
-			x := pdf.GetX()
-			y := pdf.GetY()
-			pdf.MultiCell(139, 4, fullSpec, "1", "L", false)
-			endY := pdf.GetY()
-
-			if endY-y > 6 {
-				pdf.SetXY(x, endY)
-			} else {
-				pdf.SetXY(18, y+6)
+			descLines := wrapAnnexureText(fullSpec, 139)
+			rowHeight := float64(len(descLines)) * descLineHeight
+			if rowHeight < minAnnexureRowHeight {
+				rowHeight = minAnnexureRowHeight
 			}
 
-			// Page overflow: add new page if near bottom (A4 = 297mm)
-			if pdf.GetY() > 260 && i < len(offer.Items)-1 {
+			if pdf.GetY()+rowHeight > 255 {
 				pdf.AddPage()
 				pdf.SetY(52)
-				// Reprint header on new page
-				pdf.SetFont("Helvetica", "B", 9)
-				pdf.SetTextColor(255, 255, 255)
-				pdf.SetFillColor(29, 29, 31)
-				pdf.CellFormat(15, 7, "Item", "1", 0, "C", true, 0, "")
-				pdf.CellFormat(20, 7, "QTY", "1", 0, "C", true, 0, "")
-				pdf.CellFormat(139, 7, "Order code / Description", "1", 0, "C", true, 0, "")
-				pdf.Ln(7)
-				pdf.SetFont("Helvetica", "", 8)
-				pdf.SetTextColor(29, 29, 31)
+				drawAnnexureHeader()
 			}
+
+			startX := pdf.GetX()
+			startY := pdf.GetY()
+			pdf.CellFormat(15, rowHeight, fmt.Sprintf("%d", lineNum), "1", 0, "C", false, 0, "")
+			pdf.CellFormat(20, rowHeight, fmt.Sprintf("%.0f PC", item.Quantity), "1", 0, "C", false, 0, "")
+
+			descX := pdf.GetX()
+			pdf.MultiCell(139, descLineHeight, fullSpec, "1", "L", false)
+			descEndY := pdf.GetY()
+			if descEndY-startY < rowHeight {
+				pdf.SetXY(descX, descEndY)
+				pdf.CellFormat(139, rowHeight-(descEndY-startY), "", "LRB", 0, "L", false, 0, "")
+			}
+
+			pdf.SetXY(startX, startY+rowHeight)
 		}
 	}
 
@@ -628,10 +667,6 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	// ========================================================================
 	// SAVE PDF
 	// ========================================================================
-	paths := a.getAppPaths()
-	exportDir := filepath.Join(paths.ProjectRoot, "exports", "offers")
-	os.MkdirAll(exportDir, 0755)
-
 	// Combined filename: {SystemNumber}_{UserReference}.pdf
 	cleanOfferNum := sanitizeFilename(offer.OfferNumber)
 	userRef := ""
@@ -644,17 +679,11 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	}
 	filename = fmt.Sprintf("Offer_%s.pdf", filename)
 
-	// Save to structured folder: <exports>/<division>/Customers/<CustomerName>/RFQ/
-	customerDir := ""
-	if offer.CustomerName != "" {
-		safeCust := sanitizeFilename(offer.CustomerName)
-		customerDir = filepath.Join(exportDir, "..", "PH Trading", "Customers", safeCust, "RFQ")
-		os.MkdirAll(customerDir, 0755)
+	docYear := offer.QuotationDate.Year()
+	if docYear <= 0 {
+		docYear = time.Now().Year()
 	}
-	saveDir := exportDir
-	if customerDir != "" {
-		saveDir = customerDir
-	}
+	saveDir := a.getExportDir("customer", offer.CustomerName, "Quotation", docYear)
 	filePath := filepath.Join(saveDir, filename)
 
 	if err := pdf.OutputFileAndClose(filePath); err != nil {

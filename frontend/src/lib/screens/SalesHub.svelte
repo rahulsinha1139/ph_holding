@@ -8,7 +8,10 @@
     import Tabs from "../components/ui/Tabs.svelte";
     import ErrorBoundary from "../components/ErrorBoundary.svelte";
 
+    export let params = {};
+
     let activeTab = "opportunities";
+    let lastAppliedRouteTab = "";
 
     // Text-only tabs - Living Minimalist
     // Sales flow: RFQ → Costing → Offer → Customer Order
@@ -31,6 +34,17 @@
             activeTab = 'costing';
         } else if (screen === 'orders') {
             activeTab = 'orders';
+        }
+    }
+
+    $: {
+        const requestedTab = params?.tab;
+        const isValidRequestedTab = requestedTab && tabs.some((tab) => tab.id === requestedTab);
+        if (isValidRequestedTab && requestedTab !== lastAppliedRouteTab) {
+            activeTab = requestedTab;
+            lastAppliedRouteTab = requestedTab;
+        } else if (!requestedTab) {
+            lastAppliedRouteTab = "";
         }
     }
 </script>

@@ -103,36 +103,161 @@ type ToolsConfig struct {
 
 // AppConfig defines application behavior settings
 type AppConfig struct {
-	LogLevel             string // debug, info, warn, error
-	DebugMode            bool
-	WatcherDebounceMS    int    // Debounce delay in milliseconds
-	WatcherQueueSize     int    // Max event queue size
-	EnableFileWatcher    bool   // Auto-start file watcher?
-	EnableGeometryBridge bool   // Enable three-regime routing?
-	EnableAutoBackup     bool   // Hourly database backups?
-	BackupRetentionDays  int    // How long to keep backups
-	AllowedOrigins       string // Comma-separated CORS origins (default: localhost only)
-	RateLimitPerMinute   int    // Rate limit per IP per minute (default: 60)
+	LogLevel                 string // debug, info, warn, error
+	DebugMode                bool
+	EnableDeveloperMasterKey bool   // Allow PH-DEV-MASTER in trusted/dev environments only
+	WatcherDebounceMS        int    // Debounce delay in milliseconds
+	WatcherQueueSize         int    // Max event queue size
+	EnableFileWatcher        bool   // Auto-start file watcher?
+	EnableGeometryBridge     bool   // Enable three-regime routing?
+	EnableAutoBackup         bool   // Hourly database backups?
+	BackupRetentionDays      int    // How long to keep backups
+	AllowedOrigins           string // Comma-separated CORS origins (default: localhost only)
+	RateLimitPerMinute       int    // Rate limit per IP per minute (default: 60)
 }
 
 // ============================================================================
 // CONFIG LOADING
 // ============================================================================
 
+func appendUniquePath(paths []string, seen map[string]struct{}, path string) []string {
+	if path == "" {
+		return paths
+	}
+	clean := filepath.Clean(path)
+	if _, exists := seen[clean]; exists {
+		return paths
+	}
+	seen[clean] = struct{}{}
+	return append(paths, clean)
+}
+
+func executableSearchDirs() []string {
+	exePath, err := os.Executable()
+	if err != nil || strings.TrimSpace(exePath) == "" {
+		return nil
+	}
+
+	exeDir := filepath.Dir(exePath)
+	seen := make(map[string]struct{})
+	dirs := make([]string, 0, 5)
+	dirs = appendUniquePath(dirs, seen, exeDir)
+
+	// Support macOS app bundles:
+	// - Contents/Resources for files copied inside the bundle
+	// - folder containing the .app for sidecar deployment packages
+	if runtime.GOOS == "darwin" {
+		dirs = appendUniquePath(dirs, seen, filepath.Join(exeDir, "..", "Resources"))
+		dirs = appendUniquePath(dirs, seen, filepath.Join(exeDir, "..", "..", ".."))
+	}
+
+	return dirs
+}
+
+func resolveConfiguredPath(configuredPath string) string {
+	if strings.TrimSpace(configuredPath) == "" {
+		return configuredPath
+	}
+	if filepath.IsAbs(configuredPath) {
+		return configuredPath
+	}
+
+	candidates := make([]string, 0, len(executableSearchDirs())+1)
+	for _, baseDir := range executableSearchDirs() {
+		candidates = append(candidates, filepath.Join(baseDir, configuredPath))
+	}
+	candidates = append(candidates, configuredPath)
+
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return filepath.Clean(candidate)
+		}
+	}
+
+	if dirs := executableSearchDirs(); len(dirs) > 0 {
+		return filepath.Clean(filepath.Join(dirs[0], configuredPath))
+	}
+	return filepath.Clean(configuredPath)
+}
+
+func packagedDatabasePath() string {
+	for _, baseDir := range executableSearchDirs() {
+		candidates := []string{
+			filepath.Join(baseDir, "data", "ph_holdings.db"),
+			filepath.Join(baseDir, "ph_holdings.db"),
+		}
+		for _, candidate := range candidates {
+			if _, err := os.Stat(candidate); err == nil {
+				return filepath.Clean(candidate)
+			}
+		}
+	}
+	return ""
+}
+
+func appDataDatabasePath() string {
+	if runtime.GOOS == "windows" {
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			return filepath.Join(appData, "AsymmFlow", "ph_holdings.db")
+		}
+		return ""
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "share", "AsymmFlow", "ph_holdings.db")
+	}
+	return ""
+}
+
 // getDatabasePath returns the database path with proper precedence
 func getDatabasePath() string {
 	// Priority 1: Environment variable (PH_DB_PATH or DATABASE_PATH)
 	if envPath := strings.TrimSpace(os.Getenv("PH_DB_PATH")); envPath != "" {
-		log.Printf("📂 Database path from PH_DB_PATH: %s", envPath)
-		return envPath
+		resolved := resolveConfiguredPath(envPath)
+		log.Printf("📂 Database path from PH_DB_PATH: %s -> %s", envPath, resolved)
+		return resolved
 	}
 	if envPath := strings.TrimSpace(os.Getenv("DATABASE_PATH")); envPath != "" {
-		log.Printf("📂 Database path from DATABASE_PATH: %s", envPath)
-		return envPath
+		resolved := resolveConfiguredPath(envPath)
+		log.Printf("📂 Database path from DATABASE_PATH: %s -> %s", envPath, resolved)
+		return resolved
 	}
 
-	// Priority 2: Current working directory - ALWAYS prefer if file exists
-	// This ensures development mode uses the project's database
+	// Priority 2: Existing machine-level application database.
+	// This preserves the user's activated license and local data across rebuilds,
+	// package refreshes, and app bundle replacements.
+	appDataPath := appDataDatabasePath()
+	if appDataPath != "" {
+		if _, err := os.Stat(appDataPath); err == nil {
+			log.Printf("📂 Database path (AppData existing): %s", appDataPath)
+			return appDataPath
+		}
+	}
+
+	// Priority 3: Packaged database beside the executable/app bundle.
+	// Use this for first-run or portable deployments when no machine database exists yet.
+	if packaged := packagedDatabasePath(); packaged != "" {
+		log.Printf("📂 Database path (packaged app): %s", packaged)
+		return packaged
+	}
+
+	// Priority 4: Executable directory (for portable deployment)
+	// Prefer the packaged database over CWD so desktop shortcuts and Finder/Explorer
+	// launches don't silently fall back to some other working directory.
+	for _, baseDir := range executableSearchDirs() {
+		candidates := []string{
+			filepath.Join(baseDir, "data", "ph_holdings.db"),
+			filepath.Join(baseDir, "ph_holdings.db"),
+		}
+		for _, execPath := range candidates {
+			if _, err := os.Stat(execPath); err == nil {
+				log.Printf("📂 Database path (exec search): %s", execPath)
+				return execPath
+			}
+		}
+	}
+
+	// Priority 5: Current working directory - preferred in development once
+	// no packaged database is present next to the executable.
 	localPath := "./ph_holdings.db"
 	if _, err := os.Stat(localPath); err == nil {
 		absPath, _ := filepath.Abs(localPath)
@@ -140,34 +265,14 @@ func getDatabasePath() string {
 		return localPath
 	}
 
-	// Priority 3: Executable directory (for portable deployment)
-	if ex, err := os.Executable(); err == nil {
-		execPath := filepath.Join(filepath.Dir(ex), "data", "ph_holdings.db")
-		if _, err := os.Stat(execPath); err == nil {
-			log.Printf("📂 Database path (exec dir): %s", execPath)
-			return execPath
-		}
-	}
-
-	// Priority 4: Application data directory (Windows: %APPDATA%, Unix: ~/.local/share)
-	var appDataPath string
-	if runtime.GOOS == "windows" {
-		if appData := os.Getenv("APPDATA"); appData != "" {
-			appDataPath = filepath.Join(appData, "AsymmFlow", "ph_holdings.db")
-		}
-	} else {
-		if home, err := os.UserHomeDir(); err == nil {
-			appDataPath = filepath.Join(home, ".local", "share", "AsymmFlow", "ph_holdings.db")
-		}
-	}
-
+	// Priority 6: Application data directory (Windows: %APPDATA%, Unix: ~/.local/share)
 	if appDataPath != "" {
 		os.MkdirAll(filepath.Dir(appDataPath), 0755)
 		log.Printf("📂 Database path (AppData): %s", appDataPath)
 		return appDataPath
 	}
 
-	// Priority 5: Current working directory (fallback - will create new)
+	// Priority 7: Current working directory (fallback - will create new)
 	log.Printf("📂 Database path (fallback): %s", localPath)
 	return localPath
 }
@@ -176,22 +281,22 @@ func getDatabasePath() string {
 func LoadConfig() (*Config, error) {
 	// Try to load .env file from multiple locations
 	// This is needed because the app can run from build/bin/ or project root
-	envLocations := []string{
-		".env", // Current directory
+	envLocations := make([]string, 0, 6)
+
+	// Prefer executable-adjacent locations over platform data so a deployment package's
+	// own .env wins over stale config from an older install. This also covers macOS
+	// app bundles, where the executable lives inside Contents/MacOS.
+	for _, baseDir := range executableSearchDirs() {
+		envLocations = append(envLocations, filepath.Join(baseDir, ".env"))
 	}
 
-	// Platform data directory: ~/.local/share/AsymmFlow/ (production)
+	// Current directory remains useful in development.
+	envLocations = append(envLocations, ".env")
+
+	// Platform data directory: ~/.local/share/AsymmFlow/ (production fallback)
 	if homeDir, err := os.UserHomeDir(); err == nil {
 		envLocations = append(envLocations,
 			filepath.Join(homeDir, ".local", "share", "AsymmFlow", ".env"),
-		)
-	}
-
-	// Also try executable directory (no parent traversal)
-	if exePath, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exePath)
-		envLocations = append(envLocations,
-			filepath.Join(exeDir, ".env"),
 		)
 	}
 
@@ -230,16 +335,17 @@ func LoadConfig() (*Config, error) {
 			TesseractPath: getEnv("TESSERACT_PATH", ""),
 		},
 		App: AppConfig{
-			LogLevel:             getEnv("LOG_LEVEL", "info"),
-			DebugMode:            getEnvBool("DEBUG_MODE", false),
-			WatcherDebounceMS:    getEnvInt("WATCHER_DEBOUNCE_MS", 300),
-			WatcherQueueSize:     getEnvInt("WATCHER_QUEUE_SIZE", 1000),
-			EnableFileWatcher:    getEnvBool("ENABLE_FILE_WATCHER", true),
-			EnableGeometryBridge: getEnvBool("ENABLE_GEOMETRY_BRIDGE", true),
-			EnableAutoBackup:     getEnvBool("ENABLE_AUTO_BACKUP", false),
-			BackupRetentionDays:  getEnvInt("BACKUP_RETENTION_DAYS", 30),
-			AllowedOrigins:       getEnv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:34115,http://localhost:8080,http://127.0.0.1:5173,http://127.0.0.1:34115,http://127.0.0.1:8080"),
-			RateLimitPerMinute:   getEnvInt("RATE_LIMIT_PER_MINUTE", 60),
+			LogLevel:                 getEnv("LOG_LEVEL", "info"),
+			DebugMode:                getEnvBool("DEBUG_MODE", false),
+			EnableDeveloperMasterKey: getEnvBool("ENABLE_DEVELOPER_MASTER_KEY", false),
+			WatcherDebounceMS:        getEnvInt("WATCHER_DEBOUNCE_MS", 300),
+			WatcherQueueSize:         getEnvInt("WATCHER_QUEUE_SIZE", 1000),
+			EnableFileWatcher:        getEnvBool("ENABLE_FILE_WATCHER", true),
+			EnableGeometryBridge:     getEnvBool("ENABLE_GEOMETRY_BRIDGE", true),
+			EnableAutoBackup:         getEnvBool("ENABLE_AUTO_BACKUP", false),
+			BackupRetentionDays:      getEnvInt("BACKUP_RETENTION_DAYS", 30),
+			AllowedOrigins:           getEnv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:34115,http://localhost:8080,http://127.0.0.1:5173,http://127.0.0.1:34115,http://127.0.0.1:8080"),
+			RateLimitPerMinute:       getEnvInt("RATE_LIMIT_PER_MINUTE", 60),
 		},
 	}
 
@@ -397,6 +503,7 @@ func (c *Config) LogConfig() {
 	// App Settings
 	log.Printf("Log Level:              %s", c.App.LogLevel)
 	log.Printf("Debug Mode:             %v", c.App.DebugMode)
+	log.Printf("Developer Master Key:   %s", enabledStr(c.App.EnableDeveloperMasterKey))
 	log.Printf("File Watcher:           %s", enabledStr(c.App.EnableFileWatcher))
 	log.Printf("Geometry Bridge:        %s", enabledStr(c.App.EnableGeometryBridge))
 	log.Printf("Auto Backup:            %s", enabledStr(c.App.EnableAutoBackup))

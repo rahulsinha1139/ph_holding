@@ -15,7 +15,8 @@
     // Core screens used directly in routing
     import Customer360 from "./lib/screens/Customer360.svelte";
     import SettingsScreen from "./lib/screens/SettingsScreen.svelte";
-    import OneDriveImportScreen from "./lib/screens/OneDriveImportScreen.svelte";
+    // OneDrive import disabled — manual folder download + extraction in next session
+    // import OneDriveImportScreen from "./lib/screens/OneDriveImportScreen.svelte";
     import ArrivalCeremony from "./lib/screens/ArrivalCeremony.svelte";
     import UserManagementScreen from "./lib/screens/UserManagementScreen.svelte";
 
@@ -25,6 +26,10 @@
     import FinanceHub from "./lib/screens/FinanceHub.svelte";
     import IntelligenceHub from "./lib/screens/IntelligenceHub.svelte";
     import CRMHub from "./lib/screens/CRMHub.svelte";
+    import WorkHub from "./lib/screens/WorkHub.svelte";
+    import PeopleHub from "./lib/screens/PeopleHub.svelte";
+    import NotificationsScreen from "./lib/screens/NotificationsScreen.svelte";
+    import DeploymentHub from "./lib/screens/DeploymentHub.svelte";
     import ShowcaseScreen from "./lib/screens/ShowcaseScreen.svelte";
     import RFQScreen from "./lib/screens/RFQScreen.svelte";
 
@@ -289,7 +294,13 @@
             };
             const targetScreen = typeToScreen[type];
             if (targetScreen) {
-                currentScreen = targetScreen;
+                if (targetScreen === "costing" || targetScreen === "offers" || targetScreen === "orders") {
+                    currentScreen = "opportunities";
+                    currentParams = { tab: targetScreen };
+                } else {
+                    currentScreen = targetScreen;
+                    currentParams = {};
+                }
                 toast.info(`Navigate to ${typeName} to continue editing`);
             }
         } catch (err) {
@@ -342,10 +353,14 @@
         opportunities: SalesHub,
         operations: OperationsHub,
         finance: FinanceHub,
+        work: WorkHub,
+        people: PeopleHub,
+        notifications: NotificationsScreen,
+        deployment: DeploymentHub,
         relationships: CRMHub,
         intelligence: IntelligenceHub,
         // Utility screens (accessible via shortcuts, not main nav)
-        onedrive_import: OneDriveImportScreen,
+        // onedrive_import: OneDriveImportScreen, // Disabled — next session
         settings: SettingsScreen,
         showcase: ShowcaseScreen,
         customer360: Customer360,
@@ -359,6 +374,10 @@
         { id: "opportunities", label: "Opportunities" },
         { id: "operations", label: "Operations" },
         { id: "finance", label: "Finance" },
+        { id: "work", label: "Work" },
+        { id: "people", label: "People" },
+        { id: "notifications", label: "Notifications" },
+        { id: "deployment", label: "Deployment" },
         { id: "relationships", label: "Relationships" },
         { id: "intelligence", label: "Intelligence" },
     ];
@@ -372,7 +391,10 @@
     }
 
     // SINGLE UNIFIED onMount - Consolidates all initialization
-    onMount(async () => {
+    onMount(() => {
+        let cleanup: (() => void) | undefined;
+
+        void (async () => {
 
         // In DESIGN_MODE, skip all Wails backend calls for rapid UI iteration
         if (DESIGN_MODE) {
@@ -401,7 +423,7 @@
                 const licenseResult = await Promise.race([
                     ValidateLicense(),
                     timeoutPromise
-                ]) as { valid: boolean; role?: string; permissions?: string[] };
+                ]) as { valid: boolean; role?: string; permissions?: string[]; display_name?: string };
 
                 if (licenseResult && licenseResult.valid) {
                     // License is valid - set up user context from license
@@ -471,7 +493,14 @@
         window.addEventListener("navigateToScreen", (e) => {
             // @ts-ignore - CustomEvent detail property
             const { screen } = e.detail;
-            if (screen) currentScreen = screen;
+            if (!screen) return;
+            if (screen === "costing" || screen === "offers" || screen === "orders") {
+                currentScreen = "opportunities";
+                currentParams = { tab: screen };
+                return;
+            }
+            currentScreen = screen;
+            currentParams = {};
         });
 
         // Subscribe to Butler file watcher events for real-time notifications
@@ -484,7 +513,7 @@
         }
 
         // Cleanup function - CRITICAL: Remove all event listeners and Wails handlers
-        return () => {
+        cleanup = () => {
             window.removeEventListener("resize", handleResize);
             window.removeEventListener("hashchange", handleHashChange);
             window.removeEventListener("setup-complete", handleSetupComplete);
@@ -497,6 +526,12 @@
                 OnFileDropOff(); // CRITICAL: Removes drag/drop listeners
             }
         };
+
+        })();
+
+        return () => {
+            cleanup?.();
+        };
     });
 
     // Screen permission mapping - mirrors EnterpriseSidebar.svelte navItems
@@ -505,6 +540,10 @@
         opportunities: "offers:view",
         operations: "po:view",
         finance: "finance:view",
+        work: "tasks:view",
+        people: "hr:view",
+        notifications: null,
+        deployment: "settings:view",
         relationships: "customers:view",
         intelligence: "intelligence:chat",
         settings: "settings:view",

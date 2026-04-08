@@ -49,7 +49,15 @@ type CustomerMaster struct {
 	BusinessName string `gorm:"index;size:255" json:"business_name"`
 	ShortCode    string `gorm:"size:10" json:"short_code"`
 
+	// Identity & Registration
+	TradingName string `gorm:"size:255" json:"trading_name"`
+	CRNumber    string `gorm:"size:100" json:"cr_number"`
+	Status      string `gorm:"size:50;default:'Active'" json:"status"`
+
 	// Contact & Regional
+	PrimaryPhone string `gorm:"size:50" json:"primary_phone"`
+	PrimaryEmail string `gorm:"size:255" json:"primary_email"`
+	Website      string `gorm:"size:255" json:"website"`
 	AddressLine1 string `json:"address_line1"`
 	City         string `gorm:"index;size:100" json:"city"`
 	Country      string `gorm:"index;size:100" json:"country"`
@@ -64,9 +72,9 @@ type CustomerMaster struct {
 	// PaymentGrade has standalone index for grade-only queries: WHERE payment_grade = ?
 	// Used by: GetCustomersByGrade() - retrieves all customers of a specific grade (A/B/C/D)
 	// No composite index needed here - CustomerID is uniqueIndex (1:1 lookup), PaymentGrade is low cardinality
-	PaymentGrade     string  `gorm:"index;size:10;default:'C'" json:"payment_grade"`     // A/B/C/D grade (P1 Fix: default)
-	CustomerGrade    string  `gorm:"index;size:10;default:'C'" json:"customer_grade"`    // Overall customer grade (P1 Fix: default)
-	PaymentTermsDays int     `gorm:"index" json:"payment_terms_days"`                    // P1 Fix: indexed for payment terms queries
+	PaymentGrade     string  `gorm:"index;size:10;default:'C'" json:"payment_grade"`  // A/B/C/D grade (P1 Fix: default)
+	CustomerGrade    string  `gorm:"index;size:10;default:'C'" json:"customer_grade"` // Overall customer grade (P1 Fix: default)
+	PaymentTermsDays int     `gorm:"index" json:"payment_terms_days"`                 // P1 Fix: indexed for payment terms queries
 	AvgPaymentDays   float64 `json:"avg_payment_days"`
 	DisputeCount     int     `json:"dispute_count"`
 
@@ -77,10 +85,10 @@ type CustomerMaster struct {
 	LastOrderDate    *time.Time `json:"last_order_date"`
 
 	// AR Tracking (Accounts Receivable)
-	ARRiskTier     string  `gorm:"index;size:20" json:"ar_risk_tier"`      // Low/Medium/High/Critical
-	OutstandingBHD float64 `json:"outstanding_bhd"`                        // Total outstanding amount
-	OverdueDays    int     `gorm:"index" json:"overdue_days"`              // Days overdue for oldest invoice
-	CreditLimitBHD float64 `gorm:"default:50000" json:"credit_limit_bhd"`  // P1 FIX: Credit limit in BHD (default 50,000)
+	ARRiskTier     string  `gorm:"index;size:20" json:"ar_risk_tier"`     // Low/Medium/High/Critical
+	OutstandingBHD float64 `json:"outstanding_bhd"`                       // Total outstanding amount
+	OverdueDays    int     `gorm:"index" json:"overdue_days"`             // Days overdue for oldest invoice
+	CreditLimitBHD float64 `gorm:"default:50000" json:"credit_limit_bhd"` // P1 FIX: Credit limit in BHD (default 50,000)
 
 	// Flags (PostgreSQL boolean types)
 	IsCreditBlocked    bool `gorm:"index;default:false" json:"is_credit_blocked"`
@@ -246,27 +254,31 @@ type Offer struct {
 	LostReason        string `gorm:"type:varchar(2000)" json:"lost_reason"`
 
 	// PDF Generation Fields (Terms & Conditions)
-	PaymentTerms       string `gorm:"type:varchar(500);default:'30 days from Date of Delivery'" json:"payment_terms"`
-	DeliveryTerms      string `gorm:"type:varchar(500);default:'DAP Bahrain at your store or PH Trading'" json:"delivery_terms"`
-	DeliveryWeeks      string `gorm:"size:50;default:'4-6 weeks'" json:"delivery_weeks"`
-	CountryOfOrigin    string `gorm:"size:100;default:'Germany / USA'" json:"country_of_origin"`
-	IssuedBy           string `gorm:"size:100" json:"issued_by"`
-	ContactPhone       string `gorm:"size:50" json:"contact_phone"`
-	CustomerReference  string `gorm:"size:255" json:"customer_reference"` // RFQ/enquiry reference
-	AttentionPerson    string `gorm:"size:255" json:"attention_person"`   // Contact name
-	AttentionCompany   string `gorm:"size:255" json:"attention_company"`
-	AttentionPhone     string `gorm:"size:50" json:"attention_phone"`
-	AttentionAddress   string `gorm:"type:varchar(1000)" json:"attention_address"`
-	DiscountPercent    float64 `json:"discount_percent"`
-	QuoteType          string  `gorm:"size:50;default:'Quotation'" json:"quote_type"` // "Quotation" or "Budgetary Quote"
-	VatRate            float64 `gorm:"default:10" json:"vat_rate"`                    // VAT percentage (default 10%)
+	PaymentTerms      string  `gorm:"type:varchar(500);default:'30 days from Date of Delivery'" json:"payment_terms"`
+	DeliveryTerms     string  `gorm:"type:varchar(500);default:'DAP Bahrain at your store or PH Trading'" json:"delivery_terms"`
+	DeliveryWeeks     string  `gorm:"size:50;default:'4-6 weeks'" json:"delivery_weeks"`
+	CountryOfOrigin   string  `gorm:"size:100;default:'Germany / USA'" json:"country_of_origin"`
+	IssuedBy          string  `gorm:"size:100" json:"issued_by"`
+	ContactPhone      string  `gorm:"size:50" json:"contact_phone"`
+	CustomerReference string  `gorm:"size:255" json:"customer_reference"` // RFQ/enquiry reference
+	AttentionPerson   string  `gorm:"size:255" json:"attention_person"`   // Contact name
+	AttentionCompany  string  `gorm:"size:255" json:"attention_company"`
+	AttentionPhone    string  `gorm:"size:50" json:"attention_phone"`
+	AttentionAddress  string  `gorm:"type:varchar(1000)" json:"attention_address"`
+	DiscountPercent   float64 `json:"discount_percent"`
+	QuoteType         string  `gorm:"size:50;default:'Quotation'" json:"quote_type"` // "Quotation" or "Budgetary Quote"
+	VatRate           float64 `gorm:"default:10" json:"vat_rate"`                    // VAT percentage (default 10%)
 
 	// Additional costing header fields
-	CocCoo          string `gorm:"size:50" json:"coc_coo"`                   // Certificate of Conformity/Country of Origin
+	CocCoo          string `gorm:"size:50" json:"coc_coo"`                    // Certificate of Conformity/Country of Origin
 	TestCertificate string `gorm:"type:varchar(500)" json:"test_certificate"` // Test Certificate requirements
-	Installation    string `gorm:"size:50" json:"installation"`              // Installation included?
-	Commissioning   string `gorm:"size:50" json:"commissioning"`             // Commissioning included?
+	Installation    string `gorm:"size:50" json:"installation"`               // Installation included?
+	Commissioning   string `gorm:"size:50" json:"commissioning"`              // Commissioning included?
 	Testing         string `gorm:"type:varchar(500)" json:"testing"`          // Testing requirements
+
+	// Derived UI fields from linked opportunity metadata.
+	FolderNumber string `gorm:"-" json:"folder_number"`
+	ProjectName  string `gorm:"-" json:"project_name"`
 
 	Items []OfferItem `gorm:"foreignKey:OfferID" json:"items,omitempty"`
 }
@@ -281,38 +293,38 @@ type OfferItem struct {
 	LineNumber int    `json:"line_number"`
 
 	ProductID   string  `gorm:"index;size:36;constraint:OnDelete:RESTRICT,OnUpdate:CASCADE;foreignKey:ProductID;references:ID" json:"product_id"`
-	ProductCode string  `gorm:"size:100" json:"product_code"` // Model number (legacy)
-	Model       string  `gorm:"size:255" json:"model"`        // Model number (explicit)
+	ProductCode string  `gorm:"size:100" json:"product_code"`          // Model number (legacy)
+	Model       string  `gorm:"size:255" json:"model"`                 // Model number (explicit)
 	Description string  `gorm:"type:varchar(2000)" json:"description"` // Equipment name - Model
 	Quantity    float64 `json:"quantity"`
 	UnitPrice   float64 `json:"unit_price_bhd"`
 
 	// Extended fields for full costing data visibility (Fix #5)
-	LongCode            string  `gorm:"type:varchar(500)" json:"long_code"`                  // Long supplier code (e.g. E+H instrumentation codes)
-	Equipment           string  `gorm:"size:255" json:"equipment"`                           // Equipment/Product name
-	Specification       string  `gorm:"type:varchar(2000)" json:"specification"`             // Short specification
-	DetailedDescription string  `gorm:"type:varchar(5000)" json:"detailed_description"`      // Full instrumentation specs
-	Currency            string  `gorm:"size:10" json:"currency"`                             // Source currency
-	FOB                 float64 `json:"fob"`                                                 // FOB cost
-	Freight             float64 `json:"freight"`                                             // Freight cost
-	TotalCost           float64 `json:"total_cost"`                                          // Total cost (landed + handling + finance)
-	MarginPercent       float64 `json:"margin_percent"`                                      // Margin % used
-	TotalPrice          float64 `json:"total_price"`                                         // Line total (qty × unit price)
+	LongCode            string  `gorm:"type:varchar(500)" json:"long_code"`             // Long supplier code (e.g. E+H instrumentation codes)
+	Equipment           string  `gorm:"size:255" json:"equipment"`                      // Equipment/Product name
+	Specification       string  `gorm:"type:varchar(2000)" json:"specification"`        // Short specification
+	DetailedDescription string  `gorm:"type:varchar(5000)" json:"detailed_description"` // Full instrumentation specs
+	Currency            string  `gorm:"size:10" json:"currency"`                        // Source currency
+	FOB                 float64 `json:"fob"`                                            // FOB cost
+	Freight             float64 `json:"freight"`                                        // Freight cost
+	TotalCost           float64 `json:"total_cost"`                                     // Total cost (landed + handling + finance)
+	MarginPercent       float64 `json:"margin_percent"`                                 // Margin % used
+	TotalPrice          float64 `json:"total_price"`                                    // Line total (qty × unit price)
 
 	// Full cost breakdown (for detailed costing persistence - Fix 2026-02-05)
-	ExchangeRate    float64 `json:"exchange_rate"`     // Currency conversion rate
-	FobBHD          float64 `json:"fob_bhd"`           // FOB cost in BHD
-	FreightBHD      float64 `json:"freight_bhd"`       // Freight cost in BHD
-	Insurance       float64 `json:"insurance"`         // Insurance charges
-	CustomsPercent  float64 `json:"customs_percent"`   // Customs duty percentage
-	CustomsBHD      float64 `json:"customs_bhd"`       // Customs duty in BHD
-	HandlingPercent float64 `json:"handling_percent"`  // Handling charges percentage
-	HandlingBHD     float64 `json:"handling_bhd"`      // Handling charges in BHD
-	FinancePercent  float64 `json:"finance_percent"`   // Finance cost percentage
-	FinanceBHD      float64 `json:"finance_bhd"`       // Finance cost in BHD
-	OtherCosts      float64 `json:"other_costs"`       // Other miscellaneous costs
-	UserPrice       float64 `json:"user_price"`        // User-overridden price (if manually set)
-	UserPriceSet    bool    `json:"user_price_set"`    // Boolean flag for manual price override
+	ExchangeRate    float64 `json:"exchange_rate"`    // Currency conversion rate
+	FobBHD          float64 `json:"fob_bhd"`          // FOB cost in BHD
+	FreightBHD      float64 `json:"freight_bhd"`      // Freight cost in BHD
+	Insurance       float64 `json:"insurance"`        // Insurance charges
+	CustomsPercent  float64 `json:"customs_percent"`  // Customs duty percentage
+	CustomsBHD      float64 `json:"customs_bhd"`      // Customs duty in BHD
+	HandlingPercent float64 `json:"handling_percent"` // Handling charges percentage
+	HandlingBHD     float64 `json:"handling_bhd"`     // Handling charges in BHD
+	FinancePercent  float64 `json:"finance_percent"`  // Finance cost percentage
+	FinanceBHD      float64 `json:"finance_bhd"`      // Finance cost in BHD
+	OtherCosts      float64 `json:"other_costs"`      // Other miscellaneous costs
+	UserPrice       float64 `json:"user_price"`       // User-overridden price (if manually set)
+	UserPriceSet    bool    `json:"user_price_set"`   // Boolean flag for manual price override
 }
 
 func (OfferItem) TableName() string { return "offer_items" }
@@ -320,7 +332,7 @@ func (OfferItem) TableName() string { return "offer_items" }
 // Opportunity represents a sales opportunity with three-regime dynamics tracking
 type Opportunity struct {
 	Base
-	FolderNumber string `gorm:"uniqueIndex;size:50" json:"folder_number"` // Physical folder tracking number
+	FolderNumber string `gorm:"uniqueIndex;size:50" json:"folder_number"`                                                                     // Physical folder tracking number
 	OfferID      string `gorm:"index;size:36;constraint:OnDelete:SET NULL,OnUpdate:CASCADE;foreignKey:OfferID;references:ID" json:"offer_id"` // Link to Offer if quoted
 
 	// Customer & Sales
@@ -330,14 +342,15 @@ type Opportunity struct {
 	Salesperson   string `gorm:"index;size:100" json:"salesperson"`
 
 	// Pipeline Identification (from canonical seed)
-	Year       int    `gorm:"index" json:"year"`                   // Pipeline year (2024, 2025, 2026)
-	OppNumber  int    `json:"opp_number"`                          // Opportunity sequence number within year
-	FolderName string `gorm:"size:500" json:"folder_name"`         // Full descriptive folder name
-	Title      string `gorm:"size:500" json:"title"`               // SFDC opportunity title
-	EHRef      string `gorm:"size:100" json:"eh_ref"`              // Endress+Hauser reference number
-	Source     string `gorm:"index;size:50" json:"source"`         // Data source: old_db, 2025_excel, 2026_ocr
-	Comment    string `gorm:"type:varchar(2000)" json:"comment"`   // Latest salesperson comment
-	OwnerNotes string `gorm:"type:varchar(2000)" json:"owner_notes"` // Management notes (Abie's notes)
+	Year           int    `gorm:"index" json:"year"`                     // Pipeline year (2024, 2025, 2026)
+	OppNumber      int    `json:"opp_number"`                            // Opportunity sequence number within year
+	FolderName     string `gorm:"size:500" json:"folder_name"`           // Full descriptive folder name
+	Title          string `gorm:"size:500" json:"title"`                 // SFDC opportunity title
+	EHRef          string `gorm:"size:100" json:"eh_ref"`                // Endress+Hauser reference number
+	Source         string `gorm:"index;size:50" json:"source"`           // Data source: old_db, 2025_excel, 2026_ocr
+	Comment        string `gorm:"type:varchar(2000)" json:"comment"`     // Latest salesperson comment
+	OwnerNotes     string `gorm:"type:varchar(2000)" json:"owner_notes"` // Management notes (Abie's notes)
+	ProductDetails string `gorm:"type:text" json:"product_details"`      // JSON array of extracted opportunity line items
 
 	// Dates
 	OfferDate    time.Time  `gorm:"index" json:"offer_date"`
@@ -360,11 +373,11 @@ type Opportunity struct {
 	Stage      string `gorm:"index;size:50" json:"stage"`       // Lead/Qualified/Proposal/Negotiation/Won/Lost/Quoted
 
 	// Three-Regime Dynamics (Asymmetrica Mathematical Framework)
-	Regime     int     `gorm:"index" json:"regime"`     // 1=Exploration(0-30%), 2=Optimization(30-50%), 3=Stabilization(50%+)
-	Confidence float64 `json:"confidence"`              // 0.0-1.0 confidence score
-	R1         float64 `json:"r1"`                      // Regime 1 weight (Exploration)
-	R2         float64 `json:"r2"`                      // Regime 2 weight (Optimization)
-	R3         float64 `json:"r3"`                      // Regime 3 weight (Stabilization)
+	Regime     int     `gorm:"index" json:"regime"` // 1=Exploration(0-30%), 2=Optimization(30-50%), 3=Stabilization(50%+)
+	Confidence float64 `json:"confidence"`          // 0.0-1.0 confidence score
+	R1         float64 `json:"r1"`                  // Regime 1 weight (Exploration)
+	R2         float64 `json:"r2"`                  // Regime 2 weight (Optimization)
+	R3         float64 `json:"r3"`                  // Regime 3 weight (Stabilization)
 
 	// Competition & Product
 	HasABBCompetition bool   `json:"has_abb_competition"`
@@ -385,20 +398,20 @@ type ARAgingBucket struct {
 	SnapshotDate time.Time `gorm:"index" json:"snapshot_date"` // Date of aging calculation
 
 	// AR Aging Buckets (in BHD)
-	Less15Days float64 `json:"less_15_days"`   // 0-15 days (current)
-	Days16_30  float64 `json:"days_16_30"`     // 16-30 days
-	Days31_60  float64 `json:"days_31_60"`     // 31-60 days
-	Days61_90  float64 `json:"days_61_90"`     // 61-90 days
-	Over90Days float64 `json:"over_90_days"`   // 90+ days (high risk)
+	Less15Days float64 `json:"less_15_days"` // 0-15 days (current)
+	Days16_30  float64 `json:"days_16_30"`   // 16-30 days
+	Days31_60  float64 `json:"days_31_60"`   // 31-60 days
+	Days61_90  float64 `json:"days_61_90"`   // 61-90 days
+	Over90Days float64 `json:"over_90_days"` // 90+ days (high risk)
 
 	// Totals
 	TotalOutstanding float64 `json:"total_outstanding"`
 	TotalOverdue     float64 `json:"total_overdue"` // Sum of all overdue buckets
 
 	// Risk Classification
-	RiskTier   string  `gorm:"index;size:20;check:risk_tier IN ('Low','Medium','High','Critical')" json:"risk_tier"` // Low/Medium/High/Critical
-	RiskScore  float64 `gorm:"check:risk_score >= 0 AND risk_score <= 1" json:"risk_score"`                     // 0.0-1.0 calculated risk
-	OverdueDays int    `gorm:"check:overdue_days >= 0" json:"overdue_days"`                   // Days for oldest overdue invoice
+	RiskTier    string  `gorm:"index;size:20;check:risk_tier IN ('Low','Medium','High','Critical')" json:"risk_tier"` // Low/Medium/High/Critical
+	RiskScore   float64 `gorm:"check:risk_score >= 0 AND risk_score <= 1" json:"risk_score"`                          // 0.0-1.0 calculated risk
+	OverdueDays int     `gorm:"check:overdue_days >= 0" json:"overdue_days"`                                          // Days for oldest overdue invoice
 }
 
 func (ARAgingBucket) TableName() string { return "ar_aging" }
@@ -440,15 +453,15 @@ type Order struct {
 	RFQID       string `gorm:"index;size:36" json:"rfq_id"` // Link to RFQ/Opportunity
 
 	// Contact & RFQ Details (from Offer - for invoice generation)
-	CustomerReference string `gorm:"size:255" json:"customer_reference"` // RFQ/enquiry reference
-	AttentionPerson   string `gorm:"size:255" json:"attention_person"`   // Contact name
-	AttentionCompany  string `gorm:"size:255" json:"attention_company"`
-	AttentionPhone    string `gorm:"size:50" json:"attention_phone"`
-	AttentionAddress  string `gorm:"type:varchar(1000)" json:"attention_address"`
-	DeliveryWeeks     string `gorm:"size:50" json:"delivery_weeks"`
-	CountryOfOrigin   string `gorm:"size:100" json:"country_of_origin"`
-	IssuedBy          string `gorm:"size:100" json:"issued_by"`
-	ContactPhone      string `gorm:"size:50" json:"contact_phone"`
+	CustomerReference string  `gorm:"size:255" json:"customer_reference"` // RFQ/enquiry reference
+	AttentionPerson   string  `gorm:"size:255" json:"attention_person"`   // Contact name
+	AttentionCompany  string  `gorm:"size:255" json:"attention_company"`
+	AttentionPhone    string  `gorm:"size:50" json:"attention_phone"`
+	AttentionAddress  string  `gorm:"type:varchar(1000)" json:"attention_address"`
+	DeliveryWeeks     string  `gorm:"size:50" json:"delivery_weeks"`
+	CountryOfOrigin   string  `gorm:"size:100" json:"country_of_origin"`
+	IssuedBy          string  `gorm:"size:100" json:"issued_by"`
+	ContactPhone      string  `gorm:"size:50" json:"contact_phone"`
 	DiscountPercent   float64 `json:"discount_percent"`
 
 	// E2: Division field - 'PH Trading' or 'AHS Trading' (sister companies)
@@ -477,16 +490,16 @@ type OrderItem struct {
 	QuantityInvoiced float64 `json:"quantity_invoiced"`
 
 	// Extended costing fields (from OfferItem - costing sheet data)
-	Equipment           string  `gorm:"size:255" json:"equipment"`             // Equipment/Product name
-	Model               string  `gorm:"size:255" json:"model"`                 // Model number
+	Equipment           string  `gorm:"size:255" json:"equipment"`                      // Equipment/Product name
+	Model               string  `gorm:"size:255" json:"model"`                          // Model number
 	Specification       string  `gorm:"type:varchar(2000)" json:"specification"`        // Short specification
 	DetailedDescription string  `gorm:"type:varchar(5000)" json:"detailed_description"` // Full instrumentation specs
-	Currency            string  `gorm:"size:10" json:"currency"`               // Source currency (USD, EUR, etc.)
-	FOB                 float64 `json:"fob"`                                   // FOB cost
-	Freight             float64 `json:"freight"`                               // Freight cost
-	TotalCost           float64 `json:"total_cost"`                            // Total landed cost
-	MarginPercent       float64 `json:"margin_percent"`                        // Margin % applied
-	TotalPrice          float64 `json:"total_price"`                           // Line total (qty × unit price)
+	Currency            string  `gorm:"size:10" json:"currency"`                        // Source currency (USD, EUR, etc.)
+	FOB                 float64 `json:"fob"`                                            // FOB cost
+	Freight             float64 `json:"freight"`                                        // Freight cost
+	TotalCost           float64 `json:"total_cost"`                                     // Total landed cost
+	MarginPercent       float64 `json:"margin_percent"`                                 // Margin % applied
+	TotalPrice          float64 `json:"total_price"`                                    // Line total (qty × unit price)
 }
 
 func (OrderItem) TableName() string { return "order_items" }
@@ -662,7 +675,7 @@ func (DBCostingAdditionalCost) TableName() string { return "costing_additional_c
 // and full costing visibility for margin analysis.
 type Invoice struct {
 	Base
-	InvoiceNumber string    `gorm:"uniqueIndex;size:50" json:"invoice_number"`
+	InvoiceNumber string `gorm:"uniqueIndex;size:50" json:"invoice_number"`
 	// InvoiceDate indexed for revenue reports: WHERE invoice_date BETWEEN ? AND ?
 	// P1 Fix: Part of composite index idx_invoice_customer_date for customer invoice history
 	InvoiceDate time.Time `gorm:"index:idx_invoice_customer_date,priority:2;autoCreateTime:false" json:"invoice_date"`
@@ -681,9 +694,9 @@ type Invoice struct {
 	// Status indexed for invoice filtering: WHERE status = 'Paid', status IN ('Sent', 'Overdue')
 	// Used by: Dashboard KPIs, AR tracking, collection workflows
 	// P2 Fix: Part of covering index idx_invoice_ar_aging
-	Status         string    `gorm:"index:idx_invoice_ar_aging,priority:2;size:50;default:'Sent';check:status IN ('Draft','Sent','Paid','PartiallyPaid','Overdue','Cancelled','Void','Proforma')" json:"status"` // P1 Fix: added PartiallyPaid, Proforma
-	OutstandingBHD float64   `gorm:"type:decimal(15,3);not null;default:0;check:outstanding_bhd >= 0" json:"outstanding_bhd"` // P1 Fix: BHD precision
-	SubtotalBHD    float64   `gorm:"type:decimal(15,3);not null;default:0;check:subtotal_bhd >= 0" json:"subtotal_bhd"`       // P1 Fix: BHD precision
+	Status         string  `gorm:"index:idx_invoice_ar_aging,priority:2;size:50;default:'Sent';check:status IN ('Draft','Sent','Paid','PartiallyPaid','Overdue','Cancelled','Void','Proforma')" json:"status"` // P1 Fix: added PartiallyPaid, Proforma
+	OutstandingBHD float64 `gorm:"type:decimal(15,3);not null;default:0;check:outstanding_bhd >= 0" json:"outstanding_bhd"`                                                                                    // P1 Fix: BHD precision
+	SubtotalBHD    float64 `gorm:"type:decimal(15,3);not null;default:0;check:subtotal_bhd >= 0" json:"subtotal_bhd"`                                                                                          // P1 Fix: BHD precision
 	// DueDate indexed for overdue tracking: WHERE due_date < NOW()
 	// Used by: Collection alerts, AR aging, payment prediction
 	// P2 Fix: Part of covering index idx_invoice_ar_aging
@@ -728,23 +741,23 @@ type Invoice struct {
 
 	// Extended Invoice Header Fields (Issue #19 - matches client's Tally format)
 	// These fields enable the full 11-field invoice header as per client reference PDF
-	DeliveryNoteRef    string     `gorm:"size:100" json:"delivery_note_ref"`                                 // e.g., "EH/253/25"
-	ModeOfPayment      string     `gorm:"size:100" json:"mode_of_payment"`                                   // e.g., "30 Days"
-	SuppliersRef       string     `gorm:"size:100" json:"suppliers_ref"`                                     // Supplier's reference number
-	OtherReferences    string     `gorm:"size:200" json:"other_references"`                                  // e.g., "E+H"
-	BuyersOrderNumber  string     `gorm:"size:100" json:"buyers_order_number"`                               // e.g., "LPS -11347"
-	BuyersOrderDate    *time.Time `json:"buyers_order_date"`                                                 // Buyer's PO date
-	DespatchDocumentNo string     `gorm:"size:100" json:"despatch_document_no"`                              // Despatch/delivery document number
-	DeliveryNoteDate   *time.Time `json:"delivery_note_date"`                                                // Delivery note date
-	DespatchedThrough  string     `gorm:"size:100;default:'Direct'" json:"despatched_through"`               // Mode of despatch
-	Destination        string     `gorm:"size:100;default:'Bahrain'" json:"destination"`                     // Delivery destination
-	PlaceOfSupply      string     `gorm:"size:100;default:'Kingdom of Bahrain'" json:"place_of_supply"`      // VAT place of supply
-	TermsOfDelivery    string     `gorm:"size:200;default:'Direct Bank Transfer'" json:"terms_of_delivery"`  // Payment method
+	DeliveryNoteRef    string     `gorm:"size:100" json:"delivery_note_ref"`                                // e.g., "EH/253/25"
+	ModeOfPayment      string     `gorm:"size:100" json:"mode_of_payment"`                                  // e.g., "30 Days"
+	SuppliersRef       string     `gorm:"size:100" json:"suppliers_ref"`                                    // Supplier's reference number
+	OtherReferences    string     `gorm:"size:200" json:"other_references"`                                 // e.g., "E+H"
+	BuyersOrderNumber  string     `gorm:"size:100" json:"buyers_order_number"`                              // e.g., "LPS -11347"
+	BuyersOrderDate    *time.Time `json:"buyers_order_date"`                                                // Buyer's PO date
+	DespatchDocumentNo string     `gorm:"size:100" json:"despatch_document_no"`                             // Despatch/delivery document number
+	DeliveryNoteDate   *time.Time `json:"delivery_note_date"`                                               // Delivery note date
+	DespatchedThrough  string     `gorm:"size:100;default:'Direct'" json:"despatched_through"`              // Mode of despatch
+	Destination        string     `gorm:"size:100;default:'Bahrain'" json:"destination"`                    // Delivery destination
+	PlaceOfSupply      string     `gorm:"size:100;default:'Kingdom of Bahrain'" json:"place_of_supply"`     // VAT place of supply
+	TermsOfDelivery    string     `gorm:"size:200;default:'Direct Bank Transfer'" json:"terms_of_delivery"` // Payment method
 
 	// VAT & Accounting (Tally Killer feature)
 	VATBHD         float64 `gorm:"column:vatbhd;type:decimal(15,3);not null;default:0;check:vatbhd >= 0" json:"vat_bhd"` // P1 Fix: BHD precision
 	VATPercent     float64 `gorm:"not null;default:0;check:vat_percent >= 0" json:"vat_percent"`                         // VAT rate applied (default 10)
-	JournalEntryID string  `gorm:"index;size:36" json:"journal_entry_id"`                                                 // Link to auto-generated GL entry
+	JournalEntryID string  `gorm:"index;size:36" json:"journal_entry_id"`                                                // Link to auto-generated GL entry
 
 	// E-Invoicing (Phase 23)
 	InvoiceHash string `gorm:"size:64" json:"invoice_hash"` // SHA-256 hash for integrity verification
@@ -768,17 +781,17 @@ type DBInvoiceItem struct {
 
 	// Full costing data (from OrderItem/OfferItem - the costing sheet becomes the invoice)
 	ProductID           string  `gorm:"index;size:36" json:"product_id"`
-	ProductCode         string  `gorm:"size:100" json:"product_code"`        // Model number
-	Equipment           string  `gorm:"size:255" json:"equipment"`           // Equipment/Product name
-	Model               string  `gorm:"size:255" json:"model"`               // Model number
-	Specification       string  `gorm:"type:varchar(2000)" json:"specification"`      // Short specification
-	DetailedDescription string  `gorm:"type:varchar(5000)" json:"detailed_description"` // Full instrumentation specs
-	Currency            string  `gorm:"size:10" json:"currency"`             // Source currency (USD, EUR, etc.)
-	FOB                 float64 `gorm:"not null;default:0;check:fob >= 0" json:"fob"`                                 // FOB cost
-	Freight             float64 `gorm:"not null;default:0;check:freight >= 0" json:"freight"`                             // Freight cost
-	TotalCost           float64 `gorm:"not null;default:0;check:total_cost >= 0" json:"total_cost"`                          // Total landed cost
-	MarginPercent       float64 `gorm:"not null;default:0" json:"margin_percent"`                      // Margin % applied
-	TotalPrice          float64 `gorm:"not null;default:0;check:total_price >= 0" json:"total_price"`                         // Line total (qty × unit price)
+	ProductCode         string  `gorm:"size:100" json:"product_code"`                                 // Model number
+	Equipment           string  `gorm:"size:255" json:"equipment"`                                    // Equipment/Product name
+	Model               string  `gorm:"size:255" json:"model"`                                        // Model number
+	Specification       string  `gorm:"type:varchar(2000)" json:"specification"`                      // Short specification
+	DetailedDescription string  `gorm:"type:varchar(5000)" json:"detailed_description"`               // Full instrumentation specs
+	Currency            string  `gorm:"size:10" json:"currency"`                                      // Source currency (USD, EUR, etc.)
+	FOB                 float64 `gorm:"not null;default:0;check:fob >= 0" json:"fob"`                 // FOB cost
+	Freight             float64 `gorm:"not null;default:0;check:freight >= 0" json:"freight"`         // Freight cost
+	TotalCost           float64 `gorm:"not null;default:0;check:total_cost >= 0" json:"total_cost"`   // Total landed cost
+	MarginPercent       float64 `gorm:"not null;default:0" json:"margin_percent"`                     // Margin % applied
+	TotalPrice          float64 `gorm:"not null;default:0;check:total_price >= 0" json:"total_price"` // Line total (qty × unit price)
 }
 
 func (DBInvoiceItem) TableName() string { return "invoice_items" }
@@ -804,20 +817,20 @@ func (InvoiceSequence) TableName() string { return "invoice_sequences" }
 // for returns, pricing corrections, or other adjustments.
 type CreditNote struct {
 	Base
-	CreditNoteNumber string     `gorm:"uniqueIndex;size:50" json:"credit_note_number"`
-	CreditNoteDate   time.Time  `gorm:"index" json:"credit_note_date"`
-	InvoiceID        string     `gorm:"index;size:36" json:"invoice_id"`
-	InvoiceNumber    string     `gorm:"size:50" json:"invoice_number"`
-	CustomerID       string     `gorm:"index;size:36" json:"customer_id"`
-	CustomerName     string     `gorm:"size:255" json:"customer_name"`
-	Reason           string     `gorm:"type:varchar(2000)" json:"reason"`
-	SubtotalBHD      float64    `gorm:"type:decimal(15,3)" json:"subtotal_bhd"`
-	VATBHD           float64    `gorm:"type:decimal(15,3)" json:"vat_bhd"`
-	VATPercent       float64    `json:"vat_percent"`
-	GrandTotalBHD    float64    `gorm:"type:decimal(15,3)" json:"grand_total_bhd"`
-	Status           string     `gorm:"index;size:50;default:'Draft'" json:"status"` // Draft, Issued, Applied
-	AppliedAt        *time.Time `json:"applied_at"`
-	CreditNoteHash   string     `gorm:"size:64" json:"credit_note_hash"`
+	CreditNoteNumber string           `gorm:"uniqueIndex;size:50" json:"credit_note_number"`
+	CreditNoteDate   time.Time        `gorm:"index" json:"credit_note_date"`
+	InvoiceID        string           `gorm:"index;size:36" json:"invoice_id"`
+	InvoiceNumber    string           `gorm:"size:50" json:"invoice_number"`
+	CustomerID       string           `gorm:"index;size:36" json:"customer_id"`
+	CustomerName     string           `gorm:"size:255" json:"customer_name"`
+	Reason           string           `gorm:"type:varchar(2000)" json:"reason"`
+	SubtotalBHD      float64          `gorm:"type:decimal(15,3)" json:"subtotal_bhd"`
+	VATBHD           float64          `gorm:"type:decimal(15,3)" json:"vat_bhd"`
+	VATPercent       float64          `json:"vat_percent"`
+	GrandTotalBHD    float64          `gorm:"type:decimal(15,3)" json:"grand_total_bhd"`
+	Status           string           `gorm:"index;size:50;default:'Draft'" json:"status"` // Draft, Issued, Applied
+	AppliedAt        *time.Time       `json:"applied_at"`
+	CreditNoteHash   string           `gorm:"size:64" json:"credit_note_hash"`
 	Items            []CreditNoteItem `gorm:"foreignKey:CreditNoteID" json:"items"`
 }
 
@@ -919,11 +932,11 @@ type JournalEntry struct {
 	FiscalPeriod int        `json:"fiscal_period"`
 
 	// Auto-posting source tracking (Tally Killer feature)
-	SourceType      string `gorm:"index;size:50" json:"source_type"`      // invoice, payment, supplier_invoice, supplier_payment, manual
-	SourceID        string `gorm:"index;size:36" json:"source_id"`        // ID of source document
+	SourceType      string `gorm:"index;size:50" json:"source_type"` // invoice, payment, supplier_invoice, supplier_payment, manual
+	SourceID        string `gorm:"index;size:36" json:"source_id"`   // ID of source document
 	IsAutoGenerated bool   `gorm:"index;default:false" json:"is_auto_generated"`
-	ReversedByID    string `gorm:"index;size:36" json:"reversed_by_id"`   // If this entry was reversed, link to reversal
-	ReversesID      string `gorm:"index;size:36" json:"reverses_id"`      // If this is a reversal, link to original
+	ReversedByID    string `gorm:"index;size:36" json:"reversed_by_id"` // If this entry was reversed, link to reversal
+	ReversesID      string `gorm:"index;size:36" json:"reverses_id"`    // If this is a reversal, link to original
 
 	// P1 Fix: Audit field (DeletedAt already in Base for soft delete)
 	UpdatedBy string `json:"updated_by"`
@@ -972,9 +985,9 @@ type Payment struct {
 	Base
 	// P2 Fix: Added covering index for payment history queries: WHERE invoice_id = ? ORDER BY payment_date
 	// P2.4 Fix: Changed CASCADE to RESTRICT - payments are financial records, must never auto-delete
-	InvoiceID     string    `gorm:"index:idx_payment_invoice_date,priority:1;size:36;constraint:OnDelete:RESTRICT,OnUpdate:CASCADE;foreignKey:InvoiceID;references:ID" json:"invoice_id"`
-	InvoiceNumber string    `gorm:"index;size:50" json:"invoice_number"`
-	AmountBHD     float64   `gorm:"type:decimal(15,3);not null;default:0;check:amount_bhd >= 0" json:"amount_bhd"` // P1 Fix: BHD precision
+	InvoiceID     string  `gorm:"index:idx_payment_invoice_date,priority:1;size:36;constraint:OnDelete:RESTRICT,OnUpdate:CASCADE;foreignKey:InvoiceID;references:ID" json:"invoice_id"`
+	InvoiceNumber string  `gorm:"index;size:50" json:"invoice_number"`
+	AmountBHD     float64 `gorm:"type:decimal(15,3);not null;default:0;check:amount_bhd >= 0" json:"amount_bhd"` // P1 Fix: BHD precision
 	// P2 Fix: Part of covering index idx_payment_invoice_date
 	PaymentDate   time.Time `gorm:"index:idx_payment_invoice_date,priority:2;autoCreateTime:false" json:"payment_date"`
 	PaymentMethod string    `gorm:"size:50;check:payment_method IN ('Cash','Cheque','Bank Transfer','Credit Card','LC','PDC','Other')" json:"payment_method"`
@@ -1116,15 +1129,15 @@ func (Setting) TableName() string { return "settings" }
 
 // CurrencyExchangeRate stores exchange rates to BHD (base currency)
 type CurrencyExchangeRate struct {
-	ID            string         `gorm:"primaryKey;size:36" json:"id"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	DeletedAt     gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	ID        string         `gorm:"primaryKey;size:36" json:"id"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 
 	CurrencyCode  string     `gorm:"type:varchar(3);not null;index" json:"currency_code"` // USD, EUR, CHF, SAR, AED
 	Rate          float64    `gorm:"type:real;not null" json:"rate"`                      // e.g., 0.376 for 1 USD = 0.376 BHD
 	EffectiveFrom time.Time  `gorm:"not null;index" json:"effective_from"`
-	EffectiveTo   *time.Time `json:"effective_to"`   // NULL = currently active
+	EffectiveTo   *time.Time `json:"effective_to"` // NULL = currently active
 	SetBy         string     `gorm:"size:100" json:"set_by"`
 	Notes         string     `gorm:"size:500" json:"notes"`
 }
@@ -1253,13 +1266,13 @@ func (User) TableName() string { return "users" }
 // Device represents a registered installation of the application
 type Device struct {
 	Base
-	MachineID     string     `gorm:"uniqueIndex;size:255" json:"machine_id"`                                                                   // SHA-256 hash of hardware identifiers
-	DeviceName    string     `gorm:"size:255" json:"device_name"`                                                                              // Hostname
-	OSInfo        string     `gorm:"size:255" json:"os_info"`                                                                                  // "Windows 11 Pro"
-	FirstSeenAt   time.Time  `gorm:"autoCreateTime;index:idx_status_first_seen" json:"first_seen_at"`                                          // FIX CRITICAL-3: Added composite index
+	MachineID     string     `gorm:"uniqueIndex;size:255" json:"machine_id"`                          // SHA-256 hash of hardware identifiers
+	DeviceName    string     `gorm:"size:255" json:"device_name"`                                     // Hostname
+	OSInfo        string     `gorm:"size:255" json:"os_info"`                                         // "Windows 11 Pro"
+	FirstSeenAt   time.Time  `gorm:"autoCreateTime;index:idx_status_first_seen" json:"first_seen_at"` // FIX CRITICAL-3: Added composite index
 	LastSeenAt    *time.Time `json:"last_seen_at"`
 	Status        string     `gorm:"size:20;default:pending;index:idx_status_first_seen;check:status IN ('first_setup','pending','approved','blocked','revoked')" json:"status"` // FIX: Added 'first_setup' for device registration flow
-	ApprovedBy    string     `gorm:"size:36" json:"approved_by"` // RBAC DEPRECATED - no FK constraint
+	ApprovedBy    string     `gorm:"size:36" json:"approved_by"`                                                                                                                 // RBAC DEPRECATED - no FK constraint
 	ApprovedAt    *time.Time `json:"approved_at"`
 	IsAdminDevice bool       `gorm:"default:false" json:"is_admin_device"` // First device = admin device
 	Notes         string     `gorm:"type:varchar(2000)" json:"notes"`
@@ -1301,16 +1314,16 @@ func (Alert) TableName() string { return "alerts" }
 // priority, due date, and status tracking.
 type FollowUpTask struct {
 	Base
-	CustomerID  string    `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:CustomerID;references:ID" json:"customer_id"`
-	Title       string    `gorm:"size:255" json:"title"`
-	Description string    `gorm:"type:varchar(2000)" json:"description"`
+	CustomerID  string `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:CustomerID;references:ID" json:"customer_id"`
+	Title       string `gorm:"size:255" json:"title"`
+	Description string `gorm:"type:varchar(2000)" json:"description"`
 	// DueDate indexed for task queue queries: WHERE due_date < NOW(), ORDER BY due_date
 	// Used by: Overdue task alerts, calendar view, predictive Butler task scheduling
-	DueDate     time.Time `gorm:"index;autoCreateTime:false" json:"due_date"`
-	Status      string    `gorm:"index;size:50;check:status IN ('pending','in_progress','completed','cancelled','overdue')" json:"status"`
-	Priority    string    `gorm:"index;size:50;check:priority IN ('low','medium','high','urgent')" json:"priority"`
-	Type        string    `gorm:"index;size:50" json:"type"`
-	Amount      float64   `gorm:"check:amount >= 0" json:"amount"`
+	DueDate     time.Time  `gorm:"index;autoCreateTime:false" json:"due_date"`
+	Status      string     `gorm:"index;size:50;check:status IN ('pending','in_progress','completed','cancelled','overdue')" json:"status"`
+	Priority    string     `gorm:"index;size:50;check:priority IN ('low','medium','high','urgent')" json:"priority"`
+	Type        string     `gorm:"index;size:50" json:"type"`
+	Amount      float64    `gorm:"check:amount >= 0" json:"amount"`
 	Contact     string     `gorm:"size:255" json:"contact"`
 	Notes       string     `gorm:"type:varchar(2000)" json:"notes"`
 	CompletedAt *time.Time `json:"completed_at"`
@@ -1377,14 +1390,14 @@ func (Job) TableName() string { return "jobs" }
 type PurchaseOrder struct {
 	Base
 	// Links (One Order → Many POs)
-	OrderID    string `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:OrderID;references:ID" json:"order_id"`
-	RfqID      string `gorm:"index;size:36" json:"rfq_id"`
+	OrderID string `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:OrderID;references:ID" json:"order_id"`
+	RfqID   string `gorm:"index;size:36" json:"rfq_id"`
 	// P1 Fix: Composite index for supplier PO queries: WHERE supplier_id = ? ORDER BY po_date
 	SupplierID   string `gorm:"index:idx_po_supplier_date,priority:1;size:36;constraint:OnDelete:RESTRICT,OnUpdate:CASCADE;foreignKey:SupplierID;references:ID" json:"supplier_id"`
 	SupplierName string `gorm:"index;size:255" json:"supplier_name"` // Denormalized for display
 
 	// Document Info
-	PONumber         string    `gorm:"uniqueIndex;size:50" json:"po_number"`
+	PONumber string `gorm:"uniqueIndex;size:50" json:"po_number"`
 	// P1 Fix: Part of composite index idx_po_supplier_date
 	PODate           time.Time `gorm:"index:idx_po_supplier_date,priority:2;autoCreateTime:false" json:"po_date"`
 	ExpectedDelivery time.Time `json:"expected_delivery"`
@@ -1422,18 +1435,18 @@ func (PurchaseOrder) TableName() string { return "purchase_orders" }
 // and pricing in both foreign currency and BHD.
 type PurchaseOrderItem struct {
 	Base
-	PurchaseOrderID  string  `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:PurchaseOrderID;references:ID" json:"purchase_order_id"`
-	OrderItemID      string  `gorm:"index;size:36" json:"order_item_id"`
-	ProductID        string  `gorm:"index;size:36;constraint:OnDelete:RESTRICT,OnUpdate:CASCADE;foreignKey:ProductID;references:ID" json:"product_id"`
-	ProductCode      string  `gorm:"size:100" json:"product_code"`
-	SupplierPartNumber string `gorm:"size:100" json:"supplier_part_number"` // P2 Fix: Supplier's internal part number
-	Description      string  `gorm:"type:varchar(2000)" json:"description"`
-	Quantity         float64 `json:"quantity"`
-	UnitPriceForeign float64 `json:"unit_price_foreign"`
-	UnitPriceBHD     float64 `json:"unit_price_bhd"`
-	TotalForeign     float64 `json:"total_foreign"`
-	TotalBHD         float64 `json:"total_bhd"`
-	QuantityReceived float64 `json:"quantity_received"`
+	PurchaseOrderID    string  `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:PurchaseOrderID;references:ID" json:"purchase_order_id"`
+	OrderItemID        string  `gorm:"index;size:36" json:"order_item_id"`
+	ProductID          string  `gorm:"index;size:36;constraint:OnDelete:RESTRICT,OnUpdate:CASCADE;foreignKey:ProductID;references:ID" json:"product_id"`
+	ProductCode        string  `gorm:"size:100" json:"product_code"`
+	SupplierPartNumber string  `gorm:"size:100" json:"supplier_part_number"` // P2 Fix: Supplier's internal part number
+	Description        string  `gorm:"type:varchar(2000)" json:"description"`
+	Quantity           float64 `json:"quantity"`
+	UnitPriceForeign   float64 `json:"unit_price_foreign"`
+	UnitPriceBHD       float64 `json:"unit_price_bhd"`
+	TotalForeign       float64 `json:"total_foreign"`
+	TotalBHD           float64 `json:"total_bhd"`
+	QuantityReceived   float64 `json:"quantity_received"`
 }
 
 func (PurchaseOrderItem) TableName() string { return "purchase_order_items" }
@@ -1472,13 +1485,13 @@ func (GoodsReceivedNote) TableName() string { return "goods_received_notes" }
 // and rejected, with auto-calculated acceptance via BeforeSave hook.
 type GRNItem struct {
 	Base
-	GRNID            string  `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:GRNID;references:ID" json:"grn_id"`
+	GRNID string `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:GRNID;references:ID" json:"grn_id"`
 	// P0-5: Added FK constraint to prevent orphaned GRN items
 	POItemID         string  `gorm:"index;size:36;constraint:OnDelete:RESTRICT,OnUpdate:CASCADE;foreignKey:POItemID;references:ID" json:"po_item_id"`
 	ProductID        string  `gorm:"index;size:36;constraint:OnDelete:RESTRICT,OnUpdate:CASCADE;foreignKey:ProductID;references:ID" json:"product_id"`
 	QuantityOrdered  float64 `gorm:"not null;default:0;check:quantity_ordered >= 0" json:"quantity_ordered"`
 	QuantityReceived float64 `gorm:"not null;default:0;check:quantity_received >= 0" json:"quantity_received"`
-	QuantityAccepted float64 `gorm:"not null;default:0;check:quantity_accepted >= 0" json:"quantity_accepted"`  // P2 Fix: QuantityReceived - QuantityRejected
+	QuantityAccepted float64 `gorm:"not null;default:0;check:quantity_accepted >= 0" json:"quantity_accepted"` // P2 Fix: QuantityReceived - QuantityRejected
 	QuantityRejected float64 `gorm:"not null;default:0;check:quantity_rejected >= 0" json:"quantity_rejected"`
 	RejectionReason  string  `gorm:"type:varchar(2000)" json:"rejection_reason"`
 }
@@ -1509,16 +1522,16 @@ type SupplierInvoice struct {
 	OrderID         string `gorm:"index;size:36" json:"order_id"` // Internal customer order reference
 
 	// Document Info (can be OCR'd)
-	InvoiceNumber string    `gorm:"index;size:100" json:"invoice_number"` // Supplier's number
+	InvoiceNumber string `gorm:"index;size:100" json:"invoice_number"` // Supplier's number
 	// P1 Fix: Part of composite index idx_supplier_inv_date
-	InvoiceDate   time.Time `gorm:"index:idx_supplier_inv_date,priority:2;autoCreateTime:false" json:"invoice_date"`
-	DueDate       time.Time `gorm:"index" json:"due_date"`
+	InvoiceDate time.Time `gorm:"index:idx_supplier_inv_date,priority:2;autoCreateTime:false" json:"invoice_date"`
+	DueDate     time.Time `gorm:"index" json:"due_date"`
 
 	// Multi-Currency
 	Currency        string  `gorm:"size:3" json:"currency"`
 	ExchangeRate    float64 `gorm:"not null;default:1;check:exchange_rate > 0" json:"exchange_rate"`
 	SubtotalForeign float64 `gorm:"not null;default:0;check:subtotal_foreign >= 0" json:"subtotal_foreign"`
-	SubtotalBHD     float64 `gorm:"type:decimal(15,3);not null;default:0;check:subtotal_bhd >= 0" json:"subtotal_bhd"`     // P1 Fix: BHD precision
+	SubtotalBHD     float64 `gorm:"type:decimal(15,3);not null;default:0;check:subtotal_bhd >= 0" json:"subtotal_bhd"` // P1 Fix: BHD precision
 	VATForeign      float64 `gorm:"not null;default:0;check:vat_foreign >= 0" json:"vat_foreign"`
 	VATBHD          float64 `gorm:"column:vatbhd;type:decimal(15,3);not null;default:0;check:vatbhd >= 0" json:"vat_bhd"` // P1 Fix: BHD precision
 	TotalForeign    float64 `gorm:"not null;default:0;check:total_foreign >= 0" json:"total_foreign"`
@@ -1526,8 +1539,8 @@ type SupplierInvoice struct {
 
 	// 3-Way Match Status
 	MatchStatus string `gorm:"index;default:'Pending';check:match_status IN ('Pending','Matched','Discrepancy','Dispute')" json:"match_status"` // P1 Fix: indexed + default
-	POMatchOK   bool   `json:"po_match_ok"`  // Matches PO amounts?
-	GRNMatchOK  bool   `json:"grn_match_ok"` // Matches GRN quantities?
+	POMatchOK   bool   `json:"po_match_ok"`                                                                                                     // Matches PO amounts?
+	GRNMatchOK  bool   `json:"grn_match_ok"`                                                                                                    // Matches GRN quantities?
 
 	// Approval Workflow
 	// P2 Fix: Part of covering index idx_supplier_inv_status
@@ -1597,9 +1610,16 @@ func (Conversation) TableName() string { return "conversations" }
 type ChatMessage struct {
 	Base
 	ConversationID string `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:ConversationID;references:ID" json:"conversation_id"`
-	Role           string `gorm:"size:20;check:role IN ('user','assistant','system')" json:"role"`    // "user" or "assistant"
-	Content        string `gorm:"type:varchar(5000)" json:"content"`
+	Role           string `gorm:"size:20;check:role IN ('user','assistant','system')" json:"role"` // "user" or "assistant"
+	Content        string `gorm:"type:text" json:"content"`
 	TokensUsed     int    `gorm:"check:tokens_used >= 0" json:"tokens_used"`
+	MessageType    string `gorm:"size:50;default:'chat'" json:"message_type"`
+	ActionType     string `gorm:"size:50" json:"action_type"`
+	ActionTarget   string `gorm:"size:100" json:"action_target"`
+	ActionLabel    string `gorm:"size:100" json:"action_label"`
+	ActionData     string `gorm:"type:text" json:"action_data"`
+	ActionStatus   string `gorm:"size:50;default:'none'" json:"action_status"`
+	ActionMetadata string `gorm:"type:text" json:"action_metadata"`
 }
 
 func (ChatMessage) TableName() string { return "chat_messages" }
@@ -1621,7 +1641,7 @@ type SupplierPayment struct {
 	AmountBHD         float64   `gorm:"type:decimal(15,3);not null;default:0;check:amount_bhd >= 0" json:"amount_bhd"` // P1 Fix: BHD precision
 	PaymentDate       time.Time `gorm:"index;autoCreateTime:false" json:"payment_date"`
 	PaymentMethod     string    `gorm:"size:50;check:payment_method IN ('Bank Transfer','Cheque','LC','Cash','Wire Transfer','PDC','Other')" json:"payment_method"` // Bank Transfer, Cheque, LC
-	Reference         string    `gorm:"size:100" json:"reference"`     // Cheque/transfer reference
+	Reference         string    `gorm:"size:100" json:"reference"`                                                                                                  // Cheque/transfer reference
 	Notes             string    `gorm:"type:varchar(2000)" json:"notes"`
 
 	// Accounting Integration (Tally Killer feature)
@@ -1659,10 +1679,9 @@ func (OfferFollowUp) TableName() string { return "offer_follow_ups" }
 // OfferNote stores freeform notes/comments on offers
 type OfferNote struct {
 	Base
-	OfferID   string    `gorm:"index;size:36" json:"offer_id"`
-	NoteDate  time.Time `gorm:"index" json:"note_date"`
-	Content   string    `gorm:"type:text" json:"content"`
-	CreatedBy string    `gorm:"size:255" json:"created_by"`
+	OfferID  string    `gorm:"index;size:36" json:"offer_id"`
+	NoteDate time.Time `gorm:"index" json:"note_date"`
+	Content  string    `gorm:"type:text" json:"content"`
 }
 
 func (OfferNote) TableName() string { return "offer_notes" }
@@ -1694,16 +1713,16 @@ func (SyncRecord) TableName() string { return "sync_records" }
 // status tracking, and raw data preservation for reconciliation.
 type TallyInvoiceImport struct {
 	Base
-	ImportBatch     string    `gorm:"index;size:36" json:"import_batch"`
-	Year            int       `gorm:"index;check:year >= 2000 AND year <= 2100" json:"year"`
-	InvoiceNumber   string    `gorm:"index;size:100" json:"invoice_number"`
-	CustomerName    string    `gorm:"index;size:255" json:"customer_name"`
-	MatchedCustomerID string  `gorm:"index;size:36" json:"matched_customer_id"`
-	InvoiceDate     time.Time `gorm:"autoCreateTime:false" json:"invoice_date"`
-	Amount          float64   `gorm:"check:amount >= 0" json:"amount"`
-	Currency        string    `gorm:"size:3" json:"currency"`
-	Status          string    `gorm:"index;size:50;check:status IN ('imported','matched','duplicate','error','pending')" json:"status"` // imported, matched, duplicate, error
-	RawData         string    `gorm:"type:varchar(5000)" json:"raw_data"`
+	ImportBatch       string    `gorm:"index;size:36" json:"import_batch"`
+	Year              int       `gorm:"index;check:year >= 2000 AND year <= 2100" json:"year"`
+	InvoiceNumber     string    `gorm:"index;size:100" json:"invoice_number"`
+	CustomerName      string    `gorm:"index;size:255" json:"customer_name"`
+	MatchedCustomerID string    `gorm:"index;size:36" json:"matched_customer_id"`
+	InvoiceDate       time.Time `gorm:"autoCreateTime:false" json:"invoice_date"`
+	Amount            float64   `gorm:"check:amount >= 0" json:"amount"`
+	Currency          string    `gorm:"size:3" json:"currency"`
+	Status            string    `gorm:"index;size:50;check:status IN ('imported','matched','duplicate','error','pending')" json:"status"` // imported, matched, duplicate, error
+	RawData           string    `gorm:"type:varchar(5000)" json:"raw_data"`
 }
 
 func (TallyInvoiceImport) TableName() string { return "tally_invoice_imports" }
@@ -1712,16 +1731,16 @@ func (TallyInvoiceImport) TableName() string { return "tally_invoice_imports" }
 // status tracking, and raw data preservation for reconciliation.
 type TallyPurchaseImport struct {
 	Base
-	ImportBatch     string    `gorm:"index;size:36" json:"import_batch"`
-	Year            int       `gorm:"index;check:year >= 2000 AND year <= 2100" json:"year"`
-	InvoiceNumber   string    `gorm:"index;size:100" json:"invoice_number"`
-	SupplierName    string    `gorm:"index;size:255" json:"supplier_name"`
-	MatchedSupplierID string  `gorm:"index;size:36" json:"matched_supplier_id"`
-	InvoiceDate     time.Time `gorm:"autoCreateTime:false" json:"invoice_date"`
-	Amount          float64   `gorm:"check:amount >= 0" json:"amount"`
-	Currency        string    `gorm:"size:3" json:"currency"`
-	Status          string    `gorm:"index;size:50;check:status IN ('imported','matched','duplicate','error','pending')" json:"status"` // imported, matched, duplicate, error
-	RawData         string    `gorm:"type:varchar(5000)" json:"raw_data"`
+	ImportBatch       string    `gorm:"index;size:36" json:"import_batch"`
+	Year              int       `gorm:"index;check:year >= 2000 AND year <= 2100" json:"year"`
+	InvoiceNumber     string    `gorm:"index;size:100" json:"invoice_number"`
+	SupplierName      string    `gorm:"index;size:255" json:"supplier_name"`
+	MatchedSupplierID string    `gorm:"index;size:36" json:"matched_supplier_id"`
+	InvoiceDate       time.Time `gorm:"autoCreateTime:false" json:"invoice_date"`
+	Amount            float64   `gorm:"check:amount >= 0" json:"amount"`
+	Currency          string    `gorm:"size:3" json:"currency"`
+	Status            string    `gorm:"index;size:50;check:status IN ('imported','matched','duplicate','error','pending')" json:"status"` // imported, matched, duplicate, error
+	RawData           string    `gorm:"type:varchar(5000)" json:"raw_data"`
 }
 
 func (TallyPurchaseImport) TableName() string { return "tally_purchase_imports" }
@@ -1749,7 +1768,7 @@ func (AccountMapping) TableName() string { return "account_mappings" }
 type FiscalPeriod struct {
 	Base
 	FiscalYear  int        `gorm:"index;check:fiscal_year >= 2000 AND fiscal_year <= 2100" json:"fiscal_year"`
-	Period      int        `gorm:"index;check:period >= 1 AND period <= 12" json:"period"`      // 1-12 for months
+	Period      int        `gorm:"index;check:period >= 1 AND period <= 12" json:"period"` // 1-12 for months
 	PeriodStart time.Time  `json:"period_start"`
 	PeriodEnd   time.Time  `json:"period_end"`
 	Status      string     `gorm:"index;size:20;default:'Open';check:status IN ('Open','Closed','Locked')" json:"status"` // Open, Closed, Locked
@@ -1763,13 +1782,13 @@ func (FiscalPeriod) TableName() string { return "fiscal_periods" }
 // balance tracking, and multi-currency support.
 type BankAccount struct {
 	Base
-	AccountID     string  `gorm:"index;size:36;constraint:OnDelete:RESTRICT,OnUpdate:CASCADE;foreignKey:AccountID;references:ID" json:"account_id"` // Link to ChartOfAccount
-	BankName      string  `gorm:"size:255" json:"bank_name"`
-	AccountNumber string  `gorm:"size:100" json:"account_number"`
-	AccountName   string  `gorm:"size:255" json:"account_name"`
-	Currency      string  `gorm:"size:3;default:'BHD'" json:"currency"`
+	AccountID      string  `gorm:"index;size:36;constraint:OnDelete:RESTRICT,OnUpdate:CASCADE;foreignKey:AccountID;references:ID" json:"account_id"` // Link to ChartOfAccount
+	BankName       string  `gorm:"size:255" json:"bank_name"`
+	AccountNumber  string  `gorm:"size:100" json:"account_number"`
+	AccountName    string  `gorm:"size:255" json:"account_name"`
+	Currency       string  `gorm:"size:3;default:'BHD'" json:"currency"`
 	CurrentBalance float64 `gorm:"type:decimal(15,3)" json:"current_balance"`
-	IsActive      bool    `gorm:"index;default:true" json:"is_active"`
+	IsActive       bool    `gorm:"index;default:true" json:"is_active"`
 }
 
 func (BankAccount) TableName() string { return "bank_accounts" }
@@ -1978,7 +1997,7 @@ type DepositInTransit struct {
 	Description   string     `gorm:"size:500" json:"description"`
 	SourceType    string     `gorm:"size:30" json:"source_type"` // CUSTOMER_PAYMENT, CASH_SALE, OTHER
 	CustomerID    *string    `gorm:"size:36" json:"customer_id"`
-	InvoiceIDs    string     `gorm:"type:text" json:"invoice_ids"` // JSON array
+	InvoiceIDs    string     `gorm:"type:text" json:"invoice_ids"`                  // JSON array
 	Status        string     `gorm:"index;size:20;default:'PENDING'" json:"status"` // PENDING, CLEARED, RETURNED
 	ClearedDate   *time.Time `json:"cleared_date"`
 	MatchedLineID *string    `gorm:"size:36" json:"matched_line_id"`
@@ -2055,7 +2074,7 @@ type BankReconciliationAuditLog struct {
 	Base
 	BankStatementID     string     `gorm:"index;size:36" json:"bank_statement_id"`
 	BankStatementLineID *string    `gorm:"index;size:36" json:"bank_statement_line_id"`
-	Action              string     `gorm:"size:30" json:"action"` // IMPORT, MATCH, UNMATCH, SPLIT, CATEGORIZE, RECONCILE, VERIFY
+	Action              string     `gorm:"size:30" json:"action"`          // IMPORT, MATCH, UNMATCH, SPLIT, CATEGORIZE, RECONCILE, VERIFY
 	ActionDetail        string     `gorm:"type:text" json:"action_detail"` // JSON
 	PerformedBy         string     `gorm:"size:100" json:"performed_by"`
 	PerformedAt         time.Time  `gorm:"index" json:"performed_at"`
@@ -2080,6 +2099,9 @@ const maxBackups = 7
 // Backups are stored in a "backups/" directory next to the database file.
 // Keeps the last 7 backups and deletes older ones.
 func (a *App) BackupDatabase() (string, error) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return "", err
+	}
 	if a.db == nil {
 		return "", fmt.Errorf("database not initialized")
 	}
@@ -2275,9 +2297,9 @@ func (a *App) GetBackupInfo() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"count":          len(backups),
-		"last_backup":    lastBackup,
-		"total_size_mb":  float64(totalSize) / (1024 * 1024),
-		"backup_dir":     backupDir,
+		"count":         len(backups),
+		"last_backup":   lastBackup,
+		"total_size_mb": float64(totalSize) / (1024 * 1024),
+		"backup_dir":    backupDir,
 	}
 }

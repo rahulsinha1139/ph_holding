@@ -48,7 +48,7 @@ func TestSessionCreation(t *testing.T) {
 
 	// Verify session in database
 	var session UserSession
-	err = db.Where("token = ?", token.AccessToken).First(&session).Error
+	err = db.Where("token = ?", hashToken(token.AccessToken)).First(&session).Error
 	if err != nil {
 		t.Fatalf("Session not found in database: %v", err)
 	}
@@ -58,12 +58,12 @@ func TestSessionCreation(t *testing.T) {
 		t.Errorf("Expected UserID = test_user_123, got %s", session.UserID)
 	}
 
-	if session.Token != token.AccessToken {
-		t.Errorf("Expected Token = %s, got %s", token.AccessToken, session.Token)
+	if session.Token != hashToken(token.AccessToken) {
+		t.Errorf("Expected Token hash = %s, got %s", hashToken(token.AccessToken), session.Token)
 	}
 
-	if session.RefreshToken != token.RefreshToken {
-		t.Errorf("Expected RefreshToken = %s, got %s", token.RefreshToken, session.RefreshToken)
+	if session.RefreshToken != hashToken(token.RefreshToken) {
+		t.Errorf("Expected RefreshToken hash = %s, got %s", hashToken(token.RefreshToken), session.RefreshToken)
 	}
 
 	if !session.IsActive {
@@ -171,7 +171,7 @@ func TestSessionInvalidation(t *testing.T) {
 
 	// Get session ID
 	var session UserSession
-	db.Where("token = ?", token.AccessToken).First(&session)
+	db.Where("token = ?", hashToken(token.AccessToken)).First(&session)
 
 	// Invalidate session
 	err = authManager.InvalidateSession(session.ID, "user_logout")

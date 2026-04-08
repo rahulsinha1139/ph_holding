@@ -521,6 +521,7 @@
         display: flex;
         flex-direction: column;
         gap: 20px;
+        font-family: var(--font-body);
     }
 
     .loading-state {
@@ -538,6 +539,8 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
         padding-bottom: 16px;
         border-bottom: 1px solid var(--border);
     }
@@ -546,12 +549,16 @@
         display: flex;
         align-items: center;
         gap: 12px;
+        flex-wrap: wrap;
+        min-width: 0;
     }
 
     .header-left h2 {
         margin: 0;
+        font-family: var(--font-display);
         font-size: 20px;
-        font-weight: 600;
+        font-weight: 500;
+        letter-spacing: -0.02em;
         color: var(--onyx, #1D1D1F);
     }
 
@@ -559,6 +566,7 @@
         display: flex;
         align-items: center;
         gap: 16px;
+        flex-wrap: wrap;
     }
 
     .period-badge {
@@ -596,6 +604,7 @@
         background: var(--canvas, #FFF);
         border: 1px solid var(--border, #E5E5E5);
         border-radius: 4px;
+        font-family: var(--font-body);
         font-size: 13px;
         font-weight: 500;
         color: var(--onyx, #1D1D1F);
@@ -640,11 +649,11 @@
     .kpi-card {
         background: var(--surface);
         border: 1px solid var(--border);
-        border-radius: 8px;
+        border-radius: 12px;
         padding: 20px;
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 10px;
         min-width: 0; /* Allow shrinking in grid */
         overflow: hidden; /* Prevent overflow */
     }
@@ -655,31 +664,40 @@
     }
 
     .kpi-label {
+        font-family: var(--font-body);
         font-size: 12px;
         text-transform: uppercase;
         letter-spacing: 0.5px;
         color: var(--text-muted);
         font-weight: 500;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
     }
 
     .kpi-value {
         font-size: clamp(18px, 2.5vw, 28px); /* Responsive font size */
-        font-weight: 700;
-        font-family: var(--font-mono, monospace);
+        font-weight: 500;
+        font-family: var(--font-display);
         color: var(--text-primary);
-        word-break: break-word;
-        overflow-wrap: break-word;
-        line-height: 1.2;
+        word-break: normal;
+        overflow-wrap: anywhere;
+        line-height: 1.18;
+        letter-spacing: -0.035em;
+        max-width: 100%;
     }
 
     .kpi-sub {
         font-size: 13px;
         color: var(--text-secondary);
+        line-height: 1.5;
+        overflow-wrap: anywhere;
     }
 
     .kpi-change {
         font-size: 13px;
         font-weight: 500;
+        line-height: 1.5;
+        overflow-wrap: anywhere;
     }
 
     .kpi-change.positive { color: #15803d; }
@@ -696,8 +714,9 @@
     .card {
         background: var(--surface);
         border: 1px solid var(--border);
-        border-radius: 8px;
+        border-radius: 12px;
         overflow: hidden;
+        min-width: 0;
     }
 
     .card.wide {
@@ -708,6 +727,7 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
+        gap: 16px;
         padding: 16px 20px;
         background: var(--bg-base);
         border-bottom: 1px solid var(--border);
@@ -715,15 +735,20 @@
 
     .card-header h3 {
         margin: 0;
+        font-family: var(--font-display);
         font-size: 14px;
-        font-weight: 600;
+        font-weight: 500;
         text-transform: uppercase;
         letter-spacing: 0.5px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
     }
 
     .card-date {
         font-size: 12px;
         color: var(--text-muted);
+        overflow-wrap: anywhere;
+        text-align: right;
     }
 
     .card-badge {
@@ -740,6 +765,7 @@
 
     .card-body {
         padding: 20px;
+        min-width: 0;
     }
 
     /* Balance Sheet */
@@ -760,6 +786,8 @@
     .bs-row {
         display: flex;
         justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
         font-size: 13px;
     }
 
@@ -771,7 +799,9 @@
     }
 
     .bs-val {
-        font-family: var(--font-mono, monospace);
+        font-family: var(--font-display);
+        flex-shrink: 0;
+        text-align: right;
     }
 
     .bs-bar {
@@ -822,12 +852,16 @@
     .ratio-row {
         display: flex;
         justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
         font-size: 13px;
     }
 
     .ratio-val {
-        font-family: var(--font-mono, monospace);
+        font-family: var(--font-display);
         font-weight: 500;
+        flex-shrink: 0;
+        text-align: right;
     }
 
     .ratio-val.good { color: #15803d; }
@@ -837,13 +871,17 @@
     .ar-total {
         display: flex;
         justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
         margin-bottom: 20px;
         font-size: 14px;
     }
 
     .ar-total-val {
         font-weight: 600;
-        font-family: var(--font-mono, monospace);
+        font-family: var(--font-display);
+        flex-shrink: 0;
+        text-align: right;
     }
 
     .ar-buckets {
@@ -890,7 +928,9 @@
 
     .ar-val {
         font-size: 11px;
-        font-family: var(--font-mono, monospace);
+        font-family: var(--font-display);
+        text-align: center;
+        overflow-wrap: anywhere;
     }
 
     /* Working Capital */
@@ -903,6 +943,8 @@
     .wc-row {
         display: flex;
         justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
         font-size: 13px;
     }
 
@@ -914,14 +956,16 @@
     }
 
     .wc-val {
-        font-family: var(--font-mono, monospace);
+        font-family: var(--font-display);
+        flex-shrink: 0;
+        text-align: right;
     }
 
     .ccc-box {
         margin-top: 20px;
         padding: 16px;
         background: var(--bg-base);
-        border-radius: 8px;
+        border-radius: 12px;
         text-align: center;
     }
 
@@ -942,7 +986,7 @@
 
     .ccc-item {
         font-size: 13px;
-        font-family: var(--font-mono, monospace);
+        font-family: var(--font-display);
     }
 
     .ccc-op {
@@ -951,9 +995,9 @@
 
     .ccc-result {
         font-size: 16px;
-        font-weight: 700;
+        font-weight: 500;
         color: var(--brand-indigo);
-        font-family: var(--font-mono, monospace);
+        font-family: var(--font-display);
     }
 
     /* YoY Comparison */
@@ -972,6 +1016,7 @@
     .yoy-label {
         font-size: 13px;
         font-weight: 500;
+        font-family: var(--font-body);
     }
 
     .yoy-compare {
@@ -1010,14 +1055,15 @@
 
     .yoy-val {
         font-size: 11px;
-        font-family: var(--font-mono, monospace);
+        font-family: var(--font-display);
         width: 90px;
         text-align: right;
+        overflow-wrap: anywhere;
     }
 
     .yoy-change {
         font-size: 13px;
-        font-weight: 600;
+        font-weight: 500;
         text-align: center;
     }
 
@@ -1037,6 +1083,8 @@
     .dashboard-footer {
         display: flex;
         justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
         font-size: 11px;
         color: var(--text-muted);
         padding-top: 16px;

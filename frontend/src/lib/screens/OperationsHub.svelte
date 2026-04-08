@@ -7,7 +7,6 @@
   // GRNScreen deprecated per user request - not needed
   import SupplierInvoicesScreen from './SupplierInvoicesScreen.svelte';
   import DeliveryNotesScreen from './DeliveryNotesScreen.svelte';
-  import SerialTraceScreen from './SerialTraceScreen.svelte';
   import type { Tab } from '$lib/types/components';
   import { GetPurchaseOrders, GetSupplierInvoices, GetDeliveryNotes } from '../../../wailsjs/go/main/App';
   import { toast } from '$lib/stores/toasts';
@@ -22,7 +21,6 @@
     { id: 'pos', label: 'Supplier POs', count: 0 },              // POs sent TO suppliers (clearly not customer orders)
     { id: 'supplier-invoices', label: 'Supplier Invoices', count: 0 },  // Invoices FROM suppliers
     { id: 'delivery-notes', label: 'Delivery Notes', count: 0 },        // DNs TO customers (links to customer invoices)
-    { id: 'traceability', label: 'Traceability', count: 0 },          // Phase 23: Serial number traceability
   ];
 
   let activeTab = 'pos';
@@ -129,8 +127,6 @@
       <SupplierInvoicesScreen embedded={true} />
     {:else if activeTab === 'delivery-notes'}
       <DeliveryNotesScreen embedded={true} />
-    {:else if activeTab === 'traceability'}
-      <SerialTraceScreen />
     {/if}
   </ModuleLayout>
 </ErrorBoundary>

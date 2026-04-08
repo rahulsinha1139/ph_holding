@@ -1,7 +1,9 @@
 <script lang="ts">
     import { createEventDispatcher, onMount, onDestroy } from "svelte";
+    import { EventsOn, EventsOff } from "../../../../wailsjs/runtime/runtime";
     import { currentUser, permissions } from "$lib/stores/authContext";
     import { GetDBSyncStatus, SyncNowWithProgress, GetDBSyncSettings } from "../../../../wailsjs/go/main/App";
+    import { getUnreadNotificationsCount } from "$lib/api/collaboration";
     import SyncProgress from "./SyncProgress.svelte";
 
     const dispatch = createEventDispatcher();
@@ -20,7 +22,9 @@
     };
     let syncLoading = false;
     let statusInterval: number;
+    let notificationInterval: number;
     let showSyncProgress = false;
+    let unreadNotifications = 0;
 
     // Poll sync status every 10 seconds
     async function checkSyncStatus() {
@@ -34,6 +38,14 @@
             };
         } catch (e) {
             console.warn("Failed to get sync status:", e);
+        }
+    }
+
+    async function loadUnreadNotifications() {
+        try {
+            unreadNotifications = await getUnreadNotificationsCount();
+        } catch {
+            unreadNotifications = 0;
         }
     }
 
@@ -57,11 +69,22 @@
 
     onMount(() => {
         checkSyncStatus();
+        loadUnreadNotifications();
+        EventsOn("notifications:new", loadUnreadNotifications);
+        EventsOn("notifications:updated", loadUnreadNotifications);
         statusInterval = setInterval(checkSyncStatus, 10000) as unknown as number;
+        notificationInterval = setInterval(loadUnreadNotifications, 10000) as unknown as number;
+        return () => {
+            if (statusInterval) clearInterval(statusInterval);
+            if (notificationInterval) clearInterval(notificationInterval);
+            EventsOff("notifications:new", "notifications:updated");
+        };
     });
 
     onDestroy(() => {
         if (statusInterval) clearInterval(statusInterval);
+        if (notificationInterval) clearInterval(notificationInterval);
+        EventsOff("notifications:new", "notifications:updated");
     });
 
     // Status indicator color
@@ -84,9 +107,14 @@
         { id: "opportunities", label: "Opportunities", icon: "target", permission: "offers:view" },
         { id: "operations", label: "Operations", icon: "layers", permission: "po:view" }, // Supplier-side ops: POs, Supplier Invoices - requires po:view
         { id: "finance", label: "Finance", icon: "bar-chart", permission: "finance:view" }, // HIDDEN for staff/sales
+        { id: "work", label: "Work", icon: "check-square", permission: "tasks:view" },
+        { id: "people", label: "People", icon: "briefcase", permission: "hr:view" },
+        { id: "notifications", label: "Notifications", icon: "bell", permission: null },
+        { id: "deployment", label: "Deployment", icon: "shield", permission: "settings:view" },
         { id: "relationships", label: "Relationships", icon: "users", permission: "customers:view" },
         { id: "intelligence", label: "Intelligence", icon: "zap", permission: "intelligence:chat" },
-        { id: "onedrive_import", label: "OneDrive Import", icon: "folder", permission: "settings:view" },
+        // OneDrive import disabled — manual folder download + extraction in next session
+        // { id: "onedrive_import", label: "OneDrive Import", icon: "folder", permission: "settings:view" },
         { id: "settings", label: "Settings", icon: "settings", permission: "settings:view" },
     ];
 
@@ -138,7 +166,12 @@
                 class:active={currentScreen === item.id}
                 on:click|preventDefault={() => navigate(item.id)}
             >
-                <span class="nav-label">{item.label}</span>
+                <span class="nav-row">
+                    <span class="nav-label">{item.label}</span>
+                    {#if item.id === "notifications" && unreadNotifications > 0}
+                        <span class="nav-badge">{unreadNotifications}</span>
+                    {/if}
+                </span>
                 {#if currentScreen === item.id}
                     <div class="active-indicator"></div>
                 {/if}
@@ -238,6 +271,26 @@
         border-radius: var(--border-radius-sm);
         transition: all var(--transition-fast);
         position: relative;
+    }
+
+    .nav-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .nav-badge {
+        min-width: 18px;
+        height: 18px;
+        padding: 0 6px;
+        border-radius: 999px;
+        background: #0f766e;
+        color: white;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 700;
     }
 
     .nav-link:hover {

@@ -17,6 +17,7 @@
     ConfirmOneDriveDeal,
     ImportOneDriveDeals,
   } from '../../../wailsjs/go/main/App';
+  import { main } from '../../../wailsjs/go/models';
 
   // ─── Wizard state ───────────────────────────────────────────────────────────
   let currentStep = 1;
@@ -39,14 +40,19 @@
     score: number;
   }
   interface Deal {
+    local_id: string;
     id: string;
+    folder_path: string;
     folder_name: string;
+    final_path: string;
+    root_path: string;
     instrument_type: string;
     year: number | null;
     file_count: number;
     excel_count: number;
     pdf_count: number;
     has_costing_sheet: boolean;
+    files: main.DiscoveredFile[];
     customer_matches: CustomerMatch[];
     confirmed_customer_id: string;
   }
@@ -75,6 +81,40 @@
   $: importSuccessCount = importLog.filter(r => r.success).length;
   $: importErrorCount = importLog.filter(r => !r.success && r.done).length;
 
+  function parseDealYear(yearHint?: string): number | null {
+    const match = (yearHint || '').match(/\b(20\d{2})\b/);
+    return match ? Number(match[1]) : null;
+  }
+
+  function toDealView(raw: main.DiscoveredDeal): Deal {
+    const files = raw.files || [];
+    const excelCount = files.filter(f => ['.xlsx', '.xls'].includes((f.extension || '').toLowerCase())).length;
+    const pdfCount = files.filter(f => (f.extension || '').toLowerCase() === '.pdf').length;
+
+    return {
+      ...raw,
+      id: raw.local_id,
+      local_id: raw.local_id,
+      folder_path: raw.folder_path,
+      folder_name: raw.folder_name,
+      final_path: raw.final_path,
+      root_path: raw.root_path,
+      instrument_type: raw.instrument_type,
+      year: parseDealYear(raw.year_hint),
+      file_count: files.length,
+      excel_count: excelCount,
+      pdf_count: pdfCount,
+      has_costing_sheet: files.some(f => f.file_type === 'costing_sheet'),
+      files,
+      customer_matches: (raw.customer_matches || []).map(match => ({
+        customer_id: match.customer_id,
+        business_name: match.business_name,
+        score: match.score,
+      })),
+      confirmed_customer_id: raw.confirmed_customer_id || '',
+    };
+  }
+
   // ─── Step 1: Path management ─────────────────────────────────────────────────
   function addPath() {
     paths = [...paths, { id: pathIdCounter++, value: '', validating: false, validation: null }];
@@ -95,7 +135,11 @@
     paths = paths; // trigger reactivity
     try {
       const result = await ValidateOneDrivePath(entry.value.trim());
-      entry.validation = result;
+      entry.validation = {
+        valid: Boolean(result?.valid),
+        estimated_deals: Number(result?.estimated_deals ?? 0),
+        error: result?.error ? String(result.error) : undefined,
+      };
     } catch (e) {
       entry.validation = { valid: false, estimated_deals: 0, error: String(e) };
     } finally {
@@ -110,11 +154,15 @@
     try {
       const pathValues = validPaths.map(p => p.value.trim());
       const result = await ScanOneDrivePaths(pathValues);
-      scanResult = result;
+      scanResult = {
+        total_deals: result?.total_folders ?? result?.deals?.length ?? 0,
+        total_files: result?.total_files ?? 0,
+        deals: (result?.deals ?? []).map(toDealView),
+      };
 
       // Pre-select confirmed matches and initialize confirmed customer
-      if (result?.deals) {
-        for (const deal of result.deals) {
+      if (scanResult?.deals) {
+        for (const deal of scanResult.deals) {
           const top = deal.customer_matches?.[0];
           if (top && top.score >= 0.85) {
             deal.confirmed_customer_id = top.customer_id;
@@ -181,25 +229,30 @@
     importLog = deals.map(d => ({ deal_id: d.id, folder_name: d.folder_name, success: false, error: null, done: false }));
 
     try {
-      const result = await ImportOneDriveDeals(deals.map(d => ({
-        id: d.id,
-        folder_name: d.folder_name,
-        confirmed_customer_id: d.confirmed_customer_id,
-        instrument_type: d.instrument_type,
-        year: d.year,
-        has_costing_sheet: d.has_costing_sheet,
-      })));
+      const result = await ImportOneDriveDeals(
+        deals.map(d => main.DiscoveredDeal.createFrom({
+          local_id: d.local_id,
+          folder_path: d.folder_path,
+          folder_name: d.folder_name,
+          final_path: d.final_path,
+          root_path: d.root_path,
+          customer_matches: d.customer_matches,
+          files: d.files,
+          instrument_type: d.instrument_type,
+          year_hint: d.year ? String(d.year) : '',
+          status: 'confirmed',
+          confirmed_customer_id: d.confirmed_customer_id,
+        }))
+      );
 
       // Update log entries from result
-      if (result?.results) {
-        for (const r of result.results) {
-          const entry = importLog.find(l => l.deal_id === r.deal_id);
+      for (const r of result || []) {
+        const entry = importLog.find(l => l.deal_id === r.deal_local_id);
           if (entry) {
             entry.success = r.success;
-            entry.error = r.error ?? null;
+            entry.error = r.success ? null : (r.message || 'Import failed');
             entry.done = true;
           }
-        }
       }
     } catch (e) {
       // Mark all undone as failed

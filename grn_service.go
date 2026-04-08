@@ -43,6 +43,11 @@ func (a *App) CreateGRN(grn GoodsReceivedNote) (GoodsReceivedNote, error) {
 		return GoodsReceivedNote{}, newError("PO_NOT_FOUND", "Purchase Order not found", err.Error())
 	}
 
+	// Validate PO status - cannot create GRN against Draft or Cancelled POs
+	if po.Status == "Cancelled" || po.Status == "Draft" {
+		return GoodsReceivedNote{}, newError("INVALID_PO_STATUS", fmt.Sprintf("cannot create GRN against %s purchase order", po.Status), "")
+	}
+
 	// Generate GRN number if empty
 	if grn.GRNNumber == "" {
 		var err error
@@ -258,6 +263,21 @@ func (a *App) UpdateGRN(grn GoodsReceivedNote) (GoodsReceivedNote, error) {
 		return GoodsReceivedNote{}, newError("GRN_NOT_FOUND", "GRN not found", err.Error())
 	}
 
+	// Allow GRN number edit only if QC is still Pending (not yet completed)
+	if grn.GRNNumber != "" && grn.GRNNumber != existing.GRNNumber {
+		if existing.QCStatus != "Pending" {
+			return GoodsReceivedNote{}, newError("GRN_NUMBER_LOCKED",
+				fmt.Sprintf("Cannot change GRN number: QC status is %s (only Pending GRNs can have number changed)", existing.QCStatus), "")
+		}
+		// Uniqueness check: verify no other GRN has the same number
+		var count int64
+		a.db.Model(&GoodsReceivedNote{}).Where("grn_number = ? AND id != ?", grn.GRNNumber, grn.ID).Count(&count)
+		if count > 0 {
+			return GoodsReceivedNote{}, newError("GRN_NUMBER_EXISTS",
+				fmt.Sprintf("GRN number %s already exists", grn.GRNNumber), "")
+		}
+	}
+
 	if err := a.db.Save(&grn).Error; err != nil {
 		log.Printf("❌ Failed to update GRN: %v", err)
 		return GoodsReceivedNote{}, newError("DB_UPDATE_FAILED", "Failed to update GRN", err.Error())
@@ -280,6 +300,17 @@ func (a *App) DeleteGRN(id string) error {
 	var grn GoodsReceivedNote
 	if err := a.db.First(&grn, "id = ?", id).Error; err != nil {
 		return newError("GRN_NOT_FOUND", "GRN not found", err.Error())
+	}
+
+	// Reset serial numbers linked to this GRN before deleting items
+	if err := a.db.Model(&SerialNumber{}).
+		Where("grn_number = ?", grn.GRNNumber).
+		Updates(map[string]interface{}{
+			"status":      "Available",
+			"grn_item_id": "",
+			"grn_number":  "",
+		}).Error; err != nil {
+		log.Printf("⚠️ Failed to reset serial numbers for GRN %s: %v", grn.GRNNumber, err)
 	}
 
 	// Delete GRN items first (cascade)

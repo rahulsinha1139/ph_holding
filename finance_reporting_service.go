@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -21,26 +22,26 @@ import (
 type PaymentAgingBucket struct {
 	CustomerID       string  `json:"customer_id"`
 	CustomerName     string  `json:"customer_name"`
-	Current          float64 `json:"current"`           // 0-30 days
-	Days1To30        float64 `json:"days_1_to_30"`      // 1-30 days overdue
-	Days31To60       float64 `json:"days_31_to_60"`     // 31-60 days overdue
-	Days61To90       float64 `json:"days_61_to_90"`     // 61-90 days overdue
-	Over90Days       float64 `json:"over_90_days"`      // 90+ days overdue
+	Current          float64 `json:"current"`       // 0-30 days
+	Days1To30        float64 `json:"days_1_to_30"`  // 1-30 days overdue
+	Days31To60       float64 `json:"days_31_to_60"` // 31-60 days overdue
+	Days61To90       float64 `json:"days_61_to_90"` // 61-90 days overdue
+	Over90Days       float64 `json:"over_90_days"`  // 90+ days overdue
 	TotalOutstanding float64 `json:"total_outstanding"`
-	AvgDaysOverdue   float64 `json:"avg_days_overdue"`  // Weighted average
+	AvgDaysOverdue   float64 `json:"avg_days_overdue"` // Weighted average
 }
 
 // PaymentAgingReport represents complete aging report
 type PaymentAgingReport struct {
-	ReportDate       time.Time            `json:"report_date"`
-	TotalCurrent     float64              `json:"total_current"`
-	TotalDays1To30   float64              `json:"total_days_1_to_30"`
-	TotalDays31To60  float64              `json:"total_days_31_to_60"`
-	TotalDays61To90  float64              `json:"total_days_61_to_90"`
-	TotalOver90Days  float64              `json:"total_over_90_days"`
-	GrandTotal       float64              `json:"grand_total"`
-	AvgDaysOverdue   float64              `json:"avg_days_overdue"`
-	CustomerBuckets  []PaymentAgingBucket `json:"customer_buckets"`
+	ReportDate      time.Time            `json:"report_date"`
+	TotalCurrent    float64              `json:"total_current"`
+	TotalDays1To30  float64              `json:"total_days_1_to_30"`
+	TotalDays31To60 float64              `json:"total_days_31_to_60"`
+	TotalDays61To90 float64              `json:"total_days_61_to_90"`
+	TotalOver90Days float64              `json:"total_over_90_days"`
+	GrandTotal      float64              `json:"grand_total"`
+	AvgDaysOverdue  float64              `json:"avg_days_overdue"`
+	CustomerBuckets []PaymentAgingBucket `json:"customer_buckets"`
 }
 
 // GetPaymentAgingReport generates AR aging report with customer-level breakdown
@@ -144,24 +145,24 @@ func (a *App) GetPaymentAgingReport() (PaymentAgingReport, error) {
 
 // CashFlowProjectionDay represents projected cash for a single day
 type CashFlowProjectionDay struct {
-	Date              time.Time `json:"date"`
-	ExpectedInflows   float64   `json:"expected_inflows"`   // Customer payments
-	ExpectedOutflows  float64   `json:"expected_outflows"`  // Supplier payments
-	NetCashFlow       float64   `json:"net_cash_flow"`
-	CumulativeCash    float64   `json:"cumulative_cash"`
-	OpeningBalance    float64   `json:"opening_balance"`
-	ClosingBalance    float64   `json:"closing_balance"`
+	Date             time.Time `json:"date"`
+	ExpectedInflows  float64   `json:"expected_inflows"`  // Customer payments
+	ExpectedOutflows float64   `json:"expected_outflows"` // Supplier payments
+	NetCashFlow      float64   `json:"net_cash_flow"`
+	CumulativeCash   float64   `json:"cumulative_cash"`
+	OpeningBalance   float64   `json:"opening_balance"`
+	ClosingBalance   float64   `json:"closing_balance"`
 }
 
 // CashFlowProjection represents cash flow forecast
 type CashFlowProjection struct {
-	StartDate         time.Time               `json:"start_date"`
-	EndDate           time.Time               `json:"end_date"`
-	OpeningCash       float64                 `json:"opening_cash"`
-	TotalInflows      float64                 `json:"total_inflows"`
-	TotalOutflows     float64                 `json:"total_outflows"`
-	ProjectedCash     float64                 `json:"projected_cash"`
-	DailyProjections  []CashFlowProjectionDay `json:"daily_projections"`
+	StartDate        time.Time               `json:"start_date"`
+	EndDate          time.Time               `json:"end_date"`
+	OpeningCash      float64                 `json:"opening_cash"`
+	TotalInflows     float64                 `json:"total_inflows"`
+	TotalOutflows    float64                 `json:"total_outflows"`
+	ProjectedCash    float64                 `json:"projected_cash"`
+	DailyProjections []CashFlowProjectionDay `json:"daily_projections"`
 }
 
 // GetCashFlowProjection generates cash flow forecast based on due dates and payment history
@@ -268,6 +269,91 @@ func (a *App) GetCashFlowProjection(days int) (CashFlowProjection, error) {
 		}
 	}
 
+	// 2b. Project OUTFLOWS from approved/posted expense entries
+	var unpaidExpenses []ExpenseEntry
+	if err := a.db.Where(
+		"status IN ? AND payment_status != ? AND ((due_date BETWEEN ? AND ?) OR (due_date IS NULL AND expense_date BETWEEN ? AND ?))",
+		[]string{"approved", "posted"},
+		"paid",
+		now, endDate,
+		now, endDate,
+	).Find(&unpaidExpenses).Error; err != nil {
+		log.Printf("⚠️ Failed to retrieve expense entries for cashflow: %v", err)
+	} else {
+		for _, expense := range unpaidExpenses {
+			postDate := expense.ExpenseDate
+			if expense.DueDate != nil {
+				postDate = *expense.DueDate
+			}
+			dateKey := postDate.Format("2006-01-02")
+			if day, exists := dailyMap[dateKey]; exists {
+				day.ExpectedOutflows += expense.TotalAmount
+				projection.TotalOutflows += expense.TotalAmount
+			}
+		}
+	}
+
+	// 2c. Project OUTFLOWS from recurring expenses not yet generated in the window
+	var recurringExpenses []RecurringExpense
+	if err := a.db.Where("is_active = ? AND next_run_date <= ?", true, endDate).Find(&recurringExpenses).Error; err != nil {
+		log.Printf("⚠️ Failed to retrieve recurring expenses for cashflow: %v", err)
+	} else {
+		for _, recurring := range recurringExpenses {
+			for runAt := recurring.NextRunDate; !runAt.After(endDate); runAt = nextRecurringDate(runAt, recurring.Frequency, recurring.IntervalValue) {
+				if runAt.Before(now) {
+					continue
+				}
+				dateKey := runAt.Format("2006-01-02")
+				if day, exists := dailyMap[dateKey]; exists {
+					amount := recurring.DefaultAmount + recurring.DefaultVATAmount
+					day.ExpectedOutflows += amount
+					projection.TotalOutflows += amount
+				}
+			}
+		}
+	}
+
+	// 2d. Project OUTFLOWS from approved/posted payroll liabilities
+	var payrollRuns []PayrollRun
+	if err := a.db.Where("status IN ?", []string{"approved", "posted"}).Find(&payrollRuns).Error; err != nil {
+		log.Printf("⚠️ Failed to retrieve payroll runs for cashflow: %v", err)
+	} else if len(payrollRuns) > 0 {
+		periodIDs := make([]string, 0, len(payrollRuns))
+		for _, run := range payrollRuns {
+			if strings.TrimSpace(run.PayrollPeriodID) != "" {
+				periodIDs = append(periodIDs, run.PayrollPeriodID)
+			}
+		}
+
+		periodMap := map[string]PayrollPeriod{}
+		var payrollPeriods []PayrollPeriod
+		if len(periodIDs) > 0 && a.db.Where("id IN ?", periodIDs).Find(&payrollPeriods).Error == nil {
+			for _, period := range payrollPeriods {
+				periodMap[period.ID] = period
+			}
+		}
+
+		for _, run := range payrollRuns {
+			period, ok := periodMap[run.PayrollPeriodID]
+			if !ok {
+				continue
+			}
+			dueOn := period.PeriodEnd
+			if period.PaymentDate != nil {
+				dueOn = *period.PaymentDate
+			}
+			if dueOn.Before(now) || dueOn.After(endDate) {
+				continue
+			}
+			dateKey := dueOn.Format("2006-01-02")
+			if day, exists := dailyMap[dateKey]; exists {
+				liability := run.NetTotal + run.DeductionsTotal + run.EmployerCostTotal
+				day.ExpectedOutflows += liability
+				projection.TotalOutflows += liability
+			}
+		}
+	}
+
 	// 3. Calculate cumulative cash
 	cumulativeCash := projection.OpeningCash
 	for d := 0; d <= days; d++ {
@@ -294,14 +380,14 @@ func (a *App) GetCashFlowProjection(days int) (CashFlowProjection, error) {
 
 // MarginAnalysisByCustomer represents margin breakdown per customer
 type MarginAnalysisByCustomer struct {
-	CustomerID      string  `json:"customer_id"`
-	CustomerName    string  `json:"customer_name"`
-	TotalRevenue    float64 `json:"total_revenue"`
-	TotalCost       float64 `json:"total_cost"`
-	GrossMargin     float64 `json:"gross_margin"`
-	MarginPercent   float64 `json:"margin_percent"`
-	OrderCount      int     `json:"order_count"`
-	AvgMarginPct    float64 `json:"avg_margin_pct"`
+	CustomerID    string  `json:"customer_id"`
+	CustomerName  string  `json:"customer_name"`
+	TotalRevenue  float64 `json:"total_revenue"`
+	TotalCost     float64 `json:"total_cost"`
+	GrossMargin   float64 `json:"gross_margin"`
+	MarginPercent float64 `json:"margin_percent"`
+	OrderCount    int     `json:"order_count"`
+	AvgMarginPct  float64 `json:"avg_margin_pct"`
 }
 
 // MarginAnalysisByProduct represents margin breakdown per product category
@@ -439,13 +525,13 @@ func (a *App) GetMarginAnalysisByProduct() ([]MarginAnalysisByProduct, error) {
 
 // VATReconciliation represents VAT summary for a period
 type VATReconciliation struct {
-	StartDate       time.Time `json:"start_date"`
-	EndDate         time.Time `json:"end_date"`
-	OutputVAT       float64   `json:"output_vat"`        // VAT collected from customers
-	InputVAT        float64   `json:"input_vat"`         // VAT paid to suppliers
-	NetVAT          float64   `json:"net_vat"`           // Payable (positive) or Receivable (negative)
-	CustomerInvoices int      `json:"customer_invoices"` // Count of customer invoices
-	SupplierInvoices int      `json:"supplier_invoices"` // Count of supplier invoices
+	StartDate        time.Time `json:"start_date"`
+	EndDate          time.Time `json:"end_date"`
+	OutputVAT        float64   `json:"output_vat"`        // VAT collected from customers
+	InputVAT         float64   `json:"input_vat"`         // VAT paid to suppliers
+	NetVAT           float64   `json:"net_vat"`           // Payable (positive) or Receivable (negative)
+	CustomerInvoices int       `json:"customer_invoices"` // Count of customer invoices
+	SupplierInvoices int       `json:"supplier_invoices"` // Count of supplier invoices
 }
 
 // GetVATReconciliation calculates VAT payable/receivable for a date range

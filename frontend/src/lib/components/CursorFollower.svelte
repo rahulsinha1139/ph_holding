@@ -33,7 +33,6 @@
         const isText = target.closest('p, span, h1, h2, h3, h4, h5, h6, label, .text-content, td');
         const isInput = target.closest('input, textarea, [contenteditable]');
 
-        // Detect interactive elements for magnetic mode
         const isInteractive = target.closest(
             'button, a, [role="button"], .nav-link, .tab, .card, .btn, .quick-link'
         );
@@ -53,12 +52,11 @@
             magneticRadius = 2;
             magneticScale = 1;
         } else if (isInteractive) {
-            mode = "magnetic";
-            magnetTarget = isInteractive;
-            const rect = isInteractive.getBoundingClientRect();
-            magneticWidth = rect.width + 12;
-            magneticHeight = rect.height + 8;
-            magneticRadius = Math.min(rect.height / 2 + 4, 20);
+            mode = "default";
+            magnetTarget = null;
+            magneticWidth = 6;
+            magneticHeight = 6;
+            magneticRadius = 50;
             magneticScale = 1;
         } else {
             mode = "default";
@@ -75,19 +73,9 @@
     }
 
     function animate() {
-        if (mode === "magnetic" && magnetTarget) {
-            // Snap cursor to center of the magnetic target
-            const rect = magnetTarget.getBoundingClientRect();
-            const centerX = rect.left + rect.width / 2;
-            const centerY = rect.top + rect.height / 2;
-
-            cursorX = lerp(cursorX, centerX, 0.2);
-            cursorY = lerp(cursorY, centerY, 0.2);
-        } else {
-            // Smooth follow for default/text mode
-            cursorX = lerp(cursorX, targetX, LERP_FACTOR);
-            cursorY = lerp(cursorY, targetY, LERP_FACTOR);
-        }
+        // Smooth follow for default/text mode
+        cursorX = lerp(cursorX, targetX, LERP_FACTOR);
+        cursorY = lerp(cursorY, targetY, LERP_FACTOR);
 
         animFrame = requestAnimationFrame(animate);
     }
@@ -158,10 +146,4 @@
         opacity: 0.7;
     }
 
-    /* Magnetic mode: translucent gray encompassing the element */
-    .cursor-follower.mode-magnetic {
-        background: rgba(0, 0, 0, 0.06);
-        border: 1px solid rgba(0, 0, 0, 0.08);
-        mix-blend-mode: normal;
-    }
 </style>
