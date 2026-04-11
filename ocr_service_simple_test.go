@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 )
 
@@ -52,10 +53,18 @@ func TestNewSimpleOCRService(t *testing.T) {
 		t.Error("dpi should be > 0")
 	}
 
-	// Verify default endpoint
-	expectedEndpoint := "https://asymmetrica-runtime.fly.dev"
-	if service.flyEndpoint != expectedEndpoint {
-		t.Errorf("Expected endpoint %s, got %s", expectedEndpoint, service.flyEndpoint)
+	// Verify default endpoint — expects the VPS asymm-engine (Apr 2026 migration).
+	// Accepts either the new default or an env-var override; the test only cares
+	// that we're no longer hitting Fly.io.
+	if service.flyEndpoint == "https://asymmetrica-runtime.fly.dev" {
+		t.Errorf("Default endpoint should NOT be fly.io, got %s", service.flyEndpoint)
+	}
+	expectedDefault := "https://api.asymmetrica.ai/engine"
+	// Only assert the exact default if no env vars are overriding it.
+	if os.Getenv("ASYMM_ENGINE_URL") == "" && os.Getenv("FLY_OCR_URL") == "" {
+		if service.flyEndpoint != expectedDefault {
+			t.Errorf("Expected default endpoint %s, got %s", expectedDefault, service.flyEndpoint)
+		}
 	}
 }
 

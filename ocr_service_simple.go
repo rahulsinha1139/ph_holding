@@ -88,22 +88,26 @@ type OCRResult = OCRResultSimple
 func NewSimpleOCRService() (*SimpleOCRService, error) {
 	log.Println("🌸 Initializing Simple OCR Service...")
 
-	// Get Fly.io endpoint from environment (default to production)
-	flyEndpoint := os.Getenv("FLY_OCR_URL")
-	if flyEndpoint == "" {
-		flyEndpoint = "https://asymmetrica-runtime.fly.dev"
+	// Asymmetrica Runtime endpoint (previously Fly.io, now VPS asymm-engine).
+	// Resolution order: ASYMM_ENGINE_URL > legacy FLY_OCR_URL > hardcoded default.
+	engineEndpoint := os.Getenv("ASYMM_ENGINE_URL")
+	if engineEndpoint == "" {
+		engineEndpoint = os.Getenv("FLY_OCR_URL") // legacy fallback
+	}
+	if engineEndpoint == "" {
+		engineEndpoint = "https://api.asymmetrica.ai/engine"
 	}
 
 	service := &SimpleOCRService{
-		flyEndpoint: flyEndpoint,
+		flyEndpoint: engineEndpoint,
 		httpClient:  &http.Client{Timeout: 60 * time.Second},
 		maxPages:    10,
 		dpi:         150,
 	}
 
 	log.Printf("✓ Simple OCR Service initialized")
-	log.Printf("  Fly.io Endpoint: %s", flyEndpoint)
-	log.Println("  Strategy: Vector PDF → go-fitz (free) | Scanned → Fly.io Runtime (direct HTTP)")
+	log.Printf("  Asymmetrica Runtime: %s", engineEndpoint)
+	log.Println("  Strategy: Vector PDF → go-fitz (free) | Scanned → Asymmetrica Runtime /api/ocr/cloud")
 
 	return service, nil
 }
@@ -297,26 +301,17 @@ func (s *SimpleOCRService) processImage(filePath, docType string) (*OCRResultSim
 
 	base64Content := base64.StdEncoding.EncodeToString(fileBytes)
 
-	// Determine MIME type
-	ext := strings.ToLower(filepath.Ext(filePath))
-	mimeType := "image/png"
-	switch ext {
-	case ".jpg", ".jpeg":
-		mimeType = "image/jpeg"
-	case ".bmp":
-		mimeType = "image/bmp"
-	case ".tiff", ".tif":
-		mimeType = "image/tiff"
-	case ".webp":
-		mimeType = "image/webp"
-	}
+	// Suppress unused-var warning from the removed mimeType variable — we used
+	// to pass it to /api/ocr/image-upload but /api/ocr/cloud infers it from
+	// the base64 content itself.
+	_ = filepath.Ext(filePath)
 
-	// Send to Fly.io image OCR endpoint
+	// Send to Asymmetrica Runtime /api/ocr/cloud (was Fly.io /api/ocr/image-upload).
+	// New endpoint takes ImageBase64 + DocumentType, returns a richer shape
+	// with rawText, enhancedText, confidence, and structuredData.
 	payload := map[string]interface{}{
-		"base64Content": base64Content,
-		"fileName":      filepath.Base(filePath),
-		"mimeType":      mimeType,
-		"maxPages":      1,
+		"ImageBase64":  base64Content,
+		"DocumentType": "Generic",
 	}
 
 	jsonPayload, err := json.Marshal(payload)
@@ -324,22 +319,25 @@ func (s *SimpleOCRService) processImage(filePath, docType string) (*OCRResultSim
 		return nil, fmt.Errorf("failed to marshal image request: %w", err)
 	}
 
-	// Try the image upload endpoint first, fall back to pdf-upload
-	url := s.flyEndpoint + "/api/ocr/image-upload"
-	log.Printf("→ Calling Fly.io image OCR: %s", url)
+	url := s.flyEndpoint + "/api/ocr/cloud"
+	log.Printf("→ Calling Asymmetrica Runtime image OCR: %s", url)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if apiKey := os.Getenv("ASYMM_API_KEY"); apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+	// Auth: prefer the new ASYMM_SERVICE_TOKEN env var, fall back to the
+	// legacy ASYMM_API_KEY for backward compat during the transition.
+	if token := os.Getenv("ASYMM_SERVICE_TOKEN"); token != "" {
+		req.Header.Set("X-Asymm-Service-Token", token)
+	} else if apiKey := os.Getenv("ASYMM_API_KEY"); apiKey != "" {
+		req.Header.Set("X-Asymm-Service-Token", apiKey)
 	}
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fly.io image request failed: %w", err)
+		return nil, fmt.Errorf("asymm-engine image request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -348,45 +346,44 @@ func (s *SimpleOCRService) processImage(filePath, docType string) (*OCRResultSim
 		return nil, fmt.Errorf("failed to read image response: %w", err)
 	}
 
-	// If image-upload endpoint returns 404, try pdf-upload (some deployments use unified endpoint)
-	if resp.StatusCode == http.StatusNotFound {
-		log.Println("→ image-upload not available, trying pdf-upload endpoint")
-		resp.Body.Close()
-		return s.callFlyOCR(filePath, docType)
-	}
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fly.io returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("asymm-engine returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response (same format as PDF response)
+	// Parse the /api/ocr/cloud response (replaces the old image-upload shape).
+	// The runtime returns 200 even on upstream failures, reporting via the
+	// Success bool and Error field — honor that instead of relying on HTTP status.
 	var response struct {
-		Success bool   `json:"success"`
-		Text    string `json:"text"`
-		RawText string `json:"raw_text"`
-		Pages   []struct {
-			PageNumber int    `json:"page_number"`
-			Text       string `json:"text"`
-		} `json:"pages"`
-		Error string `json:"error"`
+		Success      bool    `json:"success"`
+		RawText      string  `json:"rawText"`
+		EnhancedText string  `json:"enhancedText"`
+		Confidence   float64 `json:"confidence"`
+		Error        string  `json:"error"`
 	}
 
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("failed to parse image OCR response: %w", err)
 	}
 
-	rawText := response.Text
-	if rawText == "" {
-		rawText = response.RawText
-	}
-	if rawText == "" && len(response.Pages) > 0 {
-		var pageTexts []string
-		for _, page := range response.Pages {
-			if page.Text != "" {
-				pageTexts = append(pageTexts, page.Text)
-			}
+	if !response.Success {
+		errMsg := response.Error
+		if errMsg == "" {
+			errMsg = "asymm-engine returned success=false"
 		}
-		rawText = strings.Join(pageTexts, "\n\n")
+		return nil, fmt.Errorf("asymm-engine OCR failed: %s", errMsg)
+	}
+
+	rawText := response.RawText
+	if rawText == "" {
+		rawText = response.EnhancedText
+	}
+	if rawText == "" {
+		return nil, fmt.Errorf("asymm-engine returned empty text")
+	}
+
+	confidence := response.Confidence
+	if confidence == 0 {
+		confidence = 0.85 // fallback default, matches old behavior
 	}
 
 	extractedData := extractFieldsFromText(rawText, docType)
@@ -396,10 +393,10 @@ func (s *SimpleOCRService) processImage(filePath, docType string) (*OCRResultSim
 	return &OCRResultSimple{
 		Success:       true,
 		Text:          rawText,
-		Confidence:    0.85,
+		Confidence:    confidence,
 		DocumentType:  docType,
 		ExtractedData: extractedData,
-		Engine:        "fly-runtime-image",
+		Engine:        "asymm-engine-cloud",
 	}, nil
 }
 
@@ -1086,7 +1083,10 @@ func (s *SimpleOCRService) ProcessBatch(filePaths []string, docType string) ([]*
 	return results, nil
 }
 
-// callFlyOCR calls Fly.io Runtime directly via HTTP (no PowerShell!)
+// callFlyOCR calls the Asymmetrica Runtime for PDF OCR.
+// Name retained for caller compatibility — the target is now the VPS
+// asymm-engine at /api/ocr/cloud, not Fly.io. Rename planned for a
+// follow-up refactor.
 func (s *SimpleOCRService) callFlyOCR(filePath, docType string) (*OCRResultSimple, error) {
 	// FIX: Check file size before reading to prevent crashes with large files
 	fileInfo, err := os.Stat(filePath)
@@ -1106,12 +1106,12 @@ func (s *SimpleOCRService) callFlyOCR(filePath, docType string) (*OCRResultSimpl
 
 	base64Content := base64.StdEncoding.EncodeToString(fileBytes)
 
-	// Build request payload (matches .NET Runtime API spec)
+	// Build request payload for the new /api/ocr/cloud endpoint.
+	// DocumentBase64 is the PDF-specific field (ImageBase64 is the image-specific
+	// one). Runtime dispatches to the right pipeline based on which one is set.
 	payload := map[string]interface{}{
-		"base64Content": base64Content,
-		"fileName":      filepath.Base(filePath),
-		"maxPages":      s.maxPages,
-		"dpi":           s.dpi,
+		"DocumentBase64": base64Content,
+		"DocumentType":   "Generic",
 	}
 
 	jsonPayload, err := json.Marshal(payload)
@@ -1119,9 +1119,9 @@ func (s *SimpleOCRService) callFlyOCR(filePath, docType string) (*OCRResultSimpl
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Call Fly.io OCR endpoint with retry logic
-	url := s.flyEndpoint + "/api/ocr/pdf-upload"
-	log.Printf("→ Calling Fly.io: %s", url)
+	// Call Asymmetrica Runtime with retry logic preserved from the old fly.io path.
+	url := s.flyEndpoint + "/api/ocr/cloud"
+	log.Printf("→ Calling Asymmetrica Runtime PDF OCR: %s", url)
 
 	const maxRetries = 3
 	var resp *http.Response
@@ -1134,9 +1134,11 @@ func (s *SimpleOCRService) callFlyOCR(filePath, docType string) (*OCRResultSimpl
 		}
 		req.Header.Set("Content-Type", "application/json")
 
-		// Optional API key from environment
-		if apiKey := os.Getenv("ASYMM_API_KEY"); apiKey != "" {
-			req.Header.Set("Authorization", "Bearer "+apiKey)
+		// Auth: prefer ASYMM_SERVICE_TOKEN, fall back to legacy ASYMM_API_KEY.
+		if token := os.Getenv("ASYMM_SERVICE_TOKEN"); token != "" {
+			req.Header.Set("X-Asymm-Service-Token", token)
+		} else if apiKey := os.Getenv("ASYMM_API_KEY"); apiKey != "" {
+			req.Header.Set("X-Asymm-Service-Token", apiKey)
 		}
 
 		// Make request
@@ -1145,11 +1147,11 @@ func (s *SimpleOCRService) callFlyOCR(filePath, docType string) (*OCRResultSimpl
 			// Network error - retry with exponential backoff
 			if attempt < maxRetries {
 				backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-				log.Printf("⚠️ Fly.io network error (attempt %d/%d): %v. Retrying in %v...", attempt, maxRetries, err, backoff)
+				log.Printf("⚠️ asymm-engine network error (attempt %d/%d): %v. Retrying in %v...", attempt, maxRetries, err, backoff)
 				time.Sleep(backoff)
 				continue
 			}
-			return nil, fmt.Errorf("fly.io request failed after %d attempts: %w", maxRetries, err)
+			return nil, fmt.Errorf("asymm-engine request failed after %d attempts: %w", maxRetries, err)
 		}
 
 		// Read response
@@ -1164,16 +1166,16 @@ func (s *SimpleOCRService) callFlyOCR(filePath, docType string) (*OCRResultSimpl
 			// Server error - retry with exponential backoff
 			if attempt < maxRetries {
 				backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-				log.Printf("⚠️ Fly.io server error %d (attempt %d/%d). Retrying in %v...", resp.StatusCode, attempt, maxRetries, backoff)
+				log.Printf("⚠️ asymm-engine server error %d (attempt %d/%d). Retrying in %v...", resp.StatusCode, attempt, maxRetries, backoff)
 				time.Sleep(backoff)
 				continue
 			}
-			return nil, fmt.Errorf("fly.io returned status %d after %d attempts: %s", resp.StatusCode, maxRetries, string(body))
+			return nil, fmt.Errorf("asymm-engine returned status %d after %d attempts: %s", resp.StatusCode, maxRetries, string(body))
 		}
 
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			// Client error - don't retry
-			return nil, fmt.Errorf("fly.io returned status %d: %s", resp.StatusCode, string(body))
+			return nil, fmt.Errorf("asymm-engine returned status %d: %s", resp.StatusCode, string(body))
 		}
 
 		// Success - break out of retry loop
@@ -1181,29 +1183,21 @@ func (s *SimpleOCRService) callFlyOCR(filePath, docType string) (*OCRResultSimpl
 	}
 
 	// DEBUG: Log raw response to understand API structure
-	log.Printf("🔍 DEBUG Fly.io raw response (%d bytes): %s", len(body), truncateForLog(string(body), 500))
+	log.Printf("🔍 DEBUG asymm-engine raw response (%d bytes): %s", len(body), truncateForLog(string(body), 500))
 
-	// Parse response from .NET Runtime - flexible structure to handle various response formats
+	// Parse the new /api/ocr/cloud response shape. Previous code expected a
+	// nested { data: {...}, pages: [...], page_count, ... } shape from the
+	// older fly.io deployment. The new runtime returns a flatter payload:
+	// { success, rawText, enhancedText, confidence, structuredData, error }.
 	var response struct {
-		Success bool `json:"success"`
-		Data    struct {
-			InvoiceNumber string  `json:"invoice_number"`
-			InvoiceDate   string  `json:"invoice_date"`
-			CustomerName  string  `json:"customer_name"`
-			Total         float64 `json:"total"`
-			VAT           float64 `json:"vat"`
-			PONumber      string  `json:"po_number"`
-			RawText       string  `json:"raw_text"`
-			Text          string  `json:"text"` // Alternative field name
-		} `json:"data"`
-		Pages []struct {
-			PageNumber int    `json:"page_number"`
-			Text       string `json:"text"`
-		} `json:"pages"`
-		PageCount int    `json:"page_count"`
-		Text      string `json:"text"`     // Top-level text field
-		RawText   string `json:"raw_text"` // Top-level raw_text field
-		Error     string `json:"error"`
+		Success          bool                   `json:"success"`
+		RawText          string                 `json:"rawText"`
+		EnhancedText     string                 `json:"enhancedText"`
+		Confidence       float64                `json:"confidence"`
+		ProcessingTimeMs int                    `json:"processingTimeMs"`
+		StructuredData   map[string]interface{} `json:"structuredData"`
+		DocumentType     string                 `json:"documentType"`
+		Error            string                 `json:"error"`
 	}
 
 	if err := json.Unmarshal(body, &response); err != nil {
@@ -1215,94 +1209,80 @@ func (s *SimpleOCRService) callFlyOCR(filePath, docType string) (*OCRResultSimpl
 			Success:      false,
 			DocumentType: docType,
 			Error:        response.Error,
-			Engine:       "fly-runtime",
+			Engine:       "asymm-engine-cloud",
 		}, nil
 	}
 
-	// Extract raw text from whichever field contains it
-	rawText := response.Data.RawText
+	// Text extraction with fallback chain. The new runtime prefers rawText;
+	// EnhancedText is the consciousness-processed variant (usually the same
+	// but occasionally cleaner on low-quality scans).
+	rawText := response.RawText
 	if rawText == "" {
-		rawText = response.Data.Text
-	}
-	if rawText == "" {
-		rawText = response.Text
-	}
-	if rawText == "" {
-		rawText = response.RawText
-	}
-	// CRITICAL FIX: Always prefer page-by-page text concatenation for multi-page documents
-	// This ensures ALL pages are captured, not just the first page's text
-	if len(response.Pages) > 0 {
-		var pageTexts []string
-		for _, page := range response.Pages {
-			if page.Text != "" {
-				pageTexts = append(pageTexts, page.Text)
-			}
-		}
-		concatenatedText := strings.Join(pageTexts, "\n\n--- PAGE BREAK ---\n\n")
-		// Use concatenated text if it's longer (more complete) than top-level rawText
-		if len(concatenatedText) > len(rawText) {
-			log.Printf("📄 Using page-by-page concatenation: %d pages, %d chars (vs %d chars top-level)",
-				len(response.Pages), len(concatenatedText), len(rawText))
-			rawText = concatenatedText
-		}
+		rawText = response.EnhancedText
 	}
 
-	// Fallback: if still empty, try any available text source
 	if rawText == "" {
-		log.Printf("⚠️ No text extracted from Fly.io response - document may be empty or unreadable")
+		log.Printf("⚠️ No text extracted from asymm-engine response — document may be empty or unreadable")
 	}
 
-	log.Printf("📄 Final extracted text length: %d chars, pages detected: %d", len(rawText), response.PageCount)
+	log.Printf("📄 Final extracted text length: %d chars, confidence: %.2f, processing: %dms",
+		len(rawText), response.Confidence, response.ProcessingTimeMs)
 
-	// CRITICAL FIX: Always extract fields from raw text using regex patterns
-	// The Fly.io API may only return raw OCR text, not structured fields
+	// Always run regex-based field extraction as the primary source of truth.
+	// The runtime's StructuredData is a best-effort bonus — if it has fields,
+	// they override regex output, but we never depend solely on it.
 	extractedData := extractFieldsFromText(rawText, docType)
 	extractedData["raw_text"] = rawText
-	extractedData["page_count"] = response.PageCount
-	if response.PageCount == 0 && len(response.Pages) > 0 {
-		extractedData["page_count"] = len(response.Pages)
-	}
 
-	// Override with API-provided structured data if available (non-zero/non-empty values)
-	if response.Data.InvoiceNumber != "" {
-		extractedData["invoice_number"] = response.Data.InvoiceNumber
-	}
-	if response.Data.InvoiceDate != "" {
-		extractedData["invoice_date"] = response.Data.InvoiceDate
-	}
-	if response.Data.CustomerName != "" {
-		extractedData["customer_name"] = response.Data.CustomerName
-	}
-	if response.Data.Total > 0 {
-		extractedData["total"] = response.Data.Total
-	}
-	if response.Data.VAT > 0 {
-		extractedData["vat"] = response.Data.VAT
-	}
-	if response.Data.PONumber != "" {
-		extractedData["po_number"] = response.Data.PONumber
+	// Merge structured data from the runtime if present. It's a generic
+	// map[string]interface{}, so we pull known keys defensively.
+	if response.StructuredData != nil {
+		if v, ok := response.StructuredData["invoice_number"].(string); ok && v != "" {
+			extractedData["invoice_number"] = v
+		}
+		if v, ok := response.StructuredData["invoice_date"].(string); ok && v != "" {
+			extractedData["invoice_date"] = v
+		}
+		if v, ok := response.StructuredData["customer_name"].(string); ok && v != "" {
+			extractedData["customer_name"] = v
+		}
+		if v, ok := response.StructuredData["total"].(float64); ok && v > 0 {
+			extractedData["total"] = v
+		}
+		if v, ok := response.StructuredData["vat"].(float64); ok && v > 0 {
+			extractedData["vat"] = v
+		}
+		if v, ok := response.StructuredData["po_number"].(string); ok && v != "" {
+			extractedData["po_number"] = v
+		}
 	}
 
 	// Log extracted fields for debugging
-	log.Printf("📊 Extracted fields from Fly.io response:")
+	log.Printf("📊 Extracted fields from asymm-engine response:")
 	for k, v := range extractedData {
 		if k != "raw_text" {
 			log.Printf("  %s: %v", k, v)
 		}
 	}
 
+	// Confidence: prefer the runtime-reported value, fall back to a
+	// reasonable default if missing (matches the old 0.88 behavior).
+	resultConfidence := response.Confidence
+	if resultConfidence == 0 {
+		resultConfidence = 0.88
+	}
+
 	// Build successful result
 	result := &OCRResultSimple{
 		Success:       true,
 		Text:          rawText,
-		Confidence:    0.88, // .NET Runtime typical confidence
+		Confidence:    resultConfidence,
 		DocumentType:  docType,
 		ExtractedData: extractedData,
-		Engine:        "fly-runtime",
+		Engine:        "asymm-engine-cloud",
 	}
 
-	log.Printf("✅ Fly.io OCR complete: %d pages, confidence=%.2f", response.PageCount, result.Confidence)
+	log.Printf("✅ asymm-engine OCR complete: %d chars, confidence=%.2f, %dms", len(rawText), result.Confidence, response.ProcessingTimeMs)
 	return result, nil
 }
 
