@@ -87,6 +87,12 @@ func criticalDeploymentModels() []interface{} {
 		&TaskComment{},
 		&TaskActivity{},
 		&CollaborativePendingOperation{},
+		// ChartOfAccount must come BEFORE the expense models — EnsureExpenseFoundation
+		// in expense_service.go calls db.Create(&ChartOfAccount{...}) to seed default
+		// accounts (e.g. "6100 Rent Expense"). On a fresh local SQLite DB the table
+		// needs to exist before that Create runs, or startup fails via
+		// enforceCriticalDeploymentState → os.Exit(1) on 2026-04-11-era builds.
+		&ChartOfAccount{},
 		&ExpenseCategory{},
 		&ExpenseVendor{},
 		&ExpenseEntry{},
