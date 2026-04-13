@@ -18,6 +18,32 @@ const (
 	BHDPrecisionMultiplier = 1000 // 3 decimal places for BHD currency
 )
 
+// Invoice status determination
+func determineInvoiceStatus(outstandingBHD, grandTotalBHD float64, currentStatus string, remainingPayments int) string {
+	// If no outstanding balance, invoice is paid
+	if outstandingBHD <= 0 {
+		return "Paid"
+	}
+
+	// If still has outstanding balance, check if it's partially paid
+	if outstandingBHD < grandTotalBHD {
+		return "PartiallyPaid"
+	}
+
+	// If outstanding equals grand total, maintain current status
+	return currentStatus
+}
+
+// Helper to check if invoice is non-payable
+func isNonPayableStatus(status string) bool {
+	nonPayableStatuses := map[string]bool{
+		"Cancelled": true,
+		"Void":      true,
+		"Proforma":  true,
+		"Paid":      true,
+	}
+	return nonPayableStatuses[status]
+}
 // =============================================================================
 // PAYMENT RECORDING SERVICE
 // =============================================================================
@@ -73,8 +99,7 @@ func (a *App) RecordPayment(invoiceID string, amount float64, method string, dat
 	}
 
 	// P1 FIX: Reject payments on non-payable invoices
-	nonPayableStatuses := map[string]bool{"Cancelled": true, "Void": true, "Proforma": true, "Paid": true}
-	if nonPayableStatuses[invoice.Status] {
+	if isNonPayableStatus(invoice.Status) {
 		tx.Rollback()
 		return nil, fmt.Errorf("cannot record payment on invoice with status '%s'", invoice.Status)
 	}
@@ -146,24 +171,20 @@ func (a *App) RecordPayment(invoiceID string, amount float64, method string, dat
 		newOutstanding = 0 // Floor at zero - no negative balances!
 	}
 
-	// Determine new invoice status
+	// Determine new invoice status using centralized logic
 	var newStatus string
 	if newOutstanding <= 0 {
 		newStatus = "Paid"
 		newOutstanding = 0 // Ensure no negative balances
 	} else {
-		// Check if this is the first payment
+		// Check remaining payments to determine if partially paid
 		var paymentCount int64
 		tx.Model(&Payment{}).Where("invoice_id = ?", invoiceID).Count(&paymentCount)
 		if paymentCount > 1 {
 			newStatus = "PartiallyPaid"
 		} else {
-			// First payment, was invoice overdue?
-			if invoice.Status == "Overdue" {
-				newStatus = "PartiallyPaid"
-			} else {
-				newStatus = "PartiallyPaid"
-			}
+			// Single payment remaining, invoice is partially paid
+			newStatus = "PartiallyPaid"
 		}
 	}
 

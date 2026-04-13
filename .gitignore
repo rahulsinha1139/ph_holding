@@ -17,6 +17,7 @@ frontend/node_modules/
 
 # === Environment & Secrets ===
 .env
+.env.bak-*
 .env.local
 .env.production
 # .env.example is committed (template without secrets)
@@ -86,3 +87,6 @@ mac_dev_setup/
 # === AI Tool Config (local only) ===
 .agent/
 .claude/
+.gitnexus
+.opencode/
+opencode.json
