@@ -4,8 +4,8 @@
    * Features:
    * - Full CRUD for supplier invoices
    * - 3-way matching (PO ↔ GRN ↔ Invoice)
-   * - Match status visualization (Matched, Partial, Mismatch, Pending)
-   * - Payment tracking (Pending, Partial, Paid, Overdue)
+   * - Match status visualization (Matched, Pending, Discrepancy)
+   * - Settlement tracking (Open, Partial, Settled, Disputed, Overdue)
    * - Multi-currency support with BHD conversion
    * - Approval workflow (Pending → Matched → Approved → Paid)
    * - Overdue tracking with visual warnings
@@ -53,7 +53,7 @@
   export let embedded = false;
 
   // Types
-  type InvoiceFilter = 'all' | 'pending' | 'matched' | 'discrepancy' | 'paid' | 'overdue';
+  type InvoiceFilter = 'all' | 'open' | 'partial' | 'settled' | 'disputed' | 'overdue';
 
   function getErrorMessage(err: unknown): string {
     if (!err) return 'Unknown error';
@@ -324,10 +324,10 @@
                 class="action-btn action-btn-pay"
                 data-action="pay"
                 data-id="${row.id}"
-                aria-label="Mark as paid"
-                title="Mark Paid"
+                aria-label="Settle invoice"
+                title="Settle Invoice"
               >
-                Pay
+                Settle
               </button>
             ` : ''}
           </div>
@@ -381,27 +381,43 @@
     `;
   }
 
+  function getOutstandingBHD(invoice: SupplierInvoiceDisplay): number {
+    return Number(invoice.outstanding_bhd || 0);
+  }
+
+  function isDisputedInvoice(invoice: SupplierInvoiceDisplay): boolean {
+    return invoice.status === 'Dispute' || invoice.match_status === 'Discrepancy';
+  }
+
+  function getSettlementStatus(invoice: SupplierInvoiceDisplay): string {
+    if (isDisputedInvoice(invoice)) return 'Disputed';
+    if (invoice.is_overdue) return 'Overdue';
+    if (getOutstandingBHD(invoice) <= 0.001) return 'Settled';
+    if (invoice.payment_status === 'Partial') return 'Partial';
+    return 'Open';
+  }
+
   // Payment status badge renderer
   function renderPaymentStatus(invoice: SupplierInvoiceDisplay): string {
     const icons = {
-      'Paid': '',
+      'Settled': '',
       'Partial': '',
-      'Unpaid': '',
-      'Scheduled': '',
+      'Open': '',
+      'Disputed': '',
       'Overdue': ''
     };
 
     const colors = {
-      'Paid': '#10B981',
+      'Settled': '#10B981',
       'Partial': '#F59E0B',
-      'Unpaid': '#6B7280',
-      'Scheduled': '#3B82F6',
+      'Open': '#6B7280',
+      'Disputed': '#B91C1C',
       'Overdue': '#DC2626'
     };
 
-    const status = invoice.is_overdue ? 'Overdue' : (invoice.payment_status || 'Unpaid');
-    const color = colors[status] || colors['Unpaid'];
-    const icon = icons[status] || icons['Unpaid'];
+    const status = getSettlementStatus(invoice);
+    const color = colors[status] || colors['Open'];
+    const icon = icons[status] || icons['Open'];
 
     return `
       <span
@@ -425,20 +441,20 @@
   // Filter tabs
   const filterTabs: { value: InvoiceFilter; label: string; count: number }[] = [
     { value: 'all', label: 'All Invoices', count: 0 },
-    { value: 'pending', label: 'Pending Match', count: 0 },
-    { value: 'matched', label: 'Matched', count: 0 },
-    { value: 'discrepancy', label: 'Discrepancy', count: 0 },
-    { value: 'paid', label: 'Paid', count: 0 },
+    { value: 'open', label: 'Open', count: 0 },
+    { value: 'partial', label: 'Partial', count: 0 },
+    { value: 'settled', label: 'Settled', count: 0 },
+    { value: 'disputed', label: 'Disputed', count: 0 },
     { value: 'overdue', label: 'Overdue', count: 0 }
   ];
 
   // Update tab counts
   $: {
     filterTabs[0].count = invoices.length;
-    filterTabs[1].count = invoices.filter(i => i.match_status === 'Pending').length;
-    filterTabs[2].count = invoices.filter(i => i.match_status === 'Matched').length;
-    filterTabs[3].count = invoices.filter(i => i.match_status === 'Discrepancy').length;
-    filterTabs[4].count = invoices.filter(i => i.payment_status === 'Paid').length;
+    filterTabs[1].count = invoices.filter(i => getSettlementStatus(i) === 'Open').length;
+    filterTabs[2].count = invoices.filter(i => getSettlementStatus(i) === 'Partial').length;
+    filterTabs[3].count = invoices.filter(i => getSettlementStatus(i) === 'Settled').length;
+    filterTabs[4].count = invoices.filter(i => getSettlementStatus(i) === 'Disputed').length;
     filterTabs[5].count = invoices.filter(i => i.is_overdue).length;
   }
 
@@ -447,14 +463,14 @@
     let result = [...invoices];
 
     // Apply tab filter (existing logic)
-    if (selectedFilter === 'pending') {
-      result = result.filter(i => i.match_status === 'Pending');
-    } else if (selectedFilter === 'matched') {
-      result = result.filter(i => i.match_status === 'Matched');
-    } else if (selectedFilter === 'discrepancy') {
-      result = result.filter(i => i.match_status === 'Discrepancy');
-    } else if (selectedFilter === 'paid') {
-      result = result.filter(i => i.payment_status === 'Paid');
+    if (selectedFilter === 'open') {
+      result = result.filter(i => getSettlementStatus(i) === 'Open');
+    } else if (selectedFilter === 'partial') {
+      result = result.filter(i => getSettlementStatus(i) === 'Partial');
+    } else if (selectedFilter === 'settled') {
+      result = result.filter(i => getSettlementStatus(i) === 'Settled');
+    } else if (selectedFilter === 'disputed') {
+      result = result.filter(i => getSettlementStatus(i) === 'Disputed');
     } else if (selectedFilter === 'overdue') {
       result = result.filter(i => i.is_overdue);
     }
@@ -781,13 +797,13 @@
         paymentData.payment_reference,
         paymentData.payment_method
       );
-      toast.success('Invoice marked as paid successfully');
+      toast.success('Invoice settled successfully');
       showPaymentModal = false;
       invoiceToMarkPaid = null;
       await loadInvoices();
     } catch (err) {
       console.error('Failed to mark invoice as paid:', err);
-      toast.danger('Failed to mark invoice as paid: ' + getErrorMessage(err));
+      toast.danger('Failed to settle invoice: ' + getErrorMessage(err));
     } finally {
       paymentLoading = false;
     }
@@ -1316,7 +1332,7 @@
             <span>GRN Match</span>
           </div>
           <div class="match-item" class:matched={selectedInvoice.match_status === 'Matched'}>
-            <span class="match-icon">{selectedInvoice.match_status === 'Matched' ? 'Yes' : 'Pending'}</span>
+            <span class="match-icon">{selectedInvoice.match_status === 'Matched' ? 'Yes' : selectedInvoice.match_status}</span>
             <span>{selectedInvoice.match_status}</span>
           </div>
         </div>
@@ -1359,7 +1375,7 @@
 
       {#if selectedInvoice.payment_status === 'Paid' || selectedInvoice.payment_status === 'Partial'}
         <div class="detail-section">
-          <h4>Payment Information</h4>
+          <h4>Settlement Information</h4>
           <div class="detail-grid">
             <div class="detail-item">
               <span class="detail-label">Payment Date</span>

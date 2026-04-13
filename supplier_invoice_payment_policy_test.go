@@ -106,6 +106,8 @@ func TestGetSupplierFullProfile_UsesAllOpenInvoiceOutstanding(t *testing.T) {
 	require.Len(t, profile.RecentInvoices, 5)
 	require.InDelta(t, 60, profile.OutstandingBHD, 0.0001)
 	require.InDelta(t, 0, profile.OverdueBHD, 0.0001)
+	require.Equal(t, "Unpaid", profile.RecentInvoices[0].PaymentStatus)
+	require.InDelta(t, 10, profile.RecentInvoices[0].OutstandingBHD, 0.0001)
 }
 
 func TestGetCRMSupplierDashboard_UsesOutstandingAfterPartialPayments(t *testing.T) {

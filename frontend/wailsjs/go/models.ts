@@ -12311,6 +12311,8 @@ export namespace main {
 	    invoice_number: string;
 	    invoice_date: time.Time;
 	    total_bhd: number;
+	    outstanding_bhd: number;
+	    payment_status: string;
 	    status: string;
 	
 	    static createFrom(source: any = {}) {
@@ -12323,6 +12325,8 @@ export namespace main {
 	        this.invoice_number = source["invoice_number"];
 	        this.invoice_date = this.convertValues(source["invoice_date"], time.Time);
 	        this.total_bhd = source["total_bhd"];
+	        this.outstanding_bhd = source["outstanding_bhd"];
+	        this.payment_status = source["payment_status"];
 	        this.status = source["status"];
 	    }
 	

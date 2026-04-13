@@ -29,6 +29,27 @@
   let showContactModal = false;
   let contactForm = { contact_name: '', job_title: '', email: '', phone: '', address: '', is_primary_contact: false };
 
+  function getInvoiceOpenBalance(invoice: any): number {
+    return Number(invoice?.outstanding_bhd || 0) || 0;
+  }
+
+  function getInvoiceSettlementLabel(invoice: any): string {
+    const status = String(invoice?.status || '');
+    const paymentStatus = String(invoice?.payment_status || '');
+    const outstanding = getInvoiceOpenBalance(invoice);
+
+    if (status === 'Dispute') return 'Disputed';
+    if (outstanding <= 0) return 'Settled';
+    if (paymentStatus === 'Partial') return 'Partial';
+    return 'Open';
+  }
+
+  function getInvoiceDisplayAmount(invoice: any): number {
+    const outstanding = getInvoiceOpenBalance(invoice);
+    if (outstanding > 0) return outstanding;
+    return Number(invoice?.total_bhd || 0) || 0;
+  }
+
   function buildSupplierUpdatePayload(source: any): any {
     return {
       id: source?.id || '',
@@ -485,8 +506,8 @@
                         <span class="item-date">{formatDate(invoice.invoice_date)}</span>
                       </div>
                       <div class="item-meta">
-                        <span class="item-status status-{invoice.status?.toLowerCase()}">{invoice.status}</span>
-                        <span class="item-amount">{formatCurrency(invoice.total_bhd)} BHD</span>
+                        <span class="item-status status-{getInvoiceSettlementLabel(invoice).toLowerCase()}">{getInvoiceSettlementLabel(invoice)}</span>
+                        <span class="item-amount">{formatCurrency(getInvoiceDisplayAmount(invoice))} BHD</span>
                       </div>
                     </div>
                   {/each}

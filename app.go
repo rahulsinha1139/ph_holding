@@ -2997,11 +2997,13 @@ type POSummary struct {
 }
 
 type SupplierInvoiceSummary struct {
-	ID            string    `json:"id"`
-	InvoiceNumber string    `json:"invoice_number"`
-	InvoiceDate   time.Time `json:"invoice_date"`
-	TotalBHD      float64   `json:"total_bhd"`
-	Status        string    `json:"status"`
+	ID             string    `json:"id"`
+	InvoiceNumber  string    `json:"invoice_number"`
+	InvoiceDate    time.Time `json:"invoice_date"`
+	TotalBHD       float64   `json:"total_bhd"`
+	OutstandingBHD float64   `json:"outstanding_bhd"`
+	PaymentStatus  string    `json:"payment_status"`
+	Status         string    `json:"status"`
 }
 
 // GetSupplierFullProfile retrieves complete supplier profile
@@ -3082,13 +3084,20 @@ func (a *App) GetSupplierFullProfile(supplierID string) (SupplierFullProfile, er
 	var invoices []SupplierInvoice
 	a.db.Where("supplier_id = ?", supplierID).Order("invoice_date DESC").Limit(5).Find(&invoices)
 	invSummaries := make([]SupplierInvoiceSummary, 0, len(invoices))
+	stateByInvoiceID, err := a.buildSupplierInvoicePaymentStateMap(a.db, invoices)
+	if err != nil {
+		log.Printf("⚠️ Failed to build supplier recent invoice payment states: %v", err)
+	}
 	for _, inv := range invoices {
+		state := stateByInvoiceID[inv.ID]
 		invSummaries = append(invSummaries, SupplierInvoiceSummary{
-			ID:            inv.ID,
-			InvoiceNumber: inv.InvoiceNumber,
-			InvoiceDate:   inv.InvoiceDate,
-			TotalBHD:      inv.TotalBHD,
-			Status:        inv.Status,
+			ID:             inv.ID,
+			InvoiceNumber:  inv.InvoiceNumber,
+			InvoiceDate:    inv.InvoiceDate,
+			TotalBHD:       inv.TotalBHD,
+			OutstandingBHD: state.OutstandingBHD,
+			PaymentStatus:  state.PaymentStatus,
+			Status:         state.InvoiceStatus,
 		})
 	}
 	profile.RecentInvoices = invSummaries
