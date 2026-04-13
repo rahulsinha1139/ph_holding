@@ -27,6 +27,57 @@ type CustomerReferenceSeedResult struct {
 	UnmatchedSeed    int `json:"unmatched_seed"`
 }
 
+func normalizeReferenceSeedCustomerType(row CustomerReferenceSeedRow) string {
+	shortCode := strings.ToUpper(strings.TrimSpace(row.ShortCode))
+	switch shortCode {
+	case "EC":
+		return "EC"
+	case "GOV", "GOVERNMENT":
+		return "Government"
+	case "SME":
+		return "SME"
+	case "IND", "INDIVIDUAL":
+		return "Individual"
+	case "CORP", "CORPORATE":
+		return "Corporate"
+	}
+
+	label := strings.ToLower(strings.TrimSpace(row.CustomerType))
+	switch label {
+	case "end customer":
+		return "EC"
+	case "government":
+		return "Government"
+	case "sme":
+		return "SME"
+	case "individual":
+		return "Individual"
+	case "corporate":
+		return "Corporate"
+	default:
+		return "Corporate"
+	}
+}
+
+func hasReferenceSeedIdentityConflict(target string, currentID string, customerIDIndex map[string][]CustomerMaster, customerCodeIndex map[string][]CustomerMaster) bool {
+	target = strings.ToUpper(strings.TrimSpace(target))
+	if target == "" {
+		return false
+	}
+
+	for _, candidate := range customerIDIndex[target] {
+		if candidate.ID != currentID {
+			return true
+		}
+	}
+	for _, candidate := range customerCodeIndex[target] {
+		if candidate.ID != currentID {
+			return true
+		}
+	}
+	return false
+}
+
 func loadCustomerReferenceSeed(seedPath string) ([]CustomerReferenceSeedRow, error) {
 	file, err := os.Open(seedPath)
 	if err != nil {
@@ -154,12 +205,16 @@ func applyCustomerReferenceSeed(db *gorm.DB, seedPath string) (CustomerReference
 				customer := CustomerMaster{
 					CustomerID:   row.CustomerID,
 					CustomerCode: row.CustomerID,
-					CustomerType: row.CustomerType,
+					CustomerType: normalizeReferenceSeedCustomerType(row),
 					BusinessName: row.BusinessName,
 					ShortCode:    row.ShortCode,
 					Status:       "Active",
 				}
-				if err := tx.Create(&customer).Error; err != nil {
+				preparedCustomer, err := newCustomerWritePolicy(GlobalValidator).PrepareForCreate(customer)
+				if err != nil {
+					return fmt.Errorf("prepare customer %s: %w", row.BusinessName, err)
+				}
+				if err := tx.Create(&preparedCustomer).Error; err != nil {
 					return fmt.Errorf("create customer %s: %w", row.BusinessName, err)
 				}
 				result.InsertedNew++
@@ -178,23 +233,49 @@ func applyCustomerReferenceSeed(db *gorm.DB, seedPath string) (CustomerReference
 			}
 			seenCustomer[match.ID] = struct{}{}
 
+			updatedCustomer := match
 			updates := map[string]interface{}{}
+			shouldUpdateCode := strings.TrimSpace(match.CustomerCode) == "" || strings.HasPrefix(strings.TrimSpace(match.CustomerCode), "CUST-") || strings.TrimSpace(match.CustomerCode) == strings.TrimSpace(match.CustomerID)
+			shouldChangeIdentity := strings.TrimSpace(match.CustomerID) != row.CustomerID || shouldUpdateCode
+			if shouldChangeIdentity && hasReferenceSeedIdentityConflict(row.CustomerID, match.ID, customerIDIndex, customerCodeIndex) {
+				result.SkippedAmbiguous++
+				continue
+			}
+
 			if strings.TrimSpace(match.CustomerID) != row.CustomerID {
+				updatedCustomer.CustomerID = row.CustomerID
 				updates["customer_id"] = row.CustomerID
 			}
-			if strings.TrimSpace(match.CustomerCode) == "" || strings.HasPrefix(strings.TrimSpace(match.CustomerCode), "CUST-") || strings.TrimSpace(match.CustomerCode) == strings.TrimSpace(match.CustomerID) {
+			if shouldUpdateCode {
+				updatedCustomer.CustomerCode = row.CustomerID
 				updates["customer_code"] = row.CustomerID
 			}
 			if strings.TrimSpace(match.ShortCode) != row.ShortCode {
+				updatedCustomer.ShortCode = row.ShortCode
 				updates["short_code"] = row.ShortCode
 			}
-			if strings.TrimSpace(match.CustomerType) != row.CustomerType {
-				updates["customer_type"] = row.CustomerType
+			normalizedType := normalizeReferenceSeedCustomerType(row)
+			if strings.TrimSpace(match.CustomerType) != normalizedType {
+				updatedCustomer.CustomerType = normalizedType
+				updates["customer_type"] = normalizedType
 			}
 			if len(updates) == 0 {
 				continue
 			}
-			if err := tx.Model(&CustomerMaster{}).Where("id = ?", match.ID).Updates(updates).Error; err != nil {
+
+			preparedCustomer, err := newCustomerWritePolicy(GlobalValidator).PrepareForUpdate(match, updatedCustomer)
+			if err != nil {
+				return fmt.Errorf("prepare customer %s: %w", row.BusinessName, err)
+			}
+			if err := tx.Model(&CustomerMaster{}).Where("id = ?", match.ID).Updates(map[string]interface{}{
+				"customer_id":   preparedCustomer.CustomerID,
+				"customer_code": preparedCustomer.CustomerCode,
+				"short_code":    preparedCustomer.ShortCode,
+				"customer_type": preparedCustomer.CustomerType,
+				"created_at":    preparedCustomer.CreatedAt,
+				"created_by":    preparedCustomer.CreatedBy,
+				"version":       preparedCustomer.Version,
+			}).Error; err != nil {
 				return fmt.Errorf("update customer %s: %w", row.BusinessName, err)
 			}
 			result.UpdatedExisting++
