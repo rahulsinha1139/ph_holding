@@ -808,51 +808,42 @@ func (a *App) CreatePOFromOrder(orderID string, supplierID string, itemIDs []str
 			continue
 		}
 
-		// Check if product belongs to this supplier
-		var product ProductMaster
-		if err := a.db.First(&product, "id = ?", orderItem.ProductID).Error; err == nil {
-			if product.SupplierID != supplierID {
-				log.Printf("⚠️ Skipping item %s - belongs to different supplier", orderItem.ProductCode)
-				continue
-			}
+		productProfile, err := a.loadProductOperationsProfile(orderItem.ProductID)
+		if err == nil && !productBelongsToSupplier(productProfile, supplierID) {
+			log.Printf("⚠️ Skipping item %s - belongs to different supplier", orderItem.ProductCode)
+			continue
 		}
 
-		// Determine purchase price using best available source:
-		// 1. OrderItem.FOB (from costing sheet via offer — actual supplier cost)
-		// 2. ProductMaster.StandardCostBHD (catalog cost)
-		// 3. Fallback: 70% of sell price (rough estimate)
-		unitForeign := orderItem.UnitPrice * 0.7 // Fallback estimate
-		unitBHD := orderItem.UnitPrice * 0.7
+		product := ProductMaster{}
+		if err == nil {
+			product = productProfile.Product
+		}
 
-		if orderItem.FOB > 0 {
-			// Best source: actual FOB from costing sheet (supplier's price in their currency)
-			unitForeign = orderItem.FOB
-			if orderItem.TotalCost > 0 && orderItem.Quantity > 0 {
-				// Use calculated landed cost from costing sheet (already in BHD)
-				unitBHD = orderItem.TotalCost / orderItem.Quantity
-			} else if orderItem.Currency == "BHD" || orderItem.Currency == "" {
-				// FOB is already in BHD
-				unitBHD = orderItem.FOB
-			} else {
-				// Foreign currency FOB without TotalCost — fall back to 70% estimate
-				// rather than using unconverted foreign value as BHD
-				unitBHD = orderItem.UnitPrice * 0.7
-				log.Printf("⚠️ PO item %s: FOB in %s but no TotalCost — using 70%% estimate for BHD", orderItem.ProductCode, orderItem.Currency)
-			}
-			log.Printf("📊 PO item %s: using costing sheet FOB (%.3f %s, %.3f BHD)", orderItem.ProductCode, unitForeign, orderItem.Currency, unitBHD)
-		} else if err := a.db.First(&product, "id = ?", orderItem.ProductID).Error; err == nil && product.StandardCostBHD > 0 {
-			// Second source: product master standard cost
-			unitForeign = product.StandardCostBHD
-			unitBHD = product.StandardCostBHD
+		costing := deriveProductOperationalCost(orderItem, product)
+		unitForeign := costing.UnitForeign
+		unitBHD := costing.UnitBHD
+		switch costing.Source {
+		case "costing_sheet_landed_cost":
+			log.Printf("📊 PO item %s: using costing sheet landed cost (%.3f %s, %.3f BHD)", orderItem.ProductCode, unitForeign, orderItem.Currency, unitBHD)
+		case "costing_sheet_fob_bhd":
+			log.Printf("📊 PO item %s: using costing sheet FOB (%.3f BHD)", orderItem.ProductCode, unitBHD)
+		case "costing_sheet_fob_foreign_estimate":
+			log.Printf("⚠️ PO item %s: FOB in %s but no TotalCost — using 70%% estimate for BHD", orderItem.ProductCode, orderItem.Currency)
+		case "product_standard_cost":
 			log.Printf("📊 PO item %s: using ProductMaster StandardCost (%.3f BHD)", orderItem.ProductCode, unitBHD)
-		} else {
+		default:
 			log.Printf("⚠️ PO item %s: no costing data — using 70%% sell price estimate (%.3f BHD)", orderItem.ProductCode, unitBHD)
+		}
+
+		productCode := orderItem.ProductCode
+		if strings.TrimSpace(product.ProductCode) != "" {
+			productCode = product.ProductCode
 		}
 
 		poItem := PurchaseOrderItem{
 			OrderItemID:      orderItem.ID,
 			ProductID:        orderItem.ProductID,
-			ProductCode:      orderItem.ProductCode,
+			ProductCode:      productCode,
 			Description:      orderItem.Description,
 			Quantity:         orderItem.Quantity,
 			UnitPriceForeign: unitForeign,

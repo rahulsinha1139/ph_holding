@@ -50,15 +50,22 @@ func (a *App) RegisterSerials(productID string, serialNos []string) ([]SerialNum
 		}
 	}
 
-	// Look up product
-	var product ProductMaster
-	if err := a.db.Where("id = ?", productID).First(&product).Error; err != nil {
-		return nil, fmt.Errorf("product not found: %w", err)
+	profile, err := a.loadProductOperationsProfile(productID)
+	if err != nil {
+		return nil, err
 	}
+	if !profile.Product.RequiresSerialTracking {
+		return nil, newError(
+			"SERIAL_TRACKING_DISABLED",
+			fmt.Sprintf("Product %s is not configured for serial tracking", profile.Product.ProductCode),
+			"",
+		)
+	}
+	product := profile.Product
 
 	// S5 FIX: Duplicate check + creation inside single transaction to prevent TOCTOU race
 	var created []SerialNumber
-	err := a.db.Transaction(func(tx *gorm.DB) error {
+	err = a.db.Transaction(func(tx *gorm.DB) error {
 		for _, sn := range serialNos {
 			var existing SerialNumber
 			if err := tx.Where("serial_no = ?", sn).First(&existing).Error; err == nil {
@@ -247,7 +254,7 @@ func (a *App) AttachCalibrationCert(serialID, certPath string) error {
 	now := time.Now()
 	updates := map[string]interface{}{
 		"calibration_cert_path": certPath,
-		"calibration_date":     now,
+		"calibration_date":      now,
 	}
 	if err := a.db.Model(&SerialNumber{}).Where("id = ?", serialID).Updates(updates).Error; err != nil {
 		return fmt.Errorf("failed to attach calibration cert: %w", err)
@@ -344,7 +351,7 @@ func (a *App) markSerialsShipped(dnNumber string) error {
 	result := a.db.Model(&SerialNumber{}).
 		Where("dn_number = ? AND status = ?", dnNumber, "Reserved").
 		Updates(map[string]interface{}{
-			"status":      "Shipped",
+			"status":       "Shipped",
 			"shipped_date": now,
 		})
 	if result.Error != nil {

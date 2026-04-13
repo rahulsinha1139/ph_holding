@@ -595,6 +595,10 @@ func (a *App) ReceiveAgainstPO(poID string, items []GRNItem) (GoodsReceivedNote,
 			return GoodsReceivedNote{}, newError("INVALID_PO_ITEM", fmt.Sprintf("PO item %s not found", item.POItemID), "")
 		}
 
+		if err := a.validateProductSerialHandling(poItem.ProductID, item.QuantityReceived, nil, "goods receipt"); err != nil {
+			return GoodsReceivedNote{}, err
+		}
+
 		// Set quantity ordered from PO
 		grn.Items[i].QuantityOrdered = poItem.Quantity
 		grn.Items[i].ProductID = poItem.ProductID
@@ -654,21 +658,18 @@ func (a *App) ReceiveAgainstPOWithSerials(poID string, items []GRNItemWithSerial
 
 	// Pre-validate serial numbers
 	for _, item := range items {
-		if len(item.SerialNumbers) > 0 {
-			// Validate serial count matches received quantity
-			if float64(len(item.SerialNumbers)) != item.QuantityReceived {
-				poItem := poItemMap[item.POItemID]
-				return GoodsReceivedNote{}, newError("SERIAL_COUNT_MISMATCH",
-					fmt.Sprintf("Serial count (%d) must match received quantity (%.0f) for %s",
-						len(item.SerialNumbers), item.QuantityReceived, poItem.ProductCode), "")
-			}
-			// Validate no duplicate serials in DB
-			for _, sn := range item.SerialNumbers {
-				var existing SerialNumber
-				if err := a.db.Where("serial_no = ?", sn).First(&existing).Error; err == nil {
-					return GoodsReceivedNote{}, newError("DUPLICATE_SERIAL",
-						fmt.Sprintf("Serial number %s already exists (product: %s)", sn, existing.ProductCode), "")
-				}
+		poItem, exists := poItemMap[item.POItemID]
+		if !exists {
+			return GoodsReceivedNote{}, newError("INVALID_PO_ITEM", fmt.Sprintf("PO item %s not found", item.POItemID), "")
+		}
+		if err := a.validateProductSerialHandling(poItem.ProductID, item.QuantityReceived, item.SerialNumbers, "goods receipt"); err != nil {
+			return GoodsReceivedNote{}, err
+		}
+		for _, sn := range item.SerialNumbers {
+			var existing SerialNumber
+			if err := a.db.Where("serial_no = ?", sn).First(&existing).Error; err == nil {
+				return GoodsReceivedNote{}, newError("DUPLICATE_SERIAL",
+					fmt.Sprintf("Serial number %s already exists (product: %s)", sn, existing.ProductCode), "")
 			}
 		}
 	}
@@ -719,19 +720,19 @@ func (a *App) ReceiveAgainstPOWithSerials(poID string, items []GRNItemWithSerial
 
 // GRNDiscrepancy tracks quality/quantity issues for supplier follow-up
 type GRNDiscrepancy struct {
-	ID          string    `json:"id"`
-	GRNID       string    `json:"grn_id"`
-	GRNItemID   string    `json:"grn_item_id"`
-	ProductCode string    `json:"product_code"`
-	DiscrepancyType string `json:"discrepancy_type"` // "quantity_short", "quality_issue", "damaged", "wrong_item"
-	Reason      string    `json:"reason"`
-	RejectedQty float64   `json:"rejected_qty"`
-	RaisedBy    string    `json:"raised_by"`
-	RaisedAt    time.Time `json:"raised_at"`
-	Status      string    `json:"status"` // "open", "supplier_contacted", "resolved", "credited"
-	Resolution  string    `json:"resolution"`
-	ResolvedAt  *time.Time `json:"resolved_at"`
-	CostImpactBHD float64 `json:"cost_impact_bhd"`
+	ID              string     `json:"id"`
+	GRNID           string     `json:"grn_id"`
+	GRNItemID       string     `json:"grn_item_id"`
+	ProductCode     string     `json:"product_code"`
+	DiscrepancyType string     `json:"discrepancy_type"` // "quantity_short", "quality_issue", "damaged", "wrong_item"
+	Reason          string     `json:"reason"`
+	RejectedQty     float64    `json:"rejected_qty"`
+	RaisedBy        string     `json:"raised_by"`
+	RaisedAt        time.Time  `json:"raised_at"`
+	Status          string     `json:"status"` // "open", "supplier_contacted", "resolved", "credited"
+	Resolution      string     `json:"resolution"`
+	ResolvedAt      *time.Time `json:"resolved_at"`
+	CostImpactBHD   float64    `json:"cost_impact_bhd"`
 }
 
 // RaiseGRNDiscrepancy creates a discrepancy record for supplier follow-up

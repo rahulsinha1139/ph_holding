@@ -737,11 +737,11 @@ func (a *App) GetOrderDeliveryStatus(orderID string) (map[string]float64, error)
 // DeliveryPlanningItem represents a delivery with urgency and location info
 type DeliveryPlanningItem struct {
 	DeliveryNote
-	CustomerArea    string  `json:"customer_area"`
-	UrgencyScore    float64 `json:"urgency_score"` // 0-1, higher = more urgent
-	DaysUntilDue    int     `json:"days_until_due"`
-	OrderValue      float64 `json:"order_value"`
-	IsHighPriority  bool    `json:"is_high_priority"`
+	CustomerArea   string  `json:"customer_area"`
+	UrgencyScore   float64 `json:"urgency_score"` // 0-1, higher = more urgent
+	DaysUntilDue   int     `json:"days_until_due"`
+	OrderValue     float64 `json:"order_value"`
+	IsHighPriority bool    `json:"is_high_priority"`
 }
 
 // GetDeliveriesByArea groups pending deliveries by customer area for route optimization
@@ -1058,6 +1058,9 @@ func (a *App) CreateDeliveryNoteWithItems(orderID string, items []DeliveryNoteIt
 				fmt.Sprintf("Cannot ship %.2f units for %s - only %.2f remaining",
 					input.ShipQty, orderItem.ProductCode, remaining), "")
 		}
+		if err := a.validateProductSerialHandling(orderItem.ProductID, input.ShipQty, nil, "delivery"); err != nil {
+			return DeliveryNote{}, err
+		}
 
 		afterDelivery := remaining - input.ShipQty
 		if afterDelivery > 0.001 {
@@ -1196,15 +1199,25 @@ func (a *App) CreateDNWithSerials(orderID string, items []DNItemInputWithSerials
 		return DeliveryNote{}, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
+	var order Order
+	if err := a.db.Preload("Items").First(&order, "id = ?", orderID).Error; err != nil {
+		return DeliveryNote{}, newError("ORDER_NOT_FOUND", "Order not found for serial allocation", err.Error())
+	}
+	orderItemMap := make(map[string]OrderItem, len(order.Items))
+	for _, orderItem := range order.Items {
+		orderItemMap[orderItem.ID] = orderItem
+	}
+
 	// Pre-validate serial count matches ship qty (availability is checked atomically in allocateSerialsToDN)
 	// S6 FIX: Removed TOCTOU-prone availability pre-check — allocateSerialsToDN uses atomic UPDATE WHERE
 	for _, item := range items {
-		if len(item.SerialNos) > 0 {
-			if float64(len(item.SerialNos)) != item.ShipQty {
-				return DeliveryNote{}, newError("SERIAL_COUNT_MISMATCH",
-					fmt.Sprintf("Serial count (%d) must match ship qty (%.0f) for order item %s",
-						len(item.SerialNos), item.ShipQty, item.OrderItemID), "")
-			}
+		orderItem, ok := orderItemMap[item.OrderItemID]
+		if !ok {
+			return DeliveryNote{}, newError("INVALID_ITEM",
+				fmt.Sprintf("Order item %s not found in order", item.OrderItemID), "")
+		}
+		if err := a.validateProductSerialHandling(orderItem.ProductID, item.ShipQty, item.SerialNos, "delivery"); err != nil {
+			return DeliveryNote{}, err
 		}
 	}
 
@@ -1242,11 +1255,6 @@ func (a *App) CreateDNWithSerials(orderID string, items []DNItemInputWithSerials
 	}
 
 	// Load customer for serial allocation
-	var order Order
-	if err := a.db.Where("id = ?", orderID).First(&order).Error; err != nil {
-		cleanupDN("order lookup failed")
-		return DeliveryNote{}, newError("ORDER_NOT_FOUND", "Order not found for serial allocation", err.Error())
-	}
 	var customer CustomerMaster
 	if err := a.db.Where("id = ?", order.CustomerID).First(&customer).Error; err != nil {
 		cleanupDN("customer lookup failed")
