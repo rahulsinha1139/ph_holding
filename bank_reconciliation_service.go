@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // =============================================================================
@@ -73,8 +74,14 @@ func (a *App) CreateBankStatement(statement *BankStatement) error {
 		return fmt.Errorf("database not initialized")
 	}
 
-	if statement.Status == "" {
-		statement.Status = "Imported"
+	if strings.TrimSpace(statement.Status) == "" {
+		statement.Status = bankStatementStatusImported
+	} else {
+		normalizedStatus, err := normalizeBankStatementStatus(statement.Status)
+		if err != nil {
+			return err
+		}
+		statement.Status = normalizedStatus
 	}
 
 	if err := a.db.Create(statement).Error; err != nil {
@@ -99,6 +106,17 @@ func (a *App) UpdateBankStatement(id string, updates map[string]interface{}) err
 		return fmt.Errorf("database not initialized")
 	}
 
+	statement, err := a.getBankStatementByIDForWorkflow(id)
+	if err != nil {
+		return err
+	}
+	if err := ensureBankStatementMutable(*statement, "edit this statement"); err != nil {
+		return err
+	}
+	if err := normalizeBankStatementUpdates(updates); err != nil {
+		return err
+	}
+
 	result := a.db.Model(&BankStatement{}).Where("id = ?", id).Updates(updates)
 	if result.Error != nil {
 		log.Printf("UpdateBankStatement error: %v", result.Error)
@@ -119,6 +137,14 @@ func (a *App) DeleteBankStatement(id string) error {
 	}
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
+	}
+
+	statement, err := a.getBankStatementByIDForWorkflow(id)
+	if err != nil {
+		return err
+	}
+	if err := ensureBankStatementMutable(*statement, "delete this statement"); err != nil {
+		return err
 	}
 
 	result := a.db.Delete(&BankStatement{}, "id = ?", id)
@@ -184,6 +210,14 @@ func (a *App) UpdateBankStatementLine(lineID string, updates map[string]interfac
 		return fmt.Errorf("database not initialized")
 	}
 
+	_, statement, err := a.getBankStatementForLine(lineID)
+	if err != nil {
+		return err
+	}
+	if err := ensureBankStatementMutable(*statement, "edit statement lines"); err != nil {
+		return err
+	}
+
 	result := a.db.Model(&BankStatementLine{}).Where("id = ?", lineID).Updates(updates)
 	if result.Error != nil {
 		log.Printf("UpdateBankStatementLine error: %v", result.Error)
@@ -200,6 +234,14 @@ func (a *App) CreateBankStatementLine(statementID string, line map[string]interf
 	}
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
+	}
+
+	statement, err := a.getBankStatementByIDForWorkflow(statementID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureBankStatementMutable(*statement, "create statement lines"); err != nil {
+		return nil, err
 	}
 
 	// Get next line number
@@ -257,9 +299,12 @@ func (a *App) DeleteBankStatementLine(lineID string) error {
 	}
 
 	// Get line details for audit log
-	var line BankStatementLine
-	if err := a.db.First(&line, "id = ?", lineID).Error; err != nil {
-		return fmt.Errorf("line not found: %w", err)
+	line, statement, err := a.getBankStatementForLine(lineID)
+	if err != nil {
+		return err
+	}
+	if err := ensureBankStatementMutable(*statement, "delete statement lines"); err != nil {
+		return err
 	}
 
 	// SECURITY: Audit log BEFORE deletion
@@ -318,7 +363,7 @@ func (a *App) GetCashPosition() (map[string]interface{}, error) {
 
 	var positions []AccountPosition
 
-	// Get latest reconciled balance per account
+	// Use the latest active statement balance per account for finance widgets.
 	err := a.db.Raw(`
 		SELECT
 			ba.id as bank_account_id,
@@ -375,7 +420,7 @@ func (a *App) GetCashPositionByAccount(bankAccountID string) (float64, error) {
 	err := a.db.Raw(`
 		SELECT COALESCE(closing_balance, 0)
 		FROM bank_statements
-		WHERE bank_account_id = ? AND status IN ('Reconciled', 'InProgress')
+		WHERE bank_account_id = ? AND status IN ('Imported', 'InProgress', 'Reconciled', 'Verified')
 		ORDER BY period_end DESC
 		LIMIT 1
 	`, bankAccountID).Scan(&balance).Error
@@ -429,7 +474,7 @@ func (a *App) ValidateStatementBalance(statementID string) (bool, float64, error
 		"discrepancy_amount": discrepancy,
 		"total_debits":       totals.TotalDebits,
 		"total_credits":      totals.TotalCredits,
-		"debit_count":        0,  // Will be updated by trigger or separate query
+		"debit_count":        0, // Will be updated by trigger or separate query
 		"credit_count":       0,
 	})
 
@@ -458,7 +503,7 @@ func (a *App) FinalizeReconciliation(statementID string, reconciledBy string) er
 		return fmt.Errorf("statement not found: %w", err)
 	}
 
-	if statement.Status == "Reconciled" {
+	if isFinalBankStatementStatus(statement.Status) {
 		return fmt.Errorf("statement already reconciled")
 	}
 
@@ -482,7 +527,7 @@ func (a *App) FinalizeReconciliation(statementID string, reconciledBy string) er
 
 	now := time.Now()
 	if err := a.db.Model(&statement).Updates(map[string]interface{}{
-		"status":        "Reconciled",
+		"status":        bankStatementStatusReconciled,
 		"reconciled_at": now,
 		"reconciled_by": reconciledBy,
 	}).Error; err != nil {
@@ -491,7 +536,7 @@ func (a *App) FinalizeReconciliation(statementID string, reconciledBy string) er
 
 	// Log the action
 	a.LogReconciliationAction(statementID, nil, "RECONCILE",
-		map[string]interface{}{"status": "Reconciled", "unmatched": unmatchedCount},
+		map[string]interface{}{"status": bankStatementStatusReconciled, "unmatched": unmatchedCount},
 		reconciledBy, false, 1.0, "Statement finalized")
 
 	log.Printf("✅ Bank statement %s reconciled by %s", statementID, reconciledBy)
@@ -512,12 +557,12 @@ func (a *App) ReopenReconciliation(statementID string, user, reason string) erro
 		return fmt.Errorf("statement not found: %w", err)
 	}
 
-	if statement.Status != "Reconciled" {
+	if !isFinalBankStatementStatus(statement.Status) {
 		return fmt.Errorf("statement is not reconciled")
 	}
 
 	if err := a.db.Model(&statement).Updates(map[string]interface{}{
-		"status":        "InProgress",
+		"status":        bankStatementStatusInProgress,
 		"reconciled_at": nil,
 		"reconciled_by": "",
 	}).Error; err != nil {
@@ -526,7 +571,7 @@ func (a *App) ReopenReconciliation(statementID string, user, reason string) erro
 
 	// Log the action
 	a.LogReconciliationAction(statementID, nil, "REOPEN",
-		map[string]interface{}{"previous_status": "Reconciled", "reason": reason},
+		map[string]interface{}{"previous_status": statement.Status, "reason": reason},
 		user, false, 1.0, reason)
 
 	log.Printf("🔓 Bank statement %s reopened by %s: %s", statementID, user, reason)
@@ -569,7 +614,7 @@ func (a *App) GetReconciliationSummary(statementID string) (map[string]interface
 		MatchedAmount float64
 	}
 	a.db.Model(&BankStatementLine{}).
-		Select("COALESCE(SUM(debit), 0) as total_debits, COALESCE(SUM(credit), 0) as total_credits, COALESCE(SUM(CASE WHEN is_matched THEN debit + credit ELSE 0 END), 0) as matched_amount").
+		Select("COALESCE(SUM(debit), 0) as total_debits, COALESCE(SUM(credit), 0) as total_credits, COALESCE(SUM(CASE WHEN is_matched THEN CASE WHEN debit > 0 THEN debit ELSE credit END ELSE 0 END), 0) as matched_amount").
 		Where("bank_statement_id = ?", statementID).
 		Scan(&amounts)
 
@@ -611,30 +656,32 @@ func (a *App) GetReconciliationStats(bankAccountID string) (map[string]interface
 		ImportedStatements   int64
 	}
 
-	query := a.db.Model(&BankStatement{})
-	if bankAccountID != "" {
-		query = query.Where("bank_account_id = ?", bankAccountID)
+	scopedQuery := func() *gorm.DB {
+		query := a.db.Model(&BankStatement{})
+		if bankAccountID != "" {
+			query = query.Where("bank_account_id = ?", bankAccountID)
+		}
+		return query
 	}
 
-	query.Count(&stats.TotalStatements)
-	query.Where("status = ?", "Reconciled").Count(&stats.ReconciledStatements)
-	a.db.Model(&BankStatement{}).Where("status = ?", "InProgress").Count(&stats.InProgressStatements)
-	a.db.Model(&BankStatement{}).Where("status = ?", "Imported").Count(&stats.ImportedStatements)
+	scopedQuery().Count(&stats.TotalStatements)
+	scopedQuery().Where("status = ?", bankStatementStatusReconciled).Count(&stats.ReconciledStatements)
+	scopedQuery().Where("status = ?", bankStatementStatusInProgress).Count(&stats.InProgressStatements)
+	scopedQuery().Where("status = ?", bankStatementStatusImported).Count(&stats.ImportedStatements)
 
 	// Get latest statement date
 	var latestDate time.Time
-	a.db.Model(&BankStatement{}).
+	scopedQuery().
 		Select("MAX(period_end)").
-		Where("bank_account_id = ?", bankAccountID).
 		Scan(&latestDate)
 
 	return map[string]interface{}{
-		"bank_account_id":       bankAccountID,
-		"total_statements":      stats.TotalStatements,
-		"reconciled_statements": stats.ReconciledStatements,
+		"bank_account_id":        bankAccountID,
+		"total_statements":       stats.TotalStatements,
+		"reconciled_statements":  stats.ReconciledStatements,
 		"in_progress_statements": stats.InProgressStatements,
-		"imported_statements":   stats.ImportedStatements,
-		"latest_statement_date": latestDate,
+		"imported_statements":    stats.ImportedStatements,
+		"latest_statement_date":  latestDate,
 	}, nil
 }
 

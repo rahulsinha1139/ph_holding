@@ -72,7 +72,7 @@ func (a *App) AutoMatchBankLines(statementID string) (*BankReconciliationMatchRe
 		return nil, fmt.Errorf("statement not found: %w", err)
 	}
 
-	if statement.Status == "Reconciled" {
+	if isFinalBankStatementStatus(statement.Status) {
 		return nil, fmt.Errorf("statement already reconciled")
 	}
 
@@ -131,7 +131,12 @@ func (a *App) AutoMatchBankLines(statementID string) (*BankReconciliationMatchRe
 			updates["is_matched"] = true
 			updates["match_type"] = "Auto"
 			updates["match_confidence"] = confidence
-			updates["matched_invoice_ids"] = matchedID
+			switch txType {
+			case TxTypeSupplierPayment, TxTypeChequeIssued:
+				updates["matched_payment_id"] = matchedID
+			default:
+				updates["matched_invoice_ids"] = matchedID
+			}
 			matchedCount++
 			autoMatchedCount++
 
@@ -161,9 +166,9 @@ func (a *App) AutoMatchBankLines(statementID string) (*BankReconciliationMatchRe
 	}
 
 	// Update statement status
-	newStatus := "InProgress"
+	newStatus := bankStatementStatusInProgress
 	if finalMatchedCount == totalLines {
-		newStatus = "InProgress" // Still needs verification before reconciled
+		newStatus = bankStatementStatusInProgress // Still needs verification before reconciled
 	}
 	a.db.Model(&statement).Update("status", newStatus)
 
@@ -426,9 +431,12 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 		return fmt.Errorf("database not initialized")
 	}
 
-	var line BankStatementLine
-	if err := a.db.First(&line, "id = ?", lineID).Error; err != nil {
-		return fmt.Errorf("line not found: %w", err)
+	line, statement, err := a.getBankStatementForLine(lineID)
+	if err != nil {
+		return err
+	}
+	if err := ensureBankStatementMutable(*statement, "match transactions"); err != nil {
+		return err
 	}
 
 	if line.IsMatched {
@@ -487,7 +495,7 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 	case "CUSTOMER_INVOICE":
 		updates["matched_invoice_ids"] = entityID
 	case "SUPPLIER_INVOICE":
-		updates["matched_payment_ids"] = entityID
+		updates["matched_invoice_ids"] = entityID
 	case "SUPPLIER_PAYMENT":
 		updates["matched_payment_id"] = entityID
 	case "EXPENSE":
@@ -510,7 +518,7 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 		}
 	}
 
-	if err := a.db.Model(&line).Updates(updates).Error; err != nil {
+	if err := a.db.Model(line).Updates(updates).Error; err != nil {
 		return fmt.Errorf("failed to update line: %w", err)
 	}
 
@@ -536,9 +544,12 @@ func (a *App) UnmatchLine(lineID, user, reason string) error {
 		return fmt.Errorf("database not initialized")
 	}
 
-	var line BankStatementLine
-	if err := a.db.First(&line, "id = ?", lineID).Error; err != nil {
-		return fmt.Errorf("line not found: %w", err)
+	line, statement, err := a.getBankStatementForLine(lineID)
+	if err != nil {
+		return err
+	}
+	if err := ensureBankStatementMutable(*statement, "unmatch transactions"); err != nil {
+		return err
 	}
 
 	previousMatch := line.MatchedInvoiceIDs
@@ -551,7 +562,7 @@ func (a *App) UnmatchLine(lineID, user, reason string) error {
 		"match_type":          "Unmatched",
 		"match_confidence":    0,
 		"matched_invoice_ids": "",
-		"matched_payment_ids": "",
+		"matched_payment_id":  "",
 		"matched_expense_id":  nil,
 		"matched_journal_id":  "",
 	}
@@ -566,7 +577,7 @@ func (a *App) UnmatchLine(lineID, user, reason string) error {
 		}
 	}
 
-	if err := a.db.Model(&line).Updates(updates).Error; err != nil {
+	if err := a.db.Model(line).Updates(updates).Error; err != nil {
 		return fmt.Errorf("failed to unmatch line: %w", err)
 	}
 
@@ -595,9 +606,12 @@ func (a *App) CreateSplitAllocation(lineID string, allocations []AllocationInput
 		return fmt.Errorf("database not initialized")
 	}
 
-	var line BankStatementLine
-	if err := a.db.First(&line, "id = ?", lineID).Error; err != nil {
-		return fmt.Errorf("line not found: %w", err)
+	line, statement, err := a.getBankStatementForLine(lineID)
+	if err != nil {
+		return err
+	}
+	if err := ensureBankStatementMutable(*statement, "split transaction allocations"); err != nil {
+		return err
 	}
 
 	// Validate total allocation matches line amount
@@ -653,7 +667,7 @@ func (a *App) CreateSplitAllocation(lineID string, allocations []AllocationInput
 		allocationIDs[i] = alloc.EntityID
 	}
 
-	a.db.Model(&line).Updates(map[string]interface{}{
+	a.db.Model(line).Updates(map[string]interface{}{
 		"is_matched":          true,
 		"match_type":          "Split",
 		"match_confidence":    1.0,

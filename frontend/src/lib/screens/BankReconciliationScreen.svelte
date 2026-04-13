@@ -32,6 +32,9 @@
     ManualMatchLine,
     UnmatchLine,
     FinalizeReconciliation,
+    ReopenReconciliation,
+    GetReconciliationStats,
+    GetReconciliationSummary,
     GetAuditTrail,
     DeleteBankStatement,
     UpdateBankStatement,
@@ -112,6 +115,24 @@
     as_of: any;
   }
 
+  interface ReconciliationStats {
+    total_statements: number;
+    reconciled_statements: number;
+    in_progress_statements: number;
+    imported_statements: number;
+    latest_statement_date: any;
+  }
+
+  interface ReconciliationSummary {
+    status: string;
+    matched_count: number;
+    unmatched_count: number;
+    matched_percent: number;
+    matched_amount: number;
+    total_lines: number;
+    balance_verified: boolean;
+  }
+
   // State - using any types for Wails-generated compatibility
   let bankAccounts: any[] = [];
   let allBankAccounts: any[] = []; // All accounts including inactive for management
@@ -120,6 +141,8 @@
   let selectedStatement: any | null = null;
   let statementLines: any[] = [];
   let cashPosition: any = null;
+  let reconciliationStats: ReconciliationStats | null = null;
+  let reconciliationSummary: ReconciliationSummary | null = null;
   let loading = true;
   let linesLoading = false;
 
@@ -179,10 +202,8 @@
   let editingLine: BankStatementLine | null = null;
 
   // KPI calculations
-  $: totalUnmatched = statementLines.filter(l => !l.is_matched).length;
-  $: totalMatched = statementLines.filter(l => l.is_matched).length;
-  $: unmatchedDebit = statementLines.filter(l => !l.is_matched && l.debit > 0).reduce((sum, l) => sum + l.debit, 0);
-  $: unmatchedCredit = statementLines.filter(l => !l.is_matched && l.credit > 0).reduce((sum, l) => sum + l.credit, 0);
+  $: totalUnmatched = reconciliationSummary?.unmatched_count ?? statementLines.filter(l => !l.is_matched).length;
+  $: openStatements = (reconciliationStats?.imported_statements || 0) + (reconciliationStats?.in_progress_statements || 0);
 
   // DataTable columns for statements
   const statementColumns = [
@@ -216,12 +237,12 @@
       render: (row: BankStatement) => {
         const statusColors: Record<string, string> = {
           'Imported': '#F59E0B',
-          'In Progress': '#3B82F6',
+          'InProgress': '#3B82F6',
           'Reconciled': '#10B981',
           'Verified': '#059669'
         };
         const color = statusColors[row.status] || '#6B7280';
-        return `<span style="color: ${color}; font-weight: 500; font-size: 12px;">${escapeHtml(row.status)}</span>`;
+        return `<span style="color: ${color}; font-weight: 500; font-size: 12px;">${escapeHtml(formatStatementStatus(row.status))}</span>`;
       }
     }
   ];
@@ -295,9 +316,10 @@
       render: (row: BankStatementLine) => {
         if (row.is_matched) {
           const confidence = Math.round(row.match_confidence * 100);
-          return `<span style="color: #10B981; font-size: 12px;">Matched (${confidence}%)</span>`;
+          const label = row.match_type ? `${row.match_type} Match` : 'Matched';
+          return `<span style="color: #10B981; font-size: 12px;">${escapeHtml(label)} (${confidence}%)</span>`;
         }
-        return `<span style="color: #EF4444; font-size: 12px;">Unmatched</span>`;
+        return `<span style="color: #EF4444; font-size: 12px;">Open</span>`;
       }
     }
   ];
@@ -320,6 +342,43 @@
     }
   }
 
+  function formatStatementStatus(status: string): string {
+    if (status === 'InProgress') return 'In Progress';
+    return status || 'Unknown';
+  }
+
+  function isStatementLocked(statement: BankStatement | null | undefined): boolean {
+    return Boolean(statement && ['Reconciled', 'Verified'].includes(statement.status));
+  }
+
+  function currentStatementLabel(): string {
+    if (!selectedStatement) return '-';
+    return formatStatementStatus(reconciliationSummary?.status || selectedStatement.status);
+  }
+
+  async function loadReconciliationStats() {
+    if (!selectedAccountId) {
+      reconciliationStats = null;
+      return;
+    }
+
+    try {
+      reconciliationStats = await GetReconciliationStats(selectedAccountId) as ReconciliationStats;
+    } catch (err) {
+      console.error('Failed to load reconciliation stats:', err);
+      reconciliationStats = null;
+    }
+  }
+
+  async function loadStatementSummary(statementID: string) {
+    try {
+      reconciliationSummary = await GetReconciliationSummary(statementID) as ReconciliationSummary;
+    } catch (err) {
+      console.error('Failed to load reconciliation summary:', err);
+      reconciliationSummary = null;
+    }
+  }
+
   // escapeHtml now imported from centralized utility
 
   // Data loading - independent API calls to prevent one failure from blocking the other
@@ -333,6 +392,8 @@
       bankAccounts = accountsResult || [];
       if (bankAccounts.length > 0 && !selectedAccountId) {
         selectedAccountId = bankAccounts[0].id;
+        await loadStatements();
+      } else if (selectedAccountId) {
         await loadStatements();
       }
     } catch (err) {
@@ -358,6 +419,7 @@
     try {
       const result = await GetBankStatements(selectedAccountId);
       statements = result || [];
+      await loadReconciliationStats();
     } catch (err) {
       console.error('Failed to load statements:', err);
       toast.danger('Failed to load statements');
@@ -370,6 +432,7 @@
     try {
       const result = await GetBankStatementLines(statement.id);
       statementLines = result || [];
+      await loadStatementSummary(statement.id);
     } catch (err) {
       console.error('Failed to load statement lines:', err);
       toast.danger('Failed to load transactions');
@@ -385,6 +448,7 @@
       const result = await AutoMatchBankLines(selectedStatement.id);
       toast.success(`Auto-matched ${result?.matched_count || 0} transactions`);
       await loadStatementLines(selectedStatement);
+      await loadStatements();
     } catch (err) {
       console.error('Auto-match failed:', err);
       toast.danger('Auto-match failed');
@@ -401,9 +465,29 @@
       await FinalizeReconciliation(selectedStatement.id, 'admin');
       toast.success('Statement reconciled successfully');
       await loadStatements();
+      const refreshed = statements.find((statement) => statement.id === selectedStatement.id);
+      if (refreshed) {
+        await loadStatementLines(refreshed);
+      }
     } catch (err) {
       console.error('Finalize failed:', err);
       toast.danger('Finalization failed');
+    }
+  }
+
+  async function handleReopen() {
+    if (!selectedStatement) return;
+    try {
+      await ReopenReconciliation(selectedStatement.id, 'admin', 'Reopened from bank reconciliation workspace');
+      toast.success('Statement reopened for reconciliation');
+      await loadStatements();
+      const refreshed = statements.find((statement) => statement.id === selectedStatement.id);
+      if (refreshed) {
+        await loadStatementLines(refreshed);
+      }
+    } catch (err) {
+      console.error('Reopen failed:', err);
+      toast.danger(`Failed to reopen statement: ${err}`);
     }
   }
 
@@ -566,6 +650,7 @@
   async function handleAccountChange() {
     selectedStatement = null;
     statementLines = [];
+    reconciliationSummary = null;
     await loadStatements();
   }
 
@@ -740,6 +825,10 @@
 
   // Transaction line CRUD handlers
   function openEditLineModal(line: BankStatementLine) {
+    if (isStatementLocked(selectedStatement)) {
+      toast.info('Reopen the statement before editing transactions');
+      return;
+    }
     editingLine = line;
 
     // Format date for input
@@ -761,6 +850,10 @@
 
   function openAddLineModal() {
     if (!selectedStatement) return;
+    if (isStatementLocked(selectedStatement)) {
+      toast.info('Reopen the statement before adding transactions');
+      return;
+    }
     editingLine = null;
     lineFormData = {
       transaction_date: '',
@@ -871,20 +964,20 @@
         </Card>
         <Card variant="elevated">
           <div class="kpi">
-            <span class="kpi-label">Matched</span>
-            <span class="kpi-value success">{totalMatched}</span>
+            <span class="kpi-label">Statements Open</span>
+            <span class="kpi-value success">{openStatements}</span>
           </div>
         </Card>
         <Card variant="elevated">
           <div class="kpi">
-            <span class="kpi-label">Unmatched</span>
-            <span class="kpi-value warning">{totalUnmatched}</span>
+            <span class="kpi-label">Statements Reconciled</span>
+            <span class="kpi-value success">{reconciliationStats?.reconciled_statements || 0}</span>
           </div>
         </Card>
         <Card variant="elevated">
           <div class="kpi">
-            <span class="kpi-label">Unmatched Credits</span>
-            <span class="kpi-value">{formatBHD(unmatchedCredit)} BHD</span>
+            <span class="kpi-label">Current Statement</span>
+            <span class="kpi-value">{currentStatementLabel()}</span>
           </div>
         </Card>
       </div>
@@ -908,18 +1001,24 @@
             Import Statement
           </Button>
           {#if selectedStatement}
-            <Button variant="secondary" on:click={openEditStatementModal}>
+            <Button variant="secondary" on:click={openEditStatementModal} disabled={isStatementLocked(selectedStatement)}>
               Edit Statement
             </Button>
-            <Button variant="danger" on:click={handleDeleteStatement}>
+            <Button variant="danger" on:click={handleDeleteStatement} disabled={isStatementLocked(selectedStatement)}>
               Delete Statement
             </Button>
-            <Button variant="primary" on:click={handleAutoMatch}>
+            <Button variant="primary" on:click={handleAutoMatch} disabled={isStatementLocked(selectedStatement)}>
               Auto-Match
             </Button>
-            <Button variant="success" on:click={handleFinalize} disabled={totalUnmatched > 0}>
-              Finalize
-            </Button>
+            {#if isStatementLocked(selectedStatement)}
+              <Button variant="secondary" on:click={handleReopen}>
+                Reopen
+              </Button>
+            {:else}
+              <Button variant="success" on:click={handleFinalize} disabled={totalUnmatched > 0}>
+                Finalize
+              </Button>
+            {/if}
           {/if}
         </div>
       </div>
@@ -949,11 +1048,19 @@
               {/if}
             </h3>
             {#if selectedStatement}
-              <Button variant="secondary" size="sm" on:click={openAddLineModal}>
+              <Button variant="secondary" size="sm" on:click={openAddLineModal} disabled={isStatementLocked(selectedStatement)}>
                 Add Transaction
               </Button>
             {/if}
           </div>
+          {#if selectedStatement && reconciliationSummary}
+            <div class="statement-summary">
+              <span>Status: {formatStatementStatus(reconciliationSummary.status || selectedStatement.status)}</span>
+              <span>{reconciliationSummary.matched_count}/{reconciliationSummary.total_lines} matched</span>
+              <span>{reconciliationSummary.unmatched_count} open</span>
+              <span>{Math.round(reconciliationSummary.matched_percent || 0)}% complete</span>
+            </div>
+          {/if}
           {#if linesLoading}
             <div class="loading-container small">
               <WabiSpinner size="md" />
@@ -1032,7 +1139,9 @@
       {/if}
     </div>
     <div class="match-actions">
-      {#if matchingLine.is_matched}
+      {#if selectedStatement && isStatementLocked(selectedStatement)}
+        <p class="match-hint">This statement is finalized. Reopen it to change matches.</p>
+      {:else if matchingLine.is_matched}
         <Button variant="secondary" on:click={() => matchingLine && handleUnmatch(matchingLine)}>
           Unmatch
         </Button>
@@ -1078,7 +1187,7 @@
     </div>
   {/if}
   <svelte:fragment slot="footer">
-    {#if matchingLine && !matchingLine.is_matched}
+    {#if matchingLine && !matchingLine.is_matched && !(selectedStatement && isStatementLocked(selectedStatement))}
       <Button variant="primary" on:click={handleManualMatch} loading={matchLoading} disabled={!matchingCandidateId}>
         Match Selected
       </Button>
@@ -1110,12 +1219,11 @@
       <FormGroup label="Status">
         <select bind:value={editStatementData.status} class="form-select">
           <option value="Imported">Imported</option>
-          <option value="In Progress">In Progress</option>
-          <option value="Reconciled">Reconciled</option>
-          <option value="Verified">Verified</option>
+          <option value="InProgress">In Progress</option>
         </select>
       </FormGroup>
     </div>
+    <p class="form-note">Use Finalize and Reopen for reconciled workflow states.</p>
   </div>
   <svelte:fragment slot="footer">
     <Button variant="secondary" on:click={() => showEditStatementModal = false}>Cancel</Button>
@@ -1696,6 +1804,19 @@
     margin-top: 12px;
   }
 
+  .statement-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
   .import-hint {
     margin-top: 16px;
     padding-top: 16px;
@@ -1730,6 +1851,9 @@
     background: var(--surface-elevated);
     border-left: 3px solid var(--brand-indigo);
     border-radius: var(--radius-sm);
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-secondary);
   }
 
   .form-note p {
