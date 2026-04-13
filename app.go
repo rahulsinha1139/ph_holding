@@ -3082,7 +3082,6 @@ func (a *App) GetSupplierFullProfile(supplierID string) (SupplierFullProfile, er
 	var invoices []SupplierInvoice
 	a.db.Where("supplier_id = ?", supplierID).Order("invoice_date DESC").Limit(5).Find(&invoices)
 	invSummaries := make([]SupplierInvoiceSummary, 0, len(invoices))
-	var outstanding, overdue float64
 	for _, inv := range invoices {
 		invSummaries = append(invSummaries, SupplierInvoiceSummary{
 			ID:            inv.ID,
@@ -3091,14 +3090,27 @@ func (a *App) GetSupplierFullProfile(supplierID string) (SupplierFullProfile, er
 			TotalBHD:      inv.TotalBHD,
 			Status:        inv.Status,
 		})
-		if inv.Status != "Paid" {
-			outstanding += inv.TotalBHD
+	}
+	profile.RecentInvoices = invSummaries
+
+	var openInvoices []SupplierInvoice
+	var outstanding, overdue float64
+	if err := a.db.Where("supplier_id = ? AND deleted_at IS NULL", supplierID).Find(&openInvoices).Error; err != nil {
+		log.Printf("⚠️ Failed to load supplier invoices for profile aging: %v", err)
+	} else if states, err := a.buildSupplierInvoicePaymentStateMap(a.db, openInvoices); err != nil {
+		log.Printf("⚠️ Failed to build supplier profile payment states: %v", err)
+	} else {
+		for _, inv := range openInvoices {
+			amount := states[inv.ID].OutstandingBHD
+			if amount <= FloatingPointTolerance {
+				continue
+			}
+			outstanding += amount
 			if time.Since(inv.DueDate).Hours()/24 > 30 {
-				overdue += inv.TotalBHD
+				overdue += amount
 			}
 		}
 	}
-	profile.RecentInvoices = invSummaries
 	profile.OutstandingBHD = outstanding
 	profile.OverdueBHD = overdue
 
@@ -8549,14 +8561,25 @@ func (a *App) GetCRMSupplierDashboard() CRMSupplierDashboard {
 	supplierOutstanding := make(map[string]float64)
 	supplierOverdue := make(map[string]float64)
 	var totalOutstanding, totalOverdue float64
+	supplierStates, err := a.buildSupplierInvoicePaymentStateMap(a.db, supplierInvoices)
+	if err != nil {
+		log.Printf("⚠️ Failed to build supplier dashboard payment states: %v", err)
+	}
 
 	for _, inv := range supplierInvoices {
-		supplierOutstanding[inv.SupplierID] += inv.TotalBHD
-		totalOutstanding += inv.TotalBHD
+		amount := inv.TotalBHD
+		if state, ok := supplierStates[inv.ID]; ok {
+			amount = state.OutstandingBHD
+		}
+		if amount <= FloatingPointTolerance {
+			continue
+		}
+		supplierOutstanding[inv.SupplierID] += amount
+		totalOutstanding += amount
 
 		if time.Since(inv.DueDate).Hours()/24 > 30 {
-			supplierOverdue[inv.SupplierID] += inv.TotalBHD
-			totalOverdue += inv.TotalBHD
+			supplierOverdue[inv.SupplierID] += amount
+			totalOverdue += amount
 		}
 	}
 	dashboard.OutstandingPayables = totalOutstanding
@@ -8681,14 +8704,25 @@ func (a *App) GetCRMSupplierDashboardByYear(year int) CRMSupplierDashboard {
 	supplierOutstanding := make(map[string]float64)
 	supplierOverdue := make(map[string]float64)
 	var totalOutstanding, totalOverdue float64
+	supplierStates, err := a.buildSupplierInvoicePaymentStateMap(a.db, supplierInvoices)
+	if err != nil {
+		log.Printf("⚠️ Failed to build yearly supplier dashboard payment states: %v", err)
+	}
 
 	for _, inv := range supplierInvoices {
-		supplierOutstanding[inv.SupplierID] += inv.TotalBHD
-		totalOutstanding += inv.TotalBHD
+		amount := inv.TotalBHD
+		if state, ok := supplierStates[inv.ID]; ok {
+			amount = state.OutstandingBHD
+		}
+		if amount <= FloatingPointTolerance {
+			continue
+		}
+		supplierOutstanding[inv.SupplierID] += amount
+		totalOutstanding += amount
 
 		if time.Since(inv.DueDate).Hours()/24 > 30 {
-			supplierOverdue[inv.SupplierID] += inv.TotalBHD
-			totalOverdue += inv.TotalBHD
+			supplierOverdue[inv.SupplierID] += amount
+			totalOverdue += amount
 		}
 	}
 	dashboard.OutstandingPayables = totalOutstanding
@@ -16656,8 +16690,7 @@ func (a *App) GetAPAgingReport() (*ARAgingReport, error) {
 		Details: make([]ARAgingDetail, 0),
 	}
 
-	// Query unpaid/outstanding supplier invoices
-	// Note: SupplierInvoice doesn't have OutstandingBHD field, so we use TotalBHD for unpaid invoices
+	// Query unpaid/outstanding supplier invoices.
 	var invoices []SupplierInvoice
 	err := a.db.Where("payment_status != ? AND deleted_at IS NULL", "Paid").
 		Order("due_date ASC").
@@ -16668,16 +16701,24 @@ func (a *App) GetAPAgingReport() (*ARAgingReport, error) {
 		return report, nil // Return empty report on error
 	}
 
+	states, err := a.buildSupplierInvoicePaymentStateMap(a.db, invoices)
+	if err != nil {
+		log.Printf("⚠️ AP aging payment-state lookup failed: %v", err)
+		return report, nil
+	}
+
 	// Calculate aging buckets (same logic as AR aging, but for payables)
 	now := time.Now()
 	for _, inv := range invoices {
+		amount := states[inv.ID].OutstandingBHD
+		if amount <= FloatingPointTolerance {
+			continue
+		}
 		daysOverdue := int(now.Sub(inv.DueDate).Hours() / 24)
 		if daysOverdue < 0 {
 			daysOverdue = 0 // Not yet due
 		}
 
-		// Use TotalBHD for unpaid invoices
-		amount := inv.TotalBHD
 		detail := ARAgingDetail{
 			CustomerID:   inv.SupplierID,   // Using same struct, but for suppliers
 			CustomerName: inv.SupplierName, // Supplier name in customer field

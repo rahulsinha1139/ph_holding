@@ -357,75 +357,28 @@ func (a *App) UpdateSupplierInvoiceWithPayment(inv SupplierInvoice, createPaymen
 	}
 
 	if createPaymentEntry && inv.PaymentStatus == "Paid" {
-		var totals struct {
-			AmountBHD     float64
-			AmountForeign float64
+		paymentDate := time.Now()
+		if inv.PaymentDate != nil {
+			paymentDate = *inv.PaymentDate
 		}
-		if err := tx.Model(&SupplierPayment{}).
-			Where("supplier_invoice_id = ?", inv.ID).
-			Select("COALESCE(SUM(amount_bhd), 0) AS amount_bhd, COALESCE(SUM(amount_foreign), 0) AS amount_foreign").
-			Scan(&totals).Error; err != nil {
+		if _, err := a.createRemainingSupplierInvoicePayment(tx, inv, paymentDate, inv.PaymentMethod, inv.PaymentRef, "Created from supplier invoice edit"); err != nil {
 			tx.Rollback()
-			return SupplierInvoice{}, fmt.Errorf("failed to calculate existing supplier payments: %w", err)
+			return SupplierInvoice{}, fmt.Errorf("failed to create supplier payment ledger entry: %w", err)
 		}
+	}
 
-		remainingBHD := inv.TotalBHD - totals.AmountBHD
-		if remainingBHD > FloatingPointTolerance {
-			currency := inv.Currency
-			if currency == "" {
-				currency = "BHD"
-			}
-
-			exchangeRate := inv.ExchangeRate
-			if exchangeRate <= 0 {
-				exchangeRate = 1
-			}
-
-			amountForeign := remainingBHD
-			if currency != "BHD" {
-				remainingForeign := inv.TotalForeign - totals.AmountForeign
-				if remainingForeign > FloatingPointTolerance {
-					amountForeign = remainingForeign
-				} else {
-					amountForeign = remainingBHD / exchangeRate
-				}
-			}
-
-			paymentMethod := inv.PaymentMethod
-			if paymentMethod == "" {
-				paymentMethod = "Other"
-			}
-
-			paymentDate := time.Now()
-			if inv.PaymentDate != nil {
-				paymentDate = *inv.PaymentDate
-			}
-
-			payment := SupplierPayment{
-				SupplierInvoiceID: inv.ID,
-				SupplierID:        inv.SupplierID,
-				AmountForeign:     amountForeign,
-				Currency:          currency,
-				ExchangeRate:      exchangeRate,
-				AmountBHD:         remainingBHD,
-				PaymentDate:       paymentDate,
-				PaymentMethod:     paymentMethod,
-				Reference:         inv.PaymentRef,
-				Notes:             "Created from supplier invoice edit",
-				SupplierName:      inv.SupplierName,
-				InvoiceNumber:     inv.InvoiceNumber,
-			}
-
-			if err := tx.Create(&payment).Error; err != nil {
-				tx.Rollback()
-				return SupplierInvoice{}, fmt.Errorf("failed to create supplier payment ledger entry: %w", err)
-			}
-		}
+	if _, err := a.applySupplierInvoicePaymentState(tx, inv.ID); err != nil {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("failed to normalize supplier invoice payment state: %w", err)
 	}
 
 	if err := tx.Commit().Error; err != nil {
 		tx.Rollback()
 		return SupplierInvoice{}, fmt.Errorf("failed to commit supplier invoice update: %w", err)
+	}
+
+	if err := a.db.Where("id = ?", inv.ID).First(&inv).Error; err != nil {
+		return SupplierInvoice{}, fmt.Errorf("failed to reload supplier invoice: %w", err)
 	}
 
 	log.Printf("✅ Updated Supplier Invoice from editor: %s (create payment entry=%v)", inv.InvoiceNumber, createPaymentEntry)
@@ -556,20 +509,27 @@ func (a *App) MarkSupplierInvoicePaid(id string, paymentRef string, paymentMetho
 	}
 
 	// Verify invoice is approved before marking as paid
-	if invoice.Status != "Approved" {
+	if invoice.Status != "Approved" && invoice.Status != "Paid" {
 		return fmt.Errorf("invoice must be approved before payment: %s", invoice.InvoiceNumber)
 	}
 
-	now := time.Now()
-	invoice.PaymentStatus = "Paid"
-	invoice.Status = "Paid"
-	invoice.PaymentDate = &now
-	invoice.PaymentRef = paymentRef
-	invoice.PaymentMethod = paymentMethod
-	invoice.UpdatedAt = now
+	tx := a.db.Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("failed to start transaction: %w", tx.Error)
+	}
 
-	if err := a.db.Save(&invoice).Error; err != nil {
-		return fmt.Errorf("failed to mark invoice as paid: %w", err)
+	now := time.Now()
+	if _, err := a.createRemainingSupplierInvoicePayment(tx, invoice, now, paymentMethod, paymentRef, "Created from mark-as-paid action"); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to create supplier payment ledger entry: %w", err)
+	}
+	if _, err := a.applySupplierInvoicePaymentState(tx, invoice.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to update invoice payment state: %w", err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to commit mark-as-paid transaction: %w", err)
 	}
 
 	log.Printf("💰 Marked Supplier Invoice as Paid: %s (Ref: %s, Method: %s)",
@@ -587,7 +547,7 @@ func (a *App) GetUnpaidSupplierInvoices() ([]SupplierInvoice, error) {
 	}
 
 	var invoices []SupplierInvoice
-	if err := a.db.Preload("Items").Where("payment_status = ?", "Unpaid").
+	if err := a.db.Preload("Items").Where("payment_status != ? AND (status IS NULL OR status NOT IN ?)", "Paid", []string{"Rejected", "Dispute"}).
 		Order("due_date ASC").
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve unpaid invoices: %w", err)
@@ -608,7 +568,7 @@ func (a *App) GetOverdueSupplierInvoices() ([]SupplierInvoice, error) {
 
 	now := time.Now()
 	var invoices []SupplierInvoice
-	if err := a.db.Preload("Items").Where("payment_status = ? AND due_date < ?", "Unpaid", now).
+	if err := a.db.Preload("Items").Where("payment_status != ? AND due_date < ? AND (status IS NULL OR status NOT IN ?)", "Paid", now, []string{"Rejected", "Dispute"}).
 		Order("due_date ASC").
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve overdue invoices: %w", err)

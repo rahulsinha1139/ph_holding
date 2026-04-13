@@ -260,11 +260,22 @@ func (a *App) GetCashFlowProjection(days int) (CashFlowProjection, error) {
 		log.Printf("⚠️ Failed to retrieve supplier invoices: %v", err)
 		// Continue with customer inflows only
 	} else {
+		states, err := a.buildSupplierInvoicePaymentStateMap(a.db, unpaidSupplierInvoices)
+		if err != nil {
+			log.Printf("⚠️ Failed to build supplier cashflow payment states: %v", err)
+		}
 		for _, inv := range unpaidSupplierInvoices {
+			amount := inv.TotalBHD
+			if state, ok := states[inv.ID]; ok {
+				amount = state.OutstandingBHD
+			}
+			if amount <= FloatingPointTolerance {
+				continue
+			}
 			dateKey := inv.DueDate.Format("2006-01-02")
 			if day, exists := dailyMap[dateKey]; exists {
-				day.ExpectedOutflows += inv.TotalBHD
-				projection.TotalOutflows += inv.TotalBHD
+				day.ExpectedOutflows += amount
+				projection.TotalOutflows += amount
 			}
 		}
 	}
