@@ -21,30 +21,30 @@ import (
 
 // Customer name mapping from short codes to full business names
 var customerNameMap = map[string]string{
-	"GPIC":          "Gulf Petrochemical Industries Company",
-	"ALBA":          "Aluminium Bahrain B.S.C.",
-	"BAPCO":         "Bahrain Petroleum Company",
-	"EWA":           "Electricity & Water Authority",
-	"TTSJV":         "Tatweer TTSJV",
-	"INTERCOL":      "Intercol",
-	"ARLA":          "Arla Foods",
-	"VWT":           "Veolia Water Technologies",
-	"VEOLIA":        "Veolia Energy",
-	"VEOLIA ENERGY": "Veolia Energy",
-	"ABRAQYAH":      "Abraqyah",
-	"NOMAC":         "NOMAC",
-	"XENITT":        "Xenitt",
-	"SEAPEAK":       "Seapeak",
-	"AQUA TECH":     "Aqua Tech",
-	"WABAG":         "WABAG",
-	"ALDUR":         "Aldur",
-	"YATEEM":        "Yateem Group",
-	"ZOHAL":         "Zohal Trading",
-	"ENGIE":         "ENGIE",
-	"AIC":           "AIC",
-	"SYSCON":        "Syscon",
+	"GPIC":            "Gulf Petrochemical Industries Company",
+	"ALBA":            "Aluminium Bahrain B.S.C.",
+	"BAPCO":           "Bahrain Petroleum Company",
+	"EWA":             "Electricity & Water Authority",
+	"TTSJV":           "Tatweer TTSJV",
+	"INTERCOL":        "Intercol",
+	"ARLA":            "Arla Foods",
+	"VWT":             "Veolia Water Technologies",
+	"VEOLIA":          "Veolia Energy",
+	"VEOLIA ENERGY":   "Veolia Energy",
+	"ABRAQYAH":        "Abraqyah",
+	"NOMAC":           "NOMAC",
+	"XENITT":          "Xenitt",
+	"SEAPEAK":         "Seapeak",
+	"AQUA TECH":       "Aqua Tech",
+	"WABAG":           "WABAG",
+	"ALDUR":           "Aldur",
+	"YATEEM":          "Yateem Group",
+	"ZOHAL":           "Zohal Trading",
+	"ENGIE":           "ENGIE",
+	"AIC":             "AIC",
+	"SYSCON":          "Syscon",
 	"AHS TRADING WLL": "AHS Trading WLL",
-	"AHS":           "AHS Trading WLL",
+	"AHS":             "AHS Trading WLL",
 }
 
 // Product type code mapping
@@ -73,14 +73,14 @@ func (a *App) Import2026BusinessData(offersPath string) map[string]interface{} {
 	log.Printf("Starting 2026 business data import from: %s", offersPath)
 
 	stats := map[string]interface{}{
-		"offers_created":       0,
-		"offer_items_created":  0,
-		"customers_created":    0,
-		"customers_matched":    0,
-		"bank_statements":      0,
-		"bank_transactions":    0,
-		"bank_accounts_added":  0,
-		"errors":               []string{},
+		"offers_created":      0,
+		"offer_items_created": 0,
+		"customers_created":   0,
+		"customers_matched":   0,
+		"bank_statements":     0,
+		"bank_transactions":   0,
+		"bank_accounts_added": 0,
+		"errors":              []string{},
 	}
 
 	// 1. Import offers from folder structure
@@ -176,15 +176,15 @@ func (a *App) importOffersFromFolders(offersPath string, stats map[string]interf
 				CreatedAt: time.Now(),
 				UpdatedAt: time.Now(),
 			},
-			OfferNumber:    offerNumber,
-			RevisionNumber: 0,
-			CustomerID:     customer.ID,
-			CustomerName:   fullCustomerName,
-			QuotationDate:  quotationDate,
-			ValidityDate:   quotationDate.AddDate(0, 1, 0), // 1 month validity
-			TotalValueBHD:  0, // Will be calculated from items
+			OfferNumber:     offerNumber,
+			RevisionNumber:  0,
+			CustomerID:      customer.ID,
+			CustomerName:    fullCustomerName,
+			QuotationDate:   quotationDate,
+			ValidityDate:    quotationDate.AddDate(0, 1, 0), // 1 month validity
+			TotalValueBHD:   0,                              // Will be calculated from items
 			EstimatedMargin: 0,
-			Stage:          stage,
+			Stage:           stage,
 		})
 
 		if result.Error != nil {
@@ -302,13 +302,21 @@ func (a *App) findOrCreateCustomer(businessName, shortCode string) (*CustomerMas
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		},
-		CustomerID:   fmt.Sprintf("CUST-%s", strings.ToUpper(strings.ReplaceAll(shortCode, " ", "-"))),
 		BusinessName: businessName,
 		ShortCode:    shortCode,
 		Industry:     "Process Instrumentation", // Default industry
 		Country:      "Bahrain",                 // Default country
 		City:         "Manama",                  // Default city
 	}
+	if strings.TrimSpace(shortCode) != "" {
+		customer.CustomerCode = fmt.Sprintf("CUST-%s", strings.ToUpper(strings.ReplaceAll(shortCode, " ", "-")))
+	}
+
+	preparedCustomer, err := newCustomerWritePolicy(GlobalValidator).PrepareForCreate(*customer)
+	if err != nil {
+		return nil, err
+	}
+	customer = &preparedCustomer
 
 	if err := a.db.Create(customer).Error; err != nil {
 		return nil, err

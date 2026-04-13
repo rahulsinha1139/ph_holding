@@ -124,6 +124,27 @@ func TestCreateCustomerFromButler_UsesCustomerCreatePolicy(t *testing.T) {
 	require.Equal(t, created.CustomerCode, created.CustomerID)
 }
 
+func TestFindOrCreateCustomer_UsesSharedIdentifierPolicy(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	created, err := app.findOrCreateCustomer("Import Helper Customer", "ihc")
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.Equal(t, "CUST-IHC", created.CustomerCode)
+	require.Equal(t, created.CustomerCode, created.CustomerID)
+	require.Equal(t, "Bahrain", created.Country)
+}
+
+func TestFindOrCreateCustomer_GeneratesFallbackIdentifierWithoutShortCode(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	created, err := app.findOrCreateCustomer("No Shortcode Customer", "")
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.NotEmpty(t, created.CustomerCode)
+	require.Equal(t, created.CustomerCode, created.CustomerID)
+}
+
 func TestSupplierCreation_WithValidRole(t *testing.T) {
 	app := makeCreationTestApp(t)
 
