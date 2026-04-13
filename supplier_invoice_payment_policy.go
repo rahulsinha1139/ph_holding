@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -183,6 +184,57 @@ func (a *App) buildSupplierInvoicePaymentStateMap(tx *gorm.DB, invoices []Suppli
 	}
 
 	return states, nil
+}
+
+func (a *App) hydrateSupplierInvoicePaymentState(tx *gorm.DB, invoice *SupplierInvoice) error {
+	if invoice == nil || strings.TrimSpace(invoice.ID) == "" {
+		return nil
+	}
+
+	state, err := a.loadSupplierInvoicePaymentState(tx, *invoice)
+	if err != nil {
+		return err
+	}
+
+	invoice.PaymentStatus = state.PaymentStatus
+	invoice.OutstandingBHD = state.OutstandingBHD
+	if state.InvoiceStatus != "" {
+		invoice.Status = state.InvoiceStatus
+	}
+	if state.LatestPaymentDate != nil {
+		paymentDate := *state.LatestPaymentDate
+		invoice.PaymentDate = &paymentDate
+		invoice.PaymentRef = state.LatestPaymentRef
+		invoice.PaymentMethod = state.LatestPaymentType
+	} else {
+		invoice.PaymentDate = nil
+		invoice.PaymentRef = ""
+		invoice.PaymentMethod = ""
+	}
+
+	return nil
+}
+
+func (a *App) hydrateSupplierInvoicesPaymentState(tx *gorm.DB, invoices []SupplierInvoice) error {
+	if len(invoices) == 0 {
+		return nil
+	}
+
+	states, err := a.buildSupplierInvoicePaymentStateMap(tx, invoices)
+	if err != nil {
+		return err
+	}
+
+	for i := range invoices {
+		state := states[invoices[i].ID]
+		invoices[i].PaymentStatus = state.PaymentStatus
+		invoices[i].OutstandingBHD = state.OutstandingBHD
+		if state.InvoiceStatus != "" {
+			invoices[i].Status = state.InvoiceStatus
+		}
+	}
+
+	return nil
 }
 
 func (a *App) createRemainingSupplierInvoicePayment(tx *gorm.DB, invoice SupplierInvoice, paymentDate time.Time, paymentMethod string, paymentRef string, notes string) (bool, error) {

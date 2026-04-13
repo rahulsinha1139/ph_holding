@@ -230,27 +230,37 @@ func (a *App) GetSupplierPaymentsSummary() (map[string]interface{}, error) {
 	}
 	summary["total_paid_bhd"] = totalPaidBHD
 
-	// Count of invoices not fully paid
+	// Count of invoices with live outstanding balances.
+	var invoices []SupplierInvoice
+	if err := a.db.Where("status IS NULL OR status NOT IN ?", []string{"Rejected", "Dispute"}).
+		Find(&invoices).Error; err != nil {
+		return nil, fmt.Errorf("failed to retrieve supplier invoices for payment summary: %w", err)
+	}
+	if err := a.hydrateSupplierInvoicesPaymentState(a.db, invoices); err != nil {
+		return nil, fmt.Errorf("failed to normalize supplier invoices for payment summary: %w", err)
+	}
+
 	var outstandingCount int64
-	if err := a.db.Model(&SupplierInvoice{}).
-		Where("payment_status != ?", "Paid").
-		Count(&outstandingCount).Error; err != nil {
-		return nil, fmt.Errorf("failed to count outstanding invoices: %w", err)
-	}
-	summary["outstanding_count"] = outstandingCount
-
-	// Count of overdue invoices (past due date and not paid)
 	var overdueCount int64
+	var outstandingBHD float64
 	now := time.Now()
-	if err := a.db.Model(&SupplierInvoice{}).
-		Where("payment_status != ? AND due_date < ?", "Paid", now).
-		Count(&overdueCount).Error; err != nil {
-		return nil, fmt.Errorf("failed to count overdue invoices: %w", err)
+	for _, invoice := range invoices {
+		if invoice.OutstandingBHD <= FloatingPointTolerance {
+			continue
+		}
+		outstandingCount++
+		outstandingBHD += invoice.OutstandingBHD
+		if invoice.DueDate.Before(now) {
+			overdueCount++
+		}
 	}
-	summary["overdue_count"] = overdueCount
 
-	log.Printf("📊 Supplier payments summary: %.3f BHD paid, %d outstanding, %d overdue",
-		totalPaidBHD, outstandingCount, overdueCount)
+	summary["outstanding_count"] = outstandingCount
+	summary["overdue_count"] = overdueCount
+	summary["outstanding_bhd"] = outstandingBHD
+
+	log.Printf("📊 Supplier payments summary: %.3f BHD paid, %.3f BHD outstanding, %d outstanding, %d overdue",
+		totalPaidBHD, outstandingBHD, outstandingCount, overdueCount)
 
 	return summary, nil
 }

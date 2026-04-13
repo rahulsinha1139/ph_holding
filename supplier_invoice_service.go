@@ -172,6 +172,9 @@ func (a *App) GetSupplierInvoices() ([]SupplierInvoice, error) {
 	if err := a.db.Preload("Items").Order("invoice_date DESC").Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve supplier invoices: %w", err)
 	}
+	if err := a.hydrateSupplierInvoicesPaymentState(a.db, invoices); err != nil {
+		return nil, fmt.Errorf("failed to normalize supplier invoice payment state: %w", err)
+	}
 
 	log.Printf("📊 Retrieved %d supplier invoices", len(invoices))
 	return invoices, nil
@@ -189,6 +192,9 @@ func (a *App) GetSupplierInvoiceByID(id string) (SupplierInvoice, error) {
 	var invoice SupplierInvoice
 	if err := a.db.Preload("Items").Where("id = ?", id).First(&invoice).Error; err != nil {
 		return SupplierInvoice{}, fmt.Errorf("supplier invoice not found: %w", err)
+	}
+	if err := a.hydrateSupplierInvoicePaymentState(a.db, &invoice); err != nil {
+		return SupplierInvoice{}, fmt.Errorf("failed to normalize supplier invoice payment state: %w", err)
 	}
 
 	return invoice, nil
@@ -209,6 +215,9 @@ func (a *App) GetSupplierInvoicesBySupplier(supplierID string) ([]SupplierInvoic
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve supplier invoices: %w", err)
 	}
+	if err := a.hydrateSupplierInvoicesPaymentState(a.db, invoices); err != nil {
+		return nil, fmt.Errorf("failed to normalize supplier invoices for supplier %s: %w", supplierID, err)
+	}
 
 	log.Printf("📊 Retrieved %d invoices for supplier %s", len(invoices), supplierID)
 	return invoices, nil
@@ -228,6 +237,9 @@ func (a *App) GetSupplierInvoicesByPO(poID string) ([]SupplierInvoice, error) {
 		Order("invoice_date DESC").
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve invoices for PO: %w", err)
+	}
+	if err := a.hydrateSupplierInvoicesPaymentState(a.db, invoices); err != nil {
+		return nil, fmt.Errorf("failed to normalize supplier invoices for PO %s: %w", poID, err)
 	}
 
 	log.Printf("📊 Retrieved %d invoices for PO %s", len(invoices), poID)
@@ -547,14 +559,24 @@ func (a *App) GetUnpaidSupplierInvoices() ([]SupplierInvoice, error) {
 	}
 
 	var invoices []SupplierInvoice
-	if err := a.db.Preload("Items").Where("payment_status != ? AND (status IS NULL OR status NOT IN ?)", "Paid", []string{"Rejected", "Dispute"}).
+	if err := a.db.Preload("Items").Where("status IS NULL OR status NOT IN ?", []string{"Rejected", "Dispute"}).
 		Order("due_date ASC").
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve unpaid invoices: %w", err)
 	}
+	if err := a.hydrateSupplierInvoicesPaymentState(a.db, invoices); err != nil {
+		return nil, fmt.Errorf("failed to normalize unpaid supplier invoices: %w", err)
+	}
 
-	log.Printf("📊 Retrieved %d unpaid supplier invoices", len(invoices))
-	return invoices, nil
+	openInvoices := make([]SupplierInvoice, 0, len(invoices))
+	for _, invoice := range invoices {
+		if invoice.OutstandingBHD > FloatingPointTolerance {
+			openInvoices = append(openInvoices, invoice)
+		}
+	}
+
+	log.Printf("📊 Retrieved %d unpaid supplier invoices", len(openInvoices))
+	return openInvoices, nil
 }
 
 // GetOverdueSupplierInvoices retrieves all overdue invoices
@@ -568,14 +590,24 @@ func (a *App) GetOverdueSupplierInvoices() ([]SupplierInvoice, error) {
 
 	now := time.Now()
 	var invoices []SupplierInvoice
-	if err := a.db.Preload("Items").Where("payment_status != ? AND due_date < ? AND (status IS NULL OR status NOT IN ?)", "Paid", now, []string{"Rejected", "Dispute"}).
+	if err := a.db.Preload("Items").Where("due_date < ? AND (status IS NULL OR status NOT IN ?)", now, []string{"Rejected", "Dispute"}).
 		Order("due_date ASC").
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve overdue invoices: %w", err)
 	}
+	if err := a.hydrateSupplierInvoicesPaymentState(a.db, invoices); err != nil {
+		return nil, fmt.Errorf("failed to normalize overdue supplier invoices: %w", err)
+	}
 
-	log.Printf("⚠️ Retrieved %d overdue supplier invoices", len(invoices))
-	return invoices, nil
+	overdueInvoices := make([]SupplierInvoice, 0, len(invoices))
+	for _, invoice := range invoices {
+		if invoice.OutstandingBHD > FloatingPointTolerance {
+			overdueInvoices = append(overdueInvoices, invoice)
+		}
+	}
+
+	log.Printf("⚠️ Retrieved %d overdue supplier invoices", len(overdueInvoices))
+	return overdueInvoices, nil
 }
 
 // =============================================================================

@@ -157,6 +157,7 @@
 
       summary = {
         total_paid_bhd: (summaryRes?.total_paid_bhd || 0) + paidExpenseTotal,
+        outstanding_bhd: (summaryRes?.outstanding_bhd || 0) + unpaidExpenseEntries.reduce((sum: number, entry: ExpenseEntry) => sum + (Number(entry.total_amount) || 0), 0),
         outstanding_count: (summaryRes?.outstanding_count || 0) + unpaidExpenseEntries.length,
         overdue_count: (summaryRes?.overdue_count || 0) + overdueExpenseCount,
       };
@@ -172,6 +173,7 @@
     if (!invoicesLoaded) {
       try {
         invoices = await GetSupplierInvoices() || [];
+        invoices = invoices.filter((invoice: any) => Number(invoice?.outstanding_bhd || 0) > 0);
         invoicesLoaded = true;
       } catch (e) {
         console.error('Failed to load invoices:', e);
@@ -241,6 +243,10 @@
       <span class="kpi-value">{formatBHD(totalPaidYTD)} BHD</span>
     </div>
     <div class="kpi">
+      <span class="kpi-label">Outstanding Value</span>
+      <span class="kpi-value">{formatBHD(summary.outstanding_bhd || 0)} BHD</span>
+    </div>
+    <div class="kpi">
       <span class="kpi-label">Outstanding Invoices</span>
       <span class="kpi-value">{summary.outstanding_count || 0}</span>
     </div>
@@ -271,7 +277,7 @@
           <option value="">Select invoice...</option>
           {#each invoices as inv}
             <option value={inv.id}>
-              {inv.invoice_number || inv.id?.slice(0,8)} - {formatBHD(inv.total_bhd)} BHD
+              {inv.invoice_number || inv.id?.slice(0,8)} - {formatBHD(inv.outstanding_bhd || inv.total_bhd)} BHD open
             </option>
           {/each}
         </select>

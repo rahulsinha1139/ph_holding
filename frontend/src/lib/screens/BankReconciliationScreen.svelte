@@ -431,8 +431,7 @@
       });
       supplierInvoiceCandidates = (allSupplierInvoices || []).filter((invoice: any) => {
         const status = String(invoice?.status || '').toLowerCase();
-        const paymentStatus = String(invoice?.payment_status || '').toLowerCase();
-        return paymentStatus !== 'paid' && !['cancelled', 'void', 'rejected'].includes(status);
+        return Number(invoice?.outstanding_bhd || 0) > 0 && !['cancelled', 'void', 'rejected', 'dispute'].includes(status);
       });
       supplierPaymentCandidates = supplierPayments || [];
       payrollPayoutCandidates = await ListUnreconciledPayrollPayouts().catch(() => []);
@@ -455,7 +454,7 @@
     if (type === 'PAYROLL_PAYOUT') {
       return `${candidate.run_number || 'Payroll'} • ${candidate.employee_name || 'Employee'} • ${formatBHD(candidate.amount || 0)} BHD${candidate.payment_reference ? ` • ${candidate.payment_reference}` : ''}`;
     }
-    return `${candidate.invoice_number || 'Invoice'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.total_bhd || 0)} BHD`;
+    return `${candidate.invoice_number || 'Invoice'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.outstanding_bhd || candidate.total_bhd || 0)} BHD`;
   }
 
   function getFilteredMatchCandidates() {

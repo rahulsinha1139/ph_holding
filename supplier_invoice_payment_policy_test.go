@@ -149,3 +149,66 @@ func TestGetCashFlowProjection_UsesOutstandingSupplierBalance(t *testing.T) {
 	require.NoError(t, err)
 	require.InDelta(t, 75, projection.TotalOutflows, 0.0001)
 }
+
+func TestGetSupplierInvoices_HydratesOutstandingBalanceAndPartialStatus(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&SupplierInvoice{}, &SupplierInvoiceItem{}, &SupplierPayment{}))
+
+	supplierID := seedTestSupplier(t, app.db, "Hydrated Supplier")
+	invoiceDate := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	invoice := createTestSupplierInvoice(t, app, supplierID, "Hydrated Supplier", "SI-HYDRATE-1", invoiceDate, invoiceDate.AddDate(0, 0, 30), 90)
+
+	_, err := app.RecordSupplierPayment(invoice.ID, 25, "BHD", "Bank Transfer", "2026-04-02", "SUP-HYDRATE-1")
+	require.NoError(t, err)
+
+	invoices, err := app.GetSupplierInvoices()
+	require.NoError(t, err)
+	require.Len(t, invoices, 1)
+	require.Equal(t, "Partial", invoices[0].PaymentStatus)
+	require.InDelta(t, 65, invoices[0].OutstandingBHD, 0.0001)
+}
+
+func TestGetUnpaidSupplierInvoices_UsesLedgerWhenStoredPaymentStatusDrifts(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&SupplierInvoice{}, &SupplierInvoiceItem{}, &SupplierPayment{}))
+
+	supplierID := seedTestSupplier(t, app.db, "Drift Supplier")
+	invoiceDate := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	invoice := createTestSupplierInvoice(t, app, supplierID, "Drift Supplier", "SI-DRIFT-1", invoiceDate, invoiceDate.AddDate(0, 0, 10), 100)
+	require.NoError(t, app.db.Model(&SupplierInvoice{}).Where("id = ?", invoice.ID).Updates(map[string]interface{}{
+		"payment_status": "Paid",
+		"status":         "Paid",
+	}).Error)
+
+	invoices, err := app.GetUnpaidSupplierInvoices()
+	require.NoError(t, err)
+	require.Len(t, invoices, 1)
+	require.Equal(t, invoice.ID, invoices[0].ID)
+	require.Equal(t, "Unpaid", invoices[0].PaymentStatus)
+	require.Equal(t, "Approved", invoices[0].Status)
+	require.InDelta(t, 100, invoices[0].OutstandingBHD, 0.0001)
+}
+
+func TestGetSupplierPaymentsSummary_UsesLiveOutstandingBalances(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&SupplierInvoice{}, &SupplierPayment{}))
+
+	supplierID := seedTestSupplier(t, app.db, "Summary Supplier")
+	invoiceDate := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	first := createTestSupplierInvoice(t, app, supplierID, "Summary Supplier", "SI-SUM-1", invoiceDate, time.Now().AddDate(0, 0, -1), 120)
+	second := createTestSupplierInvoice(t, app, supplierID, "Summary Supplier", "SI-SUM-2", invoiceDate.AddDate(0, 0, 1), time.Now().AddDate(0, 0, 5), 80)
+
+	_, err := app.RecordSupplierPayment(first.ID, 20, "BHD", "Bank Transfer", "2026-04-03", "SUP-SUM-1")
+	require.NoError(t, err)
+	require.NoError(t, app.db.Model(&SupplierInvoice{}).Where("id = ?", second.ID).Updates(map[string]interface{}{
+		"payment_status": "Paid",
+		"status":         "Paid",
+	}).Error)
+
+	summary, err := app.GetSupplierPaymentsSummary()
+	require.NoError(t, err)
+	require.InDelta(t, 20, summary["total_paid_bhd"], 0.0001)
+	require.InDelta(t, 180, summary["outstanding_bhd"], 0.0001)
+	require.EqualValues(t, 2, summary["outstanding_count"])
+	require.EqualValues(t, 1, summary["overdue_count"])
+}

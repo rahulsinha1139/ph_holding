@@ -1552,10 +1552,11 @@ type SupplierInvoice struct {
 	UpdatedBy string `json:"updated_by"`
 
 	// Payment
-	PaymentStatus string     `json:"payment_status"` // Unpaid, Scheduled, Paid
-	PaymentDate   *time.Time `json:"payment_date"`
-	PaymentRef    string     `json:"payment_ref"`
-	PaymentMethod string     `json:"payment_method"` // Bank Transfer, Cheque, etc.
+	PaymentStatus  string     `json:"payment_status"` // Unpaid, Scheduled, Paid
+	PaymentDate    *time.Time `json:"payment_date"`
+	PaymentRef     string     `json:"payment_ref"`
+	PaymentMethod  string     `json:"payment_method"` // Bank Transfer, Cheque, etc.
+	OutstandingBHD float64    `gorm:"-" json:"outstanding_bhd"`
 
 	// OCR Metadata
 	OCRDocumentID string  `json:"ocr_document_id"` // Link to OCR scan

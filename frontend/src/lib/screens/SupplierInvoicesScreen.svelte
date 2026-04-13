@@ -90,6 +90,7 @@
     // Computed fields
     days_until_due?: number;
     is_overdue?: boolean;
+    outstanding_bhd?: number;
     // Note: supplier_name already exists in main.SupplierInvoice
   }
 
@@ -221,7 +222,12 @@
       sortable: true,
       width: '110px',
       render: (row: SupplierInvoiceDisplay) => {
-        return `<span class="amount-bhd">${formatMoney(row.total_bhd)}</span>`;
+        const outstanding = Number(row.outstanding_bhd || 0);
+        const baseAmount = Number(row.total_bhd || 0);
+        if (outstanding > 0 && Math.abs(outstanding - baseAmount) > 0.0001) {
+          return `<span class="amount-bhd">${formatMoney(outstanding)} <span class="amount-caption">open</span></span>`;
+        }
+        return `<span class="amount-bhd">${formatMoney(baseAmount)}</span>`;
       }
     },
     {
@@ -313,7 +319,7 @@
                 Approve
               </button>
             ` : ''}
-            ${row.status === 'Approved' && row.payment_status === 'Unpaid' ? `
+            ${row.status === 'Approved' && Number(row.outstanding_bhd || 0) > 0 ? `
               <button
                 class="action-btn action-btn-pay"
                 data-action="pay"
@@ -379,6 +385,7 @@
   function renderPaymentStatus(invoice: SupplierInvoiceDisplay): string {
     const icons = {
       'Paid': '',
+      'Partial': '',
       'Unpaid': '',
       'Scheduled': '',
       'Overdue': ''
@@ -386,6 +393,7 @@
 
     const colors = {
       'Paid': '#10B981',
+      'Partial': '#F59E0B',
       'Unpaid': '#6B7280',
       'Scheduled': '#3B82F6',
       'Overdue': '#DC2626'
@@ -572,8 +580,9 @@
       subtotal_bhd: subtotalBHD,
       vat_bhd: vatBHD,
       total_bhd: totalBHD,
+      outstanding_bhd: Number(invoice.outstanding_bhd || 0),
       days_until_due: daysUntilDue,
-      is_overdue: daysUntilDue < 0 && invoice.payment_status !== 'Paid',
+      is_overdue: daysUntilDue < 0 && Number(invoice.outstanding_bhd || 0) > 0,
       // supplier_name already comes from database - no mapping needed!
       supplier_name: invoice.supplier_name || suppliersMap.get(invoice.supplier_id) || undefined
     } as SupplierInvoiceDisplay;
@@ -1050,9 +1059,9 @@
 
         <Card padding="md">
           <div class="stat">
-            <div class="stat-label">Unpaid</div>
+            <div class="stat-label">Open</div>
             <div class="stat-value stat-warning">
-              {invoices.filter(i => i.payment_status === 'Unpaid').length}
+              {invoices.filter(i => Number(i.outstanding_bhd || 0) > 0).length}
             </div>
           </div>
         </Card>
@@ -1325,10 +1334,14 @@
             <span class="detail-label">Total (BHD)</span>
             <span class="detail-value amount-highlight">{formatMoney(selectedInvoice.total_bhd)} BHD</span>
           </div>
+          <div class="detail-item">
+            <span class="detail-label">Outstanding</span>
+            <span class="detail-value amount-highlight">{formatMoney(selectedInvoice.outstanding_bhd || 0)} BHD</span>
+          </div>
         </div>
       </div>
 
-      {#if selectedInvoice.payment_status === 'Paid'}
+      {#if selectedInvoice.payment_status === 'Paid' || selectedInvoice.payment_status === 'Partial'}
         <div class="detail-section">
           <h4>Payment Information</h4>
           <div class="detail-grid">
