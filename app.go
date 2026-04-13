@@ -8003,73 +8003,21 @@ func (a *App) CreateCustomer(customer CustomerMaster) (*CustomerMaster, error) {
 		return nil, newError("PERMISSION_DENIED", err.Error(), "")
 	}
 
-	// P1 FIX: Input validation
-	if GlobalValidator != nil {
-		if err := GlobalValidator.ValidateCustomerInput(&customer); err != nil {
-			return nil, newError("VALIDATION_FAILED", "Invalid customer data", err.Error())
-		}
+	preparedCustomer, err := newCustomerWritePolicy(GlobalValidator).PrepareForCreate(customer)
+	if err != nil {
+		return nil, newError("VALIDATION_FAILED", "Invalid customer data", err.Error())
 	}
 
-	// Backend enforcement: BusinessName must be non-empty
-	if strings.TrimSpace(customer.BusinessName) == "" {
-		return nil, fmt.Errorf("business name is required")
-	}
-
-	// Auto-generate CustomerCode if empty (don't rely on frontend)
-	if strings.TrimSpace(customer.CustomerCode) == "" {
-		prefix := strings.ToUpper(customer.BusinessName)
-		if len(prefix) > 4 {
-			prefix = prefix[:4]
-		}
-		cleaned := ""
-		for _, r := range prefix {
-			if r >= 'A' && r <= 'Z' {
-				cleaned += string(r)
-			}
-		}
-		if cleaned == "" {
-			cleaned = "CUST"
-		}
-		customer.CustomerCode = fmt.Sprintf("CUST-%s%d", cleaned, time.Now().UnixMilli()%100000)
-	}
-
-	// Auto-generate CustomerID if empty
-	if strings.TrimSpace(customer.CustomerID) == "" {
-		customer.CustomerID = customer.CustomerCode
-	}
-
-	if err := a.db.Create(&customer).Error; err != nil {
+	if err := a.db.Create(&preparedCustomer).Error; err != nil {
 		return nil, newError("DB_CREATE_FAILED", "Failed to create customer", err.Error())
 	}
 
 	log.Printf("✅ Created Customer: %s", customer.BusinessName)
-	return &customer, nil
+	return &preparedCustomer, nil
 }
 
 func looksLikeUUID(raw string) bool {
 	return regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`).MatchString(strings.TrimSpace(raw))
-}
-
-func businessCustomerIDFromRecord(customer CustomerMaster) string {
-	if code := strings.TrimSpace(customer.CustomerCode); code != "" {
-		return code
-	}
-
-	name := strings.ToUpper(customer.BusinessName)
-	builder := strings.Builder{}
-	for _, r := range name {
-		if r >= 'A' && r <= 'Z' {
-			builder.WriteRune(r)
-		}
-	}
-	prefix := builder.String()
-	if len(prefix) > 6 {
-		prefix = prefix[:6]
-	}
-	if prefix == "" {
-		prefix = "CUST"
-	}
-	return fmt.Sprintf("CUST-%s", prefix)
 }
 
 func (a *App) BackfillBusinessCustomerIDs() (map[string]interface{}, error) {
@@ -8376,17 +8324,17 @@ func (a *App) UpdateCustomer(customer CustomerMaster) (*CustomerMaster, error) {
 		return nil, newError("CUSTOMER_NOT_FOUND", "Customer not found", err.Error())
 	}
 
-	// Preserve audit fields
-	customer.CreatedAt = existing.CreatedAt
-	customer.CreatedBy = existing.CreatedBy
-	customer.Version = existing.Version + 1
+	preparedCustomer, err := newCustomerWritePolicy(GlobalValidator).PrepareForUpdate(existing, customer)
+	if err != nil {
+		return nil, newError("VALIDATION_FAILED", "Invalid customer data", err.Error())
+	}
 
-	if err := a.db.Save(&customer).Error; err != nil {
+	if err := a.db.Save(&preparedCustomer).Error; err != nil {
 		return nil, newError("DB_UPDATE_FAILED", "Failed to update customer", err.Error())
 	}
 
 	log.Printf("✅ Customer updated: %s (%s) v%d", customer.BusinessName, customer.ID, customer.Version)
-	return &customer, nil
+	return &preparedCustomer, nil
 }
 
 // UpdateSupplier updates an existing supplier in the database

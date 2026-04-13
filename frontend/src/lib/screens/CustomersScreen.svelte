@@ -114,12 +114,6 @@
             toast.warning("Company Name is required");
             return;
         }
-        // Auto-generate customer code if not provided
-        if (!newCustomer.customer_id) {
-            const prefix = newCustomer.business_name.substring(0, 4).toUpperCase().replace(/[^A-Z]/g, '');
-            const suffix = Date.now().toString().slice(-6) + Math.random().toString(36).slice(-2);
-            newCustomer.customer_id = `CUST-${prefix}${suffix}`;
-        }
         creating = true;
         try {
             // Compose address_line1 from Bahrain address parts
@@ -149,8 +143,8 @@
                 updated_at: new time.Time(),
                 version: 0,
                 created_by: "system",
-                customer_id: newCustomer.customer_id,
-                customer_code: newCustomer.short_code || newCustomer.customer_id,
+                customer_id: newCustomer.customer_id || "",
+                customer_code: newCustomer.short_code || newCustomer.customer_id || "",
                 customer_type: newCustomer.customer_type,
                 business_name: newCustomer.business_name,
                 short_code: newCustomer.short_code || "",

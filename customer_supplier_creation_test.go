@@ -20,7 +20,7 @@ func makeCreationTestApp(t *testing.T) *App {
 		Role: Role{
 			Name:        "admin",
 			DisplayName: "Admin",
-			Permissions: `["customers:create","customers:view","suppliers:create","suppliers:view"]`,
+			Permissions: `["customers:create","customers:view","customers:edit","suppliers:create","suppliers:view"]`,
 		},
 	}
 	return app
@@ -44,7 +44,84 @@ func TestCustomerCreation_WithValidRole(t *testing.T) {
 	require.NotNil(t, created)
 	require.NotEmpty(t, created.CustomerCode)
 	require.NotEmpty(t, created.CustomerID)
+	require.Equal(t, created.CustomerCode, created.CustomerID)
 	require.Equal(t, "Creation Check Customer", created.BusinessName)
+}
+
+func TestCustomerUpdate_PreservesIdentifiersWhenOmitted(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	created, err := app.CreateCustomer(CustomerMaster{
+		BusinessName:     "Update Identifier Customer",
+		CustomerType:     "Corporate",
+		Country:          "Bahrain",
+		PaymentGrade:     "B",
+		CustomerGrade:    "B",
+		PaymentTermsDays: 30,
+	})
+	require.NoError(t, err)
+
+	updated, err := app.UpdateCustomer(CustomerMaster{
+		Base:             Base{ID: created.ID},
+		BusinessName:     "",
+		CustomerID:       "",
+		CustomerCode:     "",
+		CustomerType:     "Corporate",
+		City:             "Muharraq",
+		Country:          "Bahrain",
+		PaymentGrade:     "B",
+		CustomerGrade:    "B",
+		PaymentTermsDays: 30,
+	})
+	require.NoError(t, err)
+	require.Equal(t, created.BusinessName, updated.BusinessName)
+	require.Equal(t, created.CustomerID, updated.CustomerID)
+	require.Equal(t, created.CustomerCode, updated.CustomerCode)
+	require.Equal(t, "Muharraq", updated.City)
+}
+
+func TestCustomerUpdate_ValidatesInput(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	created, err := app.CreateCustomer(CustomerMaster{
+		BusinessName:     "Update Validation Customer",
+		CustomerType:     "Corporate",
+		Country:          "Bahrain",
+		PaymentGrade:     "B",
+		CustomerGrade:    "B",
+		PaymentTermsDays: 30,
+	})
+	require.NoError(t, err)
+
+	updated, err := app.UpdateCustomer(CustomerMaster{
+		Base:             Base{ID: created.ID},
+		BusinessName:     created.BusinessName,
+		CustomerID:       created.CustomerID,
+		CustomerCode:     created.CustomerCode,
+		CustomerType:     "Corporate",
+		Country:          "Bahrain",
+		PaymentGrade:     "Z",
+		CustomerGrade:    "B",
+		PaymentTermsDays: 30,
+	})
+	require.Error(t, err)
+	require.Nil(t, updated)
+	require.Contains(t, err.Error(), "Invalid customer data")
+}
+
+func TestCreateCustomerFromButler_UsesCustomerCreatePolicy(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	created, err := app.CreateCustomerFromButler(ButlerCustomerRequest{
+		BusinessName: "Butler Customer",
+		PaymentGrade: "invalid",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.Equal(t, "B", created.PaymentGrade)
+	require.Equal(t, "Bahrain", created.Country)
+	require.NotEmpty(t, created.CustomerCode)
+	require.Equal(t, created.CustomerCode, created.CustomerID)
 }
 
 func TestSupplierCreation_WithValidRole(t *testing.T) {
