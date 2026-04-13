@@ -27,8 +27,8 @@
     const tabs = [
         { id: "dashboard", label: "Dashboard" },
         { id: "invoices", label: "Customer Invoices" },
-        { id: "payments", label: "Payments Received" },
-        { id: "payments_made", label: "Payments Made" },
+        { id: "payments", label: "Receipts" },
+        { id: "payments_made", label: "Supplier Settlements" },
         { id: "expenses", label: "Expenses" },
         { id: "expense_approvals", label: "Approvals" },
         { id: "payroll_runs", label: "Payroll" },

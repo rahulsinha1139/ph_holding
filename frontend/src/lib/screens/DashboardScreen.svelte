@@ -102,7 +102,7 @@
             }
 
             actionItems = [
-                { icon: '', title: 'Overdue Invoices', count: stats.pendingInvoices, screen: 'finance', urgent: stats.arDaysOverdue > 30 || stats.pendingInvoices > 0 },
+                { icon: '', title: 'Overdue Receivables', count: stats.pendingInvoices, screen: 'finance', urgent: stats.arDaysOverdue > 30 || stats.pendingInvoices > 0 },
                 { icon: '', title: 'Open Opportunities', count: stats.activeRFQs, screen: 'opportunities', urgent: false },
                 { icon: '', title: 'Active Orders', count: stats.activeOrders, screen: 'operations', urgent: false },
             ];
@@ -444,7 +444,7 @@
             <div class="kpi-grid">
                 <!-- Total Revenue with YTD trend -->
                 <KPICard
-                    label="Total Revenue (YTD)"
+                    label="Invoiced Revenue (YTD)"
                     value={formatCurrency(stats.totalRevenue)}
                     meta={stats.revenueMeta}
                     trend={stats.revenueGrowth > 0 ? 'up' : stats.revenueGrowth < 0 ? 'down' : 'neutral'}
@@ -467,17 +467,17 @@
 
                 <!-- Outstanding AR -->
                 <KPICard
-                    label="Outstanding AR"
+                    label="Open Receivables"
                     value={formatCurrency(stats.outstandingAR)}
-                    meta={stats.arDaysOverdue > 0 ? `Avg ${stats.arDaysOverdue} days overdue` : "All current"}
+                    meta={stats.arDaysOverdue > 0 ? `Avg ${stats.arDaysOverdue} days overdue` : "All receivables current"}
                     trend={stats.arDaysOverdue > 30 ? 'down' : 'neutral'}
                 />
 
-                <!-- Pending Invoices -->
+                <!-- Open invoice count -->
                 <KPICard
-                    label="Pending Invoices"
+                    label="Open Invoices"
                     value={String(stats.pendingInvoices)}
-                    meta="Awaiting Payment"
+                    meta="Awaiting Collection"
                 />
 
                 <!-- Active Customers -->
