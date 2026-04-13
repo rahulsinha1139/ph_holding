@@ -225,3 +225,107 @@ func TestGetCashFlowProjection_UsesNormalizedOpenCustomerInvoices(t *testing.T) 
 	require.NoError(t, err)
 	assert.InDelta(t, 40.0, projection.TotalInflows, 0.001)
 }
+
+func TestUpdateCustomerInvoice_RejectsManualSettlementStatusEdit(t *testing.T) {
+	app := setupPaymentTestApp(t)
+	customer := createPaymentStateTestCustomer(t, app, "Workflow Lock Co")
+	invoice := createPaymentStateTestInvoice(
+		t,
+		app,
+		customer,
+		"INV-WORKFLOW-001",
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+		100,
+		25,
+		"PartiallyPaid",
+	)
+
+	_, err := app.UpdateCustomerInvoice(Invoice{
+		Base:             Base{ID: invoice.ID},
+		Status:           "Sent",
+		GrandTotalBHD:    invoice.GrandTotalBHD,
+		OutstandingBHD:   invoice.OutstandingBHD,
+		CustomerPONumber: "PO-LOCK",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "payment-driven")
+}
+
+func TestUpdateCustomerInvoice_RejectsManualOutstandingEdit(t *testing.T) {
+	app := setupPaymentTestApp(t)
+	customer := createPaymentStateTestCustomer(t, app, "Outstanding Lock Co")
+	invoice := createPaymentStateTestInvoice(
+		t,
+		app,
+		customer,
+		"INV-WORKFLOW-002",
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+		100,
+		100,
+		"Sent",
+	)
+
+	_, err := app.UpdateCustomerInvoice(Invoice{
+		Base:             Base{ID: invoice.ID},
+		Status:           "Sent",
+		GrandTotalBHD:    invoice.GrandTotalBHD,
+		OutstandingBHD:   10,
+		CustomerPONumber: "PO-LOCK",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "payment-driven")
+}
+
+func TestMarkCustomerInvoicePaid_CreatesLedgerEntryForRemainingBalance(t *testing.T) {
+	app := setupPaymentTestApp(t)
+	customer := createPaymentStateTestCustomer(t, app, "Mark Paid Co")
+	invoice := createPaymentStateTestInvoice(
+		t,
+		app,
+		customer,
+		"INV-WORKFLOW-003",
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		100,
+		40,
+		"Paid",
+	)
+
+	err := app.MarkCustomerInvoicePaid(invoice.ID, time.Date(2026, 2, 10, 0, 0, 0, 0, time.UTC), "MARK-REF")
+	require.NoError(t, err)
+
+	var updated Invoice
+	require.NoError(t, app.db.First(&updated, "id = ?", invoice.ID).Error)
+	assert.Equal(t, 0.0, updated.OutstandingBHD)
+	assert.Equal(t, "Paid", updated.Status)
+
+	var payments []Payment
+	require.NoError(t, app.db.Where("invoice_id = ?", invoice.ID).Find(&payments).Error)
+	require.Len(t, payments, 1)
+	assert.Equal(t, 40.0, payments[0].AmountBHD)
+	assert.Equal(t, "MARK-REF", payments[0].Reference)
+}
+
+func TestGetInvoicesByStatus_UsesNormalizedSettlementState(t *testing.T) {
+	app := setupPaymentTestApp(t)
+	customer := createPaymentStateTestCustomer(t, app, "Status Query Co")
+	invoice := createPaymentStateTestInvoice(
+		t,
+		app,
+		customer,
+		"INV-WORKFLOW-004",
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		100,
+		20,
+		"Paid",
+	)
+
+	invoices, err := app.GetInvoicesByStatus("PartiallyPaid")
+	require.NoError(t, err)
+	require.Len(t, invoices, 1)
+	assert.Equal(t, invoice.ID, invoices[0].ID)
+	assert.Equal(t, "PartiallyPaid", invoices[0].Status)
+}

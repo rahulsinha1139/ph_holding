@@ -92,6 +92,15 @@ func hydrateCustomerInvoicesPaymentState(invoices []Invoice) {
 	}
 }
 
+func isCustomerInvoiceSettlementStatus(status string) bool {
+	switch status {
+	case "Paid", "PartiallyPaid", "Overdue":
+		return true
+	default:
+		return false
+	}
+}
+
 func isCustomerInvoicePostedStatus(status string) bool {
 	switch status {
 	case "Sent", "Paid", "PartiallyPaid", "Overdue":

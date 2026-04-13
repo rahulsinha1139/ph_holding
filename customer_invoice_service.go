@@ -980,6 +980,7 @@ func (a *App) UpdateCustomerInvoice(inv Invoice) (Invoice, error) {
 	if err := a.db.Where("id = ?", inv.ID).First(&existing).Error; err != nil {
 		return Invoice{}, fmt.Errorf("invoice not found: %w", err)
 	}
+	hydrateCustomerInvoicePaymentState(&existing)
 
 	// SECURITY: Terminal states (Paid, Cancelled, Void) are immutable for audit compliance
 	terminalStatuses := map[string]bool{"Paid": true, "Cancelled": true, "Void": true}
@@ -1009,12 +1010,16 @@ func (a *App) UpdateCustomerInvoice(inv Invoice) (Invoice, error) {
 	if !validStatuses[inv.Status] {
 		return Invoice{}, fmt.Errorf("invalid invoice status: '%s'", inv.Status)
 	}
-	existing.Status = inv.Status
 
-	// Fix 3: Prevent setting status to "Paid" when there's still outstanding balance
-	if existing.Status == "Paid" && existing.OutstandingBHD > 0.001 {
-		return Invoice{}, fmt.Errorf("cannot set status to Paid: outstanding balance is %.3f BHD (must be 0)", existing.OutstandingBHD)
+	if math.Abs(inv.OutstandingBHD-existing.OutstandingBHD) > FloatingPointTolerance {
+		return Invoice{}, fmt.Errorf("outstanding balance is payment-driven and cannot be edited directly")
 	}
+
+	if inv.Status != existing.Status && (isCustomerInvoiceSettlementStatus(inv.Status) || isCustomerInvoiceSettlementStatus(existing.Status)) {
+		return Invoice{}, fmt.Errorf("invoice settlement status is payment-driven; record a payment or let the due-date workflow derive overdue state")
+	}
+
+	existing.Status = inv.Status
 
 	// Fix 2: GrandTotalBHD is a computed field (SubtotalBHD + VATBHD) — NOT directly editable
 	// OutstandingBHD intentionally NOT editable — must change via payments/credit notes only
@@ -1279,52 +1284,22 @@ func (a *App) MarkCustomerInvoicePaid(id string, paymentDate time.Time, paymentR
 		return fmt.Errorf("database not initialized")
 	}
 
-	// P1 FIX: Use database transaction to prevent concurrent payment race conditions
-	tx := a.db.Begin()
-	if tx.Error != nil {
-		return fmt.Errorf("failed to start transaction: %w", tx.Error)
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-			log.Printf("❌ Transaction rolled back due to panic: %v", r)
-		}
-	}()
-
-	// Verify invoice exists (with transaction lock)
 	var invoice Invoice
-	if err := tx.Where("id = ?", id).First(&invoice).Error; err != nil {
-		tx.Rollback()
+	if err := a.db.Where("id = ?", id).First(&invoice).Error; err != nil {
 		return fmt.Errorf("invoice not found: %w", err)
 	}
 
-	// Fix 5: Block marking terminal-state invoices as paid
-	nonMarkableStatuses := map[string]bool{"Cancelled": true, "Void": true, "Proforma": true, "Paid": true}
-	if nonMarkableStatuses[invoice.Status] {
-		tx.Rollback()
-		return fmt.Errorf("cannot mark invoice as paid: current status is '%s'", invoice.Status)
+	state := customerInvoicePaymentStateFromInvoice(invoice, time.Now())
+	if !state.IsOpen {
+		return fmt.Errorf("cannot mark invoice as paid: current status is '%s'", state.Status)
 	}
 
-	// Update status and outstanding balance atomically
-	now := time.Now()
-	if err := tx.Model(&Invoice{}).
-		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"status":          "Paid",
-			"outstanding_bhd": 0.0,
-			"updated_at":      now,
-		}).Error; err != nil {
-		tx.Rollback()
+	if err := a.RecordPartialPayment(id, state.OutstandingBHD, paymentDate, paymentRef); err != nil {
 		return fmt.Errorf("failed to mark invoice as paid: %w", err)
 	}
 
-	// Commit transaction
-	if err := tx.Commit().Error; err != nil {
-		return fmt.Errorf("failed to commit payment transaction: %w", err)
-	}
-
 	log.Printf("💰 Marked Invoice as Paid: %s (Customer: %s, Amount: %.3f BHD, Ref: %s)",
-		invoice.InvoiceNumber, invoice.CustomerName, invoice.GrandTotalBHD, paymentRef)
+		invoice.InvoiceNumber, invoice.CustomerName, state.OutstandingBHD, paymentRef)
 
 	return nil
 }
@@ -1344,29 +1319,31 @@ func (a *App) MarkCustomerInvoiceOverdue(id string) error {
 	if err := a.db.Where("id = ?", id).First(&invoice).Error; err != nil {
 		return fmt.Errorf("invoice not found: %w", err)
 	}
-
-	if invoice.Status == "Paid" {
-		return fmt.Errorf("cannot mark paid invoice as overdue: %s", invoice.InvoiceNumber)
+	state := customerInvoicePaymentStateFromInvoice(invoice, time.Now())
+	if !state.IsCollectible {
+		return fmt.Errorf("cannot mark %s invoice as overdue: %s", state.Status, invoice.InvoiceNumber)
+	}
+	if state.Status != "Overdue" {
+		return fmt.Errorf("invoice settlement status remains %s: %s", state.Status, invoice.InvoiceNumber)
 	}
 
-	// Don't regress PartiallyPaid — partial payment information is more important than overdue status
-	if invoice.Status == "PartiallyPaid" {
-		return fmt.Errorf("cannot mark partially paid invoice as overdue: %s (status: PartiallyPaid)", invoice.InvoiceNumber)
+	tx := a.db.Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("failed to start transaction: %w", tx.Error)
 	}
-	// Block terminal states
-	if invoice.Status == "Cancelled" || invoice.Status == "Void" {
-		return fmt.Errorf("cannot mark %s invoice as overdue: %s", invoice.Status, invoice.InvoiceNumber)
-	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
 
-	// Update status to Overdue
-	now := time.Now()
-	if err := a.db.Model(&Invoice{}).
-		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"status":     "Overdue",
-			"updated_at": now,
-		}).Error; err != nil {
+	invoice.OutstandingBHD = state.OutstandingBHD
+	if _, err := a.applyCustomerInvoicePaymentState(tx, &invoice); err != nil {
+		tx.Rollback()
 		return fmt.Errorf("failed to mark invoice as overdue: %w", err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("failed to commit overdue update: %w", err)
 	}
 
 	log.Printf("⚠️ Marked Invoice as Overdue: %s (Customer: %s, Due: %s, Outstanding: %.3f BHD)",
@@ -1451,16 +1428,22 @@ func (a *App) GetInvoicesByStatus(status string) ([]Invoice, error) {
 	}
 
 	var invoices []Invoice
-	if err := a.db.Preload("Items").
-		Where("status = ?", status).
-		Order("invoice_date DESC").
+	if err := a.db.Order("invoice_date DESC").
 		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve invoices by status: %w", err)
 	}
 
-	log.Printf("📊 Retrieved %d invoices with status: %s", len(invoices), status)
-	return invoices, nil
+	hydrateCustomerInvoicesPaymentState(invoices)
+	filtered := make([]Invoice, 0, len(invoices))
+	for _, invoice := range invoices {
+		if invoice.Status == status {
+			filtered = append(filtered, invoice)
+		}
+	}
+
+	log.Printf("📊 Retrieved %d invoices with status: %s", len(filtered), status)
+	return filtered, nil
 }
 
 // RecordPartialPayment records a partial payment against an invoice

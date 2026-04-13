@@ -284,6 +284,12 @@
     PartiallyPaid: '#F59E0B',
   };
 
+  const workflowEditableStatuses = ['Draft', 'Sent', 'Cancelled', 'Void', 'Proforma'];
+
+  function isSettlementLockedStatus(status: string): boolean {
+    return ['Paid', 'PartiallyPaid', 'Overdue'].includes(String(status || ''));
+  }
+
   function openEditModal(invoice: Invoice) {
     editInvoice = { ...invoice };
     showEditModal = true;
@@ -295,14 +301,6 @@
     // Validate amounts > 0
     if (editInvoice.grand_total_bhd <= 0) {
       toast.warning('Invoice amount must be greater than 0');
-      return;
-    }
-    if (editInvoice.outstanding_bhd < 0) {
-      toast.warning('Outstanding amount cannot be negative');
-      return;
-    }
-    if (editInvoice.outstanding_bhd > editInvoice.grand_total_bhd) {
-      toast.warning('Outstanding amount cannot exceed invoice total');
       return;
     }
 
@@ -873,7 +871,7 @@
                     {sendingInvoiceId === row.id ? '...' : 'Send'}
                   </button>
                 {/if}
-                {#if row.status !== 'Paid'}
+                {#if !['Paid', 'Cancelled', 'Void'].includes(row.status)}
                   <button
                     class="action-btn action-delete"
                     on:click|stopPropagation={() => openDeleteModal(row)}
@@ -1154,13 +1152,21 @@
         </div>
         <div class="form-field">
           <label>Status</label>
-          <select bind:value={editInvoice.status} class="input-field">
-            <option value="Draft">Draft</option>
-            <option value="Sent">Sent</option>
-            <option value="Paid">Paid</option>
-            <option value="PartiallyPaid">Partially Paid</option>
-            <option value="Overdue">Overdue</option>
-          </select>
+          {#if isSettlementLockedStatus(editInvoice.status)}
+            <input
+              type="text"
+              value={editInvoice.status}
+              class="input-field"
+              disabled
+              title="Settlement status is derived from payments, credit notes, and due date"
+            />
+          {:else}
+            <select bind:value={editInvoice.status} class="input-field">
+              {#each workflowEditableStatuses as status}
+                <option value={status}>{status}</option>
+              {/each}
+            </select>
+          {/if}
         </div>
       </div>
       <div class="form-row">
@@ -1176,17 +1182,19 @@
           />
         </div>
         <div class="form-field">
-          <label>Outstanding (BHD) <span class="required">*</span></label>
+          <label>Outstanding (BHD)</label>
           <input
-            type="number"
-            step="0.001"
-            min="0"
-            bind:value={editInvoice.outstanding_bhd}
+            type="text"
+            value={formatBHD(editInvoice.outstanding_bhd)}
             class="input-field"
-            required
+            disabled
+            title="Outstanding balance is payment-driven and read-only here"
           />
         </div>
       </div>
+      {#if isSettlementLockedStatus(editInvoice.status)}
+        <p class="workflow-hint">Settlement status and outstanding balance are ledger-driven here. Use Payments or Credit Notes to change them.</p>
+      {/if}
       <div class="form-field">
         <label>Customer PO Number</label>
         <input type="text" bind:value={editInvoice.customer_po_number} class="input-field" />
@@ -1683,6 +1691,12 @@
   .input-field:focus {
     border-color: var(--ink, #1d1d1f);
     outline: none;
+  }
+  .workflow-hint {
+    margin: -4px 0 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-secondary);
   }
 
   /* Modal Forms */
