@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -337,6 +338,10 @@ func (a *App) matchToCustomerInvoice(line *BankStatementLine, invoiceNumbers []s
 		var invoice Invoice
 		err := a.db.Where("invoice_number LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(invNum)+"%").First(&invoice).Error
 		if err == nil {
+			state := customerInvoicePaymentStateFromInvoice(invoice, time.Now())
+			if !state.IsCollectible {
+				continue
+			}
 			// Found matching invoice
 			return true, invoice.ID, 0.95
 		}
@@ -347,21 +352,38 @@ func (a *App) matchToCustomerInvoice(line *BankStatementLine, invoiceNumbers []s
 		var customer CustomerMaster
 		err := a.db.Where("business_name LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(customerName)+"%").First(&customer).Error
 		if err == nil {
-			// Found customer, look for matching invoice amount
-			var invoice Invoice
-			err = a.db.Where("customer_id = ? AND grand_total_bhd = ? AND status = ?",
-				customer.ID, line.Credit, "Outstanding").First(&invoice).Error
+			// Found customer, look for a collectible invoice whose open balance matches the receipt.
+			var invoices []Invoice
+			err = a.db.Where("customer_id = ? AND outstanding_bhd > 0", customer.ID).
+				Order("due_date ASC, invoice_date ASC").
+				Find(&invoices).Error
 			if err == nil {
-				return true, invoice.ID, 0.85
+				for _, invoice := range invoices {
+					state := customerInvoicePaymentStateFromInvoice(invoice, time.Now())
+					if !state.IsCollectible {
+						continue
+					}
+					if math.Abs(state.OutstandingBHD-line.Credit) <= FloatingPointTolerance {
+						return true, invoice.ID, 0.85
+					}
+				}
 			}
 		}
 	}
 
 	// Try matching by amount only (low confidence)
-	var invoice Invoice
-	err := a.db.Where("grand_total_bhd = ? AND status = ?", line.Credit, "Outstanding").First(&invoice).Error
+	var invoices []Invoice
+	err := a.db.Where("outstanding_bhd > 0").Order("due_date ASC, invoice_date ASC").Find(&invoices).Error
 	if err == nil {
-		return true, invoice.ID, 0.60
+		for _, invoice := range invoices {
+			state := customerInvoicePaymentStateFromInvoice(invoice, time.Now())
+			if !state.IsCollectible {
+				continue
+			}
+			if math.Abs(state.OutstandingBHD-line.Credit) <= FloatingPointTolerance {
+				return true, invoice.ID, 0.60
+			}
+		}
 	}
 
 	return false, "", 0
@@ -449,7 +471,7 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 	case "CUSTOMER_INVOICE":
 		var inv Invoice
 		if err := a.db.First(&inv, "id = ?", entityID).Error; err == nil {
-			entityAmount = inv.GrandTotalBHD
+			entityAmount = customerInvoicePaymentStateFromInvoice(inv, time.Now()).OutstandingBHD
 		}
 	case "SUPPLIER_INVOICE":
 		var sinv SupplierInvoice

@@ -76,6 +76,22 @@ func canRecordCustomerInvoicePayment(invoice Invoice, asOf time.Time) bool {
 	return state.IsOpen
 }
 
+func hydrateCustomerInvoicePaymentState(invoice *Invoice) {
+	if invoice == nil {
+		return
+	}
+
+	state := customerInvoicePaymentStateFromInvoice(*invoice, time.Now())
+	invoice.OutstandingBHD = state.OutstandingBHD
+	invoice.Status = state.Status
+}
+
+func hydrateCustomerInvoicesPaymentState(invoices []Invoice) {
+	for i := range invoices {
+		hydrateCustomerInvoicePaymentState(&invoices[i])
+	}
+}
+
 func isCustomerInvoicePostedStatus(status string) bool {
 	switch status {
 	case "Sent", "Paid", "PartiallyPaid", "Overdue":

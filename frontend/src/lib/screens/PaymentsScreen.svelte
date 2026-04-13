@@ -332,9 +332,10 @@
       hasMore = payments.length === PAGE_SIZE;
 
       // Filter to only unpaid/partially paid invoices for dropdown
-      invoices = (invoicesData || []).filter(
-        inv => inv.outstanding_bhd > 0
-      );
+      invoices = (invoicesData || []).filter((inv) => {
+        const status = String(inv?.status || '').toLowerCase();
+        return Number(inv?.outstanding_bhd || 0) > 0 && !['draft', 'cancelled', 'void', 'proforma'].includes(status);
+      });
 
       console.log(`Loaded ${payments.length} payments (page 1), ${invoices.length} unpaid invoices`);
     } catch (err) {

@@ -932,6 +932,8 @@ func (a *App) ListCustomerInvoices(limit, offset int) ([]Invoice, error) {
 		return nil, fmt.Errorf("failed to retrieve invoices: %w", err)
 	}
 
+	hydrateCustomerInvoicesPaymentState(invoices)
+
 	// Debug: Log items loaded per invoice
 	for i, inv := range invoices {
 		log.Printf("🔍 Invoice[%d] %s: %d items loaded", i, inv.InvoiceNumber, len(inv.Items))
@@ -955,6 +957,8 @@ func (a *App) GetCustomerInvoiceByID(id string) (Invoice, error) {
 	if err := a.db.Preload("Items").Where("id = ?", id).First(&invoice).Error; err != nil {
 		return Invoice{}, fmt.Errorf("invoice not found: %w", err)
 	}
+
+	hydrateCustomerInvoicePaymentState(&invoice)
 
 	return invoice, nil
 }
@@ -1186,6 +1190,8 @@ func (a *App) GetInvoicesByCustomer(customerID string) ([]Invoice, error) {
 		return nil, fmt.Errorf("failed to retrieve customer invoices: %w", err)
 	}
 
+	hydrateCustomerInvoicesPaymentState(invoices)
+
 	log.Printf("📊 Retrieved %d invoices for customer %s", len(invoices), customerID)
 	return invoices, nil
 }
@@ -1383,15 +1389,24 @@ func (a *App) GetOverdueInvoices() ([]Invoice, error) {
 	now := time.Now()
 	var invoices []Invoice
 	if err := a.db.Preload("Items").
-		Where("due_date < ? AND status != ?", now, "Paid").
+		Where("due_date < ? AND outstanding_bhd > 0", now).
 		Order("due_date ASC").
 		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve overdue invoices: %w", err)
 	}
 
-	log.Printf("⚠️ Retrieved %d overdue invoices", len(invoices))
-	return invoices, nil
+	hydrateCustomerInvoicesPaymentState(invoices)
+	filtered := make([]Invoice, 0, len(invoices))
+	for _, invoice := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(invoice, now)
+		if state.IsOverdue {
+			filtered = append(filtered, invoice)
+		}
+	}
+
+	log.Printf("⚠️ Retrieved %d overdue invoices", len(filtered))
+	return filtered, nil
 }
 
 // GetUnpaidInvoices retrieves all unpaid invoices
@@ -1406,15 +1421,24 @@ func (a *App) GetUnpaidInvoices() ([]Invoice, error) {
 
 	var invoices []Invoice
 	if err := a.db.Preload("Items").
-		Where("status IN ?", []string{"Draft", "Sent", "Overdue"}).
+		Where("outstanding_bhd > 0").
 		Order("invoice_date DESC").
 		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve unpaid invoices: %w", err)
 	}
 
-	log.Printf("📊 Retrieved %d unpaid invoices", len(invoices))
-	return invoices, nil
+	hydrateCustomerInvoicesPaymentState(invoices)
+	filtered := make([]Invoice, 0, len(invoices))
+	for _, invoice := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(invoice, time.Now())
+		if state.IsOpen {
+			filtered = append(filtered, invoice)
+		}
+	}
+
+	log.Printf("📊 Retrieved %d unpaid invoices", len(filtered))
+	return filtered, nil
 }
 
 // GetInvoicesByStatus retrieves invoices filtered by status

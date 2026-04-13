@@ -511,7 +511,7 @@
 
       customerInvoiceCandidates = (allCustomerInvoices || []).filter((invoice: any) => {
         const status = String(invoice?.status || '').toLowerCase();
-        return Number(invoice?.outstanding_bhd || 0) > 0 && !['cancelled', 'void', 'draft'].includes(status);
+        return Number(invoice?.outstanding_bhd || 0) > 0 && !['cancelled', 'void', 'draft', 'proforma'].includes(status);
       });
       supplierInvoiceCandidates = (allSupplierInvoices || []).filter((invoice: any) => {
         const status = String(invoice?.status || '').toLowerCase();
@@ -540,7 +540,7 @@
 
   function buildMatchCandidateLabel(candidate: any, type: string) {
     if (type === 'CUSTOMER_INVOICE') {
-      return `${candidate.invoice_number || 'Invoice'} • ${candidate.customer_name || 'Customer'} • ${formatBHD(candidate.grand_total_bhd || 0)} BHD`;
+      return `${candidate.invoice_number || 'Invoice'} • ${candidate.customer_name || 'Customer'} • ${formatBHD(candidate.outstanding_bhd || candidate.grand_total_bhd || 0)} BHD open`;
     }
     if (type === 'SUPPLIER_PAYMENT') {
       return `${candidate.reference || candidate.invoice_number || 'Payment'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.amount_bhd || 0)} BHD settled`;
