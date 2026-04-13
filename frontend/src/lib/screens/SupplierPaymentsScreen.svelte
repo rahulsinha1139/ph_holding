@@ -243,7 +243,7 @@
       <span class="kpi-value">{formatBHD(totalPaidYTD)} BHD</span>
     </div>
     <div class="kpi">
-      <span class="kpi-label">Outstanding Value</span>
+      <span class="kpi-label">Open Payables Value</span>
       <span class="kpi-value">{formatBHD(summary.outstanding_bhd || 0)} BHD</span>
     </div>
     <div class="kpi">
