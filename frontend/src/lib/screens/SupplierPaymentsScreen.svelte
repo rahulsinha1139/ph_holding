@@ -140,7 +140,7 @@
       }));
       const supplierPaymentRows = (paymentsRes || []).map((row: any) => ({
         ...row,
-        source: row.source || 'Supplier Invoice',
+        source: row.source || 'Supplier Payable',
       }));
       payments = [...supplierPaymentRows, ...expensePaymentRows].sort((left: any, right: any) => {
         const leftTime = new Date(left.payment_date || 0).getTime();
@@ -223,7 +223,7 @@
 
 <div class="screen" in:fade={{ duration: 200 }}>
   {#if !embedded}
-    <PageLayout title="Payments Made" subtitle="Track outgoing payments across supplier invoices and expense settlements">
+    <PageLayout title="Supplier Settlements" subtitle="Track outgoing cash events alongside open supplier payables">
       <svelte:fragment slot="actions">
         <Button variant="secondary" on:click={openBankReconciliation}>Open Bank Recon</Button>
         <Button variant="primary" on:click={openPaymentModal}>Record Payment</Button>
@@ -247,11 +247,11 @@
       <span class="kpi-value">{formatBHD(summary.outstanding_bhd || 0)} BHD</span>
     </div>
     <div class="kpi">
-      <span class="kpi-label">Outstanding Invoices</span>
+      <span class="kpi-label">Open Payables</span>
       <span class="kpi-value">{summary.outstanding_count || 0}</span>
     </div>
     <div class="kpi">
-      <span class="kpi-label">Overdue</span>
+      <span class="kpi-label">Overdue Payables</span>
       <span class="kpi-value kpi-alert">{summary.overdue_count || 0}</span>
     </div>
   </div>

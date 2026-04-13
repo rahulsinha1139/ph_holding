@@ -411,7 +411,7 @@
     matchingLine = line;
     matchingSearch = '';
     matchingCandidateId = '';
-    matchingType = line.credit > 0 ? 'CUSTOMER_INVOICE' : 'SUPPLIER_INVOICE';
+    matchingType = line.credit > 0 ? 'CUSTOMER_INVOICE' : 'SUPPLIER_PAYMENT';
     showMatchModal = true;
     void loadMatchCandidates(line);
   }
@@ -435,6 +435,16 @@
       });
       supplierPaymentCandidates = supplierPayments || [];
       payrollPayoutCandidates = await ListUnreconciledPayrollPayouts().catch(() => []);
+
+      if (line.debit > 0) {
+        if (supplierPaymentCandidates.length > 0) {
+          matchingType = 'SUPPLIER_PAYMENT';
+        } else if (payrollPayoutCandidates.length > 0) {
+          matchingType = 'PAYROLL_PAYOUT';
+        } else {
+          matchingType = 'SUPPLIER_INVOICE';
+        }
+      }
     } finally {
       matchLoading = false;
     }
@@ -449,12 +459,12 @@
       return `${candidate.invoice_number || 'Invoice'} • ${candidate.customer_name || 'Customer'} • ${formatBHD(candidate.grand_total_bhd || 0)} BHD`;
     }
     if (type === 'SUPPLIER_PAYMENT') {
-      return `${candidate.reference || candidate.invoice_number || 'Payment'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.amount_bhd || 0)} BHD`;
+      return `${candidate.reference || candidate.invoice_number || 'Payment'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.amount_bhd || 0)} BHD settled`;
     }
     if (type === 'PAYROLL_PAYOUT') {
       return `${candidate.run_number || 'Payroll'} • ${candidate.employee_name || 'Employee'} • ${formatBHD(candidate.amount || 0)} BHD${candidate.payment_reference ? ` • ${candidate.payment_reference}` : ''}`;
     }
-    return `${candidate.invoice_number || 'Invoice'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.outstanding_bhd || candidate.total_bhd || 0)} BHD`;
+    return `${candidate.invoice_number || 'Invoice'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.outstanding_bhd || candidate.total_bhd || 0)} BHD open`;
   }
 
   function getFilteredMatchCandidates() {
@@ -1034,9 +1044,9 @@
                 {#if matchingLine.credit > 0}
                   <option value="CUSTOMER_INVOICE">Customer Invoice</option>
                 {:else}
-                  <option value="SUPPLIER_INVOICE">Supplier Invoice</option>
                   <option value="SUPPLIER_PAYMENT">Supplier Payment</option>
                   <option value="PAYROLL_PAYOUT">Payroll Payout</option>
+                  <option value="SUPPLIER_INVOICE">Supplier Invoice</option>
                 {/if}
               </select>
             </FormGroup>
