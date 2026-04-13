@@ -12991,47 +12991,9 @@ func (a *App) SeedDatabaseFromOpportunities(opportunitiesFile string) (map[strin
 	// Seed customers using actual CustomerMaster fields from database.go
 	customersCreated := 0
 	for _, c := range customersData {
-		existing := &CustomerMaster{}
-		if err := a.db.Where("business_name = ?", c.NormalizedName).First(existing).Error; err == nil {
-			continue // Already exists
-		}
-
-		// Generate customer code from name (first 3 letters + sequence)
-		customerCode := strings.ToUpper(strings.ReplaceAll(c.NormalizedName, " ", ""))
-		if len(customerCode) > 10 {
-			customerCode = customerCode[:10]
-		}
-
-		customer := &CustomerMaster{
-			CustomerCode:  customerCode + "-" + uuid.New().String()[:4],
-			BusinessName:  c.NormalizedName,
-			CustomerType:  "Industrial", // Default for instrumentation
-			Country:       "Bahrain",    // Default
-			CustomerGrade: "B",          // Default grade
-		}
-
-		preparedCustomer, err := newCustomerWritePolicy(GlobalValidator).PrepareForCreate(*customer)
-		if err != nil {
-			continue
-		}
-		customer = &preparedCustomer
-
-		if err := a.db.Create(customer).Error; err == nil {
-			customersCreated++
-
-			// If we have contact info, create a CustomerContact record
-			if len(c.EmailAddresses) > 0 || len(c.PhoneNumbers) > 0 {
-				contact := &CustomerContact{
-					CustomerID:       customer.ID,
-					IsPrimaryContact: true,
-				}
-				if len(c.EmailAddresses) > 0 {
-					contact.Email = c.EmailAddresses[0]
-				}
-				if len(c.PhoneNumbers) > 0 {
-					contact.Phone = c.PhoneNumbers[0]
-				}
-				a.db.Create(contact)
+		if _, created, err := a.ensureSeedCustomerFromExtracted(c); err == nil {
+			if created {
+				customersCreated++
 			}
 		}
 	}

@@ -256,6 +256,96 @@ func TestGetCustomerFullProfile_RepairsLegacyDisplayIdentifier(t *testing.T) {
 	require.True(t, strings.HasPrefix(profile.CustomerID, "CUST-"))
 }
 
+func TestExtractPrimarySeedCustomerContact_UsesFirstNonEmptyTrimmedValues(t *testing.T) {
+	email, phone := extractPrimarySeedCustomerContact(ExtractedCustomer{
+		EmailAddresses: []string{"", "  sales@example.com  ", "other@example.com"},
+		PhoneNumbers:   []string{" ", "  +973 1234 5678  ", "999"},
+	})
+
+	require.Equal(t, "sales@example.com", email)
+	require.Equal(t, "+973 1234 5678", phone)
+}
+
+func TestEnsureSeedCustomerFromExtracted_CreatesCanonicalCustomerAndPrimaryContact(t *testing.T) {
+	app := makeCreationTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&CustomerContact{}))
+
+	customer, created, err := app.ensureSeedCustomerFromExtracted(ExtractedCustomer{
+		NormalizedName: "Seeded Opportunity Customer",
+		EmailAddresses: []string{"sales@seeded.example"},
+		PhoneNumbers:   []string{"+973-1700-0000"},
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.NotNil(t, customer)
+	require.Equal(t, customer.CustomerCode, customer.CustomerID)
+	require.Equal(t, "Corporate", customer.CustomerType)
+	require.Equal(t, "B", customer.PaymentGrade)
+	require.Equal(t, "Active", customer.Status)
+
+	var contacts []CustomerContact
+	require.NoError(t, app.db.Where("customer_id = ?", customer.ID).Find(&contacts).Error)
+	require.Len(t, contacts, 1)
+	require.True(t, contacts[0].IsPrimaryContact)
+	require.Equal(t, "sales@seeded.example", contacts[0].Email)
+	require.Equal(t, "+973-1700-0000", contacts[0].Phone)
+}
+
+func TestEnsureSeedCustomerFromExtracted_EnrichesExistingCustomerWithoutDuplicateContact(t *testing.T) {
+	app := makeCreationTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&CustomerContact{}))
+
+	existing, err := app.CreateCustomer(CustomerMaster{
+		BusinessName:     "Existing Seed Customer",
+		CustomerType:     "Corporate",
+		Country:          "Bahrain",
+		PaymentGrade:     "B",
+		CustomerGrade:    "B",
+		PaymentTermsDays: 30,
+	})
+	require.NoError(t, err)
+
+	customer, created, err := app.ensureSeedCustomerFromExtracted(ExtractedCustomer{
+		NormalizedName: "existing seed customer",
+		EmailAddresses: []string{"ops@example.com"},
+		PhoneNumbers:   []string{"+973-9988-7766"},
+	})
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, existing.ID, customer.ID)
+
+	customer, created, err = app.ensureSeedCustomerFromExtracted(ExtractedCustomer{
+		NormalizedName: "Existing Seed Customer",
+		EmailAddresses: []string{"ops@example.com"},
+		PhoneNumbers:   []string{"+973-9988-7766"},
+	})
+	require.NoError(t, err)
+	require.False(t, created)
+
+	var contacts []CustomerContact
+	require.NoError(t, app.db.Where("customer_id = ?", existing.ID).Find(&contacts).Error)
+	require.Len(t, contacts, 1)
+	require.True(t, contacts[0].IsPrimaryContact)
+	require.Equal(t, "ops@example.com", contacts[0].Email)
+	require.Equal(t, "+973-9988-7766", contacts[0].Phone)
+}
+
+func TestEnsureSeedCustomerFromExtracted_DoesNotCreateBlankContact(t *testing.T) {
+	app := makeCreationTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&CustomerContact{}))
+
+	customer, created, err := app.ensureSeedCustomerFromExtracted(ExtractedCustomer{
+		NormalizedName: "Seeded Without Contact",
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.NotNil(t, customer)
+
+	var contacts []CustomerContact
+	require.NoError(t, app.db.Where("customer_id = ?", customer.ID).Find(&contacts).Error)
+	require.Len(t, contacts, 0)
+}
+
 func TestSupplierCreation_WithValidRole(t *testing.T) {
 	app := makeCreationTestApp(t)
 
