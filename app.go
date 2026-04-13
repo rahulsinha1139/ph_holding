@@ -12944,6 +12944,7 @@ func (a *App) SeedDatabaseFromOpportunities(opportunitiesFile string) (map[strin
 
 	// Extract data from seed
 	customersData, _ := seedData["customers"].([]ExtractedCustomer)
+	suppliersData, _ := seedData["suppliers"].([]ExtractedSupplier)
 	rfqsData, _ := seedData["rfqs"].([]map[string]interface{})
 
 	// Seed customers using actual CustomerMaster fields from database.go
@@ -13000,40 +13001,12 @@ func (a *App) SeedDatabaseFromOpportunities(opportunitiesFile string) (map[strin
 		}
 	}
 
-	// Seed default suppliers (known instrumentation suppliers)
-	suppliers := []map[string]string{
-		{"name": "Endress+Hauser", "code": "EH", "country": "Germany", "payment_terms": "Net 60"},
-		{"name": "Servomex", "code": "SRVX", "country": "UK", "payment_terms": "Net 45"},
-		{"name": "Siemens", "code": "SIEM", "country": "Germany", "payment_terms": "Net 60"},
-		{"name": "Emerson", "code": "EMER", "country": "USA", "payment_terms": "Net 45"},
-		{"name": "ABB", "code": "ABB", "country": "Switzerland", "payment_terms": "Net 45"},
-		{"name": "Yokogawa", "code": "YOKO", "country": "Japan", "payment_terms": "Net 60"},
-		{"name": "Honeywell", "code": "HON", "country": "USA", "payment_terms": "Net 45"},
-	}
-
 	suppliersCreated := 0
-	for _, s := range suppliers {
-		existing := &SupplierMaster{}
-		if err := a.db.Where("supplier_name = ?", s["name"]).First(existing).Error; err == nil {
-			continue
-		}
-
-		supplier := &SupplierMaster{
-			SupplierCode: s["code"],
-			SupplierName: s["name"],
-			SupplierType: "Manufacturer",
-			Country:      s["country"],
-			PaymentTerms: s["payment_terms"],
-			Rating:       5, // Default 5-star
-		}
-
-		preparedSupplier, err := newSupplierWritePolicy(GlobalValidator).PrepareForCreate(*supplier)
-		if err != nil {
-			continue
-		}
-
-		if err := a.db.Create(&preparedSupplier).Error; err == nil {
-			suppliersCreated++
+	for _, spec := range canonicalSeedSupplierSpecs(suppliersData) {
+		if _, created, err := a.ensureSeedSupplier(spec); err == nil {
+			if created {
+				suppliersCreated++
+			}
 		}
 	}
 

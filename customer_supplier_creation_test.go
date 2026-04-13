@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -452,6 +453,99 @@ func TestCreateSupplierFromButler_UsesSupplierCreatePolicy(t *testing.T) {
 	require.Equal(t, "Bahrain", created.Country)
 	require.NotEmpty(t, created.SupplierCode)
 	require.Equal(t, 3, created.Rating)
+}
+
+func TestCanonicalSeedSupplierSpecs_MergesExtractedSupplierProducts(t *testing.T) {
+	specs := canonicalSeedSupplierSpecs([]ExtractedSupplier{
+		{
+			NormalizedName: "Endress+Hauser",
+			Products:       []string{"Flow meters", "Level transmitters"},
+		},
+		{
+			NormalizedName: "New Supplier",
+			Products:       []string{"Analyzers"},
+		},
+	})
+
+	var endress supplierSeedSpec
+	var foundEndress bool
+	var foundNew bool
+	for _, spec := range specs {
+		if spec.Name == "Endress+Hauser" {
+			endress = spec
+			foundEndress = true
+		}
+		if spec.Name == "New Supplier" {
+			foundNew = true
+		}
+	}
+
+	require.True(t, foundEndress)
+	require.True(t, foundNew)
+	require.Contains(t, endress.ProductTypes, "Flow meters")
+	require.Contains(t, endress.ProductTypes, "Level transmitters")
+}
+
+func TestEnsureSeedSupplier_CreatesCanonicalSupplier(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	supplier, created, err := app.ensureSeedSupplier(supplierSeedSpec{
+		Name:         "Seeded Supplier",
+		Code:         "SEED",
+		Country:      "Bahrain",
+		PaymentTerms: "Net 30",
+		SupplierType: "Manufacturer",
+		Rating:       5,
+		ProductTypes: []string{"Analyzers"},
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.NotNil(t, supplier)
+	require.Equal(t, "SEED", supplier.SupplierCode)
+	require.Equal(t, "Manufacturer", supplier.SupplierType)
+	require.Equal(t, 5, supplier.Rating)
+
+	var stored SupplierMaster
+	require.NoError(t, app.db.First(&stored, "id = ?", supplier.ID).Error)
+	var products []string
+	require.NoError(t, json.Unmarshal([]byte(stored.ProductTypes), &products))
+	require.Equal(t, []string{"Analyzers"}, products)
+}
+
+func TestEnsureSeedSupplier_EnrichesExistingSupplierWithoutChangingIdentity(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	existing, err := app.CreateSupplier(SupplierMaster{
+		SupplierName: "Existing Seed Supplier",
+		SupplierType: "Manufacturer",
+		Country:      "",
+		LeadTimeDays: 10,
+	})
+	require.NoError(t, err)
+
+	supplier, created, err := app.ensureSeedSupplier(supplierSeedSpec{
+		Name:         "existing seed supplier",
+		Code:         "EXIST",
+		Country:      "Germany",
+		PaymentTerms: "Net 60",
+		SupplierType: "Manufacturer",
+		Rating:       5,
+		ProductTypes: []string{"Flow meters", "Analyzers"},
+	})
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, existing.ID, supplier.ID)
+	require.Equal(t, existing.SupplierCode, supplier.SupplierCode)
+
+	var stored SupplierMaster
+	require.NoError(t, app.db.First(&stored, "id = ?", existing.ID).Error)
+	require.Equal(t, "Germany", stored.Country)
+	require.Equal(t, "Net 30", stored.PaymentTerms)
+	require.Equal(t, 3, stored.Rating)
+
+	var products []string
+	require.NoError(t, json.Unmarshal([]byte(stored.ProductTypes), &products))
+	require.Equal(t, []string{"Flow meters", "Analyzers"}, products)
 }
 
 func TestCustomerCreation_RequiresCreatePermission(t *testing.T) {
