@@ -439,6 +439,12 @@ func (a *App) CompleteGRN(id string) error {
 			tx.Rollback()
 			return newError("DB_UPDATE_FAILED", "Failed to update PO item quantity", err.Error())
 		}
+		poItem.QuantityReceived = newQuantityReceived
+
+		if err := a.reconcileInventoryReceipt(tx, grn, poItem, item); err != nil {
+			tx.Rollback()
+			return newError("DB_UPDATE_FAILED", "Failed to reconcile inventory receipt", err.Error())
+		}
 
 		log.Printf("Updated PO item %s: received %.2f (total now: %.2f/%.2f)",
 			item.POItemID, item.QuantityReceived, newQuantityReceived, poItem.Quantity)

@@ -493,8 +493,8 @@ func (a *App) ApproveSupplierInvoice(id string, approvedBy string) error {
 	}
 
 	// Verify 3-way match passed before approving
-	if invoice.MatchStatus == "Discrepancy" {
-		return fmt.Errorf("cannot approve invoice with discrepancies: %s", invoice.InvoiceNumber)
+	if invoice.MatchStatus != "Matched" {
+		return fmt.Errorf("cannot approve invoice until 3-way match is Matched: %s", invoice.InvoiceNumber)
 	}
 
 	now := time.Now()
@@ -767,7 +767,7 @@ func (a *App) PerformThreeWayMatch(invoiceID string) (ThreeWayMatchResult, error
 	} else {
 		// P1 FIX: Distinguish between minor variances (within tolerance, manual review) and hard failures
 		if priceVarianceFlag {
-			invoice.MatchStatus = "Review Required"
+			invoice.MatchStatus = "Pending"
 			invoice.Status = "Pending"
 			log.Printf("⚠️ 3-Way Match NEEDS REVIEW: Invoice %s - Price variance exceeds tolerance", invoice.InvoiceNumber)
 		} else {
