@@ -763,20 +763,22 @@ func (a *App) RaiseGRNDiscrepancy(grnID string, itemID string, reason string, di
 		return newError("GRN_ITEM_NOT_FOUND", "GRN item not found", "")
 	}
 
-	// Get product code for logging
+	// Get product code and reference cost from linked PO item when available
 	var po PurchaseOrder
 	productCode := "Unknown"
+	unitCost := 0.0
 	if err := a.db.Preload("Items").First(&po, "id = ?", grn.PurchaseOrderID).Error; err == nil {
 		for _, poItem := range po.Items {
 			if poItem.ID == grnItem.POItemID {
 				productCode = poItem.ProductCode
+				unitCost = a.resolvePurchaseOrderItemReferenceCost(poItem).UnitCostBHD
 				break
 			}
 		}
 	}
 
-	// Calculate cost impact (estimated)
-	costImpact := rejectedQty * 100.0 // Placeholder - should get unit cost from PO
+	// Calculate cost impact from the linked PO/product contract instead of a placeholder
+	costImpact := rejectedQty * unitCost
 
 	// Create discrepancy record (store in dedicated table via raw SQL for now)
 	discrepancy := GRNDiscrepancy{

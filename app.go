@@ -17173,7 +17173,7 @@ func (a *App) RecordStockMovement(movement StockMovement) (*StockMovement, error
 
 	// Get current inventory item
 	var item InventoryItem
-	if err := tx.First(&item, movement.InventoryItemID).Error; err != nil {
+	if err := tx.First(&item, "id = ?", movement.InventoryItemID).Error; err != nil {
 		tx.Rollback()
 		return nil, newError("ITEM_NOT_FOUND", "Inventory item not found", err.Error())
 	}
@@ -17202,21 +17202,7 @@ func (a *App) RecordStockMovement(movement StockMovement) (*StockMovement, error
 	// Update stock status
 	item.StockStatus = a.calculateStockStatus(item.QuantityOnHand, item.ReorderPoint, item.MinimumStock, item.MaximumStock)
 
-	// Update valuation if cost provided
-	if movement.UnitCost > 0 {
-		// Weighted average cost
-		if movement.Direction == "IN" {
-			totalValue := (item.UnitCost * movement.BalanceBefore) + (movement.UnitCost * movement.Quantity)
-			item.UnitCost = totalValue / item.QuantityOnHand
-			item.LastPurchaseCost = movement.UnitCost
-		}
-		movement.TotalValue = movement.Quantity * movement.UnitCost
-	} else {
-		movement.UnitCost = item.UnitCost
-		movement.TotalValue = movement.Quantity * item.UnitCost
-	}
-
-	item.TotalValue = item.QuantityOnHand * item.UnitCost
+	a.applyInventoryMovementValuation(&item, &movement)
 
 	// Generate movement number if not provided
 	if movement.MovementNumber == "" {
@@ -17463,14 +17449,21 @@ func (a *App) GetInventoryValuation(warehouseID *uint) (map[string]interface{}, 
 		query = query.Where("warehouse_id = ?", *warehouseID)
 	}
 
+	var items []InventoryItem
+	if err := query.Find(&items).Error; err != nil {
+		return nil, newError("DB_QUERY_FAILED", "Failed to calculate inventory valuation", err.Error())
+	}
+
 	var result struct {
 		TotalValue float64
 		TotalItems int64
 		TotalQty   float64
 	}
-
-	query.Select("SUM(total_value) as total_value, COUNT(*) as total_items, SUM(quantity_on_hand) as total_qty").
-		Scan(&result)
+	result.TotalItems = int64(len(items))
+	for _, item := range items {
+		result.TotalQty += item.QuantityOnHand
+		result.TotalValue += a.resolveInventoryItemTotalValue(item)
+	}
 
 	valuation := map[string]interface{}{
 		"total_value":    result.TotalValue,
