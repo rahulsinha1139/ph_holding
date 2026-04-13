@@ -91,6 +91,10 @@
     return value.toFixed(0);
   }
 
+  function formatPercent(value: number): string {
+    return `${value?.toFixed(1) || 0}%`;
+  }
+
   $: filteredCustomers = dashboard?.customers?.filter((c: any) => {
     const matchSearch = !searchQuery ||
       c.business_name?.toLowerCase().includes(searchQuery.toLowerCase());
@@ -130,25 +134,26 @@
       </Card>
       <Card padding="md">
         <div class="kpi">
-          <div class="kpi-label">YTD REVENUE</div>
+          <div class="kpi-label">INVOICED REVENUE (YTD)</div>
           <div class="kpi-value">{formatCurrency(dashboard.total_revenue)} BHD</div>
           <div class="kpi-subtext" class:negative={dashboard.revenue_yoy < 0}>
-            {dashboard.revenue_yoy > 0 ? '+' : ''}{dashboard.revenue_yoy?.toFixed(1) || 0}% YoY
+            {dashboard.revenue_yoy > 0 ? '+' : ''}{formatPercent(dashboard.revenue_yoy)} YoY
           </div>
         </div>
       </Card>
       <Card padding="md">
         <div class="kpi">
-          <div class="kpi-label">AR OUTSTANDING</div>
+          <div class="kpi-label">OPEN RECEIVABLES</div>
           <div class="kpi-value">{formatCurrency(dashboard.total_outstanding)} BHD</div>
+          <div class="kpi-subtext">Collectible open balance</div>
         </div>
       </Card>
       <Card padding="md">
         <div class="kpi">
-          <div class="kpi-label">OVERDUE</div>
+          <div class="kpi-label">OVERDUE RECEIVABLES</div>
           <div class="kpi-value">{formatCurrency(dashboard.overdue_amount)} BHD</div>
           <div class="kpi-subtext" class:warning={dashboard.overdue_pct > 20}>
-            {dashboard.overdue_pct?.toFixed(1) || 0}%
+            {formatPercent(dashboard.overdue_pct)} of open receivables
           </div>
         </div>
       </Card>
@@ -262,11 +267,11 @@
             <div class="card-metrics">
               <div class="metric">
                 <span class="metric-value">{customer.active_invoices || 0}</span>
-                <span class="metric-label">invoices</span>
+                <span class="metric-label">open invoices</span>
               </div>
               <div class="metric">
                 <span class="metric-value">{formatCurrency(customer.outstanding_bhd || 0)}</span>
-                <span class="metric-label">due</span>
+                <span class="metric-label">open balance</span>
               </div>
             </div>
             {#if customer.city}

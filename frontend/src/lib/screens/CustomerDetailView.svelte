@@ -153,6 +153,19 @@
     return (value || 0).toFixed(3);
   }
 
+  function getInvoiceDisplayStatus(status: string): string {
+    switch (String(status || '')) {
+      case 'Sent':
+        return 'Open';
+      case 'PartiallyPaid':
+        return 'Partial';
+      case 'Paid':
+        return 'Settled';
+      default:
+        return String(status || '');
+    }
+  }
+
   onMount(loadProfile);
 </script>
 
@@ -256,11 +269,11 @@
               <span class="value">{profile.payment_terms_days} days</span>
             </div>
             <div class="info-item">
-              <span class="label">Outstanding</span>
+              <span class="label">Open Receivables</span>
               <span class="value">{formatCurrency(profile.outstanding_bhd)} BHD</span>
             </div>
             <div class="info-item">
-              <span class="label">Overdue</span>
+              <span class="label">Overdue Receivables</span>
               <span class="value" class:danger={profile.overdue_bhd > 0}>{formatCurrency(profile.overdue_bhd)} BHD</span>
             </div>
             <div class="info-item">
@@ -413,7 +426,7 @@
 
           {:else if activeTab === 'invoices'}
             <Card padding="md">
-              <h3 class="section-title">RECENT INVOICES</h3>
+              <h3 class="section-title">RECENT BILLINGS</h3>
               {#if profile.recent_invoices?.length > 0}
                 <div class="list">
                   {#each profile.recent_invoices as invoice}
@@ -423,7 +436,7 @@
                         <span class="item-date">{formatDate(invoice.invoice_date)}</span>
                       </div>
                       <div class="item-meta">
-                        <span class="item-status status-{invoice.status?.toLowerCase()}">{invoice.status}</span>
+                        <span class="item-status status-{invoice.status?.toLowerCase()}">{getInvoiceDisplayStatus(invoice.status)}</span>
                         <span class="item-amount" class:open-balance={(invoice.outstanding_bhd || 0) > 0}>
                           {#if (invoice.outstanding_bhd || 0) > 0}
                             {formatCurrency(invoice.outstanding_bhd)} BHD open
@@ -436,7 +449,7 @@
                   {/each}
                 </div>
               {:else}
-                <p class="empty-text">No invoices found</p>
+                <p class="empty-text">No billings found</p>
               {/if}
             </Card>
 
@@ -799,6 +812,7 @@
   .item-date { font-size: 12px; color: var(--text-muted); }
   .item-meta { display: flex; align-items: center; gap: 16px; }
   .item-status { font-size: 12px; padding: 2px 8px; background: var(--surface); border-radius: 4px; }
+  .item-status.status-sent { color: #3B82F6; }
   .item-status.status-paid { color: #10B981; }
   .item-status.status-partiallypaid { color: #F59E0B; }
   .item-status.status-overdue { color: #EF4444; }
