@@ -1,13 +1,13 @@
 <script lang="ts">
   /**
-   * PaymentsScreen - Complete Payment Management with Recording
+   * PaymentsScreen - Customer receipts and cash application
    *
    * Features:
-   * - Record new payments against invoices
-   * - View all payments with filtering
+   * - Apply new receipts against open invoices
+   * - View all receipts with filtering
    * - Real-time KPI dashboard (Total Collected, This Month, Avg Days)
-   * - Invoice selection with outstanding balance display
-   * - Payment method tracking (Bank Transfer, Cheque, Cash, Wire, Online)
+   * - Invoice selection with open balance display
+   * - Receipt method tracking (Bank Transfer, Cheque, Cash, Wire, Online)
    * - BHD currency formatting (3 decimal places)
    * - Filter tabs: All, This Month, This Quarter
    * - Embedded mode support for FinanceHub
@@ -197,7 +197,7 @@
 
   // Filter tabs
   const filterTabs: { value: TimeFilter; label: string; count: number }[] = [
-    { value: 'All', label: 'All Payments', count: 0 },
+    { value: 'All', label: 'All Receipts', count: 0 },
     { value: 'This Month', label: 'This Month', count: 0 },
     { value: 'This Quarter', label: 'This Quarter', count: 0 }
   ];
@@ -337,10 +337,10 @@
         return Number(inv?.outstanding_bhd || 0) > 0 && !['draft', 'cancelled', 'void', 'proforma'].includes(status);
       });
 
-      console.log(`Loaded ${payments.length} payments (page 1), ${invoices.length} unpaid invoices`);
+      console.log(`Loaded ${payments.length} receipts (page 1), ${invoices.length} open invoices`);
     } catch (err) {
       console.error('Failed to load payment data:', err);
-      toast.danger('Failed to load payment data');
+      toast.danger('Failed to load receipt data');
       payments = [];
       invoices = [];
       hasMore = false;
@@ -363,13 +363,13 @@
         currentPage++;
         totalLoaded = payments.length;
         hasMore = data.length === PAGE_SIZE;
-        console.log(`Loaded ${data.length} more payments (total: ${totalLoaded})`);
+      console.log(`Loaded ${data.length} more receipts (total: ${totalLoaded})`);
       } else {
         hasMore = false;
       }
     } catch (err) {
       console.error('Failed to load more payments:', err);
-      toast.danger('Failed to load more payments');
+      toast.danger('Failed to load more receipts');
     } finally {
       loadingMore = false;
     }
@@ -378,7 +378,7 @@
   // Open record payment modal
   function openRecordModal() {
     if (invoices.length === 0) {
-      toast.warning('No unpaid invoices available. All invoices are fully paid.');
+      toast.warning('No open invoices available. All invoices are fully settled.');
       return;
     }
 
@@ -404,7 +404,7 @@
 
     const amount = parseFloat(paymentAmount);
     if (isNaN(amount) || amount <= 0) {
-      toast.warning('Please enter a valid payment amount');
+      toast.warning('Please enter a valid receipt amount');
       return;
     }
 
@@ -414,12 +414,12 @@
     }
 
     if (amount > selectedInvoice.outstanding_bhd) {
-      toast.warning(`Payment amount (${formatBHD(amount)} BHD) exceeds outstanding balance (${formatBHD(selectedInvoice.outstanding_bhd)} BHD)`);
+      toast.warning(`Receipt amount (${formatBHD(amount)} BHD) exceeds open balance (${formatBHD(selectedInvoice.outstanding_bhd)} BHD)`);
       return;
     }
 
     if (!paymentDate) {
-      toast.warning('Please select a payment date');
+      toast.warning('Please select a receipt date');
       return;
     }
 
@@ -433,14 +433,14 @@
         paymentReference
       );
 
-      toast.success(`Payment of ${formatBHD(amount)} BHD recorded successfully`);
+      toast.success(`Receipt of ${formatBHD(amount)} BHD applied successfully`);
       showRecordModal = false;
 
       // Reload data to reflect changes
       await loadData();
     } catch (err) {
-      console.error('Failed to record payment:', err);
-      toast.danger('Failed to record payment. Please try again.');
+      console.error('Failed to apply receipt:', err);
+      toast.danger('Failed to apply receipt. Please try again.');
     } finally {
       recordLoading = false;
     }
@@ -460,8 +460,8 @@
 </script>
 
 <PageLayout
-  title="Payments"
-  subtitle="Payment recording and history management"
+  title="Receipts"
+  subtitle="Customer receipts and cash application"
   {embedded}
 >
   <svelte:fragment slot="header-actions">
@@ -472,7 +472,7 @@
       Open Bank Recon
     </Button>
     <Button variant="primary" on:click={openRecordModal}>
-      + Record Payment
+      + Apply Receipt
     </Button>
   </svelte:fragment>
 
@@ -489,26 +489,26 @@
 
       <Card padding="md" variant="elevated">
         <div class="kpi-card">
-          <div class="kpi-label">Payments This Month</div>
+          <div class="kpi-label">Receipts This Month</div>
           <div class="kpi-value">{stats.paymentsThisMonth}</div>
-          <div class="kpi-sublabel">Current month activity</div>
+          <div class="kpi-sublabel">Current month cash application</div>
         </div>
       </Card>
 
       <Card padding="md" variant="elevated">
         <div class="kpi-card">
-          <div class="kpi-label">Avg Days to Payment</div>
+          <div class="kpi-label">Avg Days to Collection</div>
           <div class="kpi-value" class:kpi-success={stats.avgDaysToPayment <= 30} class:kpi-warning={stats.avgDaysToPayment > 30 && stats.avgDaysToPayment <= 60} class:kpi-danger={stats.avgDaysToPayment > 60}>
             {stats.avgDaysToPayment.toFixed(1)}<span class="kpi-unit">d</span>
           </div>
-          <div class="kpi-sublabel">Payment velocity</div>
+          <div class="kpi-sublabel">Collection velocity</div>
         </div>
       </Card>
     </div>
 
     <!-- Filter Tabs -->
     <Card padding="sm">
-      <div class="filter-tabs" role="tablist" aria-label="Filter payments by time">
+      <div class="filter-tabs" role="tablist" aria-label="Filter receipts by time">
         {#each filterTabs as tab}
           <button
             class="filter-tab"
@@ -529,14 +529,14 @@
       {#if loading}
         <div class="loading-container">
           <WabiSpinner size="lg" />
-          <p>Loading payments...</p>
+          <p>Loading receipts...</p>
         </div>
       {:else}
         <DataTable
           {columns}
           data={filteredPayments}
           {loading}
-          emptyMessage="No payments recorded yet. Click 'Record Payment' to add one."
+          emptyMessage="No receipts recorded yet. Click 'Apply Receipt' to add one."
           onRowClick={(row) => {}}
           stickyHeader={!embedded}
           maxHeight={embedded ? "400px" : "calc(100vh - 480px)"}
@@ -552,7 +552,7 @@
           class="load-more-btn"
           on:click={loadMore}
           disabled={loadingMore}
-          aria-label={loadingMore ? 'Loading more payments' : `Load more payments, ${totalLoaded} currently loaded`}
+          aria-label={loadingMore ? 'Loading more receipts' : `Load more receipts, ${totalLoaded} currently loaded`}
         >
           {#if loadingMore}
             Loading more...
@@ -564,22 +564,22 @@
     {/if}
 
     {#if !hasMore && totalLoaded > 0 && !loading}
-      <p class="all-loaded">All {totalLoaded} payments loaded</p>
+      <p class="all-loaded">All {totalLoaded} receipts loaded</p>
     {/if}
   </div>
 </PageLayout>
 
-<!-- Record Payment Modal -->
+<!-- Apply Receipt Modal -->
 {#if showRecordModal}
   <Modal
-    title="Record Payment"
+    title="Apply Customer Receipt"
     open={showRecordModal}
     on:close={() => showRecordModal = false}
     size="md"
   >
     <div class="record-form">
       <!-- Invoice Selection with Search -->
-      <FormGroup label="Select Invoice" required>
+      <FormGroup label="Select Open Invoice" required>
         <!-- Search input -->
         <Input
           type="text"
@@ -595,10 +595,10 @@
           disabled={recordLoading}
           style="margin-top: 8px;"
         >
-          <option value="">-- Select an unpaid invoice ({filteredInvoicesForDropdown.length} shown) --</option>
+          <option value="">-- Select an open invoice ({filteredInvoicesForDropdown.length} shown) --</option>
           {#each filteredInvoicesForDropdown as invoice}
             <option value={invoice.id}>
-              {invoice.invoice_number} - {invoice.customer_name} ({formatBHD(invoice.outstanding_bhd)} BHD)
+              {invoice.invoice_number} - {invoice.customer_name} ({formatBHD(invoice.outstanding_bhd)} BHD open)
             </option>
           {/each}
         </select>
@@ -622,7 +622,7 @@
             <span class="detail-value detail-mono">{formatBHD(selectedInvoice.grand_total_bhd)} BHD</span>
           </div>
           <div class="detail-row">
-            <span class="detail-label">Outstanding:</span>
+            <span class="detail-label">Open Balance:</span>
             <span class="detail-value detail-mono detail-highlight">{formatBHD(selectedInvoice.outstanding_bhd)} BHD</span>
           </div>
           {#if selectedInvoice.invoice_date}
@@ -632,13 +632,13 @@
             </div>
           {/if}
           <button class="quick-fill-btn" on:click={selectFullOutstanding} disabled={recordLoading}>
-            Pay Full Outstanding
+            Apply Full Open Balance
           </button>
         </div>
       {/if}
 
       <!-- Amount Input -->
-      <FormGroup label="Payment Amount (BHD)" required>
+      <FormGroup label="Receipt Amount (BHD)" required>
         <Input
           type="number"
           step="0.001"
@@ -650,18 +650,18 @@
         {#if selectedInvoice && paymentAmount}
           <div class="amount-helper">
             {#if parseFloat(paymentAmount) > selectedInvoice.outstanding_bhd}
-              <span class="helper-warning">Amount exceeds outstanding balance</span>
+              <span class="helper-warning">Amount exceeds open balance</span>
             {:else if parseFloat(paymentAmount) === selectedInvoice.outstanding_bhd}
-              <span class="helper-success">Full payment (invoice will be marked as paid)</span>
+              <span class="helper-success">Full settlement (invoice will be marked as settled)</span>
             {:else}
-              <span class="helper-info">Partial payment (remaining: {formatBHD(selectedInvoice.outstanding_bhd - parseFloat(paymentAmount))} BHD)</span>
+              <span class="helper-info">Partial settlement (remaining: {formatBHD(selectedInvoice.outstanding_bhd - parseFloat(paymentAmount))} BHD open)</span>
             {/if}
           </div>
         {/if}
       </FormGroup>
 
-      <!-- Payment Method -->
-      <FormGroup label="Payment Method" required>
+      <!-- Receipt Method -->
+      <FormGroup label="Receipt Method" required>
         <select
           class="select-input"
           bind:value={paymentMethod}
@@ -673,8 +673,8 @@
         </select>
       </FormGroup>
 
-      <!-- Payment Date -->
-      <FormGroup label="Payment Date" required>
+      <!-- Receipt Date -->
+      <FormGroup label="Receipt Date" required>
         <Input
           type="date"
           bind:value={paymentDate}
@@ -684,7 +684,7 @@
       </FormGroup>
 
       <!-- Reference -->
-      <FormGroup label="Reference" hint="Bank ref, cheque number, etc. (optional)">
+      <FormGroup label="Reference" hint="Bank ref, cheque number, deposit ref, etc. (optional)">
         <Input
           type="text"
           placeholder="e.g., TXN123456, CHQ001"
@@ -699,7 +699,7 @@
         Cancel
       </Button>
       <Button variant="primary" on:click={handleRecordPayment} disabled={recordLoading || !selectedInvoiceId || !paymentAmount || (selectedInvoice && parseFloat(paymentAmount) > selectedInvoice.outstanding_bhd)}>
-        {recordLoading ? 'Recording...' : 'Record Payment'}
+        {recordLoading ? 'Applying...' : 'Apply Receipt'}
       </Button>
     </svelte:fragment>
   </Modal>

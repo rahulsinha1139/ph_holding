@@ -540,7 +540,7 @@
 
   function buildMatchCandidateLabel(candidate: any, type: string) {
     if (type === 'CUSTOMER_INVOICE') {
-      return `${candidate.invoice_number || 'Invoice'} • ${candidate.customer_name || 'Customer'} • ${formatBHD(candidate.outstanding_bhd || candidate.grand_total_bhd || 0)} BHD open`;
+      return `${candidate.invoice_number || 'Invoice'} • ${candidate.customer_name || 'Customer'} • ${formatBHD(candidate.outstanding_bhd || candidate.grand_total_bhd || 0)} BHD open receivable`;
     }
     if (type === 'SUPPLIER_PAYMENT') {
       return `${candidate.reference || candidate.invoice_number || 'Payment'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.amount_bhd || 0)} BHD settled`;
@@ -1151,7 +1151,7 @@
             <FormGroup label="Match To">
               <select bind:value={matchingType} class="form-select">
                 {#if matchingLine.credit > 0}
-                  <option value="CUSTOMER_INVOICE">Customer Invoice</option>
+                  <option value="CUSTOMER_INVOICE">Customer Open Invoice</option>
                 {:else}
                   <option value="SUPPLIER_PAYMENT">Supplier Payment</option>
                   <option value="PAYROLL_PAYOUT">Payroll Payout</option>
@@ -1160,7 +1160,7 @@
               </select>
             </FormGroup>
             <FormGroup label="Search">
-              <Input bind:value={matchingSearch} placeholder="Search number, customer, supplier..." />
+              <Input bind:value={matchingSearch} placeholder="Search invoice, customer, supplier..." />
             </FormGroup>
           </div>
 
