@@ -8041,10 +8041,12 @@ func (a *App) BackfillBusinessCustomerIDs() (map[string]interface{}, error) {
 	updated := 0
 	examples := make([]string, 0, len(customers))
 	for _, customer := range customers {
-		nextID := businessCustomerIDFromRecord(customer)
-		nextCode := strings.TrimSpace(customer.CustomerCode)
-		if nextCode == "" {
-			nextCode = nextID
+		repairedCustomer := prepareCustomerForIdentityRepair(customer, time.Now())
+		nextID := repairedCustomer.CustomerID
+		nextCode := repairedCustomer.CustomerCode
+
+		if nextID == strings.TrimSpace(customer.CustomerID) && nextCode == strings.TrimSpace(customer.CustomerCode) {
+			continue
 		}
 
 		if err := a.db.Model(&CustomerMaster{}).

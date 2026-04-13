@@ -87,16 +87,40 @@ func assignCustomerBusinessIdentifiers(customer *CustomerMaster, now time.Time) 
 	}
 }
 
+func prepareCustomerForIdentityRepair(customer CustomerMaster, now time.Time) CustomerMaster {
+	customer.CustomerCode = normalizeCustomerBusinessIdentifier(customer.CustomerCode, customer.ID)
+	customer.CustomerID = normalizeCustomerBusinessIdentifier(customer.CustomerID, customer.ID)
+
+	if customer.CustomerCode == "" && customer.CustomerID == "" {
+		customer.CustomerCode = repairCustomerCode(customer.BusinessName)
+	}
+
+	assignCustomerBusinessIdentifiers(&customer, now)
+	return customer
+}
+
+func normalizeCustomerBusinessIdentifier(raw string, recordID string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if raw == strings.TrimSpace(recordID) || looksLikeUUID(raw) {
+		return ""
+	}
+	return raw
+}
+
 func defaultCustomerCode(businessName string, now time.Time) string {
 	prefix := customerBusinessPrefix(businessName, 4)
 	return fmt.Sprintf("CUST-%s%d", prefix, now.UnixMilli()%100000)
 }
 
+func repairCustomerCode(businessName string) string {
+	return fmt.Sprintf("CUST-%s", customerBusinessPrefix(businessName, 6))
+}
+
 func businessCustomerIDFromRecord(customer CustomerMaster) string {
-	if code := strings.TrimSpace(customer.CustomerCode); code != "" {
-		return code
-	}
-	return fmt.Sprintf("CUST-%s", customerBusinessPrefix(customer.BusinessName, 6))
+	return prepareCustomerForIdentityRepair(customer, time.Now()).CustomerID
 }
 
 func customerBusinessPrefix(name string, limit int) string {

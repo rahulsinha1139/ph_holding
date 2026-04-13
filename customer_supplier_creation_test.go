@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -177,6 +178,82 @@ func TestSeedCustomerDatabase_UsesSharedCustomerPolicy(t *testing.T) {
 		require.NotEmpty(t, customer.CustomerCode)
 		require.Equal(t, customer.CustomerID, customer.CustomerCode)
 	}
+}
+
+func TestBackfillBusinessCustomerIDs_RepairsLegacyIdentifiers(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	legacyID := uuid.New().String()
+	legacyCustomer := CustomerMaster{
+		Base:             Base{ID: legacyID, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		BusinessName:     "Legacy Backfill Customer",
+		CustomerID:       legacyID,
+		CustomerType:     "Corporate",
+		Country:          "Bahrain",
+		PaymentGrade:     "B",
+		CustomerGrade:    "B",
+		PaymentTermsDays: 30,
+	}
+	require.NoError(t, app.db.Create(&legacyCustomer).Error)
+
+	results, err := app.BackfillBusinessCustomerIDs()
+	require.NoError(t, err)
+	require.Equal(t, 1, results["updated"].(int))
+
+	var stored CustomerMaster
+	require.NoError(t, app.db.First(&stored, "id = ?", legacyID).Error)
+	require.NotEmpty(t, stored.CustomerID)
+	require.Equal(t, stored.CustomerID, stored.CustomerCode)
+	require.NotEqual(t, legacyID, stored.CustomerID)
+	require.True(t, strings.HasPrefix(stored.CustomerID, "CUST-"))
+}
+
+func TestBackfillBusinessCustomerIDs_PreservesExistingCustomerCode(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	legacyID := uuid.New().String()
+	legacyCustomer := CustomerMaster{
+		Base:             Base{ID: legacyID, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		BusinessName:     "Legacy Code Customer",
+		CustomerID:       legacyID,
+		CustomerCode:     "EC14",
+		CustomerType:     "Corporate",
+		Country:          "Bahrain",
+		PaymentGrade:     "B",
+		CustomerGrade:    "B",
+		PaymentTermsDays: 30,
+	}
+	require.NoError(t, app.db.Create(&legacyCustomer).Error)
+
+	_, err := app.BackfillBusinessCustomerIDs()
+	require.NoError(t, err)
+
+	var stored CustomerMaster
+	require.NoError(t, app.db.First(&stored, "id = ?", legacyID).Error)
+	require.Equal(t, "EC14", stored.CustomerID)
+	require.Equal(t, "EC14", stored.CustomerCode)
+}
+
+func TestGetCustomerFullProfile_RepairsLegacyDisplayIdentifier(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	legacyID := uuid.New().String()
+	legacyCustomer := CustomerMaster{
+		Base:             Base{ID: legacyID, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		BusinessName:     "Profile Legacy Customer",
+		CustomerID:       legacyID,
+		CustomerType:     "Corporate",
+		Country:          "Bahrain",
+		PaymentGrade:     "B",
+		CustomerGrade:    "B",
+		PaymentTermsDays: 30,
+	}
+	require.NoError(t, app.db.Create(&legacyCustomer).Error)
+
+	profile, err := app.GetCustomerFullProfile(legacyID)
+	require.NoError(t, err)
+	require.NotEqual(t, legacyID, profile.CustomerID)
+	require.True(t, strings.HasPrefix(profile.CustomerID, "CUST-"))
 }
 
 func TestSupplierCreation_WithValidRole(t *testing.T) {
