@@ -2777,11 +2777,12 @@ type CustomerFullProfile struct {
 }
 
 type InvoiceSummary struct {
-	ID            string    `json:"id"`
-	InvoiceNumber string    `json:"invoice_number"`
-	InvoiceDate   time.Time `json:"invoice_date"`
-	GrandTotalBHD float64   `json:"grand_total_bhd"`
-	Status        string    `json:"status"`
+	ID             string    `json:"id"`
+	InvoiceNumber  string    `json:"invoice_number"`
+	InvoiceDate    time.Time `json:"invoice_date"`
+	GrandTotalBHD  float64   `json:"grand_total_bhd"`
+	OutstandingBHD float64   `json:"outstanding_bhd"`
+	Status         string    `json:"status"`
 }
 
 // GetCustomerFullProfile retrieves complete customer profile with all relationships
@@ -2820,11 +2821,19 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 	profile.LastOrderDate = customer.LastOrderDate
 	profile.RelationYears = customer.RelationYears
 
-	// Calculate TotalRevenue from paid invoices (not from denormalized field which may be empty)
-	var totalRevenue float64
-	a.db.Model(&Invoice{}).Where("customer_id = ? AND status = ?", customerID, "Paid").
-		Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&totalRevenue)
-	profile.TotalRevenue = totalRevenue
+	// Calculate revenue and outstanding from normalized invoice settlement state.
+	var customerInvoices []Invoice
+	a.db.Where("customer_id = ?", customerID).Find(&customerInvoices)
+	now := time.Now()
+	for _, inv := range customerInvoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if isCustomerInvoicePostedStatus(state.Status) {
+			profile.TotalRevenue += inv.GrandTotalBHD
+		}
+		if state.IsCollectible {
+			profile.OutstandingBHD += state.OutstandingBHD
+		}
+	}
 
 	// Calculate TotalOrders from orders table
 	var totalOrders int64
@@ -2837,16 +2846,6 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 		a.db.Model(&Order{}).Where("customer_id = ?", customerID).
 			Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&totalOrderValue)
 		profile.AvgOrderValue = totalOrderValue / float64(totalOrders)
-	}
-
-	// Calculate OutstandingBHD from collectible open invoices using the normalized payment state.
-	var outstandingInvoices []Invoice
-	a.db.Where("customer_id = ? AND outstanding_bhd > 0", customerID).Find(&outstandingInvoices)
-	for _, inv := range outstandingInvoices {
-		state := customerInvoicePaymentStateFromInvoice(inv, time.Now())
-		if state.IsCollectible {
-			profile.OutstandingBHD += state.OutstandingBHD
-		}
 	}
 
 	// 2. Get contacts
@@ -2891,17 +2890,18 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 	profile.RecentOrders = a.GetCustomerRecentOrders(customerID, 5)
 
 	// 6. Get recent invoices
-	var invoices []Invoice
-	a.db.Where("customer_id = ?", customerID).Order("invoice_date DESC").Limit(5).Find(&invoices)
-	recentInvoices := make([]InvoiceSummary, 0, len(invoices))
-	for _, inv := range invoices {
-		state := customerInvoicePaymentStateFromInvoice(inv, time.Now())
+	var recentInvoiceRows []Invoice
+	a.db.Where("customer_id = ?", customerID).Order("invoice_date DESC").Limit(5).Find(&recentInvoiceRows)
+	recentInvoices := make([]InvoiceSummary, 0, len(recentInvoiceRows))
+	for _, inv := range recentInvoiceRows {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
 		recentInvoices = append(recentInvoices, InvoiceSummary{
-			ID:            inv.ID,
-			InvoiceNumber: inv.InvoiceNumber,
-			InvoiceDate:   inv.InvoiceDate,
-			GrandTotalBHD: inv.GrandTotalBHD,
-			Status:        state.Status,
+			ID:             inv.ID,
+			InvoiceNumber:  inv.InvoiceNumber,
+			InvoiceDate:    inv.InvoiceDate,
+			GrandTotalBHD:  inv.GrandTotalBHD,
+			OutstandingBHD: state.OutstandingBHD,
+			Status:         state.Status,
 		})
 	}
 	profile.RecentInvoices = recentInvoices

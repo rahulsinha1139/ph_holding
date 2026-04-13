@@ -336,7 +336,7 @@
             <div class="metrics-grid">
               <Card padding="md">
                 <div class="metric">
-                  <span class="metric-label">Total Revenue</span>
+                  <span class="metric-label">Invoiced Revenue</span>
                   <span class="metric-value">{formatCurrency(profile.total_revenue)}</span>
                   <span class="metric-currency">BHD</span>
                 </div>
@@ -424,7 +424,13 @@
                       </div>
                       <div class="item-meta">
                         <span class="item-status status-{invoice.status?.toLowerCase()}">{invoice.status}</span>
-                        <span class="item-amount">{formatCurrency(invoice.grand_total_bhd)} BHD</span>
+                        <span class="item-amount" class:open-balance={(invoice.outstanding_bhd || 0) > 0}>
+                          {#if (invoice.outstanding_bhd || 0) > 0}
+                            {formatCurrency(invoice.outstanding_bhd)} BHD open
+                          {:else}
+                            {formatCurrency(invoice.grand_total_bhd)} BHD settled
+                          {/if}
+                        </span>
                       </div>
                     </div>
                   {/each}
@@ -794,8 +800,10 @@
   .item-meta { display: flex; align-items: center; gap: 16px; }
   .item-status { font-size: 12px; padding: 2px 8px; background: var(--surface); border-radius: 4px; }
   .item-status.status-paid { color: #10B981; }
+  .item-status.status-partiallypaid { color: #F59E0B; }
   .item-status.status-overdue { color: #EF4444; }
   .item-amount { font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+  .item-amount.open-balance { color: #F59E0B; }
 
   .rfq-stats { display: flex; gap: 24px; margin-bottom: 16px; font-size: 14px; color: var(--text-secondary); }
 

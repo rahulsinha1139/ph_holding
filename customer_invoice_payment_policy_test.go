@@ -329,3 +329,98 @@ func TestGetInvoicesByStatus_UsesNormalizedSettlementState(t *testing.T) {
 	assert.Equal(t, invoice.ID, invoices[0].ID)
 	assert.Equal(t, "PartiallyPaid", invoices[0].Status)
 }
+
+func TestGetRevenueSummary_UsesNormalizedSettlementState(t *testing.T) {
+	app := setupPaymentTestApp(t)
+	customer := createPaymentStateTestCustomer(t, app, "Revenue Summary Co")
+
+	createPaymentStateTestInvoice(
+		t,
+		app,
+		customer,
+		"INV-REV-001",
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		100,
+		30,
+		"Paid",
+	)
+	createPaymentStateTestInvoice(
+		t,
+		app,
+		customer,
+		"INV-REV-002",
+		time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC),
+		70,
+		0,
+		"Paid",
+	)
+	createPaymentStateTestInvoice(
+		t,
+		app,
+		customer,
+		"INV-REV-003",
+		time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 2, 3, 0, 0, 0, 0, time.UTC),
+		50,
+		0,
+		"Cancelled",
+	)
+
+	totalRevenue, paidRevenue, outstandingRevenue, invoiceCount, err := app.GetInvoiceRevenueSummary()
+	require.NoError(t, err)
+	assert.InDelta(t, 170.0, totalRevenue, 0.001)
+	assert.InDelta(t, 70.0, paidRevenue, 0.001)
+	assert.InDelta(t, 30.0, outstandingRevenue, 0.001)
+	assert.Equal(t, int64(3), invoiceCount)
+}
+
+func TestGetCustomerFullProfile_UsesNormalizedRevenueAndRecentInvoiceOutstanding(t *testing.T) {
+	app := setupTestApp(t)
+	customer := createPaymentStateTestCustomer(t, app, "Profile Revenue Co")
+
+	createPaymentStateTestInvoice(
+		t,
+		app,
+		customer,
+		"INV-PROFILE-001",
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		120,
+		25,
+		"Paid",
+	)
+	createPaymentStateTestInvoice(
+		t,
+		app,
+		customer,
+		"INV-PROFILE-002",
+		time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 2, 5, 0, 0, 0, 0, time.UTC),
+		80,
+		0,
+		"Paid",
+	)
+	createPaymentStateTestInvoice(
+		t,
+		app,
+		customer,
+		"INV-PROFILE-003",
+		time.Date(2026, 1, 7, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 2, 7, 0, 0, 0, 0, time.UTC),
+		50,
+		0,
+		"Proforma",
+	)
+
+	profile, err := app.GetCustomerFullProfile(customer.ID)
+	require.NoError(t, err)
+	assert.InDelta(t, 200.0, profile.TotalRevenue, 0.001)
+	assert.InDelta(t, 25.0, profile.OutstandingBHD, 0.001)
+	require.Len(t, profile.RecentInvoices, 3)
+	assert.Equal(t, "PartiallyPaid", profile.RecentInvoices[2].Status)
+	assert.InDelta(t, 25.0, profile.RecentInvoices[2].OutstandingBHD, 0.001)
+	assert.Equal(t, "Paid", profile.RecentInvoices[1].Status)
+	assert.InDelta(t, 0.0, profile.RecentInvoices[1].OutstandingBHD, 0.001)
+}

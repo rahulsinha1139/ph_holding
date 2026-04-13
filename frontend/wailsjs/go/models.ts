@@ -4174,6 +4174,7 @@ export namespace main {
 	    invoice_number: string;
 	    invoice_date: time.Time;
 	    grand_total_bhd: number;
+	    outstanding_bhd: number;
 	    status: string;
 	
 	    static createFrom(source: any = {}) {
@@ -4186,6 +4187,7 @@ export namespace main {
 	        this.invoice_number = source["invoice_number"];
 	        this.invoice_date = this.convertValues(source["invoice_date"], time.Time);
 	        this.grand_total_bhd = source["grand_total_bhd"];
+	        this.outstanding_bhd = source["outstanding_bhd"];
 	        this.status = source["status"];
 	    }
 	

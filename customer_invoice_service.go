@@ -1574,34 +1574,26 @@ func (a *App) GetInvoiceRevenueSummary() (float64, float64, float64, int64, erro
 	}
 
 	var totalRevenue, paidRevenue, outstandingRevenue float64
-	var invoiceCount int64
-
-	// Total revenue (all invoices)
-	if err := a.db.Model(&Invoice{}).
-		Select("COALESCE(SUM(grand_total_bhd), 0)").
-		Scan(&totalRevenue).Error; err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("failed to calculate total revenue: %w", err)
+	var invoices []Invoice
+	if err := a.db.Find(&invoices).Error; err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("failed to retrieve invoices for revenue summary: %w", err)
 	}
 
-	// Paid revenue
-	if err := a.db.Model(&Invoice{}).
-		Where("status = ?", "Paid").
-		Select("COALESCE(SUM(grand_total_bhd), 0)").
-		Scan(&paidRevenue).Error; err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("failed to calculate paid revenue: %w", err)
+	now := time.Now()
+	for _, invoice := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(invoice, now)
+		if isCustomerInvoicePostedStatus(state.Status) {
+			totalRevenue += invoice.GrandTotalBHD
+		}
+		if state.Status == "Paid" {
+			paidRevenue += invoice.GrandTotalBHD
+		}
+		if state.IsOpen {
+			outstandingRevenue += state.OutstandingBHD
+		}
 	}
 
-	// Outstanding revenue
-	if err := a.db.Model(&Invoice{}).
-		Select("COALESCE(SUM(outstanding_bhd), 0)").
-		Scan(&outstandingRevenue).Error; err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("failed to calculate outstanding revenue: %w", err)
-	}
-
-	// Invoice count
-	if err := a.db.Model(&Invoice{}).Count(&invoiceCount).Error; err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("failed to count invoices: %w", err)
-	}
+	invoiceCount := int64(len(invoices))
 
 	log.Printf("📊 Revenue Summary: Total=%.3f BHD, Paid=%.3f BHD, Outstanding=%.3f BHD, Count=%d",
 		totalRevenue, paidRevenue, outstandingRevenue, invoiceCount)
