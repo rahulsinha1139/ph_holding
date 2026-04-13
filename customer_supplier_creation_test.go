@@ -22,7 +22,7 @@ func makeCreationTestApp(t *testing.T) *App {
 		Role: Role{
 			Name:        "admin",
 			DisplayName: "Admin",
-			Permissions: `["customers:create","customers:view","customers:edit","suppliers:create","suppliers:view","suppliers:edit"]`,
+			Permissions: `["customers:create","customers:view","customers:edit","suppliers:create","suppliers:view","suppliers:edit","suppliers:update","suppliers:delete"]`,
 		},
 	}
 	return app
@@ -546,6 +546,128 @@ func TestEnsureSeedSupplier_EnrichesExistingSupplierWithoutChangingIdentity(t *t
 	var products []string
 	require.NoError(t, json.Unmarshal([]byte(stored.ProductTypes), &products))
 	require.Equal(t, []string{"Flow meters", "Analyzers"}, products)
+}
+
+func TestCreateSupplier_SyncsPrimaryContactRecord(t *testing.T) {
+	app := makeCreationTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&SupplierContact{}))
+
+	created, err := app.CreateSupplier(SupplierMaster{
+		SupplierName:   "Contact Sync Supplier",
+		SupplierType:   "Manufacturer",
+		Country:        "Bahrain",
+		PrimaryContact: "Amina",
+		Email:          "amina@supplier.example",
+		Phone:          "+973-1111-2222",
+		LeadTimeDays:   14,
+	})
+	require.NoError(t, err)
+
+	var contacts []SupplierContact
+	require.NoError(t, app.db.Where("supplier_id = ?", created.ID).Find(&contacts).Error)
+	require.Len(t, contacts, 1)
+	require.True(t, contacts[0].IsPrimaryContact)
+	require.Equal(t, "Amina", contacts[0].ContactName)
+	require.Equal(t, "amina@supplier.example", contacts[0].Email)
+	require.Equal(t, "+973-1111-2222", contacts[0].Phone)
+}
+
+func TestAddSupplierContact_PrimarySyncsSupplierMasterAndDemotesPreviousPrimary(t *testing.T) {
+	app := makeCreationTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&SupplierContact{}))
+
+	created, err := app.CreateSupplier(SupplierMaster{
+		SupplierName: "Supplier Contact Demotion",
+		SupplierType: "Manufacturer",
+		Country:      "Bahrain",
+		LeadTimeDays: 14,
+	})
+	require.NoError(t, err)
+
+	first, err := app.AddSupplierContact(SupplierContact{
+		SupplierID:       created.ID,
+		ContactName:      "First Contact",
+		Email:            "first@supplier.example",
+		IsPrimaryContact: true,
+	})
+	require.NoError(t, err)
+
+	second, err := app.AddSupplierContact(SupplierContact{
+		SupplierID:       created.ID,
+		ContactName:      "Second Contact",
+		Email:            "second@supplier.example",
+		Phone:            "+973-4444-5555",
+		IsPrimaryContact: true,
+	})
+	require.NoError(t, err)
+
+	var contacts []SupplierContact
+	require.NoError(t, app.db.Order("created_at ASC").Where("supplier_id = ?", created.ID).Find(&contacts).Error)
+	require.Len(t, contacts, 2)
+	require.Equal(t, first.ID, contacts[0].ID)
+	require.False(t, contacts[0].IsPrimaryContact)
+	require.Equal(t, second.ID, contacts[1].ID)
+	require.True(t, contacts[1].IsPrimaryContact)
+
+	var stored SupplierMaster
+	require.NoError(t, app.db.First(&stored, "id = ?", created.ID).Error)
+	require.Equal(t, "Second Contact", stored.PrimaryContact)
+	require.Equal(t, "second@supplier.example", stored.Email)
+	require.Equal(t, "+973-4444-5555", stored.Phone)
+}
+
+func TestGetSupplierFullProfile_FallsBackToPrimaryContact(t *testing.T) {
+	app := makeCreationTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&SupplierContact{}))
+
+	created, err := app.CreateSupplier(SupplierMaster{
+		SupplierName: "Profile Fallback Supplier",
+		SupplierType: "Manufacturer",
+		Country:      "Bahrain",
+		LeadTimeDays: 14,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, app.db.Create(&SupplierContact{
+		SupplierID:       created.ID,
+		ContactName:      "Fallback Contact",
+		Email:            "fallback@supplier.example",
+		Phone:            "+973-7777-8888",
+		IsPrimaryContact: true,
+	}).Error)
+
+	profile, err := app.GetSupplierFullProfile(created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "Fallback Contact", profile.PrimaryContact)
+	require.Equal(t, "fallback@supplier.example", profile.Email)
+	require.Equal(t, "+973-7777-8888", profile.Phone)
+}
+
+func TestDeleteSupplierContact_ClearsSupplierPrimaryFields(t *testing.T) {
+	app := makeCreationTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&SupplierContact{}))
+
+	created, err := app.CreateSupplier(SupplierMaster{
+		SupplierName:   "Delete Contact Supplier",
+		SupplierType:   "Manufacturer",
+		Country:        "Bahrain",
+		PrimaryContact: "Delete Me",
+		Email:          "delete@supplier.example",
+		Phone:          "+973-0000-1111",
+		LeadTimeDays:   14,
+	})
+	require.NoError(t, err)
+
+	var contact SupplierContact
+	require.NoError(t, app.db.Where("supplier_id = ? AND is_primary_contact = ?", created.ID, true).First(&contact).Error)
+
+	require.NoError(t, app.DeleteSupplierContact(contact.ID))
+
+	var stored SupplierMaster
+	require.NoError(t, app.db.First(&stored, "id = ?", created.ID).Error)
+	require.Equal(t, "", stored.PrimaryContact)
+	require.Equal(t, "", stored.Email)
+	require.Equal(t, "", stored.Phone)
 }
 
 func TestCustomerCreation_RequiresCreatePermission(t *testing.T) {

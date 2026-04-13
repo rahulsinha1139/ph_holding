@@ -3028,9 +3028,13 @@ func (a *App) GetSupplierFullProfile(supplierID string) (SupplierFullProfile, er
 	profile.TaxID = supplier.TaxID
 	profile.Country = supplier.Country
 	profile.Address = supplier.Address
-	profile.PrimaryContact = supplier.PrimaryContact
-	profile.Email = supplier.Email
-	profile.Phone = supplier.Phone
+	primaryContact, err := a.resolveSupplierPrimaryContactFields(supplier)
+	if err != nil {
+		return profile, fmt.Errorf("failed to resolve supplier primary contact: %w", err)
+	}
+	profile.PrimaryContact = primaryContact.Name
+	profile.Email = primaryContact.Email
+	profile.Phone = primaryContact.Phone
 	profile.BankName = supplier.BankName
 	profile.AccountNumber = supplier.AccountNumber
 	profile.IBAN = supplier.IBAN
@@ -8158,6 +8162,12 @@ func (a *App) AddSupplierContact(contact SupplierContact) (*SupplierContact, err
 	if err := a.db.Create(&contact).Error; err != nil {
 		return nil, fmt.Errorf("failed to add contact: %w", err)
 	}
+	if err := a.ensureSinglePrimarySupplierContact(contact); err != nil {
+		return nil, fmt.Errorf("failed to normalize primary supplier contact: %w", err)
+	}
+	if err := a.refreshSupplierMasterPrimaryContact(contact.SupplierID); err != nil {
+		return nil, fmt.Errorf("failed to sync supplier master: %w", err)
+	}
 	return &contact, nil
 }
 
@@ -8172,6 +8182,12 @@ func (a *App) UpdateSupplierContact(contact SupplierContact) (*SupplierContact, 
 	if err := a.db.Save(&contact).Error; err != nil {
 		return nil, fmt.Errorf("failed to update contact: %w", err)
 	}
+	if err := a.ensureSinglePrimarySupplierContact(contact); err != nil {
+		return nil, fmt.Errorf("failed to normalize primary supplier contact: %w", err)
+	}
+	if err := a.refreshSupplierMasterPrimaryContact(contact.SupplierID); err != nil {
+		return nil, fmt.Errorf("failed to sync supplier master: %w", err)
+	}
 	return &contact, nil
 }
 
@@ -8183,7 +8199,14 @@ func (a *App) DeleteSupplierContact(contactID string) error {
 	if a.db == nil {
 		return newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
-	return a.db.Delete(&SupplierContact{}, "id = ?", contactID).Error
+	var contact SupplierContact
+	if err := a.db.First(&contact, "id = ?", contactID).Error; err != nil {
+		return err
+	}
+	if err := a.db.Delete(&SupplierContact{}, "id = ?", contactID).Error; err != nil {
+		return err
+	}
+	return a.refreshSupplierMasterPrimaryContact(contact.SupplierID)
 }
 
 // ============================================================================
@@ -8279,6 +8302,9 @@ func (a *App) CreateSupplier(supplier SupplierMaster) (*SupplierMaster, error) {
 	if err := a.db.Create(&preparedSupplier).Error; err != nil {
 		return nil, newError("DB_CREATE_FAILED", "Failed to create supplier", err.Error())
 	}
+	if err := a.syncSupplierPrimaryContactRecord(preparedSupplier); err != nil {
+		return nil, newError("DB_UPDATE_FAILED", "Failed to sync supplier primary contact", err.Error())
+	}
 
 	log.Printf("✅ Created Supplier: %s", preparedSupplier.SupplierName)
 	return &preparedSupplier, nil
@@ -8340,6 +8366,9 @@ func (a *App) UpdateSupplier(supplier SupplierMaster) (*SupplierMaster, error) {
 
 	if err := a.db.Save(&preparedSupplier).Error; err != nil {
 		return nil, newError("DB_UPDATE_FAILED", "Failed to update supplier", err.Error())
+	}
+	if err := a.syncSupplierPrimaryContactRecord(preparedSupplier); err != nil {
+		return nil, newError("DB_UPDATE_FAILED", "Failed to sync supplier primary contact", err.Error())
 	}
 
 	log.Printf("✅ Supplier updated: %s (%s) v%d", preparedSupplier.SupplierName, preparedSupplier.ID, preparedSupplier.Version)
