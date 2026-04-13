@@ -8271,47 +8271,17 @@ func (a *App) CreateSupplier(supplier SupplierMaster) (*SupplierMaster, error) {
 		return nil, newError("PERMISSION_DENIED", err.Error(), "")
 	}
 
-	// P1 FIX: Input validation
-	if GlobalValidator != nil {
-		if err := GlobalValidator.ValidateSupplierInput(&supplier); err != nil {
-			return nil, newError("VALIDATION_FAILED", "Invalid supplier data", err.Error())
-		}
+	preparedSupplier, err := newSupplierWritePolicy(GlobalValidator).PrepareForCreate(supplier)
+	if err != nil {
+		return nil, newError("VALIDATION_FAILED", "Invalid supplier data", err.Error())
 	}
 
-	// Backend enforcement: SupplierName must be non-empty
-	if strings.TrimSpace(supplier.SupplierName) == "" {
-		return nil, fmt.Errorf("supplier name is required")
-	}
-
-	// Auto-generate SupplierCode if empty (don't rely on frontend)
-	if strings.TrimSpace(supplier.SupplierCode) == "" {
-		prefix := strings.ToUpper(supplier.SupplierName)
-		if len(prefix) > 4 {
-			prefix = prefix[:4]
-		}
-		cleaned := ""
-		for _, r := range prefix {
-			if r >= 'A' && r <= 'Z' {
-				cleaned += string(r)
-			}
-		}
-		if cleaned == "" {
-			cleaned = "SUP"
-		}
-		supplier.SupplierCode = fmt.Sprintf("SUP-%s%d", cleaned, time.Now().UnixMilli()%100000)
-	}
-
-	// Set default rating if not provided
-	if supplier.Rating == 0 {
-		supplier.Rating = 3
-	}
-
-	if err := a.db.Create(&supplier).Error; err != nil {
+	if err := a.db.Create(&preparedSupplier).Error; err != nil {
 		return nil, newError("DB_CREATE_FAILED", "Failed to create supplier", err.Error())
 	}
 
-	log.Printf("✅ Created Supplier: %s", supplier.SupplierName)
-	return &supplier, nil
+	log.Printf("✅ Created Supplier: %s", preparedSupplier.SupplierName)
+	return &preparedSupplier, nil
 }
 
 // UpdateCustomer updates an existing customer in the database
@@ -8363,29 +8333,17 @@ func (a *App) UpdateSupplier(supplier SupplierMaster) (*SupplierMaster, error) {
 		return nil, newError("SUPPLIER_NOT_FOUND", "Supplier not found", err.Error())
 	}
 
-	if strings.TrimSpace(supplier.SupplierCode) == "" {
-		supplier.SupplierCode = existing.SupplierCode
-	}
-	if strings.TrimSpace(supplier.SupplierName) == "" {
-		supplier.SupplierName = existing.SupplierName
-	}
-	if GlobalValidator != nil {
-		if err := GlobalValidator.ValidateSupplierInput(&supplier); err != nil {
-			return nil, newError("VALIDATION_FAILED", "Invalid supplier data", err.Error())
-		}
+	preparedSupplier, err := newSupplierWritePolicy(GlobalValidator).PrepareForUpdate(existing, supplier)
+	if err != nil {
+		return nil, newError("VALIDATION_FAILED", "Invalid supplier data", err.Error())
 	}
 
-	// Preserve audit fields
-	supplier.CreatedAt = existing.CreatedAt
-	supplier.CreatedBy = existing.CreatedBy
-	supplier.Version = existing.Version + 1
-
-	if err := a.db.Save(&supplier).Error; err != nil {
+	if err := a.db.Save(&preparedSupplier).Error; err != nil {
 		return nil, newError("DB_UPDATE_FAILED", "Failed to update supplier", err.Error())
 	}
 
-	log.Printf("✅ Supplier updated: %s (%s) v%d", supplier.SupplierName, supplier.ID, supplier.Version)
-	return &supplier, nil
+	log.Printf("✅ Supplier updated: %s (%s) v%d", preparedSupplier.SupplierName, preparedSupplier.ID, preparedSupplier.Version)
+	return &preparedSupplier, nil
 }
 
 // DeleteCustomer soft deletes a customer from the database
@@ -13063,12 +13021,18 @@ func (a *App) SeedDatabaseFromOpportunities(opportunitiesFile string) (map[strin
 		supplier := &SupplierMaster{
 			SupplierCode: s["code"],
 			SupplierName: s["name"],
+			SupplierType: "Manufacturer",
 			Country:      s["country"],
 			PaymentTerms: s["payment_terms"],
 			Rating:       5, // Default 5-star
 		}
 
-		if err := a.db.Create(supplier).Error; err == nil {
+		preparedSupplier, err := newSupplierWritePolicy(GlobalValidator).PrepareForCreate(*supplier)
+		if err != nil {
+			continue
+		}
+
+		if err := a.db.Create(&preparedSupplier).Error; err == nil {
 			suppliersCreated++
 		}
 	}

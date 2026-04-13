@@ -21,7 +21,7 @@ func makeCreationTestApp(t *testing.T) *App {
 		Role: Role{
 			Name:        "admin",
 			DisplayName: "Admin",
-			Permissions: `["customers:create","customers:view","customers:edit","suppliers:create","suppliers:view"]`,
+			Permissions: `["customers:create","customers:view","customers:edit","suppliers:create","suppliers:view","suppliers:edit"]`,
 		},
 	}
 	return app
@@ -362,6 +362,95 @@ func TestSupplierCreation_WithValidRole(t *testing.T) {
 	require.NotNil(t, created)
 	require.NotEmpty(t, created.SupplierCode)
 	require.Equal(t, "Creation Check Supplier", created.SupplierName)
+	require.Equal(t, 3, created.Rating)
+}
+
+func TestSupplierUpdate_PreservesIdentifiersWhenOmitted(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	created, err := app.CreateSupplier(SupplierMaster{
+		SupplierName: "Update Identifier Supplier",
+		SupplierType: "Manufacturer",
+		Country:      "Bahrain",
+		LeadTimeDays: 14,
+	})
+	require.NoError(t, err)
+
+	updated, err := app.UpdateSupplier(SupplierMaster{
+		Base:         Base{ID: created.ID},
+		SupplierName: "",
+		SupplierCode: "",
+		SupplierType: "Manufacturer",
+		Country:      "Bahrain",
+		LeadTimeDays: 21,
+	})
+	require.NoError(t, err)
+	require.Equal(t, created.SupplierName, updated.SupplierName)
+	require.Equal(t, created.SupplierCode, updated.SupplierCode)
+	require.Equal(t, 21, updated.LeadTimeDays)
+}
+
+func TestSupplierUpdate_PreservesRatingWhenOmitted(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	created, err := app.CreateSupplier(SupplierMaster{
+		SupplierName: "Rating Supplier",
+		SupplierType: "Manufacturer",
+		Country:      "Bahrain",
+		Rating:       5,
+		LeadTimeDays: 14,
+	})
+	require.NoError(t, err)
+
+	updated, err := app.UpdateSupplier(SupplierMaster{
+		Base:         Base{ID: created.ID},
+		SupplierName: created.SupplierName,
+		SupplierCode: created.SupplierCode,
+		SupplierType: "Manufacturer",
+		Country:      "Bahrain",
+		Rating:       0,
+		LeadTimeDays: 30,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 5, updated.Rating)
+}
+
+func TestSupplierUpdate_ValidatesInput(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	created, err := app.CreateSupplier(SupplierMaster{
+		SupplierName: "Update Validation Supplier",
+		SupplierType: "Manufacturer",
+		Country:      "Bahrain",
+		LeadTimeDays: 14,
+	})
+	require.NoError(t, err)
+
+	updated, err := app.UpdateSupplier(SupplierMaster{
+		Base:         Base{ID: created.ID},
+		SupplierName: created.SupplierName,
+		SupplierCode: created.SupplierCode,
+		SupplierType: "InvalidType",
+		Country:      "Bahrain",
+		LeadTimeDays: 14,
+	})
+	require.Error(t, err)
+	require.Nil(t, updated)
+	require.Contains(t, err.Error(), "Invalid supplier data")
+}
+
+func TestCreateSupplierFromButler_UsesSupplierCreatePolicy(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	created, err := app.CreateSupplierFromButler(ButlerSupplierRequest{
+		SupplierName: "Butler Supplier",
+		LeadTimeDays: 21,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.Equal(t, "Manufacturer", created.SupplierType)
+	require.Equal(t, "Bahrain", created.Country)
+	require.NotEmpty(t, created.SupplierCode)
 	require.Equal(t, 3, created.Rating)
 }
 
