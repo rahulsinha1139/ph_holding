@@ -48,6 +48,24 @@ func TestCustomerCreation_WithValidRole(t *testing.T) {
 	require.Equal(t, "Creation Check Customer", created.BusinessName)
 }
 
+func TestCustomerCreation_UsesProvidedCustomerIDAsCodeFallback(t *testing.T) {
+	app := makeCreationTestApp(t)
+
+	created, err := app.CreateCustomer(CustomerMaster{
+		BusinessName:     "Explicit ID Customer",
+		CustomerID:       "CUST-EXPLICIT-42",
+		CustomerType:     "Corporate",
+		Country:          "Bahrain",
+		PaymentGrade:     "B",
+		CustomerGrade:    "B",
+		PaymentTermsDays: 30,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.Equal(t, "CUST-EXPLICIT-42", created.CustomerID)
+	require.Equal(t, "CUST-EXPLICIT-42", created.CustomerCode)
+}
+
 func TestCustomerUpdate_PreservesIdentifiersWhenOmitted(t *testing.T) {
 	app := makeCreationTestApp(t)
 
@@ -143,6 +161,22 @@ func TestFindOrCreateCustomer_GeneratesFallbackIdentifierWithoutShortCode(t *tes
 	require.NotNil(t, created)
 	require.NotEmpty(t, created.CustomerCode)
 	require.Equal(t, created.CustomerCode, created.CustomerID)
+}
+
+func TestSeedCustomerDatabase_UsesSharedCustomerPolicy(t *testing.T) {
+	app := setupTestApp(t)
+
+	err := app.SeedCustomerDatabase()
+	require.NoError(t, err)
+
+	var customers []CustomerMaster
+	require.NoError(t, app.db.Order("business_name ASC").Find(&customers).Error)
+	require.Len(t, customers, 5)
+	for _, customer := range customers {
+		require.NotEmpty(t, customer.CustomerID)
+		require.NotEmpty(t, customer.CustomerCode)
+		require.Equal(t, customer.CustomerID, customer.CustomerCode)
+	}
 }
 
 func TestSupplierCreation_WithValidRole(t *testing.T) {

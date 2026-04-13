@@ -76,7 +76,11 @@ func assignCustomerBusinessIdentifiers(customer *CustomerMaster, now time.Time) 
 	customer.CustomerID = strings.TrimSpace(customer.CustomerID)
 
 	if customer.CustomerCode == "" {
-		customer.CustomerCode = defaultCustomerCode(customer.BusinessName, now)
+		if customer.CustomerID != "" {
+			customer.CustomerCode = customer.CustomerID
+		} else {
+			customer.CustomerCode = defaultCustomerCode(customer.BusinessName, now)
+		}
 	}
 	if customer.CustomerID == "" {
 		customer.CustomerID = customer.CustomerCode

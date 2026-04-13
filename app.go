@@ -7944,7 +7944,7 @@ func (a *App) SeedCustomerDatabase() error {
 		},
 		{
 			CustomerID:         "TATWEER-001",
-			CustomerType:       "EP", // Engineering/EPC
+			CustomerType:       "Corporate",
 			BusinessName:       "Tatweer Petroleum",
 			ShortCode:          "TATWEER",
 			City:               "Manama",
@@ -7961,7 +7961,7 @@ func (a *App) SeedCustomerDatabase() error {
 		},
 		{
 			CustomerID:         "SIEMENS-BH-001",
-			CustomerType:       "SI", // System Integrator
+			CustomerType:       "Corporate",
 			BusinessName:       "Siemens Industrial Solutions (Bahrain)",
 			ShortCode:          "SIEMENS",
 			City:               "Manama",
@@ -7980,7 +7980,13 @@ func (a *App) SeedCustomerDatabase() error {
 
 	// Insert sample customers
 	for _, customer := range sampleCustomers {
-		if err := a.db.Create(&customer).Error; err != nil {
+		preparedCustomer, err := newCustomerWritePolicy(GlobalValidator).PrepareForCreate(customer)
+		if err != nil {
+			log.Printf("Failed to prepare seed customer %s: %v", customer.BusinessName, err)
+			continue
+		}
+
+		if err := a.db.Create(&preparedCustomer).Error; err != nil {
 			log.Printf("⚠ Failed to seed customer %s: %v", customer.BusinessName, err)
 		} else {
 			log.Printf("  ✓ Seeded: %s (%s)", customer.BusinessName, customer.CustomerID)
@@ -12995,13 +13001,18 @@ func (a *App) SeedDatabaseFromOpportunities(opportunitiesFile string) (map[strin
 		}
 
 		customer := &CustomerMaster{
-			CustomerID:    uuid.New().String(),
 			CustomerCode:  customerCode + "-" + uuid.New().String()[:4],
 			BusinessName:  c.NormalizedName,
 			CustomerType:  "Industrial", // Default for instrumentation
 			Country:       "Bahrain",    // Default
 			CustomerGrade: "B",          // Default grade
 		}
+
+		preparedCustomer, err := newCustomerWritePolicy(GlobalValidator).PrepareForCreate(*customer)
+		if err != nil {
+			continue
+		}
+		customer = &preparedCustomer
 
 		if err := a.db.Create(customer).Error; err == nil {
 			customersCreated++
