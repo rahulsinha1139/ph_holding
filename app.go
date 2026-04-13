@@ -1832,11 +1832,18 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 	yearEnd := time.Date(activityYear+1, 1, 1, 0, 0, 0, 0, time.UTC)
 	log.Printf("Dashboard using business activity year: %d (invoice=%d order=%d opportunity=%d)", activityYear, latestInvoiceYear, latestOrderYear, latestOpportunityYear)
 
-	postedInvoiceStatuses := []string{"Sent", "Paid", "PartiallyPaid", "Overdue"}
+	now := time.Now()
+	var invoices []Invoice
+	if err := a.db.Find(&invoices).Error; err != nil {
+		log.Printf("Warning: Failed to load invoices for dashboard stats: %v", err)
+	}
 
 	var invoiceRevenue float64
-	if err := a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", postedInvoiceStatuses, yearStart, yearEnd).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&invoiceRevenue).Error; err != nil {
-		log.Printf("Warning: Failed to calculate revenue: %v", err)
+	for _, inv := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if !inv.InvoiceDate.Before(yearStart) && inv.InvoiceDate.Before(yearEnd) && isCustomerInvoicePostedStatus(state.Status) {
+			invoiceRevenue += inv.GrandTotalBHD
+		}
 	}
 
 	var bookedOrderValue float64
@@ -1877,13 +1884,22 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 	}
 
 	// 6. Month Growth (Revenue this month vs last month)
-	now := time.Now()
 	currentMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	lastMonthStart := currentMonthStart.AddDate(0, -1, 0)
 
 	var currentMonthRev, lastMonthRev float64
-	a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ?", postedInvoiceStatuses, currentMonthStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&currentMonthRev)
-	a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", postedInvoiceStatuses, lastMonthStart, currentMonthStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&lastMonthRev)
+	for _, inv := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if !isCustomerInvoicePostedStatus(state.Status) {
+			continue
+		}
+		switch {
+		case !inv.InvoiceDate.Before(currentMonthStart):
+			currentMonthRev += inv.GrandTotalBHD
+		case !inv.InvoiceDate.Before(lastMonthStart) && inv.InvoiceDate.Before(currentMonthStart):
+			lastMonthRev += inv.GrandTotalBHD
+		}
+	}
 
 	if currentMonthRev == 0 && lastMonthRev == 0 {
 		a.db.Model(&Order{}).Where("status NOT IN ('Cancelled') AND order_date >= ?", currentMonthStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&currentMonthRev)
@@ -1898,31 +1914,28 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 
 	// 7. Outstanding AR (Accounts Receivable - Unpaid Invoices - Same year as revenue)
 	var outstandingAR float64
-	var pendingCount int64
-	openInvoiceStatuses := []string{"Sent", "PartiallyPaid", "Overdue"}
-	if err := a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", openInvoiceStatuses, yearStart, yearEnd).
-		Select("COALESCE(SUM(outstanding_bhd), 0)").Scan(&outstandingAR).Error; err != nil {
-		log.Printf("Warning: Failed to calculate outstanding AR: %v", err)
+	pendingCount := 0
+	totalOverdueDays := 0.0
+	overdueCount := 0.0
+	for _, inv := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if inv.InvoiceDate.Before(yearStart) || !inv.InvoiceDate.Before(yearEnd) || !state.IsOpen {
+			continue
+		}
+		outstandingAR += state.OutstandingBHD
+		pendingCount++
+		if state.IsOverdue {
+			totalOverdueDays += now.Sub(inv.DueDate).Hours() / 24
+			overdueCount++
+		}
 	}
 	stats.OutstandingAR = outstandingAR
-
-	if err := a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", openInvoiceStatuses, yearStart, yearEnd).Count(&pendingCount).Error; err != nil {
-		log.Printf("Warning: Failed to count pending invoices: %v", err)
-	}
-	stats.PendingInvoices = int(pendingCount)
+	stats.PendingInvoices = pendingCount
 
 	// 8. AR Days Overdue (Average days overdue for unpaid invoices)
-	type OverdueResult struct {
-		AvgDaysOverdue float64
+	if overdueCount > 0 {
+		stats.ARDaysOverdue = int(totalOverdueDays / overdueCount)
 	}
-	var overdueResult OverdueResult
-	if err := a.db.Model(&Invoice{}).
-		Where("status IN ? AND due_date IS NOT NULL AND due_date < ?", openInvoiceStatuses, time.Now()).
-		Select("COALESCE(AVG(JULIANDAY('now') - JULIANDAY(due_date)), 0) as avg_days_overdue").
-		Scan(&overdueResult).Error; err != nil {
-		log.Printf("Warning: Failed to calculate AR days overdue: %v", err)
-	}
-	stats.ARDaysOverdue = int(overdueResult.AvgDaysOverdue)
 
 	// 9. Active Customers
 	var customerCount int64
@@ -2591,15 +2604,20 @@ func (a *App) GetReceivablesAging(customerID string) ReceivablesAgingSummary {
 	var invoices []Invoice
 	now := time.Now()
 
-	// Fetch all unpaid/partially paid invoices for this customer
-	a.db.Where("customer_id = ? AND status IN ('Sent', 'Overdue') AND outstanding_bhd > 0", customerID).
+	// Fetch all open-balance invoices for this customer and normalize settlement state in-memory.
+	a.db.Where("customer_id = ? AND outstanding_bhd > 0", customerID).
 		Find(&invoices)
 
 	aging := ReceivablesAgingSummary{}
 
 	for _, inv := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if !state.IsCollectible {
+			continue
+		}
+
 		daysOverdue := int(now.Sub(inv.DueDate).Hours() / 24)
-		outstanding := inv.OutstandingBHD
+		outstanding := state.OutstandingBHD
 
 		if daysOverdue <= 30 {
 			aging.Current += outstanding
@@ -2627,23 +2645,18 @@ func (a *App) GetPaymentHistory(customerID string, limit int) []PaymentHistoryEn
 	if err := a.requirePermission("payments:view"); err != nil {
 		return []PaymentHistoryEntry{}
 	}
-	var payments []Payment
+	var history []PaymentHistoryEntry
+	query := a.db.Table("payments").
+		Select("payments.payment_date, payments.amount_bhd, payments.invoice_number, payments.days_to_payment, payments.payment_method").
+		Joins("JOIN invoices ON invoices.id = payments.invoice_id").
+		Where("invoices.customer_id = ?", customerID).
+		Order("payments.payment_date DESC, payments.created_at DESC")
 
-	a.db.Where("customer_id = ?", customerID).
-		Order("payment_date DESC").
-		Limit(limit).
-		Find(&payments)
-
-	history := make([]PaymentHistoryEntry, 0, len(payments))
-	for _, p := range payments {
-		history = append(history, PaymentHistoryEntry{
-			PaymentDate:   p.PaymentDate,
-			AmountBHD:     p.AmountBHD,
-			InvoiceNumber: p.InvoiceNumber,
-			DaysToPayment: p.DaysToPayment,
-			PaymentMethod: p.PaymentMethod,
-		})
+	if limit > 0 {
+		query = query.Limit(limit)
 	}
+
+	query.Scan(&history)
 
 	log.Printf("Retrieved %d payment history entries for customer %s", len(history), customerID)
 	return history
@@ -2826,11 +2839,15 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 		profile.AvgOrderValue = totalOrderValue / float64(totalOrders)
 	}
 
-	// Calculate OutstandingBHD from unpaid invoices
-	var outstandingBHD float64
-	a.db.Model(&Invoice{}).Where("customer_id = ? AND status NOT IN (?, ?)", customerID, "Paid", "Cancelled").
-		Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&outstandingBHD)
-	profile.OutstandingBHD = outstandingBHD
+	// Calculate OutstandingBHD from collectible open invoices using the normalized payment state.
+	var outstandingInvoices []Invoice
+	a.db.Where("customer_id = ? AND outstanding_bhd > 0", customerID).Find(&outstandingInvoices)
+	for _, inv := range outstandingInvoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, time.Now())
+		if state.IsCollectible {
+			profile.OutstandingBHD += state.OutstandingBHD
+		}
+	}
 
 	// 2. Get contacts
 	var contacts []CustomerContact
@@ -2878,12 +2895,13 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 	a.db.Where("customer_id = ?", customerID).Order("invoice_date DESC").Limit(5).Find(&invoices)
 	recentInvoices := make([]InvoiceSummary, 0, len(invoices))
 	for _, inv := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, time.Now())
 		recentInvoices = append(recentInvoices, InvoiceSummary{
 			ID:            inv.ID,
 			InvoiceNumber: inv.InvoiceNumber,
 			InvoiceDate:   inv.InvoiceDate,
 			GrandTotalBHD: inv.GrandTotalBHD,
-			Status:        inv.Status,
+			Status:        state.Status,
 		})
 	}
 	profile.RecentInvoices = recentInvoices
@@ -16562,9 +16580,9 @@ func (a *App) GetARAgingReport() (*ARAgingReport, error) {
 		Details: make([]ARAgingDetail, 0),
 	}
 
-	// Query unpaid/outstanding invoices
+	// Query all open-balance invoices and normalize collectible/open state in-memory.
 	var invoices []Invoice
-	err := a.db.Where("status != ? AND deleted_at IS NULL AND outstanding_bhd > 0", "Paid").
+	err := a.db.Where("outstanding_bhd > 0").
 		Order("due_date ASC").
 		Find(&invoices).Error
 
@@ -16576,12 +16594,17 @@ func (a *App) GetARAgingReport() (*ARAgingReport, error) {
 	// Calculate aging buckets
 	now := time.Now()
 	for _, inv := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if !state.IsCollectible {
+			continue
+		}
+
 		daysOverdue := int(now.Sub(inv.DueDate).Hours() / 24)
 		if daysOverdue < 0 {
 			daysOverdue = 0 // Not yet due
 		}
 
-		amount := inv.OutstandingBHD
+		amount := state.OutstandingBHD
 		detail := ARAgingDetail{
 			CustomerID:   inv.CustomerID,
 			CustomerName: inv.CustomerName,
@@ -17912,54 +17935,47 @@ func (a *App) GetFinancialDashboardForYear(year int) (FinancialDashboard, error)
 // enrichDashboardFromDB updates dashboard with live database values
 func (a *App) enrichDashboardFromDB(d *FinancialDashboard) {
 	yearStart := time.Date(time.Now().Year(), 1, 1, 0, 0, 0, 0, time.UTC)
-
-	// YTD Revenue from invoices (using grand_total_bhd - correct column name)
-	var ytdRevenue float64
-	if err := a.db.Model(&Invoice{}).
-		Where("invoice_date >= ? AND status NOT IN ('draft', 'cancelled', 'Draft', 'Cancelled')", yearStart).
-		Select("COALESCE(SUM(grand_total_bhd), 0)").
-		Scan(&ytdRevenue).Error; err == nil && ytdRevenue > 0 {
-		d.Revenue = ytdRevenue
-	}
-
-	// Current AR from open invoices (using outstanding_bhd - correct column name)
-	var currentAR float64
-	if err := a.db.Model(&Invoice{}).
-		Where("status IN ('sent', 'overdue', 'partially_paid', 'Sent', 'Overdue')").
-		Select("COALESCE(SUM(outstanding_bhd), 0)").
-		Scan(&currentAR).Error; err == nil && currentAR > 0 {
-		d.TradeReceivables = currentAR
-	}
-
-	// AR Aging buckets (using outstanding_bhd - correct column name)
 	now := time.Now()
+	var invoices []Invoice
+	if err := a.db.Find(&invoices).Error; err != nil {
+		log.Printf("Warning: Failed to load invoices for financial dashboard normalization: %v", err)
+		return
+	}
+
+	var ytdRevenue float64
+	var currentAR float64
 	thirtyDaysAgo := now.AddDate(0, 0, -30)
 	sixtyDaysAgo := now.AddDate(0, 0, -60)
 	ninetyDaysAgo := now.AddDate(0, 0, -90)
 
-	// Current (0-30 days)
-	a.db.Model(&Invoice{}).
-		Where("status IN ('sent', 'overdue', 'partially_paid', 'Sent', 'Overdue') AND invoice_date >= ?", thirtyDaysAgo).
-		Select("COALESCE(SUM(outstanding_bhd), 0)").
-		Scan(&d.ARCurrent)
+	for _, inv := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if !inv.InvoiceDate.Before(yearStart) && isCustomerInvoicePostedStatus(state.Status) {
+			ytdRevenue += inv.GrandTotalBHD
+		}
+		if !state.IsOpen {
+			continue
+		}
 
-	// 31-60 days
-	a.db.Model(&Invoice{}).
-		Where("status IN ('sent', 'overdue', 'partially_paid', 'Sent', 'Overdue') AND invoice_date < ? AND invoice_date >= ?", thirtyDaysAgo, sixtyDaysAgo).
-		Select("COALESCE(SUM(outstanding_bhd), 0)").
-		Scan(&d.AR30_60)
+		currentAR += state.OutstandingBHD
+		switch {
+		case !inv.InvoiceDate.Before(thirtyDaysAgo):
+			d.ARCurrent += state.OutstandingBHD
+		case !inv.InvoiceDate.Before(sixtyDaysAgo):
+			d.AR30_60 += state.OutstandingBHD
+		case !inv.InvoiceDate.Before(ninetyDaysAgo):
+			d.AR60_90 += state.OutstandingBHD
+		default:
+			d.AROver90 += state.OutstandingBHD
+		}
+	}
 
-	// 61-90 days
-	a.db.Model(&Invoice{}).
-		Where("status IN ('sent', 'overdue', 'partially_paid', 'Sent', 'Overdue') AND invoice_date < ? AND invoice_date >= ?", sixtyDaysAgo, ninetyDaysAgo).
-		Select("COALESCE(SUM(outstanding_bhd), 0)").
-		Scan(&d.AR60_90)
-
-	// >90 days
-	a.db.Model(&Invoice{}).
-		Where("status IN ('sent', 'overdue', 'partially_paid', 'Sent', 'Overdue') AND invoice_date < ?", ninetyDaysAgo).
-		Select("COALESCE(SUM(outstanding_bhd), 0)").
-		Scan(&d.AROver90)
+	if ytdRevenue > 0 {
+		d.Revenue = ytdRevenue
+	}
+	if currentAR > 0 {
+		d.TradeReceivables = currentAR
+	}
 
 	// Calculate overdue totals
 	d.AROverdue = d.AR30_60 + d.AR60_90 + d.AROver90
@@ -18067,15 +18083,18 @@ func (a *App) GetCRMCustomerDashboard() CRMCustomerDashboard {
 	var totalRevenue float64
 
 	for _, inv := range invoices {
-		customerRevenue[inv.CustomerID] += inv.GrandTotalBHD
-		totalRevenue += inv.GrandTotalBHD
+		state := customerInvoicePaymentStateFromInvoice(inv, time.Now())
+		if isCustomerInvoicePostedStatus(state.Status) {
+			customerRevenue[inv.CustomerID] += inv.GrandTotalBHD
+			totalRevenue += inv.GrandTotalBHD
+		}
 
-		if inv.Status != "Paid" {
+		if state.IsOpen {
 			customerActiveInvoices[inv.CustomerID]++
-			customerOutstanding[inv.CustomerID] += inv.OutstandingBHD
+			customerOutstanding[inv.CustomerID] += state.OutstandingBHD
 
-			if time.Since(inv.DueDate).Hours()/24 > 30 {
-				customerOverdue[inv.CustomerID] += inv.OutstandingBHD
+			if state.IsOverdue {
+				customerOverdue[inv.CustomerID] += state.OutstandingBHD
 			}
 		}
 	}
@@ -18221,15 +18240,18 @@ func (a *App) GetCRMCustomerDashboardByYear(year int) CRMCustomerDashboard {
 	var totalRevenue float64
 
 	for _, inv := range invoices {
-		customerRevenue[inv.CustomerID] += inv.GrandTotalBHD
-		totalRevenue += inv.GrandTotalBHD
+		state := customerInvoicePaymentStateFromInvoice(inv, time.Now())
+		if isCustomerInvoicePostedStatus(state.Status) {
+			customerRevenue[inv.CustomerID] += inv.GrandTotalBHD
+			totalRevenue += inv.GrandTotalBHD
+		}
 
-		if inv.Status != "Paid" {
+		if state.IsOpen {
 			customerActiveInvoices[inv.CustomerID]++
-			customerOutstanding[inv.CustomerID] += inv.OutstandingBHD
+			customerOutstanding[inv.CustomerID] += state.OutstandingBHD
 
-			if time.Since(inv.DueDate).Hours()/24 > 30 {
-				customerOverdue[inv.CustomerID] += inv.OutstandingBHD
+			if state.IsOverdue {
+				customerOverdue[inv.CustomerID] += state.OutstandingBHD
 			}
 		}
 	}

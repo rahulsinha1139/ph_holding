@@ -58,10 +58,9 @@ func (a *App) GetPaymentAgingReport() (PaymentAgingReport, error) {
 		CustomerBuckets: []PaymentAgingBucket{},
 	}
 
-	// Get only collectible unpaid invoices (exclude terminal/non-collectible statuses)
+	// Get all open-balance invoices and normalize collectible/open state in-memory.
 	var invoices []Invoice
-	collectibleStatuses := []string{"Sent", "Overdue", "PartiallyPaid"}
-	if err := a.db.Where("status IN ?", collectibleStatuses).Find(&invoices).Error; err != nil {
+	if err := a.db.Where("outstanding_bhd > 0").Find(&invoices).Error; err != nil {
 		return report, newError("DB_QUERY_FAILED", "Failed to retrieve invoices", err.Error())
 	}
 
@@ -70,9 +69,14 @@ func (a *App) GetPaymentAgingReport() (PaymentAgingReport, error) {
 	now := time.Now()
 
 	for _, inv := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if !state.IsCollectible {
+			continue
+		}
+
 		// Calculate days overdue (negative = not yet due)
 		daysOverdue := int(now.Sub(inv.DueDate).Hours() / 24)
-		outstanding := inv.OutstandingBHD
+		outstanding := state.OutstandingBHD
 
 		// Get or create customer bucket
 		bucket, exists := customerMap[inv.CustomerID]
@@ -216,17 +220,15 @@ func (a *App) GetCashFlowProjection(days int) (CashFlowProjection, error) {
 	}
 
 	// 1. Project INFLOWS from customer invoices (based on due dates + payment history)
-	// Only include collectible statuses — exclude Cancelled, Void, Proforma, Draft
-	collectibleStatuses := []string{"Sent", "Overdue", "PartiallyPaid"}
 	var unpaidInvoices []Invoice
-	if err := a.db.Where("status IN ? AND due_date BETWEEN ? AND ?", collectibleStatuses, now, endDate).
+	if err := a.db.Where("due_date BETWEEN ? AND ? AND outstanding_bhd > 0", now, endDate).
 		Find(&unpaidInvoices).Error; err != nil {
 		return projection, newError("DB_QUERY_FAILED", "Failed to retrieve invoices", err.Error())
 	}
 
 	for _, inv := range unpaidInvoices {
-		// Skip if already fully collected (status may lag a payment update)
-		if inv.OutstandingBHD <= 0 {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if !state.IsCollectible {
 			continue
 		}
 
@@ -244,8 +246,8 @@ func (a *App) GetCashFlowProjection(days int) (CashFlowProjection, error) {
 		if expectedDate.After(now) && expectedDate.Before(endDate) {
 			dateKey := expectedDate.Format("2006-01-02")
 			if day, exists := dailyMap[dateKey]; exists {
-				day.ExpectedInflows += inv.OutstandingBHD
-				projection.TotalInflows += inv.OutstandingBHD
+				day.ExpectedInflows += state.OutstandingBHD
+				projection.TotalInflows += state.OutstandingBHD
 			}
 		}
 	}

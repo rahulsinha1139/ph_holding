@@ -392,20 +392,20 @@ func (a *App) CreateProformaInvoice(orderID string) (Invoice, error) {
 
 	// Build proforma invoice directly (skip fulfillment tracking)
 	invoice := Invoice{
-		InvoiceNumber: invoiceNumber,
-		OrderID:       order.ID,
-		CustomerID:    order.CustomerID,
-		CustomerName:  order.CustomerName,
-		InvoiceDate:   time.Now(),
-		DueDate:       time.Now().AddDate(0, 0, 30),
-		Status:        "Proforma",
-		SubtotalBHD:   order.TotalValueBHD,
-		VATPercent:    10.0,
-		VATBHD:        order.TotalValueBHD * 0.10,
-		GrandTotalBHD: order.TotalValueBHD * 1.10,
+		InvoiceNumber:  invoiceNumber,
+		OrderID:        order.ID,
+		CustomerID:     order.CustomerID,
+		CustomerName:   order.CustomerName,
+		InvoiceDate:    time.Now(),
+		DueDate:        time.Now().AddDate(0, 0, 30),
+		Status:         "Proforma",
+		SubtotalBHD:    order.TotalValueBHD,
+		VATPercent:     10.0,
+		VATBHD:         order.TotalValueBHD * 0.10,
+		GrandTotalBHD:  order.TotalValueBHD * 1.10,
 		OutstandingBHD: 0.0, // Proforma has no outstanding balance
-		PaymentTerms:  order.PaymentTerms,
-		Division:      order.Division,
+		PaymentTerms:   order.PaymentTerms,
+		Division:       order.Division,
 	}
 
 	// Copy line items from order
@@ -1304,9 +1304,9 @@ func (a *App) MarkCustomerInvoicePaid(id string, paymentDate time.Time, paymentR
 	if err := tx.Model(&Invoice{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
-			"status":         "Paid",
+			"status":          "Paid",
 			"outstanding_bhd": 0.0,
-			"updated_at":     now,
+			"updated_at":      now,
 		}).Error; err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to mark invoice as paid: %w", err)
@@ -1493,8 +1493,7 @@ func (a *App) RecordPartialPayment(id string, paymentAmount float64, paymentDate
 	}
 
 	// Fix 5: Reject payments on non-payable invoices
-	nonPayableStatuses := map[string]bool{"Cancelled": true, "Void": true, "Proforma": true, "Paid": true}
-	if nonPayableStatuses[invoice.Status] {
+	if !canRecordCustomerInvoicePayment(invoice, time.Now()) {
 		tx.Rollback()
 		return fmt.Errorf("cannot record payment on invoice with status '%s'", invoice.Status)
 	}
@@ -1516,24 +1515,10 @@ func (a *App) RecordPartialPayment(id string, paymentAmount float64, paymentDate
 	// Calculate new outstanding balance
 	newOutstanding := invoice.OutstandingBHD - paymentAmount
 
-	// Update status based on new outstanding balance
-	newStatus := invoice.Status
-	if newOutstanding <= 0.001 { // Tolerance for floating point comparison
-		newStatus = "Paid"
-		newOutstanding = 0.0
-	} else if newOutstanding < invoice.GrandTotalBHD {
-		newStatus = "PartiallyPaid"
-	}
-
-	// Update invoice atomically within transaction
-	now := time.Now()
-	if err := tx.Model(&Invoice{}).
-		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"outstanding_bhd": newOutstanding,
-			"status":         newStatus,
-			"updated_at":     now,
-		}).Error; err != nil {
+	previousOutstanding := invoice.OutstandingBHD
+	invoice.OutstandingBHD = newOutstanding
+	state, err := a.applyCustomerInvoicePaymentState(tx, &invoice)
+	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to record partial payment: %w", err)
 	}
@@ -1562,7 +1547,7 @@ func (a *App) RecordPartialPayment(id string, paymentAmount float64, paymentDate
 	}
 
 	log.Printf("💰 Recorded Partial Payment: %.3f BHD for Invoice %s (Ref: %s, Outstanding: %.3f → %.3f BHD)",
-		paymentAmount, invoice.InvoiceNumber, paymentRef, invoice.OutstandingBHD, newOutstanding)
+		paymentAmount, invoice.InvoiceNumber, paymentRef, previousOutstanding, state.OutstandingBHD)
 
 	return nil
 }
