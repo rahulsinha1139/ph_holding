@@ -460,11 +460,11 @@
               <h3 class="section-title">PAYABLES</h3>
               <div class="aging-grid">
                 <div class="aging-item">
-                  <span class="aging-label">Outstanding</span>
+                  <span class="aging-label">Open Payables</span>
                   <span class="aging-value">{formatCurrency(profile.outstanding_bhd)} BHD</span>
                 </div>
                 <div class="aging-item">
-                  <span class="aging-label">Overdue</span>
+                  <span class="aging-label">Overdue Payables</span>
                   <span class="aging-value" class:danger={profile.overdue_bhd > 0}>{formatCurrency(profile.overdue_bhd)} BHD</span>
                 </div>
               </div>
