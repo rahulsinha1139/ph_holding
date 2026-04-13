@@ -115,12 +115,12 @@
                 <div class="kpi-sub">FY{selectedYear}</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">Outstanding AR</div>
+                <div class="kpi-label">Open Receivables</div>
                 <div class="kpi-value">{fmtCompact(data.outstanding_ar)}</div>
-                <div class="kpi-sub">{data.overdue_count} overdue</div>
+                <div class="kpi-sub">{data.overdue_count} overdue receivables</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">Collected</div>
+                <div class="kpi-label">Receipts Collected</div>
                 <div class="kpi-value">{fmtCompact(data.paid_amount)}</div>
                 <div class="kpi-sub">Avg invoice: {fmtCurrency(data.avg_invoice_size)}</div>
             </div>
@@ -138,7 +138,7 @@
                 </thead>
                 <tbody>
                     <tr>
-                        <td>Total Revenue</td>
+                        <td>Invoiced Revenue</td>
                         <td class="number-col">{fmtCurrency(data.revenue)}</td>
                     </tr>
                     <tr>
@@ -158,7 +158,7 @@
                         <td class="number-col">{fmtCurrency(data.outstanding_ar)}</td>
                     </tr>
                     <tr class:overdue={data.overdue_amount > 0}>
-                        <td>Overdue Amount</td>
+                        <td>Overdue Receivables</td>
                         <td class="number-col">{fmtCurrency(data.overdue_amount)}</td>
                     </tr>
                     <tr>
