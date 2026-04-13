@@ -212,3 +212,37 @@ func TestGetSupplierPaymentsSummary_UsesLiveOutstandingBalances(t *testing.T) {
 	require.EqualValues(t, 2, summary["outstanding_count"])
 	require.EqualValues(t, 1, summary["overdue_count"])
 }
+
+func TestUpdateSupplierInvoice_RejectsManualPaidStatusWithoutLedger(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&SupplierInvoice{}, &SupplierInvoiceItem{}, &SupplierPayment{}))
+
+	supplierID := seedTestSupplier(t, app.db, "Manual Paid Supplier")
+	invoiceDate := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	invoice := createTestSupplierInvoice(t, app, supplierID, "Manual Paid Supplier", "SI-MANUAL-PAID-1", invoiceDate, invoiceDate.AddDate(0, 0, 30), 100)
+
+	invoice.PaymentStatus = "Paid"
+	invoice.Status = "Paid"
+
+	_, err := app.UpdateSupplierInvoice(invoice)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "paid status is ledger-derived")
+}
+
+func TestUpdateSupplierInvoice_RejectsApprovedStateWithoutMatchedThreeWayMatch(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&SupplierInvoice{}, &SupplierInvoiceItem{}, &SupplierPayment{}))
+
+	supplierID := seedTestSupplier(t, app.db, "Manual Approve Supplier")
+	invoiceDate := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	invoice := createTestSupplierInvoice(t, app, supplierID, "Manual Approve Supplier", "SI-MANUAL-APPROVE-1", invoiceDate, invoiceDate.AddDate(0, 0, 30), 100)
+	invoice.Status = "Pending"
+	invoice.MatchStatus = "Pending"
+	require.NoError(t, app.db.Save(&invoice).Error)
+
+	invoice.Status = "Approved"
+
+	_, err := app.UpdateSupplierInvoice(invoice)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must have a Matched 3-way match")
+}

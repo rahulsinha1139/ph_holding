@@ -255,22 +255,28 @@ func (a *App) UpdateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 		return SupplierInvoice{}, fmt.Errorf("database not initialized")
 	}
 
+	tx := a.db.Begin()
+	if tx.Error != nil {
+		return SupplierInvoice{}, fmt.Errorf("failed to begin transaction: %w", tx.Error)
+	}
+
 	// Verify invoice exists
 	var existing SupplierInvoice
-	if err := a.db.Where("id = ?", inv.ID).First(&existing).Error; err != nil {
+	if err := tx.Where("id = ?", inv.ID).First(&existing).Error; err != nil {
+		tx.Rollback()
 		return SupplierInvoice{}, fmt.Errorf("supplier invoice not found: %w", err)
 	}
 
 	// Re-enrich denormalized fields if IDs changed
 	if inv.SupplierID != "" && inv.SupplierID != existing.SupplierID {
 		var supplier SupplierMaster
-		if err := a.db.Where("id = ?", inv.SupplierID).First(&supplier).Error; err == nil {
+		if err := tx.Where("id = ?", inv.SupplierID).First(&supplier).Error; err == nil {
 			inv.SupplierName = supplier.SupplierName
 		}
 	}
 	if inv.PurchaseOrderID != "" && inv.PurchaseOrderID != existing.PurchaseOrderID {
 		var po PurchaseOrder
-		if err := a.db.Where("id = ?", inv.PurchaseOrderID).First(&po).Error; err == nil {
+		if err := tx.Where("id = ?", inv.PurchaseOrderID).First(&po).Error; err == nil {
 			inv.PONumber = po.PONumber
 		}
 	}
@@ -278,14 +284,13 @@ func (a *App) UpdateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 	// Update timestamp
 	inv.UpdatedAt = time.Now()
 
-	if inv.PaymentStatus == "Paid" {
-		inv.Status = "Paid"
-		if inv.PaymentDate == nil {
-			now := time.Now()
-			inv.PaymentDate = &now
-		}
-	} else if inv.Status == "Paid" && inv.PaymentStatus != "Paid" {
-		inv.Status = "Approved"
+	if inv.Status == "Approved" && inv.MatchStatus != "Matched" {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("approved supplier invoices must have a Matched 3-way match")
+	}
+	if inv.Status == "Paid" {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("paid status is ledger-derived; use supplier payment workflows instead")
 	}
 
 	// Recalculate BHD amounts if currency changed
@@ -299,12 +304,21 @@ func (a *App) UpdateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 		inv.TotalBHD = inv.TotalForeign
 	}
 
-	if err := a.db.Save(&inv).Error; err != nil {
+	if err := tx.Save(&inv).Error; err != nil {
+		tx.Rollback()
 		return SupplierInvoice{}, fmt.Errorf("failed to update supplier invoice: %w", err)
+	}
+	if _, err := a.applySupplierInvoicePaymentState(tx, inv.ID); err != nil {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("failed to normalize supplier invoice payment state: %w", err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("failed to commit supplier invoice update: %w", err)
 	}
 
 	log.Printf("✅ Updated Supplier Invoice: %s", inv.InvoiceNumber)
-	return inv, nil
+	return a.GetSupplierInvoiceByID(inv.ID)
 }
 
 // UpdateSupplierInvoiceWithPayment updates a supplier invoice and, when requested,

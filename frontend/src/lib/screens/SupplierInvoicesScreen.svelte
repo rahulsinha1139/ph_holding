@@ -7,7 +7,7 @@
    * - Match status visualization (Matched, Partial, Mismatch, Pending)
    * - Payment tracking (Pending, Partial, Paid, Overdue)
    * - Multi-currency support with BHD conversion
-   * - Approval workflow (Pending → Verified → Approved → Paid)
+   * - Approval workflow (Pending → Matched → Approved → Paid)
    * - Overdue tracking with visual warnings
    */
 
@@ -308,7 +308,7 @@
                 Match
               </button>
             ` : ''}
-            ${row.status === 'Verified' ? `
+            ${row.status === 'Pending' && row.match_status === 'Matched' ? `
               <button
                 class="action-btn action-btn-approve"
                 data-action="approve"
@@ -859,7 +859,10 @@
 
       existingPaymentCount = existingPayments.length;
       existingPaymentTotalBhd = existingPayments.reduce((sum, payment) => sum + Number(payment?.amount_bhd || 0), 0);
-      createPaymentEntry = invoice.payment_status === 'Paid' && existingPaymentCount === 0;
+      createPaymentEntry =
+        invoice.payment_status === 'Paid' &&
+        existingPaymentCount === 0 &&
+        Number(invoice.outstanding_bhd || 0) > 0;
       editingInvoice = {
         ...invoice,
         supplier_id: invoice.supplier_id || '',
@@ -893,8 +896,21 @@
           normalizedInvoice.supplier_name = supplier.supplier_name;
         }
       }
-      if (normalizedInvoice.payment_status === 'Paid') {
-        normalizedInvoice.status = 'Paid';
+      if (normalizedInvoice.status === 'Approved' && normalizedInvoice.match_status !== 'Matched') {
+        toast.warning('3-way match must be Matched before approval');
+        return;
+      }
+      if (normalizedInvoice.payment_status === 'Paid' && existingPaymentCount === 0 && !createPaymentEntry) {
+        toast.warning('Enable payment ledger creation or use Mark Paid to settle this invoice');
+        return;
+      }
+      if (
+        normalizedInvoice.payment_status === 'Paid' &&
+        existingPaymentCount > 0 &&
+        existingPaymentTotalBhd + 0.001 < Number(normalizedInvoice.total_bhd || 0)
+      ) {
+        toast.warning('Use Supplier Payments to settle the remaining balance on partially paid invoices');
+        return;
       }
       const shouldCreatePaymentEntry =
         normalizedInvoice.payment_status === 'Paid' &&
@@ -1457,9 +1473,9 @@
       <FormGroup label="Status">
         <select class="select-input" bind:value={editingInvoice.status}>
           <option value="Pending">Pending</option>
-          <option value="Verified">Verified</option>
           <option value="Approved">Approved</option>
           <option value="Rejected">Rejected</option>
+          <option value="Dispute">Dispute</option>
         </select>
       </FormGroup>
       <FormGroup label="Amount (Foreign)">
@@ -1475,14 +1491,14 @@
         <Input type="date" bind:value={editingInvoice.due_date} />
       </FormGroup>
       <FormGroup label="Payment Status">
-        <select class="select-input" bind:value={editingInvoice.payment_status}>
+        <select class="select-input" bind:value={editingInvoice.payment_status} disabled={existingPaymentCount > 0}>
           <option value="Unpaid">Unpaid</option>
-          <option value="Scheduled">Scheduled</option>
+          <option value="Partial">Partial</option>
           <option value="Paid">Paid</option>
         </select>
       </FormGroup>
       <FormGroup label="Payment Method">
-        <select class="select-input" bind:value={editingInvoice.payment_method}>
+        <select class="select-input" bind:value={editingInvoice.payment_method} disabled={existingPaymentCount > 0}>
           <option value="">Not Set</option>
           <option value="Bank Transfer">Bank Transfer</option>
           <option value="Cheque">Cheque</option>
@@ -1494,28 +1510,29 @@
         </select>
       </FormGroup>
       <FormGroup label="Payment Date">
-        <Input type="date" bind:value={editingInvoice.payment_date} />
+        <Input type="date" bind:value={editingInvoice.payment_date} disabled={existingPaymentCount > 0} />
       </FormGroup>
       <FormGroup label="Payment Ref">
-        <Input type="text" bind:value={editingInvoice.payment_ref} placeholder="Transfer / cheque reference" />
+        <Input type="text" bind:value={editingInvoice.payment_ref} placeholder="Transfer / cheque reference" disabled={existingPaymentCount > 0} />
       </FormGroup>
     </div>
-    {#if editingInvoice.payment_status === 'Paid'}
+    {#if existingPaymentCount > 0}
       <div class="payment-entry-card">
-        {#if existingPaymentCount > 0}
-          <p class="payment-entry-note">
-            This invoice already has {existingPaymentCount} supplier payment entr{existingPaymentCount === 1 ? 'y' : 'ies'}
-            totaling {formatMoney(existingPaymentTotalBhd)} BHD.
-          </p>
-        {:else}
-          <label class="payment-entry-toggle">
-            <input type="checkbox" bind:checked={createPaymentEntry} />
-            <span>Create supplier payment ledger entry from this payment info</span>
-          </label>
-          <p class="payment-entry-note">
-            This will make the payment appear in Supplier Payments and Bank Reconciliation matching.
-          </p>
-        {/if}
+        <p class="payment-entry-note">
+          This invoice already has {existingPaymentCount} supplier payment entr{existingPaymentCount === 1 ? 'y' : 'ies'}
+          totaling {formatMoney(existingPaymentTotalBhd)} BHD. Payment status and payment metadata are now ledger-derived.
+        </p>
+      </div>
+    {/if}
+    {#if editingInvoice.payment_status === 'Paid' && existingPaymentCount === 0}
+      <div class="payment-entry-card">
+        <label class="payment-entry-toggle">
+          <input type="checkbox" bind:checked={createPaymentEntry} />
+          <span>Create supplier payment ledger entry from this payment info</span>
+        </label>
+        <p class="payment-entry-note">
+          This will make the payment appear in Supplier Payments and Bank Reconciliation matching.
+        </p>
       </div>
     {/if}
     <svelte:fragment slot="footer">
