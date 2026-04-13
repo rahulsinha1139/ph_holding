@@ -1,0 +1,155 @@
+package main
+
+import (
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestSeedProductDatabase_UsesCanonicalSupplierLinks(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&ProductMaster{}))
+
+	require.NoError(t, app.SeedProductDatabase())
+
+	var endress ProductMaster
+	require.NoError(t, app.db.Where("product_code = ?", "8E3B50-1").First(&endress).Error)
+	require.Equal(t, "EH", endress.SupplierCode)
+	require.NotEmpty(t, endress.SupplierID)
+
+	var supplier SupplierMaster
+	require.NoError(t, app.db.First(&supplier, "id = ?", endress.SupplierID).Error)
+	require.Equal(t, "EH", supplier.SupplierCode)
+
+	var gic ProductMaster
+	require.NoError(t, app.db.Where("product_code = ?", "GIC-PG100").First(&gic).Error)
+	require.Equal(t, "GIC", gic.SupplierCode)
+	require.NotEmpty(t, gic.SupplierID)
+	var gicSupplier SupplierMaster
+	require.NoError(t, app.db.First(&gicSupplier, "id = ?", gic.SupplierID).Error)
+	require.Equal(t, "GIC", gicSupplier.SupplierCode)
+}
+
+func TestResolveSupplierForProduct_FallsBackToSupplierCode(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&ProductMaster{}))
+
+	supplier, _, err := app.ensureSeedSupplier(supplierSeedSpec{
+		Name:         "Fallback Supplier",
+		Code:         "FALL",
+		Country:      "Bahrain",
+		PaymentTerms: "Net 30",
+		SupplierType: "Manufacturer",
+		Rating:       5,
+	})
+	require.NoError(t, err)
+
+	product := ProductMaster{
+		ProductCode:  "TEST-FALLBACK",
+		ProductName:  "Fallback Product",
+		SupplierID:   "sup_fall",
+		SupplierCode: "FALL",
+	}
+
+	resolved, err := app.resolveSupplierForProduct(product)
+	require.NoError(t, err)
+	require.Equal(t, supplier.ID, resolved.ID)
+}
+
+func TestInferSupplierForOrderItems_FallsBackToSupplierCodeLink(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&ProductMaster{}))
+
+	supplier, _, err := app.ensureSeedSupplier(supplierSeedSpec{
+		Name:         "PO Supplier",
+		Code:         "POC",
+		Country:      "Bahrain",
+		PaymentTerms: "Net 30",
+		SupplierType: "Manufacturer",
+		Rating:       5,
+	})
+	require.NoError(t, err)
+
+	product := ProductMaster{
+		ProductCode:      "PO-PROD-1",
+		ProductName:      "PO Product",
+		SupplierID:       "sup_poc",
+		SupplierCode:     "POC",
+		StandardCostBHD:  10,
+		StandardPriceBHD: 15,
+		IsActive:         true,
+	}
+	require.NoError(t, app.db.Create(&product).Error)
+
+	order := Order{
+		Items: []OrderItem{
+			{
+				Base:        Base{ID: "item-1"},
+				ProductID:   product.ID,
+				ProductCode: product.ProductCode,
+				Quantity:    1,
+			},
+		},
+	}
+
+	inferred, err := app.inferSupplierForOrderItems(order, nil)
+	require.NoError(t, err)
+	require.Equal(t, supplier.ID, inferred.ID)
+}
+
+func TestGetInventoryAlertsLowStock_UsesResolvedSupplierLink(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&ProductMaster{}, &InventoryItem{}))
+	app.currentUser = &User{
+		Base:     Base{ID: "test-user"},
+		Username: "test-admin",
+		RoleName: "admin",
+		Role: Role{
+			Name:        "admin",
+			DisplayName: "Admin",
+			Permissions: `["dashboard:view"]`,
+		},
+	}
+
+	supplier, _, err := app.ensureSeedSupplier(supplierSeedSpec{
+		Name:         "Inventory Supplier",
+		Code:         "INV",
+		Country:      "Bahrain",
+		PaymentTerms: "Net 30",
+		SupplierType: "Manufacturer",
+		Rating:       5,
+	})
+	require.NoError(t, err)
+
+	product := ProductMaster{
+		ProductCode:      "INV-PROD-1",
+		ProductName:      "Inventory Product",
+		SupplierID:       "sup_inv",
+		SupplierCode:     "INV",
+		StandardCostBHD:  12,
+		StandardPriceBHD: 18,
+		IsActive:         true,
+	}
+	require.NoError(t, app.db.Create(&product).Error)
+
+	now := time.Now().Add(-48 * time.Hour)
+	require.NoError(t, app.db.Create(&InventoryItem{
+		ProductID:         product.ID,
+		ProductCode:       product.ProductCode,
+		QuantityOnHand:    1,
+		QuantityReserved:  0,
+		QuantityAvailable: 1,
+		ReorderPoint:      5,
+		MinimumStock:      2,
+		StockStatus:       "LowStock",
+		IsActive:          true,
+		LastMovementAt:    &now,
+	}).Error)
+
+	alerts, err := app.GetInventoryAlertsLowStock(0)
+	require.NoError(t, err)
+	require.Len(t, alerts, 1)
+	require.Equal(t, supplier.ID, alerts[0].SupplierID)
+	require.Equal(t, supplier.SupplierName, alerts[0].SupplierName)
+}

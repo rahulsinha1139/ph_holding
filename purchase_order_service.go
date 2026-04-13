@@ -50,11 +50,11 @@ func (a *App) inferSupplierForOrderItems(order Order, itemIDs []string) (Supplie
 		}
 
 		var product ProductMaster
-		if err := a.db.Select("id", "supplier_id").First(&product, "id = ?", orderItem.ProductID).Error; err != nil {
+		if err := a.db.Select("id", "product_code", "supplier_id", "supplier_code").First(&product, "id = ?", orderItem.ProductID).Error; err != nil {
 			continue
 		}
-		if trimmedSupplierID := strings.TrimSpace(product.SupplierID); trimmedSupplierID != "" {
-			supplierIDs[trimmedSupplierID] = struct{}{}
+		if supplier, err := a.resolveSupplierForProduct(product); err == nil {
+			supplierIDs[supplier.ID] = struct{}{}
 		}
 	}
 

@@ -2,7 +2,6 @@ package main
 
 import (
 	"log"
-	"strings"
 	"time"
 )
 
@@ -18,7 +17,7 @@ func (a *App) SearchProducts(query string) ([]ProductMaster, error) {
 	}
 
 	var products []ProductMaster
-	
+
 	if query == "" {
 		if err := a.db.Limit(20).Find(&products).Error; err != nil {
 			return nil, err
@@ -71,6 +70,12 @@ func (a *App) SeedProductDatabase() error {
 		return nil
 	}
 
+	for _, spec := range canonicalSeedSupplierSpecs(nil) {
+		if _, _, err := a.ensureSeedSupplier(spec); err != nil {
+			log.Printf("⚠ Failed to ensure supplier %s before product seed: %v", spec.Name, err)
+		}
+	}
+
 	var count int64
 	a.db.Model(&ProductMaster{}).Count(&count)
 	if count > 0 {
@@ -85,7 +90,7 @@ func (a *App) SeedProductDatabase() error {
 		{ProductCode: "8F3B50-2", ProductName: "Promass 83F Coriolis Flow Meter", ProductCategory: "Flow", StandardCostBHD: 1450.00, StandardPriceBHD: 1950.00, SupplierCode: "EH", Description: "High accuracy mass flow meter, DN50, High temp version"},
 		{ProductCode: "50W4H-1", ProductName: "Promag 50W Electromagnetic Flow Meter", ProductCategory: "Flow", StandardCostBHD: 450.00, StandardPriceBHD: 680.00, SupplierCode: "EH", Description: "Wafer style magmeter, DN100, 4 inch, EPDM liner"},
 		{ProductCode: "50P25-1", ProductName: "Promag 50P Chemical Flow Meter", ProductCategory: "Flow", StandardCostBHD: 650.00, StandardPriceBHD: 920.00, SupplierCode: "EH", Description: "Chemical grade magmeter, DN25, 1 inch, PTFE liner"},
-		
+
 		// Level Sensors (E+H)
 		{ProductCode: "FMR51-1", ProductName: "Micropilot FMR51 Radar", ProductCategory: "Level", StandardCostBHD: 850.00, StandardPriceBHD: 1250.00, SupplierCode: "EH", Description: "Free space radar level sensor, horn antenna, 26GHz"},
 		{ProductCode: "FMR52-1", ProductName: "Micropilot FMR52 Radar", ProductCategory: "Level", StandardCostBHD: 1100.00, StandardPriceBHD: 1550.00, SupplierCode: "EH", Description: "Free space radar with flush mounted antenna for hygiene"},
@@ -115,11 +120,16 @@ func (a *App) SeedProductDatabase() error {
 	for _, p := range products {
 		p.IsActive = true
 		p.StockQuantity = 10 // Default stock
-		p.SupplierID = "sup_" + strings.ToLower(p.SupplierCode) // Placeholder link
 		p.CreatedAt = time.Now()
 		p.UpdatedAt = time.Now()
-		
-		if err := a.db.Create(&p).Error; err != nil {
+
+		linkedProduct, err := a.normalizeProductSupplierLink(p)
+		if err != nil {
+			log.Printf("⚠ Failed to link product %s to supplier: %v", p.ProductCode, err)
+			continue
+		}
+
+		if err := a.db.Create(&linkedProduct).Error; err != nil {
 			log.Printf("⚠ Failed to seed product %s: %v", p.ProductCode, err)
 		}
 	}

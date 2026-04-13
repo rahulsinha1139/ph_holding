@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"strings"
 	"time"
 )
 
@@ -11,20 +12,20 @@ import (
 
 // InventoryAlert represents a stock alert condition
 type InventoryAlert struct {
-	ProductID       string  `json:"product_id"`
-	ProductCode     string  `json:"product_code"`
-	ProductName     string  `json:"product_name"`
-	QuantityOnHand  float64 `json:"quantity_on_hand"`
-	ReorderPoint    float64 `json:"reorder_point"`
-	MinimumStock    float64 `json:"minimum_stock"`
-	AlertType       string  `json:"alert_type"`        // "low_stock", "out_of_stock", "slow_moving", "overstock"
-	AlertSeverity   string  `json:"alert_severity"`    // "critical", "high", "medium", "low"
-	DaysUntilStock  int     `json:"days_until_stock"`  // Estimated days until out of stock
-	LastMovementAt  *time.Time `json:"last_movement_at"`
-	DaysSinceMovement int    `json:"days_since_movement"`
-	SupplierID      string  `json:"supplier_id"`
-	SupplierName    string  `json:"supplier_name"`
-	LeadTimeDays    int     `json:"lead_time_days"`
+	ProductID         string     `json:"product_id"`
+	ProductCode       string     `json:"product_code"`
+	ProductName       string     `json:"product_name"`
+	QuantityOnHand    float64    `json:"quantity_on_hand"`
+	ReorderPoint      float64    `json:"reorder_point"`
+	MinimumStock      float64    `json:"minimum_stock"`
+	AlertType         string     `json:"alert_type"`       // "low_stock", "out_of_stock", "slow_moving", "overstock"
+	AlertSeverity     string     `json:"alert_severity"`   // "critical", "high", "medium", "low"
+	DaysUntilStock    int        `json:"days_until_stock"` // Estimated days until out of stock
+	LastMovementAt    *time.Time `json:"last_movement_at"`
+	DaysSinceMovement int        `json:"days_since_movement"`
+	SupplierID        string     `json:"supplier_id"`
+	SupplierName      string     `json:"supplier_name"`
+	LeadTimeDays      int        `json:"lead_time_days"`
 }
 
 // GetInventoryAlertsLowStock retrieves items below reorder point or custom threshold
@@ -62,12 +63,13 @@ func (a *App) GetInventoryAlertsLowStock(threshold float64) ([]InventoryAlert, e
 		}
 
 		// Get supplier details
-		var supplier SupplierMaster
 		supplierName := "Unknown"
 		leadTimeDays := 30 // Default
-		if err := a.db.First(&supplier, "id = ?", product.SupplierID).Error; err == nil {
+		resolvedSupplierID := strings.TrimSpace(product.SupplierID)
+		if supplier, err := a.resolveSupplierForProduct(product); err == nil {
 			supplierName = supplier.SupplierName
 			leadTimeDays = supplier.LeadTimeDays
+			resolvedSupplierID = supplier.ID
 		}
 
 		// Determine alert type and severity
@@ -114,7 +116,7 @@ func (a *App) GetInventoryAlertsLowStock(threshold float64) ([]InventoryAlert, e
 			DaysUntilStock:    daysUntilStock,
 			LastMovementAt:    item.LastMovementAt,
 			DaysSinceMovement: daysSinceMovement,
-			SupplierID:        product.SupplierID,
+			SupplierID:        resolvedSupplierID,
 			SupplierName:      supplierName,
 			LeadTimeDays:      leadTimeDays,
 		}
@@ -158,10 +160,11 @@ func (a *App) GetInventoryAlertsSlowMoving(days int) ([]InventoryAlert, error) {
 		}
 
 		// Get supplier details
-		var supplier SupplierMaster
 		supplierName := "Unknown"
-		if err := a.db.First(&supplier, "id = ?", product.SupplierID).Error; err == nil {
+		resolvedSupplierID := strings.TrimSpace(product.SupplierID)
+		if supplier, err := a.resolveSupplierForProduct(product); err == nil {
 			supplierName = supplier.SupplierName
+			resolvedSupplierID = supplier.ID
 		}
 
 		daysSinceMovement := 0
@@ -190,7 +193,7 @@ func (a *App) GetInventoryAlertsSlowMoving(days int) ([]InventoryAlert, error) {
 			AlertSeverity:     alertSeverity,
 			LastMovementAt:    item.LastMovementAt,
 			DaysSinceMovement: daysSinceMovement,
-			SupplierID:        product.SupplierID,
+			SupplierID:        resolvedSupplierID,
 			SupplierName:      supplierName,
 		}
 
@@ -243,18 +246,18 @@ func (a *App) GetInventoryAlertsSummary() (map[string]int, error) {
 
 // ReorderSuggestion represents an automated reorder recommendation
 type ReorderSuggestion struct {
-	ProductID       string  `json:"product_id"`
-	ProductCode     string  `json:"product_code"`
-	ProductName     string  `json:"product_name"`
-	QuantityOnHand  float64 `json:"quantity_on_hand"`
-	ReorderPoint    float64 `json:"reorder_point"`
-	ReorderQty      float64 `json:"reorder_qty"`       // Suggested quantity to order
-	SupplierID      string  `json:"supplier_id"`
-	SupplierName    string  `json:"supplier_name"`
-	EstimatedCost   float64 `json:"estimated_cost_bhd"`
-	LeadTimeDays    int     `json:"lead_time_days"`
-	UrgencyLevel    string  `json:"urgency_level"`     // "urgent", "normal", "can_wait"
-	Reason          string  `json:"reason"`
+	ProductID      string  `json:"product_id"`
+	ProductCode    string  `json:"product_code"`
+	ProductName    string  `json:"product_name"`
+	QuantityOnHand float64 `json:"quantity_on_hand"`
+	ReorderPoint   float64 `json:"reorder_point"`
+	ReorderQty     float64 `json:"reorder_qty"` // Suggested quantity to order
+	SupplierID     string  `json:"supplier_id"`
+	SupplierName   string  `json:"supplier_name"`
+	EstimatedCost  float64 `json:"estimated_cost_bhd"`
+	LeadTimeDays   int     `json:"lead_time_days"`
+	UrgencyLevel   string  `json:"urgency_level"` // "urgent", "normal", "can_wait"
+	Reason         string  `json:"reason"`
 }
 
 // GetReorderSuggestions generates automatic reorder recommendations

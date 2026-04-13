@@ -27,6 +27,7 @@ func canonicalSeedSupplierSpecs(extracted []ExtractedSupplier) []supplierSeedSpe
 		{Name: "ABB", Code: "ABB", Country: "Switzerland", PaymentTerms: "Net 45", SupplierType: "Manufacturer", Rating: 5},
 		{Name: "Yokogawa", Code: "YOKO", Country: "Japan", PaymentTerms: "Net 60", SupplierType: "Manufacturer", Rating: 5},
 		{Name: "Honeywell", Code: "HON", Country: "USA", PaymentTerms: "Net 45", SupplierType: "Manufacturer", Rating: 5},
+		{Name: "GIC", Code: "GIC", Country: "Bahrain", PaymentTerms: "Net 30", SupplierType: "Manufacturer", Rating: 5},
 	}
 
 	indexByName := make(map[string]int, len(specs))
