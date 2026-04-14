@@ -103,33 +103,35 @@
   });
 </script>
 
-<ErrorBoundary name="Operations Hub">
-  <ModuleLayout title="Operations Hub" {tabs} {activeTab} on:tabChange={handleTabChange}>
-    <svelte:fragment slot="header-actions">
-      {#if activeTab === 'pos'}
-        <Button variant="primary" on:click={handleNewPO}>
-          + New Purchase Order
-        </Button>
-      {:else if activeTab === 'supplier-invoices'}
-        <Button variant="primary" on:click={handleNewInvoice}>
-          + New Supplier Invoice
-        </Button>
-      {:else if activeTab === 'delivery-notes'}
-        <Button variant="primary" on:click={handleNewDN}>
-          + New Delivery Note
-        </Button>
-      {/if}
-    </svelte:fragment>
+<div data-embedded={embedded ? 'true' : undefined}>
+  <ErrorBoundary name="Operations Hub">
+    <ModuleLayout title="Operations Hub" {tabs} {activeTab} on:tabChange={handleTabChange}>
+      <svelte:fragment slot="header-actions">
+        {#if activeTab === 'pos'}
+          <Button variant="primary" on:click={handleNewPO}>
+            + New Purchase Order
+          </Button>
+        {:else if activeTab === 'supplier-invoices'}
+          <Button variant="primary" on:click={handleNewInvoice}>
+            + New Supplier Invoice
+          </Button>
+        {:else if activeTab === 'delivery-notes'}
+          <Button variant="primary" on:click={handleNewDN}>
+            + New Delivery Note
+          </Button>
+        {/if}
+      </svelte:fragment>
 
-    {#if activeTab === 'pos'}
-      <PurchaseOrdersScreen embedded={true} />
-    {:else if activeTab === 'supplier-invoices'}
-      <SupplierInvoicesScreen embedded={true} />
-    {:else if activeTab === 'delivery-notes'}
-      <DeliveryNotesScreen embedded={true} />
-    {/if}
-  </ModuleLayout>
-</ErrorBoundary>
+      {#if activeTab === 'pos'}
+        <PurchaseOrdersScreen embedded={true} />
+      {:else if activeTab === 'supplier-invoices'}
+        <SupplierInvoicesScreen embedded={true} />
+      {:else if activeTab === 'delivery-notes'}
+        <DeliveryNotesScreen embedded={true} />
+      {/if}
+    </ModuleLayout>
+  </ErrorBoundary>
+</div>
 
 <style>
   /* All styling now handled by Button component and ModuleLayout */

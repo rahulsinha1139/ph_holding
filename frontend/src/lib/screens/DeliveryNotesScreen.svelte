@@ -426,6 +426,13 @@
     showDetailModal = true;
   }
 
+  function handleEmbeddedNoteKeydown(event: KeyboardEvent, note: main.DeliveryNote) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      handleRowClick(note);
+    }
+  }
+
   // Quick actions
   async function handleDispatch(note: main.DeliveryNote) {
     if (!note.driver_name || !note.vehicle_number) {
@@ -605,7 +612,14 @@
     {:else}
       <div class="notes-list">
         {#each deliveryNotes.slice(0, 5) as note}
-          <div class="note-item" on:click={() => handleRowClick(note)}>
+          <div
+            class="note-item"
+            role="button"
+            tabindex="0"
+            aria-label={`Open delivery note ${note.dn_number} for ${note.customer_name || 'customer'}`}
+            on:click={() => handleRowClick(note)}
+            on:keydown={(event) => handleEmbeddedNoteKeydown(event, note)}
+          >
             <div class="note-info">
               <span class="note-number">{note.dn_number}</span>
               <span class="note-customer">{note.customer_name || ''}</span>
@@ -1100,6 +1114,11 @@
     border-radius: var(--radius-md);
     cursor: pointer;
     transition: background 0.2s;
+  }
+
+  .note-item:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
   }
 
   .note-item:hover {
