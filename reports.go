@@ -24,6 +24,7 @@ type ReportGenerator struct {
 	pageWidth      float64 // A4 = 595 points
 	pageHeight     float64 // A4 = 842 points
 	letterheadPath string  // Path to letterhead image (set by App)
+	renderErr      error
 }
 
 // NewReportGenerator creates a new report generator with professional styling
@@ -38,6 +39,54 @@ func NewReportGenerator() *ReportGenerator {
 	}
 }
 
+func (g *ReportGenerator) setFont(family, style string, size int) {
+	if g.renderErr != nil {
+		return
+	}
+	if err := g.pdf.SetFont(family, style, size); err != nil {
+		g.renderErr = fmt.Errorf("failed to set report font %s/%s/%d: %w", family, style, size, err)
+	}
+}
+
+func (g *ReportGenerator) cell(text string) {
+	if g.renderErr != nil {
+		return
+	}
+	if err := g.pdf.Cell(nil, text); err != nil {
+		preview := text
+		if len(preview) > 48 {
+			preview = preview[:48] + "..."
+		}
+		g.renderErr = fmt.Errorf("failed to render report cell %q: %w", preview, err)
+	}
+}
+
+func (g *ReportGenerator) image(path string, x, y float64, rect *gopdf.Rect) {
+	if g.renderErr != nil {
+		return
+	}
+	if err := g.pdf.Image(path, x, y, rect); err != nil {
+		g.renderErr = fmt.Errorf("failed to render report image %s: %w", path, err)
+	}
+}
+
+func (g *ReportGenerator) finalize(outputPath string) error {
+	if g.renderErr != nil {
+		return g.renderErr
+	}
+	if err := g.pdf.WritePdf(outputPath); err != nil {
+		return fmt.Errorf("failed to write PDF: %w", err)
+	}
+	return nil
+}
+
+func writeReportString(file *os.File, text string) error {
+	if _, err := file.WriteString(text); err != nil {
+		return fmt.Errorf("failed to write report export: %w", err)
+	}
+	return nil
+}
+
 // drawLetterhead draws the PH Trading letterhead background on the current page
 func (g *ReportGenerator) drawLetterhead() {
 	if g.letterheadPath == "" {
@@ -47,18 +96,18 @@ func (g *ReportGenerator) drawLetterhead() {
 		return
 	}
 	// Draw letterhead as full-page background (A4: 595 x 842 points)
-	g.pdf.Image(g.letterheadPath, 0, 0, &gopdf.Rect{W: g.pageWidth, H: g.pageHeight})
+	g.image(g.letterheadPath, 0, 0, &gopdf.Rect{W: g.pageWidth, H: g.pageHeight})
 }
 
 // loadFonts loads Arial (Windows default) for clean professional output
 func (g *ReportGenerator) loadFonts() error {
 	// Try multiple font paths for cross-platform compatibility
 	fontPaths := []string{
-		"C:/Windows/Fonts/arial.ttf",                          // Windows
-		"/System/Library/Fonts/Supplemental/Arial.ttf",        // macOS
-		"/Library/Fonts/Arial.ttf",                            // macOS (user-installed)
-		"/System/Library/Fonts/Helvetica.ttc",                 // macOS (built-in)
-		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",     // Linux
+		"C:/Windows/Fonts/arial.ttf",                      // Windows
+		"/System/Library/Fonts/Supplemental/Arial.ttf",    // macOS
+		"/Library/Fonts/Arial.ttf",                        // macOS (user-installed)
+		"/System/Library/Fonts/Helvetica.ttc",             // macOS (built-in)
+		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", // Linux
 	}
 
 	fontLoaded := false
@@ -87,25 +136,25 @@ func (g *ReportGenerator) drawHeader(title, subtitle string) {
 
 		// Report title overlay (below letterhead header area ~135pt)
 		g.pdf.SetTextColor(30, 58, 138) // Navy
-		g.pdf.SetFont("report", "", 14)
+		g.setFont("report", "", 14)
 		g.pdf.SetXY(40, 140)
-		g.pdf.Cell(nil, title)
+		g.cell(title)
 
 		// Date (right side)
 		dateStr := time.Now().Format("January 2, 2006")
-		g.pdf.SetFont("report", "", 9)
+		g.setFont("report", "", 9)
 		g.pdf.SetTextColor(100, 100, 100)
 		g.pdf.SetXY(g.pageWidth-150, 140)
-		g.pdf.Cell(nil, dateStr)
+		g.cell(dateStr)
 
 		// Reset
 		g.pdf.SetTextColor(0, 0, 0)
 
 		if subtitle != "" {
-			g.pdf.SetFont("report", "", 10)
+			g.setFont("report", "", 10)
 			g.pdf.SetTextColor(100, 100, 100)
 			g.pdf.SetXY(40, 155)
-			g.pdf.Cell(nil, subtitle)
+			g.cell(subtitle)
 			g.pdf.SetTextColor(0, 0, 0)
 		}
 	} else {
@@ -115,30 +164,30 @@ func (g *ReportGenerator) drawHeader(title, subtitle string) {
 
 		// Company name (white)
 		g.pdf.SetTextColor(255, 255, 255)
-		g.pdf.SetFont("report", "", 16)
+		g.setFont("report", "", 16)
 		g.pdf.SetXY(40, 15)
-		g.pdf.Cell(nil, "PH Holdings")
+		g.cell("PH Holdings")
 
 		// Report title (white)
-		g.pdf.SetFont("report", "", 12)
+		g.setFont("report", "", 12)
 		g.pdf.SetXY(40, 30)
-		g.pdf.Cell(nil, title)
+		g.cell(title)
 
 		// Date (right side, white)
 		dateStr := time.Now().Format("January 2, 2006")
-		g.pdf.SetFont("report", "", 9)
+		g.setFont("report", "", 9)
 		g.pdf.SetXY(g.pageWidth-150, 15)
-		g.pdf.Cell(nil, dateStr)
+		g.cell(dateStr)
 
 		// Reset to black for body
 		g.pdf.SetTextColor(0, 0, 0)
 
 		// Subtitle below header
 		if subtitle != "" {
-			g.pdf.SetFont("report", "", 10)
+			g.setFont("report", "", 10)
 			g.pdf.SetTextColor(100, 100, 100) // Gray
 			g.pdf.SetXY(40, 65)
-			g.pdf.Cell(nil, subtitle)
+			g.cell(subtitle)
 			g.pdf.SetTextColor(0, 0, 0) // Back to black
 		}
 	}
@@ -146,27 +195,27 @@ func (g *ReportGenerator) drawHeader(title, subtitle string) {
 
 // drawFooter draws page footer with page number
 func (g *ReportGenerator) drawFooter(pageNum int) {
-	g.pdf.SetFont("report", "", 8)
+	g.setFont("report", "", 8)
 	g.pdf.SetTextColor(150, 150, 150) // Light gray
 
 	// Page number (centered)
 	pageText := fmt.Sprintf("Page %d", pageNum)
 	g.pdf.SetXY((g.pageWidth/2)-20, g.pageHeight-30)
-	g.pdf.Cell(nil, pageText)
+	g.cell(pageText)
 
 	// Watermark
 	g.pdf.SetXY(40, g.pageHeight-30)
-	g.pdf.Cell(nil, "Generated by PH Holdings - Asymmetrica Intelligence")
+	g.cell("Generated by PH Holdings - Asymmetrica Intelligence")
 
 	g.pdf.SetTextColor(0, 0, 0) // Back to black
 }
 
 // drawSectionTitle draws a section title with subtle border
 func (g *ReportGenerator) drawSectionTitle(title string, y float64) float64 {
-	g.pdf.SetFont("report", "", 12)
+	g.setFont("report", "", 12)
 	g.pdf.SetTextColor(30, 58, 138) // Navy
 	g.pdf.SetXY(40, y)
-	g.pdf.Cell(nil, title)
+	g.cell(title)
 
 	// Underline
 	g.pdf.SetLineWidth(0.5)
@@ -179,15 +228,15 @@ func (g *ReportGenerator) drawSectionTitle(title string, y float64) float64 {
 
 // drawKeyValuePair draws a labeled value (e.g., "Total Predictions: 142")
 func (g *ReportGenerator) drawKeyValuePair(label, value string, x, y float64) {
-	g.pdf.SetFont("report", "", 10)
+	g.setFont("report", "", 10)
 	g.pdf.SetTextColor(100, 100, 100) // Gray label
 	g.pdf.SetXY(x, y)
-	g.pdf.Cell(nil, label+":")
+	g.cell(label + ":")
 
 	g.pdf.SetTextColor(0, 0, 0) // Black value
-	g.pdf.SetFont("report", "", 11)
+	g.setFont("report", "", 11)
 	g.pdf.SetXY(x+150, y)
-	g.pdf.Cell(nil, value)
+	g.cell(value)
 }
 
 // drawTable draws a simple table with headers and rows
@@ -205,20 +254,20 @@ func (g *ReportGenerator) drawTable(headers []string, rows [][]string, startY fl
 	g.pdf.SetFillColor(240, 240, 240) // Light gray background
 	g.pdf.RectFromUpperLeftWithStyle(startX, currentY, totalWidth, 20, "F")
 
-	g.pdf.SetFont("report", "", 9)
+	g.setFont("report", "", 9)
 	g.pdf.SetTextColor(0, 0, 0)
 
 	currentX := startX
 	for i, header := range headers {
 		g.pdf.SetXY(currentX+5, currentY+6)
-		g.pdf.Cell(nil, header)
+		g.cell(header)
 		currentX += colWidths[i]
 	}
 
 	currentY += 20
 
 	// Draw rows
-	g.pdf.SetFont("report", "", 8)
+	g.setFont("report", "", 8)
 	for _, row := range rows {
 		// Alternate row background (very subtle)
 		if len(rows)%2 == 0 {
@@ -229,7 +278,7 @@ func (g *ReportGenerator) drawTable(headers []string, rows [][]string, startY fl
 		currentX = startX
 		for i, cell := range row {
 			g.pdf.SetXY(currentX+5, currentY+4)
-			g.pdf.Cell(nil, truncateText(cell, int(colWidths[i]/6)))
+			g.cell(truncateText(cell, int(colWidths[i]/6)))
 			currentX += colWidths[i]
 		}
 
@@ -351,8 +400,8 @@ func (a *App) GenerateDashboardReport() (string, error) {
 	filename := fmt.Sprintf("PH_Holdings_Dashboard_%s.pdf", timestamp)
 	outputPath := filepath.Join(documentsPath, filename)
 
-	if err := gen.pdf.WritePdf(outputPath); err != nil {
-		return "", fmt.Errorf("failed to write PDF: %v", err)
+	if err := gen.finalize(outputPath); err != nil {
+		return "", err
 	}
 
 	return outputPath, nil
@@ -442,8 +491,8 @@ func (a *App) GeneratePredictionHistoryReport(limit int) (string, error) {
 	filename := fmt.Sprintf("PH_Holdings_History_%s.pdf", timestamp)
 	outputPath := filepath.Join(documentsPath, filename)
 
-	if err := gen.pdf.WritePdf(outputPath); err != nil {
-		return "", fmt.Errorf("failed to write PDF: %v", err)
+	if err := gen.finalize(outputPath); err != nil {
+		return "", err
 	}
 
 	return outputPath, nil
@@ -573,8 +622,8 @@ func (a *App) GenerateCustomer360Report(customerID string) (string, error) {
 	filename := fmt.Sprintf("PH_Holdings_Customer_%s_%s.pdf", sanitizedName, timestamp)
 	outputPath := filepath.Join(documentsPath, filename)
 
-	if err := gen.pdf.WritePdf(outputPath); err != nil {
-		return "", fmt.Errorf("failed to write PDF: %v", err)
+	if err := gen.finalize(outputPath); err != nil {
+		return "", err
 	}
 
 	return outputPath, nil
@@ -1144,12 +1193,16 @@ func (a *App) ExportReport(reportType string, format string, dataJSON string) (s
 }
 
 // exportReportToCSV exports report data to CSV format
-func (a *App) exportReportToCSV(filePath string, reportType string, dataJSON string) (string, error) {
+func (a *App) exportReportToCSV(filePath string, reportType string, dataJSON string) (_ string, err error) {
 	file, err := os.Create(filePath)
 	if err != nil {
 		return "", newError("FILE_CREATE_FAILED", "Failed to create CSV file", err.Error())
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = newError("FILE_CLOSE_FAILED", "Failed to finalize CSV file", closeErr.Error())
+		}
+	}()
 
 	// Get fresh data
 	data, err := a.GetReportData(reportType, "month")
@@ -1157,50 +1210,119 @@ func (a *App) exportReportToCSV(filePath string, reportType string, dataJSON str
 		return "", err
 	}
 
+	writeLine := func(text string) error {
+		if err := writeReportString(file, text); err != nil {
+			return newError("FILE_WRITE_FAILED", "Failed to write CSV file", err.Error())
+		}
+		return nil
+	}
+
 	// Write report-specific CSV data
 	switch reportType {
 	case "sales":
-		file.WriteString("PH Holdings - Sales Report\n")
-		file.WriteString(fmt.Sprintf("Generated: %s\n\n", time.Now().Format("2006-01-02 15:04")))
-		file.WriteString("Stage,Count,Value (BHD)\n")
-		for _, stage := range data.Pipeline {
-			file.WriteString(fmt.Sprintf("%s,%d,%.2f\n", stage.Stage, stage.Count, stage.Value))
+		if err := writeLine("PH Holdings - Sales Report\n"); err != nil {
+			return "", err
 		}
-		file.WriteString("\nMetrics\n")
-		file.WriteString(fmt.Sprintf("Win Rate,%.2f%%\n", data.WinRate*100))
-		file.WriteString(fmt.Sprintf("Conversion Rate,%.2f%%\n", data.ConversionRate*100))
-		file.WriteString(fmt.Sprintf("Avg Deal Size,%.2f BHD\n", data.AvgDealSize))
+		if err := writeLine(fmt.Sprintf("Generated: %s\n\n", time.Now().Format("2006-01-02 15:04"))); err != nil {
+			return "", err
+		}
+		if err := writeLine("Stage,Count,Value (BHD)\n"); err != nil {
+			return "", err
+		}
+		for _, stage := range data.Pipeline {
+			if err := writeLine(fmt.Sprintf("%s,%d,%.2f\n", stage.Stage, stage.Count, stage.Value)); err != nil {
+				return "", err
+			}
+		}
+		if err := writeLine("\nMetrics\n"); err != nil {
+			return "", err
+		}
+		if err := writeLine(fmt.Sprintf("Win Rate,%.2f%%\n", data.WinRate*100)); err != nil {
+			return "", err
+		}
+		if err := writeLine(fmt.Sprintf("Conversion Rate,%.2f%%\n", data.ConversionRate*100)); err != nil {
+			return "", err
+		}
+		if err := writeLine(fmt.Sprintf("Avg Deal Size,%.2f BHD\n", data.AvgDealSize)); err != nil {
+			return "", err
+		}
 
 	case "customers":
-		file.WriteString("PH Holdings - Customer Report\n")
-		file.WriteString(fmt.Sprintf("Generated: %s\n\n", time.Now().Format("2006-01-02 15:04")))
-		file.WriteString("Grade,Count,Percentage\n")
-		for _, grade := range data.GradeDistribution {
-			file.WriteString(fmt.Sprintf("%s,%d,%.1f%%\n", grade.Grade, grade.Count, grade.Percentage))
+		if err := writeLine("PH Holdings - Customer Report\n"); err != nil {
+			return "", err
 		}
-		file.WriteString("\nMetrics\n")
-		file.WriteString(fmt.Sprintf("Avg Payment Days,%.0f\n", data.AvgPaymentDays))
-		file.WriteString(fmt.Sprintf("Collection Efficiency,%.1f%%\n", data.CollectionEff*100))
+		if err := writeLine(fmt.Sprintf("Generated: %s\n\n", time.Now().Format("2006-01-02 15:04"))); err != nil {
+			return "", err
+		}
+		if err := writeLine("Grade,Count,Percentage\n"); err != nil {
+			return "", err
+		}
+		for _, grade := range data.GradeDistribution {
+			if err := writeLine(fmt.Sprintf("%s,%d,%.1f%%\n", grade.Grade, grade.Count, grade.Percentage)); err != nil {
+				return "", err
+			}
+		}
+		if err := writeLine("\nMetrics\n"); err != nil {
+			return "", err
+		}
+		if err := writeLine(fmt.Sprintf("Avg Payment Days,%.0f\n", data.AvgPaymentDays)); err != nil {
+			return "", err
+		}
+		if err := writeLine(fmt.Sprintf("Collection Efficiency,%.1f%%\n", data.CollectionEff*100)); err != nil {
+			return "", err
+		}
 
 	case "financial":
-		file.WriteString("PH Holdings - Financial Report\n")
-		file.WriteString(fmt.Sprintf("Generated: %s\n\n", time.Now().Format("2006-01-02 15:04")))
-		file.WriteString("Metric,Value\n")
-		file.WriteString(fmt.Sprintf("Cash Balance,%.2f BHD\n", data.CashBalance))
-		file.WriteString(fmt.Sprintf("Monthly Burn,%.2f BHD\n", data.MonthlyBurn))
-		file.WriteString(fmt.Sprintf("Runway,%.1f months\n", data.RunwayMonths))
-		file.WriteString(fmt.Sprintf("MRR,%.2f BHD\n", data.MRR))
-		file.WriteString("\nOverdue Receivables\n")
-		file.WriteString("Aging,Amount (BHD)\n")
+		if err := writeLine("PH Holdings - Financial Report\n"); err != nil {
+			return "", err
+		}
+		if err := writeLine(fmt.Sprintf("Generated: %s\n\n", time.Now().Format("2006-01-02 15:04"))); err != nil {
+			return "", err
+		}
+		if err := writeLine("Metric,Value\n"); err != nil {
+			return "", err
+		}
+		if err := writeLine(fmt.Sprintf("Cash Balance,%.2f BHD\n", data.CashBalance)); err != nil {
+			return "", err
+		}
+		if err := writeLine(fmt.Sprintf("Monthly Burn,%.2f BHD\n", data.MonthlyBurn)); err != nil {
+			return "", err
+		}
+		if err := writeLine(fmt.Sprintf("Runway,%.1f months\n", data.RunwayMonths)); err != nil {
+			return "", err
+		}
+		if err := writeLine(fmt.Sprintf("MRR,%.2f BHD\n", data.MRR)); err != nil {
+			return "", err
+		}
+		if err := writeLine("\nOverdue Receivables\n"); err != nil {
+			return "", err
+		}
+		if err := writeLine("Aging,Amount (BHD)\n"); err != nil {
+			return "", err
+		}
 		for _, bucket := range data.Overdue {
-			file.WriteString(fmt.Sprintf("%s,%.2f\n", bucket.Days, bucket.Amount))
+			if err := writeLine(fmt.Sprintf("%s,%.2f\n", bucket.Days, bucket.Amount)); err != nil {
+				return "", err
+			}
 		}
 
 	default:
-		file.WriteString(fmt.Sprintf("PH Holdings - %s Report\n", reportType))
-		file.WriteString(fmt.Sprintf("Generated: %s\n\n", time.Now().Format("2006-01-02 15:04")))
-		file.WriteString("Report Type,Status\n")
-		file.WriteString(fmt.Sprintf("%s,Not yet implemented\n", reportType))
+		if err := writeLine(fmt.Sprintf("PH Holdings - %s Report\n", reportType)); err != nil {
+			return "", err
+		}
+		if err := writeLine(fmt.Sprintf("Generated: %s\n\n", time.Now().Format("2006-01-02 15:04"))); err != nil {
+			return "", err
+		}
+		if err := writeLine("Report Type,Status\n"); err != nil {
+			return "", err
+		}
+		if err := writeLine(fmt.Sprintf("%s,Not yet implemented\n", reportType)); err != nil {
+			return "", err
+		}
+	}
+
+	if err := file.Sync(); err != nil {
+		return "", newError("FILE_SYNC_FAILED", "Failed to flush CSV file", err.Error())
 	}
 
 	return filePath, nil
