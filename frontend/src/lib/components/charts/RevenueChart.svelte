@@ -133,6 +133,7 @@
                         y={height - padding.bottom - barHeight}
                         width={barWidth}
                         height={barHeight}
+                        role="presentation"
                         class="bar"
                         class:hovered={hoveredBar === i}
                         on:mouseenter={() => (hoveredBar = i)}
@@ -166,6 +167,7 @@
                         cx={pointX}
                         cy={pointY}
                         r="5"
+                        role="presentation"
                         class="line-point"
                         class:hovered={hoveredBar === i}
                         on:mouseenter={() => (hoveredBar = i)}

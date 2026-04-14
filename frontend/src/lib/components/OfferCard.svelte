@@ -12,7 +12,7 @@
     import { slide } from "svelte/transition";
 
     export let offer;
-    export let compact = false;
+    export const compact = false;
 
     const dispatch = createEventDispatcher();
 
@@ -203,8 +203,16 @@
 
 <!-- Lost Reason Modal -->
 {#if showLostReasonModal}
-    <div class="modal-overlay" on:click={() => (showLostReasonModal = false)}>
-        <div class="modal" on:click|stopPropagation>
+    <div
+        class="modal-overlay"
+        role="button"
+        tabindex="0"
+        on:click={() => (showLostReasonModal = false)}
+        on:keydown={(event) =>
+            (event.key === "Enter" || event.key === " ") &&
+            (showLostReasonModal = false)}
+    >
+        <div class="modal" role="presentation" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
             <div class="modal-header">
                 <h3>Why was this offer lost?</h3>
                 <button

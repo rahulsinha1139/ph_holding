@@ -1,5 +1,5 @@
 <script>
-    import { createEventDispatcher, onMount } from "svelte";
+    import { createEventDispatcher } from "svelte";
     import { fade, fly } from "svelte/transition";
     import { toast } from "../stores/toasts";
 
@@ -74,6 +74,13 @@
             dispatch("complete", { userName, selectedRole });
         }, 400);
     }
+
+    function focusOnMount(node) {
+        requestAnimationFrame(() => node.focus());
+        return {
+            destroy() {},
+        };
+    }
 </script>
 
 <div class="ceremony" in:fade={{ duration: 400 }}>
@@ -101,7 +108,7 @@
                         bind:value={userName}
                         placeholder="Enter your name"
                         on:keydown={(e) => e.key === "Enter" && nextStep()}
-                        autofocus
+                        use:focusOnMount
                     />
                     <button class="btn-circle" on:click={nextStep}>&gt;</button>
                 </div>

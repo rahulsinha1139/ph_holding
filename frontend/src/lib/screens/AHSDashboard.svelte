@@ -9,6 +9,7 @@
     import { GetFinancialDashboardByDivision, GetFinancialReportYears } from '../../../wailsjs/go/main/App';
 
     export let embedded = false;
+    $: embedded;
 
     let loading = true;
     let data: any = null;

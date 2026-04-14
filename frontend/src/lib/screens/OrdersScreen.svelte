@@ -120,7 +120,7 @@
   let showDetailModal = false;
   let selectedOrder: main.Order | null = null;
   let showTaskModal = false;
-  let orderItems: main.OrderItem[] = [];
+  let orderItems: EditableOrderItem[] = [];
   let deliveryProgress = { delivered: 0, total: 0, percentage: 0 };
   let fulfillmentStatus: any = null;
 
@@ -837,7 +837,7 @@
             </div>
             <div class="orders-list">
               {#each yearOrders as order}
-                <div class="order-item" on:click={() => handleRowClick(order)}>
+                <div class="order-item" role="button" tabindex="0" on:click={() => handleRowClick(order)} on:keydown={(event) => (event.key === "Enter" || event.key === " ") && handleRowClick(order)}>
                   <div class="order-left">
                     <span class="order-number">{order.order_number}</span>
                     <span class="order-customer">{order.customer_name}</span>
@@ -867,7 +867,7 @@
           </div>
           <div class="orders-list">
             {#each undatedOrders as order}
-              <div class="order-item" on:click={() => handleRowClick(order)}>
+              <div class="order-item" role="button" tabindex="0" on:click={() => handleRowClick(order)} on:keydown={(event) => (event.key === "Enter" || event.key === " ") && handleRowClick(order)}>
                 <div class="order-left">
                   <span class="order-number">{order.order_number}</span>
                   <span class="order-customer">{order.customer_name}</span>

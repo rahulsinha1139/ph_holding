@@ -1,7 +1,6 @@
 <script lang="ts">
     import { devLog } from "$lib/utils/devLog";
-    import { onMount, onDestroy } from "svelte";
-    import DashboardScreen from "./lib/screens/DashboardScreen.svelte";
+    import { onMount, onDestroy, tick } from "svelte";
 
     // ============================================
     // DESIGN MODE - For frontend-only development
@@ -13,25 +12,9 @@
     const DEMO_SETUP_SCREEN = false; // Toggle to true to show ArrivalCeremony
 
     // Core screens used directly in routing
-    import Customer360 from "./lib/screens/Customer360.svelte";
-    import SettingsScreen from "./lib/screens/SettingsScreen.svelte";
     // OneDrive import disabled — manual folder download + extraction in next session
     // import OneDriveImportScreen from "./lib/screens/OneDriveImportScreen.svelte";
     import ArrivalCeremony from "./lib/screens/ArrivalCeremony.svelte";
-    import UserManagementScreen from "./lib/screens/UserManagementScreen.svelte";
-
-    // Hub screens (these import their own sub-screens internally)
-    import SalesHub from "./lib/screens/SalesHub.svelte";
-    import OperationsHub from "./lib/screens/OperationsHub.svelte";
-    import FinanceHub from "./lib/screens/FinanceHub.svelte";
-    import IntelligenceHub from "./lib/screens/IntelligenceHub.svelte";
-    import CRMHub from "./lib/screens/CRMHub.svelte";
-    import WorkHub from "./lib/screens/WorkHub.svelte";
-    import PeopleHub from "./lib/screens/PeopleHub.svelte";
-    import NotificationsScreen from "./lib/screens/NotificationsScreen.svelte";
-    import DeploymentHub from "./lib/screens/DeploymentHub.svelte";
-    import ShowcaseScreen from "./lib/screens/ShowcaseScreen.svelte";
-    import RFQScreen from "./lib/screens/RFQScreen.svelte";
 
     // Auth Context
     import {
@@ -80,6 +63,7 @@
     let globalOCRProcessing = false;
     let globalOCRResult = null;
     let globalOCRFileName = "";
+    let globalOCRSessionKey = 0;
 
     // Butler event handler - shows real-time notifications for file events
     function handleButlerEvent(event) {
@@ -112,6 +96,77 @@
     // Currently active screen
     let currentScreen = "dashboard";
     let currentParams = {};
+    let screenParamsById: Record<string, Record<string, any>> = { dashboard: {} };
+    const persistentScreenIDs = new Set([
+        "dashboard",
+        "opportunities",
+        "operations",
+        "finance",
+        "work",
+        "people",
+        "notifications",
+        "deployment",
+        "relationships",
+        "intelligence",
+        "settings",
+        "showcase",
+        "usermanagement",
+        "rfqs",
+    ]);
+    let mountedPersistentScreens: string[] = [];
+
+    function isPersistentScreen(screen: string) {
+        return persistentScreenIDs.has(screen);
+    }
+
+    function setCurrentScreen(screen: string, params: Record<string, any> = {}) {
+        currentScreen = screen;
+        currentParams = params;
+        screenParamsById = { ...screenParamsById, [screen]: params };
+    }
+
+    async function ensureScreenComponent(screen: string) {
+        const loader = screenLoaders[screen];
+        if (!loader) {
+            activeScreenComponent = null;
+            activeScreenLoading = false;
+            return;
+        }
+
+        if (loadedScreenComponents[screen]) {
+            activeScreenComponent = loadedScreenComponents[screen];
+            if (isPersistentScreen(screen) && !mountedPersistentScreens.includes(screen)) {
+                mountedPersistentScreens = [...mountedPersistentScreens, screen];
+            }
+            activeScreenLoading = false;
+            return;
+        }
+
+        const loadToken = ++activeScreenLoadToken;
+        activeScreenLoading = true;
+        activeScreenComponent = null;
+        try {
+            const mod = await loader();
+            if (loadToken !== activeScreenLoadToken) return;
+            loadedScreenComponents[screen] = mod.default;
+            activeScreenComponent = mod.default;
+            if (isPersistentScreen(screen) && !mountedPersistentScreens.includes(screen)) {
+                mountedPersistentScreens = [...mountedPersistentScreens, screen];
+            }
+        } catch (err) {
+            if (loadToken !== activeScreenLoadToken) return;
+            console.error("Failed to load screen component", screen, err);
+            toast.danger(`Failed to load ${screen} screen`);
+            activeScreenComponent = null;
+        } finally {
+            if (loadToken === activeScreenLoadToken) {
+                activeScreenLoading = false;
+            }
+        }
+    }
+
+    let navigateToScreenListener: ((event: Event) => void) | null = null;
+    let requestGlobalOCRListener: ((event: Event) => void) | null = null;
 
     // For simple hash-based routing support (uses navigate for permission checking)
     function handleHashChange() {
@@ -120,27 +175,28 @@
             const id = hash.split("/")[2];
             // P0-4 FIX: Check permission via navigate before showing screen
             if (hasScreenPermission("customer360")) {
-                currentScreen = "customer360";
-                currentParams = { id };
+                setCurrentScreen("customer360", { id });
             } else {
                 toast.danger("Access denied: You don't have permission to view customer details");
             }
         } else if (hash === "/customers") {
             if (hasScreenPermission("relationships")) {
-                currentScreen = "relationships";
-                currentParams = {};
+                setCurrentScreen("relationships", {});
             } else {
                 toast.danger("Access denied: You don't have permission to view customers");
             }
         } else if (hash && screenPermissions[hash] !== undefined) {
             // Handle direct screen hashes like #finance, #operations
             if (hasScreenPermission(hash)) {
-                currentScreen = hash;
-                currentParams = {};
+                setCurrentScreen(hash, {});
             } else {
                 toast.danger(`Access denied: You don't have permission to view ${hash}`);
             }
         }
+    }
+
+    $: if (deviceStatus === "approved" && !needsSetup) {
+        void ensureScreenComponent(currentScreen);
     }
 
     // Handle setup completion - transition from ceremony to main app
@@ -149,10 +205,10 @@
         needsSetup = false;
 
         // Personalize initial screen based on role
-        if (selectedRole === "sales") currentScreen = "opportunities";
-        else if (selectedRole === "ops") currentScreen = "operations";
-        else if (selectedRole === "finance") currentScreen = "finance";
-        else currentScreen = "dashboard";
+        if (selectedRole === "sales") setCurrentScreen("opportunities");
+        else if (selectedRole === "ops") setCurrentScreen("operations");
+        else if (selectedRole === "finance") setCurrentScreen("finance");
+        else setCurrentScreen("dashboard");
 
         toast.success(
             `Welcome back, ${userName || "Commander"}. Your workspace is ready.`,
@@ -179,7 +235,16 @@
             return;
         }
 
+        if (showGlobalOCRModal) {
+            showGlobalOCRModal = false;
+            globalOCRResult = null;
+            globalOCRFileName = "";
+            globalOCRProcessing = false;
+            await tick();
+        }
+
         // Show modal in processing state
+        globalOCRSessionKey += 1;
         globalOCRFileName = fileName;
         globalOCRResult = null;
         globalOCRProcessing = true;
@@ -348,26 +413,29 @@
         }
     }
 
-    // Screen component map - Onyx & Ether flow architecture
-    const screenComponents = {
-        dashboard: DashboardScreen,
-        opportunities: SalesHub,
-        operations: OperationsHub,
-        finance: FinanceHub,
-        work: WorkHub,
-        people: PeopleHub,
-        notifications: NotificationsScreen,
-        deployment: DeploymentHub,
-        relationships: CRMHub,
-        intelligence: IntelligenceHub,
-        // Utility screens (accessible via shortcuts, not main nav)
-        // onedrive_import: OneDriveImportScreen, // Disabled — next session
-        settings: SettingsScreen,
-        showcase: ShowcaseScreen,
-        customer360: Customer360,
-        usermanagement: UserManagementScreen,
-        rfqs: RFQScreen,
+    type ScreenModule = { default: any };
+
+    const screenLoaders: Record<string, () => Promise<ScreenModule>> = {
+        dashboard: () => import("./lib/screens/DashboardScreen.svelte"),
+        opportunities: () => import("./lib/screens/SalesHub.svelte"),
+        operations: () => import("./lib/screens/OperationsHub.svelte"),
+        finance: () => import("./lib/screens/FinanceHub.svelte"),
+        work: () => import("./lib/screens/WorkHub.svelte"),
+        people: () => import("./lib/screens/PeopleHub.svelte"),
+        notifications: () => import("./lib/screens/NotificationsScreen.svelte"),
+        deployment: () => import("./lib/screens/DeploymentHub.svelte"),
+        relationships: () => import("./lib/screens/CRMHub.svelte"),
+        intelligence: () => import("./lib/screens/IntelligenceHub.svelte"),
+        settings: () => import("./lib/screens/SettingsScreen.svelte"),
+        showcase: () => import("./lib/screens/ShowcaseScreen.svelte"),
+        customer360: () => import("./lib/screens/Customer360.svelte"),
+        usermanagement: () => import("./lib/screens/UserManagementScreen.svelte"),
+        rfqs: () => import("./lib/screens/RFQScreen.svelte"),
     };
+    const loadedScreenComponents: Record<string, any> = {};
+    let activeScreenComponent: any = null;
+    let activeScreenLoading = false;
+    let activeScreenLoadToken = 0;
 
     // Primary navigation flows
     let screens = [
@@ -490,10 +558,17 @@
         window.addEventListener("setup-complete", handleSetupComplete);
 
         // Subscribe to screen navigation events (from OrdersScreen, etc.)
-        window.addEventListener("navigateToScreen", (e) => {
-            // @ts-ignore - CustomEvent detail property
-            navigate(e.detail);
-        });
+        navigateToScreenListener = (e: Event) => {
+            const detail = (e as CustomEvent).detail;
+            navigate(detail);
+        };
+        window.addEventListener("navigateToScreen", navigateToScreenListener);
+
+        requestGlobalOCRListener = (e: Event) => {
+            const detail = (e as CustomEvent).detail || {};
+            void handleGlobalFileDrop(detail.filePath);
+        };
+        window.addEventListener("requestGlobalOCR", requestGlobalOCRListener);
 
         // Subscribe to Butler file watcher events for real-time notifications
         // Only in non-design mode (requires Wails runtime)
@@ -510,7 +585,12 @@
             window.removeEventListener("hashchange", handleHashChange);
             window.removeEventListener("setup-complete", handleSetupComplete);
             window.removeEventListener("keydown", handleKeyboard);
-            window.removeEventListener("navigateToScreen", () => {});
+            if (navigateToScreenListener) {
+                window.removeEventListener("navigateToScreen", navigateToScreenListener);
+            }
+            if (requestGlobalOCRListener) {
+                window.removeEventListener("requestGlobalOCR", requestGlobalOCRListener);
+            }
 
             // Clean up Wails event handlers
             if (!DESIGN_MODE) {
@@ -600,11 +680,9 @@
         }
 
         if (screen === "costing" || screen === "offers" || screen === "orders") {
-            currentScreen = "opportunities";
-            currentParams = { tab: screen, ...params };
+            setCurrentScreen("opportunities", { tab: screen, ...params });
         } else {
-            currentScreen = screen;
-            currentParams = params;
+            setCurrentScreen(screen, params);
         }
         console.log("Screen now:", currentScreen, "params:", currentParams);
         if (isMobile) showNav = false;
@@ -853,12 +931,49 @@
                 
                 <!-- Screen Content -->
                 <main class="screen-content">
-                    {#if screenComponents[currentScreen]}
-                        <svelte:component
-                            this={screenComponents[currentScreen]}
-                            params={currentParams}
-                            on:navigate={(e) => navigate(e.detail)}
-                        />
+                    {#if isPersistentScreen(currentScreen)}
+                        {#if activeScreenLoading && !loadedScreenComponents[currentScreen]}
+                            <div class="loading-screen inline-screen-loader">
+                                <div class="loading-spinner"></div>
+                                <p>Loading {screens.find((s) => s.id === currentScreen)?.label || currentScreen}...</p>
+                            </div>
+                        {:else if mountedPersistentScreens.length > 0}
+                            {#each mountedPersistentScreens as screenID (screenID)}
+                                {#if loadedScreenComponents[screenID]}
+                                    <div
+                                        class="screen-host"
+                                        class:screen-hidden={screenID !== currentScreen}
+                                    >
+                                        <svelte:component
+                                            this={loadedScreenComponents[screenID]}
+                                            params={screenParamsById[screenID] || {}}
+                                            on:navigate={(e) => navigate(e.detail)}
+                                        />
+                                    </div>
+                                {/if}
+                            {/each}
+                        {:else}
+                            <div class="coming-soon">
+                                <h2>
+                                    {screens.find((s) => s.id === currentScreen)
+                                        ?.label || "Unknown"}
+                                </h2>
+                                <p class="subtitle">COMING IN NEXT WAVE</p>
+                            </div>
+                        {/if}
+                    {:else if activeScreenComponent}
+                        <div class="screen-host">
+                            <svelte:component
+                                this={activeScreenComponent}
+                                params={currentParams}
+                                on:navigate={(e) => navigate(e.detail)}
+                            />
+                        </div>
+                    {:else if activeScreenLoading}
+                        <div class="loading-screen inline-screen-loader">
+                            <div class="loading-spinner"></div>
+                            <p>Loading {screens.find((s) => s.id === currentScreen)?.label || currentScreen}...</p>
+                        </div>
                     {:else}
                         <!-- Placeholder for screens not yet implemented -->
                         <div class="coming-soon">
@@ -875,14 +990,16 @@
     {/if}
 
     <!-- GLOBAL OCR Quick Capture Modal - Works on ANY screen! -->
-    <QuickCaptureModal
-        bind:show={showGlobalOCRModal}
-        processing={globalOCRProcessing}
-        ocrResult={globalOCRResult}
-        fileName={globalOCRFileName}
-        on:save={handleGlobalOCRSave}
-        on:close={handleGlobalOCRModalClose}
-    />
+    {#key globalOCRSessionKey}
+        <QuickCaptureModal
+            bind:show={showGlobalOCRModal}
+            processing={globalOCRProcessing}
+            ocrResult={globalOCRResult}
+            fileName={globalOCRFileName}
+            on:save={handleGlobalOCRSave}
+            on:close={handleGlobalOCRModalClose}
+        />
+    {/key}
 </ErrorBoundary>
 
 <style>
@@ -963,6 +1080,18 @@
         font-size: 14px;
         color: var(--text-secondary);
         margin-top: 16px;
+    }
+
+    .inline-screen-loader {
+        min-height: 320px;
+    }
+
+    .screen-host {
+        min-height: 100%;
+    }
+
+    .screen-hidden {
+        display: none;
     }
 
     .loading-spinner {

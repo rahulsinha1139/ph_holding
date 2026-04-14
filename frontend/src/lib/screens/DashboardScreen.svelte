@@ -8,12 +8,9 @@
         GetDashboardStats,
         ListFollowUps,
         CompleteFollowUp,
-        ProcessDocumentWithOCR,
-        SaveDocumentToEntity,
         PickFile,
     } from '../../../wailsjs/go/main/App';
     import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime';
-    import { fileDrop } from '../stores/fileDrop';
     import { main } from '../../../wailsjs/go/models';
     import type { UITask } from '$lib/types';
     import { createEventDispatcher } from 'svelte';
@@ -21,7 +18,6 @@
     import KPICard from '../components/ui/KPICard.svelte';
     import WabiSpinner from '../components/ui/WabiSpinner.svelte';
     import FocusCard from '../components/ui/FocusCard.svelte';
-    import QuickCaptureModal from '../components/QuickCaptureModal.svelte';
 
     const dispatch = createEventDispatcher();
 
@@ -29,10 +25,7 @@
     let loading = true;
 
     // OCR Quick Capture State
-    let showOCRModal = false;
     let ocrProcessing = false;
-    let ocrResult: any = null;
-    let ocrFileName = '';
     let isDraggingOver = false;
     $: userName = $currentUser?.name || "Alex";
 
@@ -167,19 +160,8 @@
         return 'BHD ' + val.toLocaleString();
     }
 
-    // Subscribe to global file drop store
-    let unsubscribeFileDrop: () => void;
-
     onMount(() => {
         loadData();
-
-        unsubscribeFileDrop = fileDrop.subscribe((event) => {
-            if (event && event.paths.length > 0 && !ocrProcessing) {
-                ocrProcessing = true;
-                handleOCRFileDrop(event.paths[0]);
-                fileDrop.clear();
-            }
-        });
 
         // Listen for data refresh events (e.g., when orders are delivered)
         EventsOn('data:refresh', (data: any) => {
@@ -189,164 +171,8 @@
     });
 
     onDestroy(() => {
-        if (unsubscribeFileDrop) unsubscribeFileDrop();
         EventsOff('data:refresh');
     });
-
-    async function handleOCRFileDrop(filePath: string) {
-        if (!filePath) {
-            ocrProcessing = false;
-            return;
-        }
-
-        let fileName = filePath.split(/[\\/]/).pop() || 'document';
-        fileName = fileName.replace(/[\x00-\x1F\x7F]/g, '');
-        if (fileName.length > 255) fileName = fileName.substring(0, 255);
-
-        const validExts = ['.pdf', '.xlsx', '.xls', '.docx', '.rtf', '.msg', '.eml', '.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.webp'];
-        const parts = fileName.split('.');
-        const fileExt = parts.length >= 2 ? '.' + parts[parts.length - 1].toLowerCase() : '';
-
-        if (!fileExt || !validExts.includes(fileExt)) {
-            toast.danger(`Unsupported file type: ${fileExt || '(none)'}. Supported: PDF, Excel, Word, RTF, Outlook, Email, Images`);
-            ocrProcessing = false;
-            return;
-        }
-
-        devLog.info('Quick Capture OCR: Processing', filePath);
-
-        ocrFileName = fileName;
-        ocrResult = null;
-        showOCRModal = true;
-
-        try {
-            const result = await ProcessDocumentWithOCR(filePath, 'auto');
-            ocrResult = result;
-            ocrProcessing = false;
-
-            const confidence = (typeof result?.confidence === 'number' && !isNaN(result.confidence))
-                ? (result.confidence * 100).toFixed(0)
-                : '0';
-
-            if (result?.confidence < 0.6) {
-                toast.warning(`Low confidence (${confidence}%). Please verify extracted data.`);
-            } else {
-                toast.success(`Document analyzed! ${confidence}% confidence`);
-            }
-        } catch (err) {
-            devLog.error('Quick Capture OCR failed:', err);
-            toast.danger(`OCR failed: ${err?.message || err}`);
-            ocrProcessing = false;
-            showOCRModal = false;
-        }
-    }
-
-    let ocrSaving = false;
-    async function handleOCRSave(event: CustomEvent) {
-        if (ocrSaving) return;
-        ocrSaving = true;
-
-        const { type, screen, result, fileName, documentData, customerName, projectName, estimatedValue, lineItems, butlerInsights, customerId, supplierId } = event.detail;
-        devLog.info('Saving OCR document:', { type, fileName, customerName, projectName });
-
-        try {
-            // Build extracted data object for backend routing
-            const extractedData = {
-                customer_name: customerName || documentData?.customer_name || '',
-                supplier_name: documentData?.supplier_name || '',
-                customer_id: customerId || documentData?.customer_id || '',
-                supplier_id: supplierId || documentData?.supplier_id || '',
-                project: projectName || documentData?.project || fileName,
-                total: estimatedValue || documentData?.total || 0,
-                notes: documentData?.notes || '',
-                raw_text: result?.text || '',
-                butler_summary: butlerInsights?.summary || '',
-                line_items: lineItems || documentData?.line_items || [],
-                // Include other fields for specific doc types
-                invoice_number: documentData?.invoice_number || '',
-                po_number: documentData?.po_number || '',
-                rfq_number: documentData?.rfq_number || '',
-                invoice_date: documentData?.invoice_date || '',
-                delivery_date: documentData?.delivery_date || '',
-                due_date: documentData?.due_date || '',
-                vat: documentData?.vat || '',
-                currency: documentData?.currency || 'BHD',
-                payment_terms: documentData?.payment_terms || '',
-                delivery_terms: documentData?.delivery_terms || '',
-                // Bank statement specific fields
-                bank_name: documentData?.bank_name || '',
-                account_number: documentData?.account_number || '',
-                opening_balance: documentData?.opening_balance || '',
-                closing_balance: documentData?.closing_balance || '',
-                period_start: documentData?.period_start || '',
-                period_end: documentData?.period_end || '',
-            };
-
-            const runSave = () => SaveDocumentToEntity(
-                fileName,
-                '',
-                type,
-                result?.text || '',
-                result?.confidence || 0,
-                result?.processing_time_ms || 0,
-                result?.engine || 'unknown',
-                JSON.stringify(extractedData)
-            );
-
-            let saveResult;
-            try {
-                saveResult = await runSave();
-            } catch (err) {
-                const errorMsg = err?.message || String(err);
-                if (type === 'bank_statement' && errorMsg.toLowerCase().includes('duplicate bank statement exists')) {
-                    const shouldReplace = confirm(`${errorMsg}\n\nDo you want to replace the existing bank statement?`);
-                    if (!shouldReplace) {
-                        toast.info('Bank statement save cancelled');
-                        return;
-                    }
-                    extractedData.replace_existing = true;
-                    saveResult = await runSave();
-                } else {
-                    throw err;
-                }
-            }
-
-            const entityName = type.charAt(0).toUpperCase() + type.slice(1).replace(/_/g, ' ');
-            if (saveResult?.routed) {
-                toast.success(`${entityName} created! ID: ${saveResult.entity_id}`);
-            } else {
-                toast.success(`${entityName} saved!`);
-            }
-
-            showOCRModal = false;
-            ocrResult = null;
-            ocrFileName = '';
-
-            if (screen && screen !== '/dashboard') {
-                window.location.hash = screen;
-            }
-        } catch (err) {
-            devLog.error('Failed to save OCR document:', err);
-            toast.danger(`Failed to save: ${err?.message || err}`);
-        } finally {
-            ocrSaving = false;
-        }
-    }
-
-    function handleOCRModalClose() {
-        showOCRModal = false;
-        ocrResult = null;
-        ocrFileName = '';
-        ocrProcessing = false;
-    }
-
-    function handleViewExistingOCRRecord() {
-        showOCRModal = false;
-        ocrResult = null;
-        ocrFileName = '';
-        ocrProcessing = false;
-        window.location.hash = '/opportunities';
-    }
 
     function navigateToScreen(screen: string) {
         const screenMap: Record<string, string> = {
@@ -367,7 +193,9 @@
         try {
             const filePath = await PickFile('Select Document for OCR');
             if (filePath && filePath.trim() !== '') {
-                await handleOCRFileDrop(filePath);
+                window.dispatchEvent(new CustomEvent('requestGlobalOCR', {
+                    detail: { filePath }
+                }));
             }
         } catch (err) {
             toast.danger('File selection cancelled or failed');
@@ -505,7 +333,7 @@
                     </svg>
                     <span class="dropbar-text">
                         {#if ocrProcessing}
-                            <strong>Processing {ocrFileName}...</strong>
+                            <strong>Processing document...</strong>
                         {:else if isDraggingOver}
                             <strong>Release to analyze document</strong>
                         {:else}
@@ -567,17 +395,6 @@
         </div>
     {/if}
 </div>
-
-<!-- OCR Quick Capture Modal -->
-<QuickCaptureModal
-    bind:show={showOCRModal}
-    processing={ocrProcessing}
-    ocrResult={ocrResult}
-    fileName={ocrFileName}
-    on:save={handleOCRSave}
-    on:viewRFQ={handleViewExistingOCRRecord}
-    on:close={handleOCRModalClose}
-/>
 
 <style>
     .page-container {
@@ -661,26 +478,6 @@
         min-height: 320px;
     }
 
-    /* CUSTOM ELEMENTS INSIDE COMPONENTS */
-    .prog-bar {
-        height: 4px;
-        background: var(--surface-elevated);
-        margin-top: 8px;
-        border-radius: 2px;
-        overflow: hidden;
-    }
-    
-    .fill {
-        height: 100%;
-        background: var(--brand-indigo);
-    }
-
-    .chart-container {
-        min-height: 300px;
-        display: flex;
-        flex-direction: column;
-    }
-
     /* Responsive - Main Grid */
     @media (max-width: 1200px) {
         .main-grid {
@@ -752,236 +549,6 @@
         font-size: 18px;
     }
 
-    /* FINANCIAL CHARTS SECTION */
-    .charts-section {
-        margin-top: var(--section-spacing);
-    }
-
-    .section-title {
-        font-size: 18px;
-        font-weight: 600;
-        color: var(--text-primary);
-        margin-bottom: 16px;
-    }
-
-    .charts-grid {
-        display: grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap: var(--grid-gap);
-    }
-
-    .chart-loading,
-    .chart-empty {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        min-height: 250px;
-    }
-
-    /* AR Aging Chart */
-    .ar-aging-container {
-        padding: 8px 0;
-    }
-
-    .ar-total {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 16px;
-        background: var(--bg-surface, rgba(99, 102, 241, 0.05));
-        border-radius: 8px;
-        margin-bottom: 20px;
-    }
-
-    .ar-total-label {
-        font-size: 13px;
-        color: var(--text-secondary);
-        font-weight: 500;
-    }
-
-    .ar-total-value {
-        font-size: 24px;
-        font-weight: 700;
-        color: var(--text-primary);
-    }
-
-    .aging-bars {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-    }
-
-    .aging-row {
-        display: grid;
-        grid-template-columns: 100px 1fr 120px 60px;
-        align-items: center;
-        gap: 12px;
-    }
-
-    .aging-label {
-        font-size: 13px;
-        color: var(--text-secondary);
-        font-weight: 500;
-    }
-
-    .aging-bar-bg {
-        height: 28px;
-        background: var(--bg-surface, #f5f5f5);
-        border-radius: 4px;
-        overflow: hidden;
-        position: relative;
-    }
-
-    .aging-bar {
-        height: 100%;
-        border-radius: 4px;
-        transition: width 0.4s ease;
-    }
-
-    .aging-value {
-        font-size: 14px;
-        font-weight: 600;
-        color: var(--text-primary);
-        text-align: right;
-    }
-
-    .aging-percent {
-        font-size: 12px;
-        color: var(--text-muted);
-        text-align: right;
-    }
-
-    /* Sales Pipeline Chart */
-    .pipeline-container {
-        padding: 8px 0;
-    }
-
-    .pipeline-stages {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-    }
-
-    .pipeline-stage {
-        padding: 16px;
-        background: var(--bg-surface, rgba(255, 255, 255, 0.5));
-        border-radius: 8px;
-        border: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.08));
-        transition: all 0.2s ease;
-    }
-
-    .pipeline-stage:hover {
-        background: var(--bg-elevated, rgba(255, 255, 255, 0.8));
-        transform: translateX(4px);
-    }
-
-    .pipeline-stage-header {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin-bottom: 8px;
-    }
-
-    .pipeline-stage-dot {
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        flex-shrink: 0;
-    }
-
-    .pipeline-stage-name {
-        font-size: 14px;
-        font-weight: 600;
-        color: var(--text-primary);
-    }
-
-    .pipeline-stage-metrics {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-left: 22px;
-    }
-
-    .pipeline-count {
-        font-size: 12px;
-        color: var(--text-muted);
-    }
-
-    .pipeline-value {
-        font-size: 16px;
-        font-weight: 700;
-        color: var(--text-primary);
-    }
-
-    @media (max-width: 1200px) {
-        .charts-grid {
-            grid-template-columns: 1fr;
-        }
-    }
-
-    /* OCR Document Intelligence Card */
-    .ocr-card-content {
-        display: flex;
-        flex-direction: column;
-        gap: 20px;
-    }
-
-    .ocr-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 16px;
-    }
-
-    .ocr-header-text {
-        flex: 1;
-    }
-
-    .ocr-title {
-        font-size: 18px;
-        font-weight: 600;
-        color: var(--onyx, #1D1D1F);
-        margin: 0 0 6px 0;
-        letter-spacing: -0.02em;
-    }
-
-    .ocr-subtitle {
-        font-size: 13px;
-        color: var(--steel, #86868B);
-        margin: 0;
-        line-height: 1.5;
-    }
-
-    .btn-browse {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 10px 20px;
-        background: var(--carbon, #000000);
-        color: var(--canvas, #FFFFFF);
-        border: none;
-        border-radius: 6px;
-        font-size: 14px;
-        font-weight: 500;
-        cursor: pointer;
-        transition: all 120ms ease;
-        white-space: nowrap;
-    }
-
-    .btn-browse:hover:not(:disabled) {
-        background: var(--onyx, #1D1D1F);
-        transform: translateY(-1px);
-    }
-
-    .btn-browse:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-    }
-
-    .btn-browse svg {
-        flex-shrink: 0;
-    }
-
     .spinner-small {
         width: 14px;
         height: 14px;
@@ -1001,7 +568,8 @@
     }
 
     .page-container.drag-active {
-        /* Subtle border glow when dragging */
+        outline: 1px solid rgba(255, 255, 255, 0.22);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
     }
 
     .drop-overlay {
@@ -1104,56 +672,4 @@
         cursor: not-allowed;
     }
 
-    /* Keep for modal compatibility */
-    .confidence-badge {
-        padding: 4px 12px;
-        background: var(--ether, #F5F5F7);
-        color: var(--steel, #86868B);
-        border-radius: 12px;
-        font-size: 12px;
-        font-weight: 500;
-        font-variant-numeric: tabular-nums;
-        overflow-y: auto;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-        font-family: 'JetBrains Mono', 'Courier New', monospace;
-    }
-
-    /* Extracted Data Section */
-    .extracted-data-section {
-        margin-top: 20px;
-        padding-top: 20px;
-        border-top: 1px solid var(--border, #E5E5E5);
-    }
-
-    .data-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-        gap: 12px;
-    }
-
-    .data-item {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        padding: 12px;
-        background: var(--ether, #F5F5F7);
-        border: 1px solid var(--border, #E5E5E5);
-        border-radius: 6px;
-    }
-
-    .data-key {
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        color: var(--steel, #86868B);
-    }
-
-    .data-value {
-        font-size: 14px;
-        font-weight: 500;
-        color: var(--onyx, #1D1D1F);
-        word-break: break-word;
-    }
 </style>

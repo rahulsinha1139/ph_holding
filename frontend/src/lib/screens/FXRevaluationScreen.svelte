@@ -504,10 +504,6 @@
 </Modal>
 
 <style>
-  .embedded-container {
-    padding: var(--space-4);
-  }
-
   .loading-container {
     display: flex;
     flex-direction: column;

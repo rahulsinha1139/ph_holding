@@ -42,8 +42,10 @@ test.describe('Opportunity and finance regression coverage', () => {
 
     await expect(page.getByText('Edit Supplier Invoice')).toBeVisible();
     const modal = page.locator('.modal-overlay').filter({ hasText: 'Edit Supplier Invoice' }).last();
-    await modal.locator('select').nth(1).selectOption('Paid');
-    await modal.locator('select').nth(2).selectOption('Bank Transfer');
+    const paymentStatusGroup = modal.locator('.form-group').filter({ has: page.locator('label', { hasText: 'Payment Status' }) });
+    const paymentMethodGroup = modal.locator('.form-group').filter({ has: page.locator('label', { hasText: 'Payment Method' }) });
+    await paymentStatusGroup.locator('select').selectOption('Paid');
+    await paymentMethodGroup.locator('select').selectOption('Bank Transfer');
     await modal.getByPlaceholder('Transfer / cheque reference').fill('TXN-1001');
     await modal.getByLabel(/Create supplier payment ledger entry/i).check();
     await modal.getByRole('button', { name: 'Save Changes' }).click();

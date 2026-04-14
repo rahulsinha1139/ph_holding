@@ -38,6 +38,7 @@
 
   // Props
   export let embedded = false;
+  $: embedded;
   const dispatch = createEventDispatcher();
 
   // State
@@ -1879,10 +1880,6 @@
     font-size: 12px;
     color: var(--steel, #86868B);
     margin-top: 4px;
-  }
-  .hint-small a {
-    color: var(--onyx, #1D1D1F);
-    text-decoration: underline;
   }
   .hint-inline {
     font-size: 12px;

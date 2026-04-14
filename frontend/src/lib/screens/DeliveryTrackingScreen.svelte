@@ -304,8 +304,8 @@
         <div class="modal">
             <h3>New Shipment</h3>
             <div class="form-group">
-                <label>Orders to Ship</label>
-                <div class="multi-select">
+                <div class="field-label" id="shipment-orders-label">Orders to Ship</div>
+                <div class="multi-select" aria-labelledby="shipment-orders-label">
                     {#each pendingOrders as o}
                         <label class="check-row">
                             <input
@@ -324,8 +324,9 @@
 
             <div class="form-row">
                 <div class="form-group half">
-                    <label>Courier</label>
+                    <label for="shipment-courier">Courier</label>
                     <select
+                        id="shipment-courier"
                         bind:value={newShipment.courier}
                         class="input-clean"
                     >
@@ -333,8 +334,9 @@
                     </select>
                 </div>
                 <div class="form-group half">
-                    <label>Tracking #</label>
+                    <label for="shipment-tracking-number">Tracking #</label>
                     <input
+                        id="shipment-tracking-number"
                         type="text"
                         bind:value={newShipment.trackingNumber}
                         class="input-clean"
@@ -343,8 +345,9 @@
             </div>
 
             <div class="form-group">
-                <label>Estimated Delivery</label>
+                <label for="shipment-estimated-delivery">Estimated Delivery</label>
                 <input
+                    id="shipment-estimated-delivery"
                     type="date"
                     bind:value={newShipment.estimatedDelivery}
                     class="input-clean"
@@ -352,8 +355,8 @@
             </div>
 
             <div class="form-group">
-                <label>Notes</label>
-                <textarea bind:value={newShipment.notes} class="input-clean"
+                <label for="shipment-notes">Notes</label>
+                <textarea id="shipment-notes" bind:value={newShipment.notes} class="input-clean"
                 ></textarea>
             </div>
 
@@ -374,8 +377,16 @@
 
 <!-- Cascade Confirmation Modal -->
 {#if showCascadeConfirm && pendingDeliveryShipment}
-    <div class="modal-backdrop" on:click={() => (showCascadeConfirm = false)}>
-        <div class="modal cascade-modal" on:click|stopPropagation>
+    <div
+        class="modal-backdrop"
+        role="button"
+        tabindex="0"
+        on:click={() => (showCascadeConfirm = false)}
+        on:keydown={(event) =>
+            (event.key === "Enter" || event.key === " ") &&
+            (showCascadeConfirm = false)}
+    >
+        <div class="modal cascade-modal" role="presentation" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
             <h3>Confirm Delivery?</h3>
             <p class="cascade-info">This will trigger a cascade update:</p>
 

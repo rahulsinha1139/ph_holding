@@ -5,10 +5,47 @@
   import { listNotifications, markNotificationAsRead, refreshCollaborativeWorkspace, type NotificationItem } from "$lib/api/collaboration";
 
   const pendingTaskStorageKey = "asymmflow.pendingCollaborativeTaskId";
+  const NOTIFICATIONS_CACHE_TTL_MS = 20_000;
+
+  type NotificationSnapshot = {
+    notifications: NotificationItem[];
+    savedAt: number;
+  };
+
+  const notificationSnapshots: Record<string, NotificationSnapshot | undefined> = {};
 
   let loading = true;
   let unreadOnly = false;
   let notifications: NotificationItem[] = [];
+  let loadRequestSeq = 0;
+
+  function snapshotKey() {
+    return unreadOnly ? "unread" : "all";
+  }
+
+  function hasNotificationData() {
+    return notifications.length > 0;
+  }
+
+  function restoreSnapshot() {
+    const snapshot = notificationSnapshots[snapshotKey()];
+    if (!snapshot) return false;
+    notifications = snapshot.notifications;
+    loading = false;
+    return true;
+  }
+
+  function saveSnapshot() {
+    notificationSnapshots[snapshotKey()] = {
+      notifications: [...notifications],
+      savedAt: Date.now(),
+    };
+  }
+
+  function isSnapshotStale() {
+    const snapshot = notificationSnapshots[snapshotKey()];
+    return !snapshot || Date.now() - snapshot.savedAt > NOTIFICATIONS_CACHE_TTL_MS;
+  }
 
   function applyLocalReadState(notificationID: string) {
     const readAt = new Date().toISOString();
@@ -19,30 +56,70 @@
     );
   }
 
-  async function load() {
-    loading = true;
+  async function load(options: { refreshRemote?: boolean; silent?: boolean } = {}) {
+    const { refreshRemote = false, silent = false } = options;
+    const requestSeq = ++loadRequestSeq;
+    const shouldShowLoading = !silent || !hasNotificationData();
+    if (shouldShowLoading) {
+      loading = true;
+    }
     try {
-      await refreshCollaborativeWorkspace().catch(() => undefined);
-      notifications = await listNotifications(100, unreadOnly);
+      if (refreshRemote) {
+        await refreshCollaborativeWorkspace().catch(() => undefined);
+      }
+      const nextNotifications = await listNotifications(100, unreadOnly);
+      if (requestSeq !== loadRequestSeq) {
+        return;
+      }
+      notifications = nextNotifications;
+      saveSnapshot();
     } catch (err) {
-      toast.danger(`Failed to load notifications: ${String(err)}`);
+      if (!silent || !hasNotificationData()) {
+        toast.danger(`Failed to load notifications: ${String(err)}`);
+      }
     } finally {
-      loading = false;
+      if (requestSeq === loadRequestSeq && shouldShowLoading) {
+        loading = false;
+      }
     }
   }
 
+  async function hydrateNotifications() {
+    const restored = restoreSnapshot();
+    if (!restored) {
+      await load();
+      await load({ refreshRemote: true, silent: true });
+      return;
+    }
+    if (hasNotificationData()) {
+      await load({ refreshRemote: isSnapshotStale(), silent: true });
+      return;
+    }
+    await load({ refreshRemote: true, silent: true });
+  }
+
   async function markRead(notificationID: string, options: { reload?: boolean } = {}) {
-    const { reload = true } = options;
+    const { reload = false } = options;
     applyLocalReadState(notificationID);
+    saveSnapshot();
     try {
       await markNotificationAsRead(notificationID);
       if (reload) {
-        await load();
+        await load({ silent: true });
       }
     } catch (err) {
-      await load().catch(() => undefined);
+      await load({ silent: true }).catch(() => undefined);
       toast.danger(`Failed to update notification: ${String(err)}`);
     }
+  }
+
+  function handleUnreadToggle() {
+    const restored = restoreSnapshot();
+    if (!restored) {
+      void load();
+      return;
+    }
+    void load({ refreshRemote: isSnapshotStale(), silent: true });
   }
 
   function parsePayload(notification: NotificationItem): Record<string, any> {
@@ -119,9 +196,9 @@
   }, []);
 
   onMount(() => {
-    load();
-    EventsOn("notifications:new", load);
-    EventsOn("notifications:updated", load);
+    void hydrateNotifications();
+    EventsOn("notifications:new", () => void load({ silent: true }));
+    EventsOn("notifications:updated", () => void load({ silent: true }));
   });
 
   onDestroy(() => {
@@ -137,7 +214,7 @@
       <p class="subtitle">Persistent cross-device collaboration events and task updates.</p>
     </div>
     <label class="toggle">
-      <input type="checkbox" bind:checked={unreadOnly} on:change={load} />
+      <input type="checkbox" bind:checked={unreadOnly} on:change={handleUnreadToggle} />
       <span>Unread only</span>
     </label>
   </header>

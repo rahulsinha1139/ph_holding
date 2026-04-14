@@ -168,9 +168,10 @@
           <div class="form-grid">
             {#each Object.keys(folders) as key}
               <div class="field">
-                <label>{key.replace("_path", "").toUpperCase()}</label>
+                <label for={`folder-${key}`}>{key.replace("_path", "").toUpperCase()}</label>
                 <div class="input-row">
                   <input
+                    id={`folder-${key}`}
                     type="text"
                     bind:value={folders[key]}
                     class="input-clean"
@@ -191,8 +192,9 @@
           </p>
           <div class="form-stack">
             <div class="field">
-              <label>AIMLAPI Key</label>
+              <label for="setup-aimlapi-key">AIMLAPI Key</label>
               <input
+                id="setup-aimlapi-key"
                 type="password"
                 bind:value={apiKeys.aimlapi_key}
                 class="input-clean"
@@ -200,8 +202,9 @@
               />
             </div>
             <div class="field">
-              <label>OpenAI Key</label>
+              <label for="setup-openai-key">OpenAI Key</label>
               <input
+                id="setup-openai-key"
                 type="password"
                 bind:value={apiKeys.openai_key}
                 class="input-clean"
@@ -209,8 +212,9 @@
               />
             </div>
             <div class="field">
-              <label>Anthropic Key</label>
+              <label for="setup-anthropic-key">Anthropic Key</label>
               <input
+                id="setup-anthropic-key"
                 type="password"
                 bind:value={apiKeys.anthropic_key}
                 class="input-clean"

@@ -48,6 +48,7 @@
     export let quickCaptures: any[] = [];
     export let loading = false;
     export let error = "";
+    $: quickCaptures;
 
     const dispatch = createEventDispatcher();
 

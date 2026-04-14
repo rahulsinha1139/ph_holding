@@ -89,6 +89,13 @@
       saving = false;
     }
   }
+
+  function handleBackdropKeydown(event: KeyboardEvent) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      close();
+    }
+  }
 </script>
 
 <svelte:window on:keydown={(event) => event.key === "Escape" && open && close()} />
@@ -96,8 +103,10 @@
 {#if open}
   <div
     class="modal-backdrop"
-    role="presentation"
-    on:click={close}
+    role="button"
+    tabindex="0"
+    on:click|self={close}
+    on:keydown={handleBackdropKeydown}
   >
     <div
       class="modal-card"
@@ -105,7 +114,6 @@
       aria-modal="true"
       tabindex="-1"
       aria-labelledby="context-task-modal-title"
-      on:click|stopPropagation
     >
       <div class="modal-head">
         <div>

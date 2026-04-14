@@ -1161,12 +1161,12 @@
     <div class="edit-form">
       <div class="form-row">
         <div class="form-field">
-          <label>Invoice Number</label>
-          <input type="text" value={editInvoice.invoice_number} class="input-field" disabled title="Invoice numbers are system-generated" />
+          <label for="edit-invoice-number">Invoice Number</label>
+          <input id="edit-invoice-number" type="text" value={editInvoice.invoice_number} class="input-field" disabled title="Invoice numbers are system-generated" />
         </div>
         <div class="form-field">
-          <label>Status</label>
-          <select bind:value={editInvoice.status} class="input-field">
+          <label for="edit-invoice-status">Status</label>
+          <select id="edit-invoice-status" bind:value={editInvoice.status} class="input-field">
             <option value="Draft">Draft</option>
             <option value="Sent">Sent</option>
             <option value="Paid">Paid</option>
@@ -1177,8 +1177,9 @@
       </div>
       <div class="form-row">
         <div class="form-field">
-          <label>Amount (BHD) <span class="required">*</span></label>
+          <label for="edit-invoice-amount">Amount (BHD) <span class="required">*</span></label>
           <input
+            id="edit-invoice-amount"
             type="number"
             step="0.001"
             min="0.001"
@@ -1188,8 +1189,9 @@
           />
         </div>
         <div class="form-field">
-          <label>Outstanding (BHD) <span class="required">*</span></label>
+          <label for="edit-invoice-outstanding">Outstanding (BHD) <span class="required">*</span></label>
           <input
+            id="edit-invoice-outstanding"
             type="number"
             step="0.001"
             min="0"
@@ -1200,8 +1202,8 @@
         </div>
       </div>
       <div class="form-field">
-        <label>Customer PO Number</label>
-        <input type="text" bind:value={editInvoice.customer_po_number} class="input-field" />
+        <label for="edit-invoice-customer-po">Customer PO Number</label>
+        <input id="edit-invoice-customer-po" type="text" bind:value={editInvoice.customer_po_number} class="input-field" />
       </div>
     </div>
 

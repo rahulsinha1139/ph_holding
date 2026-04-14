@@ -16,7 +16,7 @@ test.describe('Workflow guardrails', () => {
 
     await chatInput.fill('First workflow guardrail prompt');
     await chatInput.press('Enter');
-    await expect(page.getByText('Mock Butler response persisted.')).toBeVisible();
+    await expect(page.locator('#chat-feed').getByText('Mock Butler response persisted.')).toBeVisible();
 
     const clearAllButton = page.getByRole('button', { name: /Clear All Chats|Click again to confirm/ });
     await clearAllButton.click();
@@ -33,12 +33,12 @@ test.describe('Workflow guardrails', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Opportunities' }).click();
-    await page.getByText('ACTIUM PG').click();
+    await page.getByRole('button', { name: /ACTIUM PG/i }).first().click();
 
-    await expect(page.locator('#opportunity-modal-title')).toHaveText(/Gas Analyzer Package/i);
+    await expect(page.locator('#opportunity-modal-title')).toHaveText(/ACTIUM PG \/ 2026-311/i);
     await page.keyboard.press('Escape');
 
     await expect(page.getByRole('dialog')).toHaveCount(0);
-    await expect(page.getByText('ACTIUM PG')).toBeVisible();
+    await expect(page.getByRole('button', { name: /ACTIUM PG/i }).first()).toBeVisible();
   });
 });

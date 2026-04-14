@@ -27,6 +27,7 @@
     DeletePayment,
     ListCustomerInvoices,
   } from '../../../wailsjs/go/main/App';
+  import { main } from '../../../wailsjs/go/models';
 
   // Security utilities
   import { escapeHtml } from '$lib/utils/escapeHtml';
@@ -44,6 +45,7 @@
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
   import { permissions } from '$lib/stores/authContext';
+  import { buildWailsInput, toWailsDate } from '$lib/utils/wailsInterop';
 
   $: canView = $permissions.includes('*') || $permissions.includes('finance:view') || $permissions.includes('finance:*');
   $: canCreate = $permissions.includes('*') || $permissions.includes('payments:create') || $permissions.includes('payments:*') || $permissions.includes('finance:*');
@@ -556,7 +558,7 @@
         toast.success(`Payment of ${formatBHD(amount)} BHD recorded successfully`);
       } else {
         const existingPayment = await GetPayment(editingPaymentId);
-        const originalDate = new Date(existingPayment.payment_date);
+        const originalDate = toWailsDate(existingPayment.payment_date) || new Date();
         const nextDate = new Date(`${paymentDate}T00:00:00`);
         const inferredInvoiceDate = new Date(originalDate.getTime() - ((existingPayment.days_to_payment || 0) * 24 * 60 * 60 * 1000));
         const recalculatedDaysToPayment = Math.max(
@@ -564,14 +566,14 @@
           Math.round((nextDate.getTime() - inferredInvoiceDate.getTime()) / (24 * 60 * 60 * 1000))
         );
 
-        await UpdatePayment(editingPaymentId, {
+        await UpdatePayment(editingPaymentId, buildWailsInput(main.Payment, {
           ...existingPayment,
           amount_bhd: amount,
           payment_method: paymentMethod,
           payment_date: nextDate.toISOString(),
           reference: paymentReference.trim(),
           days_to_payment: recalculatedDaysToPayment,
-        });
+        }));
         toast.success(`Payment updated to ${formatBHD(amount)} BHD`);
       }
 

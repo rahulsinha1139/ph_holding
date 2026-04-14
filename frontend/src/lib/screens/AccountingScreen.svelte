@@ -5,7 +5,7 @@
     import { toast } from "../stores/toasts";
 
     // Props
-    export let embedded = false;
+    export const embedded = false;
 
     // Nav
     const views = [
@@ -479,16 +479,25 @@
 
 <!-- Voucher Entry Modal -->
 {#if showVoucherModal}
-    <div class="modal-backdrop" on:click={() => (showVoucherModal = false)}>
-        <div class="modal-card" on:click|stopPropagation>
+    <div
+        class="modal-backdrop"
+        role="button"
+        tabindex="0"
+        on:click={() => (showVoucherModal = false)}
+        on:keydown={(event) =>
+            (event.key === "Enter" || event.key === " ") &&
+            (showVoucherModal = false)}
+    >
+        <div class="modal-card" role="presentation" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
             <h3>New Accounting Entry</h3>
             <div class="form-scroll">
                 <!-- HEADER SECTION -->
                 <div class="section-label">Header</div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label>Voucher Type</label>
+                        <label for="accounting-voucher-type">Voucher Type</label>
                         <select
+                            id="accounting-voucher-type"
                             bind:value={newVoucher.type}
                             class="input-clean"
                         >
@@ -498,8 +507,9 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Date</label>
+                        <label for="accounting-voucher-date">Date</label>
                         <input
+                            id="accounting-voucher-date"
                             type="date"
                             bind:value={newVoucher.date}
                             class="input-clean"
@@ -507,8 +517,9 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Reference (Cheque No / Transfer Ref)</label>
+                    <label for="accounting-voucher-reference">Reference (Cheque No / Transfer Ref)</label>
                     <input
+                        id="accounting-voucher-reference"
                         type="text"
                         bind:value={newVoucher.reference}
                         class="input-clean"
@@ -602,14 +613,23 @@
 
 <!-- Account Modal (Add/Edit) -->
 {#if showAccountModal}
-    <div class="modal-backdrop" on:click={() => (showAccountModal = false)}>
-        <div class="modal-card" on:click|stopPropagation>
+    <div
+        class="modal-backdrop"
+        role="button"
+        tabindex="0"
+        on:click={() => (showAccountModal = false)}
+        on:keydown={(event) =>
+            (event.key === "Enter" || event.key === " ") &&
+            (showAccountModal = false)}
+    >
+        <div class="modal-card" role="presentation" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
             <h3>{editingAccount ? "Edit Account" : "Add Account"}</h3>
 
             <div class="form-row">
                 <div class="form-group">
-                    <label>Account Code *</label>
+                    <label for="accounting-account-code">Account Code *</label>
                     <input
+                        id="accounting-account-code"
                         type="text"
                         bind:value={newAccount.code}
                         class="input-clean"
@@ -618,8 +638,8 @@
                     />
                 </div>
                 <div class="form-group">
-                    <label>Account Type *</label>
-                    <select bind:value={newAccount.type} class="input-clean">
+                    <label for="accounting-account-type">Account Type *</label>
+                    <select id="accounting-account-type" bind:value={newAccount.type} class="input-clean">
                         {#each accountTypes as t}
                             <option value={t.value}>{t.label}</option>
                         {/each}
@@ -628,8 +648,9 @@
             </div>
 
             <div class="form-group">
-                <label>Account Name *</label>
+                <label for="accounting-account-name">Account Name *</label>
                 <input
+                    id="accounting-account-name"
                     type="text"
                     bind:value={newAccount.name}
                     class="input-clean"
@@ -836,11 +857,6 @@
         font-size: 10px;
         text-transform: uppercase;
     }
-    .dim {
-        color: var(--ink-light);
-        font-style: italic;
-    }
-
     /* Reports */
     .reports-grid {
         display: grid;

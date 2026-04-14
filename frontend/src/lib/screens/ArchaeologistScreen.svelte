@@ -135,8 +135,9 @@
     <aside class="sidebar">
       <div class="control-panel">
         <div class="field">
-          <label>Target Path</label>
+          <label for="archaeologist-target-path">Target Path</label>
           <input
+            id="archaeologist-target-path"
             type="text"
             bind:value={scanPath}
             placeholder="C:/Data..."
@@ -146,8 +147,8 @@
         </div>
 
         <div class="field">
-          <label>Scan Strategy</label>
-          <div class="radio-grp">
+          <div id="archaeologist-strategy-label">Scan Strategy</div>
+          <div class="radio-grp" role="group" aria-labelledby="archaeologist-strategy-label">
             {#each scanTypes as t}
               <button
                 class="radio-item"

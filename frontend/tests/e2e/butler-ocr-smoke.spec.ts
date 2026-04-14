@@ -21,20 +21,20 @@ test.describe('Butler and OCR smoke', () => {
     await chatInput.fill(prompt);
     await chatInput.press('Enter');
 
-    await expect(page.getByText(prompt)).toBeVisible();
-    await expect(page.getByText('Mock Butler response persisted.')).toBeVisible();
+    await expect(page.locator('#chat-feed').getByText(prompt)).toBeVisible();
+    await expect(page.locator('#chat-feed').getByText('Mock Butler response persisted.')).toBeVisible();
 
     await page.goto(BASE_URL);
     await page.getByRole('link', { name: 'Intelligence' }).click();
 
-    await expect(page.getByText(prompt)).toBeVisible();
-    await expect(page.getByText('Mock Butler response persisted.')).toBeVisible();
+    await expect(page.locator('#chat-feed').getByText(prompt)).toBeVisible();
+    await expect(page.locator('#chat-feed').getByText('Mock Butler response persisted.')).toBeVisible();
   });
 
   test('OCR modal opens and Butler analysis populates a bank statement', async ({ page }) => {
     await page.goto(BASE_URL);
 
-    await expect(page.getByText('Open Opportunities')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Overview.' })).toBeVisible();
     await page.getByRole('button', { name: 'Browse' }).click();
 
     await expect(page.getByText('Document Type')).toBeVisible();

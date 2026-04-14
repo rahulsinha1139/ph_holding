@@ -163,7 +163,12 @@
                         <div
                             class="doc-item"
                             class:selected={selectedDoc?.id === doc.id}
+                            role="button"
+                            tabindex="0"
                             on:click={() => selectDocument(doc)}
+                            on:keydown={(event) =>
+                                (event.key === "Enter" || event.key === " ") &&
+                                selectDocument(doc)}
                         >
                             <div class="doc-icon">
                                 {doc.type === "Invoice"

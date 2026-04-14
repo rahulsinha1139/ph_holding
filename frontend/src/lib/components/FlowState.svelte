@@ -144,10 +144,6 @@
         background-color: var(--color-safe, #15803d);
     }
 
-    .status-dot.danger {
-        background-color: var(--color-danger, #ef4444);
-    }
-
     .status-dot.warning {
         background-color: var(--color-gold, #fbbf24);
     }

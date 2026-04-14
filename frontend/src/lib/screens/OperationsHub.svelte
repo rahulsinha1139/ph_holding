@@ -14,6 +14,7 @@
 
   // Props
   export let embedded = false;
+  $: embedded;
 
   // Tab state - GRNs removed per user request (deprecated)
   // Operations = Supplier-side: POs to suppliers, supplier invoices, delivery notes to customers

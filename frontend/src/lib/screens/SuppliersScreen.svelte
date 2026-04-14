@@ -509,16 +509,16 @@
 <WabiModal bind:open={showCreateModal} title="New Supplier" size="lg">
   <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
     <div style="grid-column: 1 / -1;">
-      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Supplier Name *</label>
-      <input type="text" bind:value={newSupplier.supplier_name} placeholder="Company name" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+      <label for="supplier-name" style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Supplier Name *</label>
+      <input id="supplier-name" type="text" bind:value={newSupplier.supplier_name} placeholder="Company name" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
     </div>
     <div>
-      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Supplier Code</label>
-      <input type="text" bind:value={newSupplier.supplier_code} placeholder="Auto-generated if empty" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+      <label for="supplier-code" style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Supplier Code</label>
+      <input id="supplier-code" type="text" bind:value={newSupplier.supplier_code} placeholder="Auto-generated if empty" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
     </div>
     <div>
-      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Supplier Type</label>
-      <select bind:value={newSupplier.supplier_type} style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;">
+      <label for="supplier-type" style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Supplier Type</label>
+      <select id="supplier-type" bind:value={newSupplier.supplier_type} style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;">
         <option>Manufacturer</option>
         <option>Distributor</option>
         <option>Agent</option>
@@ -526,36 +526,36 @@
       </select>
     </div>
     <div>
-      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Contact Person</label>
-      <input type="text" bind:value={newSupplier.primary_contact} placeholder="Primary contact name" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+      <label for="supplier-contact" style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Contact Person</label>
+      <input id="supplier-contact" type="text" bind:value={newSupplier.primary_contact} placeholder="Primary contact name" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
     </div>
     <div>
-      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Email</label>
-      <input type="email" bind:value={newSupplier.email} placeholder="supplier@example.com" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+      <label for="supplier-email" style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Email</label>
+      <input id="supplier-email" type="email" bind:value={newSupplier.email} placeholder="supplier@example.com" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
     </div>
     <div>
-      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Phone</label>
-      <input type="text" bind:value={newSupplier.phone} placeholder="+973 1234 5678" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+      <label for="supplier-phone" style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Phone</label>
+      <input id="supplier-phone" type="text" bind:value={newSupplier.phone} placeholder="+973 1234 5678" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
     </div>
     <div>
-      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Country</label>
-      <input type="text" bind:value={newSupplier.country} placeholder="Bahrain" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+      <label for="supplier-country" style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Country</label>
+      <input id="supplier-country" type="text" bind:value={newSupplier.country} placeholder="Bahrain" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
     </div>
     <div>
-      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Tax ID / TRN</label>
-      <input type="text" bind:value={newSupplier.tax_id} placeholder="VAT registration number" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+      <label for="supplier-tax-id" style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Tax ID / TRN</label>
+      <input id="supplier-tax-id" type="text" bind:value={newSupplier.tax_id} placeholder="VAT registration number" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
     </div>
     <div>
-      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Lead Time (days)</label>
-      <input type="number" bind:value={newSupplier.lead_time_days} min="0" max="365" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+      <label for="supplier-lead-time" style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Lead Time (days)</label>
+      <input id="supplier-lead-time" type="number" bind:value={newSupplier.lead_time_days} min="0" max="365" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
     </div>
     <div style="grid-column: 1 / -1;">
-      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Address</label>
-      <input type="text" bind:value={newSupplier.address} placeholder="Full address" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+      <label for="supplier-address" style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Address</label>
+      <input id="supplier-address" type="text" bind:value={newSupplier.address} placeholder="Full address" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
     </div>
     <div style="grid-column: 1 / -1;">
-      <label style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Brands Handled</label>
-      <input type="text" bind:value={newSupplier.brands_handled} placeholder="Endress+Hauser, Servomex, etc." style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
+      <label for="supplier-brands" style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Brands Handled</label>
+      <input id="supplier-brands" type="text" bind:value={newSupplier.brands_handled} placeholder="Endress+Hauser, Servomex, etc." style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;" />
     </div>
   </div>
   <svelte:fragment slot="footer">

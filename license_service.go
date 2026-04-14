@@ -711,6 +711,7 @@ func (a *App) SeedEmployeeKeys() error {
 		// Sales keys
 		{Role: "sales", DisplayName: "Peri"},
 		{Role: "sales", DisplayName: "Ebin"},
+		{Role: "sales", DisplayName: "Ramya"},
 		{Role: "sales", DisplayName: "Support"},
 		{Role: "sales", DisplayName: "Sales Test"},
 		// Operations keys

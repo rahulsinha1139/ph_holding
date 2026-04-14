@@ -105,6 +105,7 @@
 <div
   class="dropdown"
   class:disabled
+  role="presentation"
   on:mouseenter={open}
   on:mouseleave={close}
   use:clickOutside={handleClose}

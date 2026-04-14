@@ -9,6 +9,7 @@
     UpdateSupplierPayment,
     DeleteSupplierPayment
   } from '../../../wailsjs/go/main/App';
+  import { main } from '../../../wailsjs/go/models';
 
   import PageLayout from '$lib/components/layout/PageLayout.svelte';
   import DataTable from '$lib/components/ui/DataTable.svelte';
@@ -16,6 +17,7 @@
   import { listExpenseEntries, type ExpenseEntry } from '$lib/api/expenses';
   import { toast } from '$lib/stores/toasts';
   import { permissions } from '$lib/stores/authContext';
+  import { buildWailsInput } from '$lib/utils/wailsInterop';
   const dispatch = createEventDispatcher();
 
   export let embedded = false;
@@ -340,7 +342,7 @@
         const exchangeRate = Number(existing.exchange_rate || (paymentForm.currency === 'BHD' ? 1 : 1));
         const amountBHD = Number((paymentForm.currency === 'BHD' ? amountForeign : amountForeign * exchangeRate).toFixed(3));
 
-        await UpdateSupplierPayment(editingPaymentId, {
+        await UpdateSupplierPayment(editingPaymentId, buildWailsInput(main.SupplierPayment, {
           ...existing,
           amount_foreign: amountForeign,
           currency: paymentForm.currency,
@@ -349,7 +351,7 @@
           payment_method: normalizeSupplierPaymentMethod(paymentForm.method),
           payment_date: new Date(`${paymentForm.date}T00:00:00`).toISOString(),
           reference: paymentForm.reference.trim(),
-        });
+        }));
         toast.success('Payment updated successfully');
       }
 
@@ -445,7 +447,7 @@
 
 <!-- Record Payment Modal -->
 {#if showPaymentModal}
-  <div class="modal-overlay" on:click|self={() => showPaymentModal = false}>
+  <div class="modal-overlay" role="button" tabindex="0" on:click|self={() => showPaymentModal = false} on:keydown={(event) => (event.key === "Enter" || event.key === " ") && (showPaymentModal = false)}>
     <div class="modal" in:fade={{ duration: 150 }}>
       <h2>Record Supplier Payment</h2>
       {#if paymentModalMode === 'edit'}
@@ -453,9 +455,9 @@
       {/if}
 
       <div class="form-group">
-        <label>Supplier Invoice</label>
+        <label for="supplier-payment-invoice">Supplier Invoice</label>
         {#if paymentModalMode === 'create'}
-          <select bind:value={paymentForm.invoice_id} disabled={paymentSaving}>
+          <select id="supplier-payment-invoice" bind:value={paymentForm.invoice_id} disabled={paymentSaving}>
             <option value="">Select invoice...</option>
             {#each invoices as inv}
               <option value={inv.id}>
@@ -473,12 +475,12 @@
 
       <div class="form-row">
         <div class="form-group">
-          <label>Amount</label>
-          <input type="number" step="0.001" bind:value={paymentForm.amount} disabled={paymentSaving} />
+          <label for="supplier-payment-amount">Amount</label>
+          <input id="supplier-payment-amount" type="number" step="0.001" bind:value={paymentForm.amount} disabled={paymentSaving} />
         </div>
         <div class="form-group">
-          <label>Currency</label>
-          <select bind:value={paymentForm.currency} disabled={paymentSaving}>
+          <label for="supplier-payment-currency">Currency</label>
+          <select id="supplier-payment-currency" bind:value={paymentForm.currency} disabled={paymentSaving}>
             <option value="BHD">BHD</option>
             <option value="USD">USD</option>
             <option value="EUR">EUR</option>
@@ -489,22 +491,22 @@
 
       <div class="form-row">
         <div class="form-group">
-          <label>Payment Method</label>
-          <select bind:value={paymentForm.method} disabled={paymentSaving}>
+          <label for="supplier-payment-method">Payment Method</label>
+          <select id="supplier-payment-method" bind:value={paymentForm.method} disabled={paymentSaving}>
             {#each paymentMethods as method}
               <option value={method}>{method}</option>
             {/each}
           </select>
         </div>
         <div class="form-group">
-          <label>Date</label>
-          <input type="date" bind:value={paymentForm.date} disabled={paymentSaving} />
+          <label for="supplier-payment-date">Date</label>
+          <input id="supplier-payment-date" type="date" bind:value={paymentForm.date} disabled={paymentSaving} />
         </div>
       </div>
 
       <div class="form-group">
-        <label>Reference</label>
-        <input type="text" bind:value={paymentForm.reference} placeholder="Cheque/transfer reference" disabled={paymentSaving} />
+        <label for="supplier-payment-reference">Reference</label>
+        <input id="supplier-payment-reference" type="text" bind:value={paymentForm.reference} placeholder="Cheque/transfer reference" disabled={paymentSaving} />
       </div>
 
       <div class="modal-actions">

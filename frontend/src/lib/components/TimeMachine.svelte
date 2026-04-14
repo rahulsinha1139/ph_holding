@@ -100,19 +100,4 @@
     cursor: grabbing;
     box-shadow: 0 0 20px var(--color-gold);
   }
-
-  /* Celestial dark mode variant */
-  .celestial .time-slider::-webkit-slider-thumb,
-  .celestial .time-slider::-moz-range-thumb {
-    box-shadow:
-      0 0 10px var(--color-gold),
-      0 0 20px rgba(255, 255, 255, 0.1);
-  }
-
-  .celestial .time-slider::-webkit-slider-thumb:hover,
-  .celestial .time-slider::-moz-range-thumb:hover {
-    box-shadow:
-      0 0 15px var(--color-gold),
-      0 0 30px rgba(255, 255, 255, 0.15);
-  }
 </style>

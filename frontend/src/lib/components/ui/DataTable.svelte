@@ -49,6 +49,7 @@
   export let keyField: string = 'id';
   export let alternateRows: boolean = false; // Optional alternating row colors for readability
   export let rowClass: ((row: any) => string) | undefined = undefined; // Custom row class function
+  $: striped;
 
   // Internal state
   let sortKey: string | null = null;

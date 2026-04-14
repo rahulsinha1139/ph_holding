@@ -156,6 +156,7 @@
         aria-hidden="true"
     >
         <!-- Modal Container -->
+        <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
         <div
             bind:this={modalContainer}
             class="modal-container"

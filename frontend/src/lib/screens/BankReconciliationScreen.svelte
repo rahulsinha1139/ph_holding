@@ -1438,10 +1438,6 @@
 </Modal>
 
 <style>
-  .embedded-container {
-    padding: 16px;
-  }
-
   .loading-container {
     display: flex;
     flex-direction: column;

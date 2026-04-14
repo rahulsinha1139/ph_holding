@@ -1151,17 +1151,30 @@
     function handleKeydown(e: KeyboardEvent) {
         if (e.key === 'Escape') handleClose();
     }
+
+    function handleBackdropKeydown(event: KeyboardEvent, callback: () => void) {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            callback();
+        }
+    }
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
 
 {#if show}
-    <div class="modal-backdrop" transition:fade={{ duration: 200 }} on:click={handleBackdropClick}>
+    <div
+        class="modal-backdrop"
+        transition:fade={{ duration: 200 }}
+        on:click|self={handleBackdropClick}
+        on:keydown={(event) => handleBackdropKeydown(event, handleBackdropClick)}
+        role="button"
+        tabindex="0"
+    >
         <div
             class="modal"
             class:bank-statement-modal={selectedType === 'bank_statement'}
             transition:scale={{ duration: 200, start: 0.95 }}
-            on:click|stopPropagation
             role="dialog"
             aria-modal="true"
             aria-labelledby="modal-title"
@@ -1186,7 +1199,7 @@
                 {:else if ocrResult}
                     <!-- Document Type Selector -->
                     <div class="type-selector">
-                        <label class="type-label">Document Type</label>
+                        <div class="type-label">Document Type</div>
                         <div class="type-options">
                             {#each documentTypes as docType}
                                 <button
@@ -1555,8 +1568,15 @@
 
 <!-- Close Confirmation Modal -->
 {#if showCloseConfirmation}
-    <div class="modal-backdrop confirmation-backdrop" transition:fade={{ duration: 150 }} on:click={cancelClose}>
-        <div class="confirmation-modal" on:click|stopPropagation transition:scale={{ duration: 150, start: 0.95 }}>
+    <div
+        class="modal-backdrop confirmation-backdrop"
+        transition:fade={{ duration: 150 }}
+        on:click|self={cancelClose}
+        on:keydown={(event) => handleBackdropKeydown(event, cancelClose)}
+        role="button"
+        tabindex="0"
+    >
+        <div class="confirmation-modal" transition:scale={{ duration: 150, start: 0.95 }}>
             <h3>Unsaved Changes</h3>
             <p>You have unsaved changes. Are you sure you want to close?</p>
             <div class="confirmation-actions">
@@ -1569,8 +1589,15 @@
 
 <!-- Duplicate Warning Modal -->
 {#if showDuplicateWarning}
-    <div class="modal-backdrop" transition:fade={{ duration: 150 }} on:click={() => showDuplicateWarning = false}>
-        <div class="warning-modal" transition:scale={{ duration: 150, start: 0.95 }} on:click|stopPropagation role="alertdialog">
+    <div
+        class="modal-backdrop"
+        transition:fade={{ duration: 150 }}
+        on:click|self={() => showDuplicateWarning = false}
+        on:keydown={(event) => handleBackdropKeydown(event, () => (showDuplicateWarning = false))}
+        role="button"
+        tabindex="0"
+    >
+        <div class="warning-modal" transition:scale={{ duration: 150, start: 0.95 }} role="alertdialog">
             <div class="warning-header">
                 <span class="warning-icon">!</span>
                 <h3>Similar Document Exists</h3>
@@ -1627,7 +1654,7 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        z-index: 1000;
+        z-index: 2000;
         backdrop-filter: blur(4px);
     }
 
@@ -1705,25 +1732,6 @@
         align-items: center;
         padding: 60px 20px;
         gap: 12px;
-    }
-
-    .spinner-large {
-        width: 48px;
-        height: 48px;
-        border: 3px solid rgba(0, 0, 0, 0.1);
-        border-top-color: #15803d;
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-    }
-
-    .spinner-small {
-        width: 14px;
-        height: 14px;
-        border: 2px solid rgba(255, 255, 255, 0.3);
-        border-top-color: white;
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-        display: inline-block;
     }
 
     @keyframes spin {
@@ -2356,7 +2364,7 @@
 
     /* Close Confirmation Modal */
     .confirmation-backdrop {
-        z-index: 1001;
+        z-index: 2001;
     }
 
     .confirmation-modal {

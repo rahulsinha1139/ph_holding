@@ -19,6 +19,6 @@ test.describe('Application shell setup', () => {
     await expect(page.getByText('Overview.')).toBeVisible();
     await expect(page.getByText('TOTAL REVENUE (YTD)')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Browse' })).toBeVisible();
-    await expect(page.getByText('Open Opportunities')).toBeVisible();
+    await expect(page.getByRole('button', { name: /Open Opportunities:/i })).toBeVisible();
   });
 });

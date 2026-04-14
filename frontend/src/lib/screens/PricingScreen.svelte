@@ -148,12 +148,13 @@
                     </div>
 
                     <div class="sim-controls">
-                        <label
+                        <label for="pricing-target-margin"
                             >Target Margin: {(simMargin * 100).toFixed(
                                 0,
                             )}%</label
                         >
                         <input
+                            id="pricing-target-margin"
                             type="range"
                             min="0.05"
                             max="0.50"

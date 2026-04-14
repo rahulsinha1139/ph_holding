@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
     import { onDestroy, onMount } from "svelte";
     import { fade } from "svelte/transition";
     import FinancialDashboard from "./FinancialDashboard.svelte";
@@ -18,14 +18,20 @@
     import ErrorBoundary from "../components/ErrorBoundary.svelte";
     import AHSDashboard from "./AHSDashboard.svelte";
 
-    export let params = {};
+    export let params: { tab?: string; company?: string } = {};
+
+    type CompanyName = "PH Trading" | "AHS Trading";
 
     let activeTab = "dashboard";
     let lastAppliedRouteKey = "";
 
     // E2: Company selector - 'PH Trading' is the default, 'AHS Trading' is the sister company
-    let selectedCompany = "PH Trading";
-    const companies = ["PH Trading", "AHS Trading"];
+    let selectedCompany: CompanyName = "PH Trading";
+    const companies: CompanyName[] = ["PH Trading", "AHS Trading"];
+
+    function isCompanyName(value: unknown): value is CompanyName {
+        return value === "PH Trading" || value === "AHS Trading";
+    }
 
     const tabs = [
         { id: "dashboard", label: "Dashboard" },
@@ -56,7 +62,7 @@
         if (nextTab && tabs.some((tab) => tab.id === nextTab)) {
             activeTab = nextTab;
         }
-        if (companies.includes(nextCompany)) {
+        if (isCompanyName(nextCompany)) {
             selectedCompany = nextCompany;
         }
     }
@@ -81,7 +87,7 @@
             if (requestedTab && tabs.some((tab) => tab.id === requestedTab)) {
                 activeTab = requestedTab;
             }
-            if (companies.includes(requestedCompany)) {
+            if (isCompanyName(requestedCompany)) {
                 selectedCompany = requestedCompany;
             }
             lastAppliedRouteKey = nextRouteKey;
@@ -250,27 +256,6 @@
 
     .content {
         padding: 20px 24px;
-    }
-
-    /* CashPositionWidget sidebar removed - dashboard now full width */
-
-    .placeholder {
-        padding: 48px;
-        text-align: center;
-        color: #6e6e73;
-    }
-
-    .placeholder h2 {
-        font-family: var(--font-display);
-        font-size: 18px;
-        font-weight: 500;
-        margin: 0 0 8px 0;
-        color: #1d1d1f;
-    }
-
-    .placeholder p {
-        font-size: 14px;
-        margin: 0;
     }
 
     @media (max-width: 768px) {

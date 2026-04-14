@@ -90,6 +90,13 @@
             handleActivate();
         }
     }
+
+    function focusOnMount(node: HTMLInputElement) {
+        requestAnimationFrame(() => node.focus());
+        return {
+            destroy() {},
+        };
+    }
 </script>
 
 <div class="license-screen">
@@ -112,7 +119,7 @@
                 disabled={loading}
                 autocomplete="off"
                 spellcheck="false"
-                autofocus
+                use:focusOnMount
             />
             <p class="hint">Contact your administrator for a license key</p>
         </div>

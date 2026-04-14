@@ -1190,7 +1190,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     </p>
                     <div class="selector-grid">
                         <div class="form-group selector-dropdown">
-                            <label>Opportunity / RFQ</label>
+                            <span class="field-label">Opportunity / RFQ</span>
                             <select bind:value={selectedOpportunityId} on:change={handleOpportunitySelect} class="input">
                                 <option value="">-- Select an Opportunity --</option>
                                 {#each opportunities as opp}
@@ -1275,6 +1275,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 class:active={rev.is_active}
                                 class:selected={selectedRevision?.id === rev.id}
                                 on:click={() => selectRevision(rev)}
+                                on:keydown={(event) => (event.key === 'Enter' || event.key === ' ') && selectRevision(rev)}
                                 role="button"
                                 tabindex="0"
                             >
@@ -1325,7 +1326,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     <!-- Row 1: Core fields always visible -->
                     <div class="header-row-3col tight">
                         <div class="field-group">
-                            <label>Customer *</label>
+                            <span class="field-label">Customer *</span>
                             <select bind:value={header.customerId} on:change={handleCustomerChange} class="input">
                                 <option value="">Select customer...</option>
                                 {#each customers as c}
@@ -1334,11 +1335,11 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             </select>
                         </div>
                         <div class="field-group">
-                            <label>Contact Person</label>
+                            <span class="field-label">Contact Person</span>
                             <input type="text" bind:value={header.contactPerson} class="input" placeholder="Name" />
                         </div>
                         <div class="field-group">
-                            <label>RFQ Reference</label>
+                            <span class="field-label">RFQ Reference</span>
                             <input type="text" bind:value={header.rfqReference} class="input" placeholder="RFQ / Enquiry ref" />
                         </div>
                     </div>
@@ -1346,24 +1347,24 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     <!-- Row 2: Document + commercial -->
                     <div class="header-row-6col tight">
                         <div class="field-group">
-                            <label>Division</label>
+                            <span class="field-label">Division</span>
                             <select bind:value={header.division} class="input-sm">
                                 {#each divisionOptions as div}<option value={div}>{div}</option>{/each}
                             </select>
                         </div>
                         <div class="field-group">
-                            <label>Date</label>
+                            <span class="field-label">Date</span>
                             <input type="date" bind:value={header.date} class="input-sm" />
                         </div>
                         <div class="field-group">
-                            <label>Prepared By</label>
+                            <span class="field-label">Prepared By</span>
                             <select bind:value={header.preparedBy} class="input-sm">
                                 <option value="">Select...</option>
                                 {#each staffList as staff}<option value={staff.name}>{staff.name}</option>{/each}
                             </select>
                         </div>
                         <div class="field-group">
-                            <label>Doc Type</label>
+                            <span class="field-label">Doc Type</span>
                             <select bind:value={header.quoteType} class="input-sm">
                                 <option value="Quotation">Quotation</option>
                                 <option value="Budgetary Quote">Budgetary Quote</option>
@@ -1373,11 +1374,11 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             </select>
                         </div>
                         <div class="field-group">
-                            <label>Folder No.</label>
+                            <span class="field-label">Folder No.</span>
                             <input type="text" bind:value={header.folderNumber} class="input-sm" placeholder="42-26" />
                         </div>
                         <div class="field-group">
-                            <label>Costing ID</label>
+                            <span class="field-label">Costing ID</span>
                             <input type="text" bind:value={header.costingId} class="input-sm" placeholder="Auto" />
                         </div>
                     </div>
@@ -1385,19 +1386,19 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     <!-- Row 3: Terms (always visible - needed for every quote) -->
                     <div class="header-row-3col tight">
                         <div class="field-group">
-                            <label>Payment Terms</label>
+                            <span class="field-label">Payment Terms</span>
                             <select bind:value={header.paymentTerms} class="input-sm">
                                 {#each paymentTermsOptions as opt}<option value={opt}>{opt}</option>{/each}
                             </select>
                         </div>
                         <div class="field-group">
-                            <label>Delivery Terms</label>
+                            <span class="field-label">Delivery Terms</span>
                             <select bind:value={header.deliveryTerms} class="input-sm">
                                 {#each deliveryTermsOptions as opt}<option value={opt}>{opt}</option>{/each}
                             </select>
                         </div>
                         <div class="field-group">
-                            <label>Est. Delivery</label>
+                            <span class="field-label">Est. Delivery</span>
                             <select bind:value={header.estDelivery} class="input-sm">
                                 {#each deliveryOptions as opt}<option value={opt}>{opt}</option>{/each}
                             </select>
@@ -1405,13 +1406,13 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     </div>
                     <div class="header-row-3col tight">
                         <div class="field-group full-span">
-                            <label>Subject</label>
+                            <span class="field-label">Subject</span>
                             <input type="text" bind:value={header.subject} class="input-sm" placeholder="Subject line for customer PDF" />
                         </div>
                     </div>
                     <div class="header-row-3col tight">
                         <div class="field-group full-span">
-                            <label>PDF Body</label>
+                            <span class="field-label">PDF Body</span>
                             <textarea bind:value={quotationBody} class="input-sm textarea-sm" rows="4" placeholder="Opening body / cover note shown before the line items"></textarea>
                         </div>
                     </div>
@@ -1425,37 +1426,37 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     <div class="advanced-section">
                         <div class="header-row-6col tight">
                             <div class="field-group">
-                                <label>Order Type</label>
+                                <span class="field-label">Order Type</span>
                                 <select bind:value={header.orderType} class="input-sm">
                                     {#each orderTypeOptions as opt}<option value={opt}>{opt}</option>{/each}
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>Origin</label>
+                                <span class="field-label">Origin</span>
                                 <select bind:value={header.countryOfOrigin} class="input-sm">
                                     {#each countryOptions as opt}<option value={opt.code}>{opt.code}</option>{/each}
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>COC/COO</label>
+                                <span class="field-label">COC/COO</span>
                                 <select bind:value={header.cocCoo} class="input-sm">
                                     {#each certificateOptions as opt}<option value={opt}>{opt}</option>{/each}
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>Test Cert</label>
+                                <span class="field-label">Test Cert</span>
                                 <select bind:value={header.testCertificate} class="input-sm">
                                     {#each certificateOptions as opt}<option value={opt}>{opt}</option>{/each}
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>Install</label>
+                                <span class="field-label">Install</span>
                                 <select bind:value={header.installation} class="input-sm">
                                     <option value="Yes">Yes</option><option value="No">No</option>
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>Commission</label>
+                                <span class="field-label">Commission</span>
                                 <select bind:value={header.commissioning} class="input-sm">
                                     <option value="Yes">Yes</option><option value="No">No</option>
                                 </select>
@@ -1463,7 +1464,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         </div>
                         <div class="header-row-3col tight">
                             <div class="field-group">
-                                <label>Place of Supply</label>
+                                <span class="field-label">Place of Supply</span>
                                 <select bind:value={header.placeOfSupply} class="input-sm">
                                     <option value="Kingdom of Bahrain">Kingdom of Bahrain</option>
                                     <option value="GCC">GCC Member State</option>
@@ -1471,7 +1472,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>Tax Category</label>
+                                <span class="field-label">Tax Category</span>
                                 <select bind:value={header.taxCategory} class="input-sm">
                                     <option value="Standard">Standard Rate (10%)</option>
                                     <option value="Zero-rated">Zero-rated</option>
@@ -1480,7 +1481,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>Customer TRN</label>
+                                <span class="field-label">Customer TRN</span>
                                 <input type="text" bind:value={header.customerTRN} class="input-sm" placeholder="Tax Reg. Number" />
                             </div>
                         </div>
@@ -1497,19 +1498,19 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         <div class="line-row-top">
                             <span class="sl-no">{i + 1}</span>
                             <div class="field-inline">
-                                <label>Equipment</label>
+                                <span class="field-label">Equipment</span>
                                 <input type="text" bind:value={item.equipment} class="input-sm" placeholder="Product name" />
                             </div>
                             <div class="field-inline">
-                                <label>Model</label>
+                                <span class="field-label">Model</span>
                                 <input type="text" bind:value={item.model} class="input-sm" placeholder="Model #" />
                             </div>
                             <div class="field-inline compact">
-                                <label>Qty</label>
+                                <span class="field-label">Qty</span>
                                 <input type="number" bind:value={item.quantity} class="input-sm qty" min="1" on:change={calculateAll} />
                             </div>
                             <div class="field-inline compact">
-                                <label>Currency</label>
+                                <span class="field-label">Currency</span>
                                 <select bind:value={item.currency} class="input-sm" on:change={() => handleCurrencyChange(i)}>
                                     {#each currencyOptions as c}
                                         <option value={c.code}>{c.code}</option>
@@ -1517,7 +1518,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 </select>
                             </div>
                             <div class="field-inline exchange-rate">
-                                <label>Exch. Rate</label>
+                                <span class="field-label">Exch. Rate</span>
                                 <input type="number" bind:value={item.exchangeRate} class="input-sm money" step="0.0001" min="0.0001" on:change={calculateAll} />
                             </div>
                             {#if lineItems.length > 1}
@@ -1530,19 +1531,19 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         <!-- Line 2: Pricing -->
                         <div class="line-row-pricing">
                             <div class="field-inline">
-                                <label>Unit Price (FOB)</label>
+                                <span class="field-label">Unit Price (FOB)</span>
                                 <input type="number" bind:value={item.fobForeign} class="input-sm money" step="0.001" on:change={calculateAll} placeholder="0.000" />
                             </div>
                             <div class="field-inline">
-                                <label>Freight %</label>
+                                <span class="field-label">Freight %</span>
                                 <input type="number" bind:value={item.freightPercent} class="input-sm money" step="0.01" min="0" on:change={calculateAll} placeholder="0.00" />
                             </div>
                             <div class="field-inline">
-                                <label>Misc Cost</label>
+                                <span class="field-label">Misc Cost</span>
                                 <input type="number" bind:value={item.otherCosts} class="input-sm money" step="0.001" min="0" on:change={calculateAll} placeholder="0.000" title="Miscellaneous costs (internal)" />
                             </div>
                             <div class="field-inline">
-                                <label>Quote Price</label>
+                                <span class="field-label">Quote Price</span>
                                 <input
                                     type="number"
                                     class="input-sm money sell-price"
@@ -1555,7 +1556,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 />
                             </div>
                             <div class="line-total">
-                                <label>Total (BHD)</label>
+                                <span class="field-label">Total (BHD)</span>
                                 <span class="calc-value highlight">{formatBHD(item.totalSuggestedPrice)}</span>
                             </div>
                         </div>
@@ -1592,23 +1593,23 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             </div>
                             <div class="cost-row">
                                 <div class="cost-input">
-                                    <label>Customs %</label>
+                                    <span class="field-label">Customs %</span>
                                     <input type="number" bind:value={item.customsPercent} class="input-xs" on:change={calculateAll} />
                                 </div>
                                 <div class="cost-input">
-                                    <label>Handling %</label>
+                                    <span class="field-label">Handling %</span>
                                     <input type="number" bind:value={item.handlingPercent} class="input-xs" on:change={calculateAll} />
                                 </div>
                                 <div class="cost-input">
-                                    <label>Finance %</label>
+                                    <span class="field-label">Finance %</span>
                                     <input type="number" bind:value={item.financePercent} class="input-xs" on:change={calculateAll} />
                                 </div>
                                 <div class="cost-input">
-                                    <label>Markup %</label>
+                                    <span class="field-label">Markup %</span>
                                     <input type="number" bind:value={item.marginPercent} class="input-xs" min="0" max="99" on:change={calculateAll} />
                                 </div>
                                 <div class="cost-input">
-                                    <label>Total Cost</label>
+                                    <span class="field-label">Total Cost</span>
                                     <span class="cost-value">{formatBHD(item.totalCost)}</span>
                                 </div>
                                 <!-- Issue #7: Copy costs button - only on first item -->
@@ -1838,7 +1839,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         grid-column: 1 / -1;
     }
 
-    .field-group label {
+    .field-group .field-label {
         font-size: 10px;
         font-weight: 600;
         color: var(--text-secondary, #6b7280);
@@ -1898,7 +1899,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         gap: 4px;
     }
 
-    .form-group label {
+    .form-group .field-label {
         font-size: 11px;
         color: var(--text-secondary);
         text-transform: uppercase;
@@ -2021,7 +2022,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         min-width: 132px;
     }
 
-    .field-inline label {
+    .field-inline .field-label {
         font-size: 9px;
         font-weight: 600;
         color: var(--text-tertiary, #9ca3af);
@@ -2036,7 +2037,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         gap: 1px;
     }
 
-    .line-total label {
+    .line-total .field-label {
         font-size: 9px;
         font-weight: 600;
         color: var(--text-tertiary, #9ca3af);
@@ -2226,7 +2227,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         gap: 4px;
     }
 
-    .cost-input label {
+    .cost-input .field-label {
         font-size: 10px;
         color: var(--text-muted);
     }
@@ -2587,10 +2588,6 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
 
     /* FIX #23: Disable hover animation "dance" on costing inputs */
     /* Prevents headache-inducing box highlighting when hovering over qty/price/margin fields */
-    .line-item-row input:hover,
-    .line-item-row input:focus,
-    .line-item-row select:hover,
-    .line-item-row select:focus,
     .cost-breakdown input:hover,
     .cost-breakdown input:focus,
     .input-sm:hover,

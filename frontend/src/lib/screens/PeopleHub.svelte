@@ -22,6 +22,21 @@
   } from "$lib/api/collaboration";
 
   type PeopleTab = "directory" | "org" | "contributions";
+  const PEOPLE_HUB_CACHE_TTL_MS = 30_000;
+
+  type PeopleHubSnapshot = {
+    employees: EmployeeProfile[];
+    accessLinks: EmployeeAccessLink[];
+    licenseKeys: LicenseKeySummary[];
+    contributions: EmployeeContributionSummary[];
+    projectAssignments: ProjectMember[];
+    selectedEmployeeID: string;
+    selectedLicenseKey: string;
+    activeTab: PeopleTab;
+    savedAt: number;
+  };
+
+  let peopleHubSnapshot: PeopleHubSnapshot | null = null;
 
   let loading = true;
   let saving = false;
@@ -54,6 +69,7 @@
   let notes = "";
 
   let assignmentLoadToken = 0;
+  let loadRequestSeq = 0;
 
   function toDateInput(value?: string) {
     if (!value) return "";
@@ -79,9 +95,50 @@
     notes = employee?.notes || "";
   }
 
-  async function load(options: { refreshRemote?: boolean } = {}) {
-    const { refreshRemote = false } = options;
-    loading = true;
+  function hasLoadedPeopleData() {
+    return Boolean(employees.length || accessLinks.length || licenseKeys.length || contributions.length);
+  }
+
+  function restoreSnapshot() {
+    if (!peopleHubSnapshot) return false;
+    employees = peopleHubSnapshot.employees;
+    accessLinks = peopleHubSnapshot.accessLinks;
+    licenseKeys = peopleHubSnapshot.licenseKeys;
+    contributions = peopleHubSnapshot.contributions;
+    projectAssignments = peopleHubSnapshot.projectAssignments;
+    selectedEmployeeID = peopleHubSnapshot.selectedEmployeeID;
+    selectedLicenseKey = peopleHubSnapshot.selectedLicenseKey;
+    activeTab = peopleHubSnapshot.activeTab;
+    applyEmployeeToForm(employees.find((employee) => employee.id === selectedEmployeeID) || null);
+    loading = false;
+    return true;
+  }
+
+  function saveSnapshot() {
+    peopleHubSnapshot = {
+      employees: [...employees],
+      accessLinks: [...accessLinks],
+      licenseKeys: [...licenseKeys],
+      contributions: [...contributions],
+      projectAssignments: [...projectAssignments],
+      selectedEmployeeID,
+      selectedLicenseKey,
+      activeTab,
+      savedAt: Date.now(),
+    };
+  }
+
+  function isSnapshotStale() {
+    return !peopleHubSnapshot || Date.now() - peopleHubSnapshot.savedAt > PEOPLE_HUB_CACHE_TTL_MS;
+  }
+
+  async function load(options: { refreshRemote?: boolean; silent?: boolean } = {}) {
+    const { refreshRemote = false, silent = false } = options;
+    const requestSeq = ++loadRequestSeq;
+    const shouldShowLoading = !silent || !hasLoadedPeopleData();
+    if (shouldShowLoading) {
+      loading = true;
+    }
     try {
       if (refreshRemote) {
         await refreshCollaborativeWorkspace().catch(() => undefined);
@@ -92,6 +149,10 @@
         listLicenseKeys(),
         listEmployeeContributionSummaries(),
       ]);
+
+      if (requestSeq !== loadRequestSeq) {
+        return;
+      }
 
       employees = employeeRows;
       accessLinks = linkRows;
@@ -109,11 +170,30 @@
       }
 
       await loadSelectedEmployeeData(selectedEmployeeID);
+      saveSnapshot();
     } catch (err) {
-      toast.danger(`Failed to load people hub: ${String(err)}`);
+      if (!silent || !hasLoadedPeopleData()) {
+        toast.danger(`Failed to load people hub: ${String(err)}`);
+      }
     } finally {
-      loading = false;
+      if (requestSeq === loadRequestSeq && shouldShowLoading) {
+        loading = false;
+      }
     }
+  }
+
+  async function hydratePeopleHub() {
+    const restored = restoreSnapshot();
+    if (!restored) {
+      await load();
+      await load({ refreshRemote: true, silent: true });
+      return;
+    }
+    if (hasLoadedPeopleData()) {
+      await load({ refreshRemote: isSnapshotStale(), silent: true });
+      return;
+    }
+    await load({ refreshRemote: true, silent: true });
   }
 
   async function loadSelectedEmployeeData(employeeID = selectedEmployeeID) {
@@ -287,10 +367,10 @@
   $: orgGroupEntries = Object.entries(orgGroups).sort((left, right) => left[0].localeCompare(right[0]));
 
   onMount(() => {
-    load({ refreshRemote: true });
-    EventsOn("employees:updated", load);
-    EventsOn("tasks:updated", load);
-    EventsOn("projects:updated", load);
+    void hydratePeopleHub();
+    EventsOn("employees:updated", () => void load({ silent: true }));
+    EventsOn("tasks:updated", () => void load({ silent: true }));
+    EventsOn("projects:updated", () => void load({ silent: true }));
   });
 
   onDestroy(() => {

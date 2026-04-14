@@ -742,6 +742,7 @@ func deploymentRoleKeySpecs() []deploymentRoleKeySpec {
 	return []deploymentRoleKeySpec{
 		{Role: "admin", DisplayName: "Admin Test", Notes: "Deployment validation admin key"},
 		{Role: "manager", DisplayName: "Manager Test", Notes: "Deployment validation manager key"},
+		{Role: "sales", DisplayName: "Ramya", Notes: "Deployment validation sales key for Ramya"},
 		{Role: "sales", DisplayName: "Sales Test", Notes: "Deployment validation sales key"},
 		{Role: "operations", DisplayName: "Operations Test", Notes: "Deployment validation operations key"},
 		{Role: "staff", DisplayName: "Staff Test", Notes: "Deployment validation staff key"},

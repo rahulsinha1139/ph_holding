@@ -298,7 +298,12 @@
                     {#each filteredCustomers as c}
                         <div
                             class="customer-card"
+                            role="button"
+                            tabindex="0"
                             on:click={() => navigate(c.id)}
+                            on:keydown={(event) =>
+                                (event.key === "Enter" || event.key === " ") &&
+                                navigate(c.id)}
                         >
                             <div class="card-head">
                                 <span class="customer-name"
@@ -327,18 +332,24 @@
     <div
         class="modal-backdrop"
         transition:fade
+        role="button"
+        tabindex="0"
         on:click={() => (showCreate = false)}
+        on:keydown={(event) =>
+            (event.key === "Enter" || event.key === " ") &&
+            (showCreate = false)}
     >
         <CursorFollower />
-        <div class="modal" on:click|stopPropagation>
+        <div class="modal" role="presentation" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
             <h3>New Customer</h3>
             <div class="form-scroll">
                 <!-- IDENTITY SECTION -->
                 <div class="section-header">Identity</div>
                 <div class="row">
                     <div class="form-group third">
-                        <label>Customer Code</label>
+                        <label for="customer-code">Customer Code</label>
                         <input
+                            id="customer-code"
                             type="text"
                             bind:value={newCustomer.customer_id}
                             class="input-clean"
@@ -346,8 +357,9 @@
                         />
                     </div>
                     <div class="form-group third">
-                        <label>Short Code</label>
+                        <label for="customer-short-code">Short Code</label>
                         <input
+                            id="customer-short-code"
                             type="text"
                             bind:value={newCustomer.short_code}
                             class="input-clean"
@@ -355,8 +367,9 @@
                         />
                     </div>
                     <div class="form-group third">
-                        <label>CR Number</label>
+                        <label for="customer-cr-number">CR Number</label>
                         <input
+                            id="customer-cr-number"
                             type="text"
                             bind:value={newCustomer.cr_number}
                             class="input-clean"
@@ -365,8 +378,9 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Company Name *</label>
+                    <label for="customer-company-name">Company Name *</label>
                     <input
+                        id="customer-company-name"
                         type="text"
                         bind:value={newCustomer.business_name}
                         class="input-clean"
@@ -374,8 +388,9 @@
                 </div>
                 <div class="row">
                     <div class="form-group half">
-                        <label>Trading Name</label>
+                        <label for="customer-trading-name">Trading Name</label>
                         <input
+                            id="customer-trading-name"
                             type="text"
                             bind:value={newCustomer.trading_name}
                             class="input-clean"
@@ -383,8 +398,9 @@
                         />
                     </div>
                     <div class="form-group half">
-                        <label>VAT / TRN</label>
+                        <label for="customer-trn">VAT / TRN</label>
                         <input
+                            id="customer-trn"
                             type="text"
                             bind:value={newCustomer.trn}
                             class="input-clean"
@@ -397,8 +413,9 @@
                 <div class="section-header">Classification</div>
                 <div class="row">
                     <div class="form-group third">
-                        <label>Type</label>
+                        <label for="customer-type">Type</label>
                         <select
+                            id="customer-type"
                             bind:value={newCustomer.customer_type}
                             class="input-clean"
                         >
@@ -408,8 +425,9 @@
                         </select>
                     </div>
                     <div class="form-group third">
-                        <label>Grade</label>
+                        <label for="customer-grade">Grade</label>
                         <select
+                            id="customer-grade"
                             bind:value={newCustomer.payment_grade}
                             class="input-clean"
                         >
@@ -419,8 +437,9 @@
                         </select>
                     </div>
                     <div class="form-group third">
-                        <label>Status</label>
+                        <label for="customer-status">Status</label>
                         <select
+                            id="customer-status"
                             bind:value={newCustomer.status}
                             class="input-clean"
                         >
@@ -431,8 +450,9 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Industry</label>
+                    <label for="customer-industry">Industry</label>
                     <input
+                        id="customer-industry"
                         type="text"
                         bind:value={newCustomer.industry}
                         class="input-clean"
@@ -444,8 +464,9 @@
                 <div class="section-header">Contact</div>
                 <div class="row">
                     <div class="form-group quarter">
-                        <label>Primary Phone</label>
+                        <label for="customer-primary-phone">Primary Phone</label>
                         <input
+                            id="customer-primary-phone"
                             type="tel"
                             bind:value={newCustomer.primary_phone}
                             class="input-clean"
@@ -453,8 +474,9 @@
                         />
                     </div>
                     <div class="form-group quarter">
-                        <label>Mobile Number</label>
+                        <label for="customer-mobile-number">Mobile Number</label>
                         <input
+                            id="customer-mobile-number"
                             type="tel"
                             bind:value={newCustomer.mobile_number}
                             class="input-clean"
@@ -462,8 +484,9 @@
                         />
                     </div>
                     <div class="form-group quarter">
-                        <label>Primary Email</label>
+                        <label for="customer-primary-email">Primary Email</label>
                         <input
+                            id="customer-primary-email"
                             type="email"
                             bind:value={newCustomer.primary_email}
                             class="input-clean"
@@ -471,8 +494,9 @@
                         />
                     </div>
                     <div class="form-group quarter">
-                        <label>Website</label>
+                        <label for="customer-website">Website</label>
                         <input
+                            id="customer-website"
                             type="url"
                             bind:value={newCustomer.website}
                             class="input-clean"
@@ -485,8 +509,9 @@
                 <div class="section-header">Address (Bahrain)</div>
                 <div class="row">
                     <div class="form-group half">
-                        <label>Building / Flat</label>
+                        <label for="customer-building-flat">Building / Flat</label>
                         <input
+                            id="customer-building-flat"
                             type="text"
                             bind:value={newCustomer.building_flat}
                             class="input-clean"
@@ -494,8 +519,9 @@
                         />
                     </div>
                     <div class="form-group half">
-                        <label>Road / Street</label>
+                        <label for="customer-road-street">Road / Street</label>
                         <input
+                            id="customer-road-street"
                             type="text"
                             bind:value={newCustomer.road_street}
                             class="input-clean"
@@ -505,8 +531,9 @@
                 </div>
                 <div class="row">
                     <div class="form-group quarter">
-                        <label>Block</label>
+                        <label for="customer-block">Block</label>
                         <input
+                            id="customer-block"
                             type="text"
                             bind:value={newCustomer.block}
                             class="input-clean"
@@ -514,8 +541,9 @@
                         />
                     </div>
                     <div class="form-group quarter">
-                        <label>Area</label>
+                        <label for="customer-area">Area</label>
                         <input
+                            id="customer-area"
                             type="text"
                             bind:value={newCustomer.area}
                             class="input-clean"
@@ -523,16 +551,18 @@
                         />
                     </div>
                     <div class="form-group quarter">
-                        <label>City</label>
+                        <label for="customer-city">City</label>
                         <input
+                            id="customer-city"
                             type="text"
                             bind:value={newCustomer.city}
                             class="input-clean"
                         />
                     </div>
                     <div class="form-group quarter">
-                        <label>Country</label>
+                        <label for="customer-country">Country</label>
                         <input
+                            id="customer-country"
                             type="text"
                             bind:value={newCustomer.country}
                             class="input-clean"
@@ -544,8 +574,9 @@
                 <div class="section-header">Financial</div>
                 <div class="row">
                     <div class="form-group half">
-                        <label>Payment Terms</label>
+                        <label for="customer-payment-terms">Payment Terms</label>
                         <select
+                            id="customer-payment-terms"
                             bind:value={newCustomer.payment_terms}
                             class="input-clean"
                         >
@@ -555,8 +586,9 @@
                         </select>
                     </div>
                     <div class="form-group half">
-                        <label>Credit Limit (BHD)</label>
+                        <label for="customer-credit-limit">Credit Limit (BHD)</label>
                         <input
+                            id="customer-credit-limit"
                             type="number"
                             bind:value={newCustomer.credit_limit}
                             class="input-clean"

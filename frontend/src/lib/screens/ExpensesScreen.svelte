@@ -853,7 +853,7 @@
 </div>
 
 {#if showPaymentModal && paymentEntry}
-  <div class="modal-overlay" on:click|self={() => { showPaymentModal = false; paymentEntry = null; }}>
+  <div class="modal-overlay" role="button" tabindex="0" on:click|self={() => { showPaymentModal = false; paymentEntry = null; }} on:keydown={(event) => (event.key === "Enter" || event.key === " ") && (showPaymentModal = false, paymentEntry = null)}>
     <div class="modal">
       <div class="panel-head">
         <div>

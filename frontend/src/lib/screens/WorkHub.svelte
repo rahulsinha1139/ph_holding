@@ -38,6 +38,24 @@
 
   type WorkTab = "my_work" | "team_board" | "projects";
   const pendingTaskStorageKey = "asymmflow.pendingCollaborativeTaskId";
+  const WORK_HUB_CACHE_TTL_MS = 30_000;
+
+  type WorkHubSnapshot = {
+    currentEmployee: CurrentEmployeeContext | null;
+    myTasks: CollaborativeTask[];
+    teamTasks: CollaborativeTask[];
+    projects: CollaborativeProject[];
+    employees: EmployeeProfile[];
+    selectedProjectId: string;
+    selectedProjectForTask: string;
+    selectedAssignee: string;
+    selectedTaskId: string;
+    activeTab: WorkTab;
+    initializedPreferredTab: boolean;
+    savedAt: number;
+  };
+
+  let workHubSnapshot: WorkHubSnapshot | null = null;
 
   let loading = true;
   let savingTask = false;
@@ -119,13 +137,64 @@
     return "my_work";
   }
 
-  async function load(options: { refreshRemote?: boolean } = {}) {
-    const { refreshRemote = false } = options;
+  function hasLoadedWorkspaceData() {
+    return Boolean(
+      currentEmployee
+      || myTasks.length
+      || teamTasks.length
+      || projects.length
+      || employees.length,
+    );
+  }
+
+  function restoreSnapshot() {
+    if (!workHubSnapshot) return false;
+    currentEmployee = workHubSnapshot.currentEmployee;
+    myTasks = workHubSnapshot.myTasks;
+    teamTasks = workHubSnapshot.teamTasks;
+    projects = workHubSnapshot.projects;
+    employees = workHubSnapshot.employees;
+    selectedProjectId = workHubSnapshot.selectedProjectId;
+    selectedProjectForTask = workHubSnapshot.selectedProjectForTask;
+    selectedAssignee = workHubSnapshot.selectedAssignee;
+    selectedTaskId = workHubSnapshot.selectedTaskId;
+    activeTab = workHubSnapshot.activeTab;
+    initializedPreferredTab = workHubSnapshot.initializedPreferredTab;
+    loading = false;
+    return true;
+  }
+
+  function saveSnapshot() {
+    workHubSnapshot = {
+      currentEmployee,
+      myTasks: [...myTasks],
+      teamTasks: [...teamTasks],
+      projects: [...projects],
+      employees: [...employees],
+      selectedProjectId,
+      selectedProjectForTask,
+      selectedAssignee,
+      selectedTaskId,
+      activeTab,
+      initializedPreferredTab,
+      savedAt: Date.now(),
+    };
+  }
+
+  function isSnapshotStale() {
+    return !workHubSnapshot || Date.now() - workHubSnapshot.savedAt > WORK_HUB_CACHE_TTL_MS;
+  }
+
+  async function load(options: { refreshRemote?: boolean; forceRemote?: boolean; silent?: boolean } = {}) {
+    const { refreshRemote = false, forceRemote = false, silent = false } = options;
     const requestSeq = ++loadRequestSeq;
-    loading = true;
+    const shouldShowLoading = !silent || !hasLoadedWorkspaceData();
+    if (shouldShowLoading) {
+      loading = true;
+    }
     try {
       if (refreshRemote) {
-        await refreshCollaborativeWorkspace().catch(() => undefined);
+        await refreshCollaborativeWorkspace({ force: forceRemote }).catch(() => undefined);
       }
       const [employee, myTaskRows, teamTaskRows, projectRows, employeeRows] = await Promise.all([
         getCurrentEmployeeContext(),
@@ -164,18 +233,35 @@
         activeTab = defaultWorkTabForRole(currentEmployee.license_role);
         initializedPreferredTab = true;
       }
+      saveSnapshot();
     } catch (err) {
       if (requestSeq !== loadRequestSeq) {
         return;
       }
       lastLoadFailed = true;
       lastLoadError = String(err);
-      toast.danger(`Failed to load work hub: ${String(err)}`);
+      if (!silent || !hasLoadedWorkspaceData()) {
+        toast.danger(`Failed to load work hub: ${String(err)}`);
+      }
     } finally {
-      if (requestSeq === loadRequestSeq) {
+      if (requestSeq === loadRequestSeq && shouldShowLoading) {
         loading = false;
       }
     }
+  }
+
+  async function hydrateWorkHub() {
+    const restored = restoreSnapshot();
+    if (!restored) {
+      await load();
+      await load({ refreshRemote: true, silent: true });
+      return;
+    }
+    if (hasLoadedWorkspaceData()) {
+      await load({ refreshRemote: isSnapshotStale(), silent: true });
+      return;
+    }
+    await load({ refreshRemote: true, silent: true });
   }
 
   async function recoverBoardIfNeeded() {
@@ -185,7 +271,7 @@
       return;
     }
     boardRecoveryAttempts += 1;
-    await load({ refreshRemote: true });
+    await load({ refreshRemote: true, forceRemote: true });
   }
 
   async function loadProjectContext(projectID: string) {
@@ -284,7 +370,7 @@
       let opened = false;
       for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
         if (attempt > 0) {
-          await load({ refreshRemote: true });
+          await load({ refreshRemote: true, forceRemote: true });
         }
         opened = await loadTaskDetail(taskID, { suppressErrorToast: true });
       }
@@ -343,7 +429,7 @@
       }
       queuePendingTaskOpen(created.id);
       primeTaskDetail(created);
-      await load({ refreshRemote: true });
+      await load({ refreshRemote: true, forceRemote: true });
       await openTaskAfterRefresh(created.id);
       toast.success("Task created");
     } catch (err) {
@@ -648,8 +734,13 @@
     return projects.find((project) => project.id === task.project_id)?.name || "None";
   }
 
-  function boardTasks(status: string) {
-    return filteredTeamTasks.filter((task) => (task.status || "open") === status);
+  function normalizedBoardStatus(task: CollaborativeTask) {
+    const status = String(task.status || "open").trim().toLowerCase().replace(/[\s-]+/g, "_");
+    if (["completed", "archived", "done"].includes(status)) return "completed";
+    if (status === "blocked") return "blocked";
+    if (["in_progress", "started", "active_progress"].includes(status)) return "in_progress";
+    if (["open", "pending", "new", "active", ""].includes(status)) return "open";
+    return "open";
   }
 
   function dueLabel(task: CollaborativeTask) {
@@ -667,6 +758,17 @@
   }
 
   $: selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
+  $: boardTaskGroups = filteredTeamTasks.reduce((groups, task) => {
+    const lane = normalizedBoardStatus(task);
+    const targetLane = boardColumns.some((column) => column.key === lane) ? lane : "open";
+    groups[targetLane] = [...groups[targetLane], task];
+    return groups;
+  }, {
+    open: [] as CollaborativeTask[],
+    in_progress: [] as CollaborativeTask[],
+    blocked: [] as CollaborativeTask[],
+    completed: [] as CollaborativeTask[],
+  });
   $: projectStats = {
     open: projectTasks.filter((task) => !["completed", "archived"].includes(task.status || "")).length,
     blocked: projectTasks.filter((task) => task.status === "blocked").length,
@@ -719,10 +821,10 @@
   }
 
   onMount(() => {
-    void load({ refreshRemote: true });
-    EventsOn("tasks:updated", () => void load());
-    EventsOn("projects:updated", () => void load());
-    EventsOn("employees:updated", () => void load());
+    void hydrateWorkHub();
+    EventsOn("tasks:updated", () => void load({ silent: true }));
+    EventsOn("projects:updated", () => void load({ silent: true }));
+    EventsOn("employees:updated", () => void load({ silent: true }));
     window.addEventListener("openCollaborativeTask", handleOpenTaskEvent);
     const pendingTaskID = consumePendingTaskOpenFromStorage();
     if (pendingTaskID) {
@@ -950,13 +1052,13 @@
             <section class="board-lane">
               <div class="board-lane-head">
                 <h3>{column.label}</h3>
-                <span>{boardTasks(column.key).length}</span>
+                <span>{boardTaskGroups[column.key]?.length || 0}</span>
               </div>
-              {#if boardTasks(column.key).length === 0}
+              {#if (boardTaskGroups[column.key]?.length || 0) === 0}
                 <div class="empty compact lane-empty">No tasks in this lane.</div>
               {:else}
                 <div class="task-gallery lane-gallery">
-                  {#each boardTasks(column.key) as task}
+                  {#each boardTaskGroups[column.key] as task}
                     <button
                       class="task-shell board-card selectable"
                       class:selected={selectedTaskId === task.id}
@@ -1394,7 +1496,6 @@
 
   .tabs button,
   .selectable,
-  .task-actions button,
   .actions button {
     font: inherit;
   }
@@ -1605,6 +1706,7 @@
     font-size: 13px;
     line-height: 1.45;
     display: -webkit-box;
+    line-clamp: 3;
     -webkit-line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
@@ -1641,9 +1743,7 @@
     margin-bottom: 6px;
   }
 
-  .task-card p,
   .timeline-item p,
-  .mini-card span,
   .employee-chip span {
     margin-top: 6px;
     color: var(--text-secondary);
@@ -1809,7 +1909,6 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .mini-card strong,
   .timeline-item strong,
   .project-row strong,
   .employee-chip strong {

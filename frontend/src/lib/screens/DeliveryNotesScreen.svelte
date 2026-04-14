@@ -605,7 +605,13 @@
     {:else}
       <div class="notes-list">
         {#each deliveryNotes.slice(0, 5) as note}
-          <div class="note-item" on:click={() => handleRowClick(note)}>
+          <div
+            class="note-item"
+            role="button"
+            tabindex="0"
+            on:click={() => handleRowClick(note)}
+            on:keydown={(event) => (event.key === "Enter" || event.key === " ") && handleRowClick(note)}
+          >
             <div class="note-info">
               <span class="note-number">{note.dn_number}</span>
               <span class="note-customer">{note.customer_name || ''}</span>

@@ -221,8 +221,8 @@
     <div class="modal">
       <h3>Export Report</h3>
       <div class="form-group">
-        <label>Format</label>
-        <div class="toggle-group">
+        <div id="report-format-label">Format</div>
+        <div class="toggle-group" role="group" aria-labelledby="report-format-label">
           <button
             class:active={exportFormat === "pdf"}
             on:click={() => (exportFormat = "pdf")}>PDF</button

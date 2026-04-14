@@ -71,11 +71,11 @@ test.describe('UI health sonars', () => {
     await page.getByPlaceholder(/Ask about financials, customers, suppliers/i).fill('Draft a short pitch for BAPCO.');
     await page.keyboard.press('Enter');
 
-    await expect(page.getByText('Mock Butler response persisted.')).toBeVisible();
+    await expect(page.locator('#chat-feed').getByText('Mock Butler response persisted.')).toBeVisible();
     await page.reload();
     await page.getByRole('link', { name: 'Intelligence' }).click();
     await expect(page.getByText('Draft a short pitch for BAPCO.').first()).toBeVisible();
-    await expect(page.getByText('Mock Butler response persisted.')).toBeVisible();
+    await expect(page.locator('#chat-feed').getByText('Mock Butler response persisted.')).toBeVisible();
     expect(errors).toEqual([]);
   });
 

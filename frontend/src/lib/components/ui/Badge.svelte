@@ -79,22 +79,22 @@
   }
 
   /* Dark mode adjustments */
-  [data-theme="dark"] .badge-success {
+  :global([data-theme="dark"]) .badge-success {
     background: rgba(34, 197, 94, 0.15);
     color: #22c55e;
   }
 
-  [data-theme="dark"] .badge-warning {
+  :global([data-theme="dark"]) .badge-warning {
     background: rgba(251, 191, 36, 0.15);
     color: #fbbf24;
   }
 
-  [data-theme="dark"] .badge-danger {
+  :global([data-theme="dark"]) .badge-danger {
     background: rgba(239, 68, 68, 0.15);
     color: #f87171;
   }
 
-  [data-theme="dark"] .badge-info {
+  :global([data-theme="dark"]) .badge-info {
     background: rgba(47, 45, 255, 0.15);
     color: #818cf8;
   }

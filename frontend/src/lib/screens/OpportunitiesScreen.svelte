@@ -519,12 +519,12 @@
         {:else}
             <div class="opportunity-list">
                 {#each filteredOpportunities as opp}
-                    <article
+                    <div
                         class="opportunity-card"
                         role="button"
                         tabindex="0"
                         on:click={() => selectOpportunity(opp)}
-                        on:keypress={(event) => event.key === "Enter" && selectOpportunity(opp)}
+                        on:keydown={(event) => (event.key === "Enter" || event.key === " ") && selectOpportunity(opp)}
                     >
                         <div class="card-main">
                             <div class="card-identity">
@@ -571,7 +571,7 @@
                                 <span class="view-link">View details</span>
                             </div>
                         </div>
-                    </article>
+                    </div>
                 {/each}
             </div>
         {/if}
@@ -582,14 +582,12 @@
     <div
         bind:this={opportunityModalEl}
         class="modal-backdrop"
-        on:click={closeOpportunityModal}
-        on:keydown={(event) => event.key === "Escape" && closeOpportunityModal()}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="opportunity-modal-title"
-        tabindex="-1"
+        on:click|self={closeOpportunityModal}
+        on:keydown={(event) => (event.key === "Escape" || event.key === "Enter" || event.key === " ") && closeOpportunityModal()}
+        role="button"
+        tabindex="0"
     >
-        <div class="modal-card opportunity-modal" on:click|stopPropagation role="document">
+        <div class="modal-card opportunity-modal" role="document">
             <div class="modal-header">
                 <div>
                     <p class="modal-kicker">{selected.folder_number || selected.rfq_number || "Opportunity"}</p>
@@ -624,19 +622,18 @@
 {#if showCreateForm}
     <div
         class="modal-backdrop"
-        on:click={() => (showCreateForm = false)}
-        on:keydown={(event) => event.key === "Escape" && (showCreateForm = false)}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="create-modal-title"
+        on:click|self={() => (showCreateForm = false)}
+        on:keydown={(event) => (event.key === "Escape" || event.key === "Enter" || event.key === " ") && (showCreateForm = false)}
+        role="button"
+        tabindex="0"
     >
-        <div class="modal-card create-modal" on:click|stopPropagation role="document">
+        <div class="modal-card create-modal" role="document">
             <h3 id="create-modal-title" class="section-title">New Opportunity</h3>
 
             <form on:submit|preventDefault={handleCreate}>
                 <div class="form-group">
-                    <label class="label">Customer</label>
-                    <input list="cust-list" bind:value={createForm.customer} class="input" placeholder="Search customer..." required />
+                    <label class="label" for="create-opportunity-customer">Customer</label>
+                    <input id="create-opportunity-customer" list="cust-list" bind:value={createForm.customer} class="input" placeholder="Search customer..." required />
                     <datalist id="cust-list">
                         {#each customers as customer}
                             <option value={customer.business_name} />
@@ -645,18 +642,18 @@
                 </div>
 
                 <div class="form-group">
-                    <label class="label">Project</label>
-                    <input type="text" bind:value={createForm.project} class="input" placeholder="Project name" required />
+                    <label class="label" for="create-opportunity-project">Project</label>
+                    <input id="create-opportunity-project" type="text" bind:value={createForm.project} class="input" placeholder="Project name" required />
                 </div>
 
                 <div class="form-grid">
                     <div class="form-group">
-                        <label class="label">Value (BHD)</label>
-                        <input type="number" bind:value={createForm.value} class="input" placeholder="0.00" />
+                        <label class="label" for="create-opportunity-value">Value (BHD)</label>
+                        <input id="create-opportunity-value" type="number" bind:value={createForm.value} class="input" placeholder="0.00" />
                     </div>
                     <div class="form-group">
-                        <label class="label">Priority</label>
-                        <select bind:value={createForm.priority} class="input">
+                        <label class="label" for="create-opportunity-priority">Priority</label>
+                        <select id="create-opportunity-priority" bind:value={createForm.priority} class="input">
                             {#each priorityOptions as priority}
                                 <option>{priority}</option>
                             {/each}
@@ -665,8 +662,9 @@
                 </div>
 
                 <div class="form-group">
-                    <label class="label">Notes</label>
+                    <label class="label" for="create-opportunity-notes">Notes</label>
                     <textarea
+                        id="create-opportunity-notes"
                         bind:value={createForm.notes}
                         class="input notes-input"
                         rows="4"
@@ -688,13 +686,12 @@
 {#if showDeleteConfirm && deleteTarget}
     <div
         class="modal-backdrop"
-        on:click={() => (showDeleteConfirm = false)}
-        on:keydown={(event) => event.key === "Escape" && (showDeleteConfirm = false)}
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="delete-modal-title"
+        on:click|self={() => (showDeleteConfirm = false)}
+        on:keydown={(event) => (event.key === "Escape" || event.key === "Enter" || event.key === " ") && (showDeleteConfirm = false)}
+        role="button"
+        tabindex="0"
     >
-        <div class="modal-card delete-modal" on:click|stopPropagation role="document">
+        <div class="modal-card delete-modal" role="document">
             <div class="delete-header">
                 <h3 id="delete-modal-title" class="section-title">Delete Opportunity?</h3>
             </div>

@@ -136,7 +136,7 @@
             })
             .join("");
 
-        return `<div class="table-wrap"><table class="butler-table"><thead><tr>${headerHtml}</tr></thead><tbody>${rowsHtml}</tbody></table></div>`;
+        return `<div class="table-wrap"><table style="width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden;"><thead><tr>${headerHtml.replace(/<th>/g, '<th style="padding:8px 10px;border:1px solid var(--border);text-align:left;vertical-align:top;word-break:break-word;background:var(--surface-elevated);color:var(--text-primary);font-weight:600;">')}</tr></thead><tbody>${rowsHtml.replace(/<td>/g, '<td style="padding:8px 10px;border:1px solid var(--border);text-align:left;vertical-align:top;word-break:break-word;">')}</tbody></table></div>`;
     }
 
     function formatButlerMessage(text) {
@@ -2282,6 +2282,9 @@
                     class="conv-item"
                     class:active={activeConversationId === convId(conv)}
                     on:click={() => selectConversation(conv)}
+                    on:keydown={(event) => (event.key === "Enter" || event.key === " ") && selectConversation(conv)}
+                    role="button"
+                    tabindex="0"
                 >
                     <span class="conv-title">{convTitle(conv)}</span>
                     <button
@@ -2581,21 +2584,6 @@
         border: 1px solid var(--border);
         border-radius: 8px;
         overflow: hidden;
-    }
-
-    .butler-table th,
-    .butler-table td {
-        padding: 8px 10px;
-        border: 1px solid var(--border);
-        text-align: left;
-        vertical-align: top;
-        word-break: break-word;
-    }
-
-    .butler-table th {
-        background: var(--surface-elevated);
-        color: var(--text-primary);
-        font-weight: 600;
     }
 
     .msg-row.butler .bubble {
