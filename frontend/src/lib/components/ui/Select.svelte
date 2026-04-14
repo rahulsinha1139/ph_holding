@@ -173,8 +173,16 @@
               class:disabled={option.disabled}
               role="option"
               aria-selected={option.value === value}
+              tabindex={option.disabled ? -1 : 0}
               on:click|stopPropagation={() => selectOption(option)}
               on:mouseenter={() => highlightedIndex = idx}
+              on:keydown={(e) => {
+                if (option.disabled) return;
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  selectOption(option);
+                }
+              }}
             >
               {option.label}
             </div>

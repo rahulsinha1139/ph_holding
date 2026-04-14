@@ -206,12 +206,12 @@
       bind:this={tableElement}
       class="data-table"
       class:sticky-header={stickyHeader}
-      role="table"
       aria-label="Data table"
       id={tableId}
+      data-striped={striped}
     >
       <thead>
-        <tr role="row">
+        <tr>
           {#each columns as column}
             <th
               role="columnheader"
@@ -249,9 +249,9 @@
         {#if loading}
           <!-- Loading skeleton -->
           {#each Array(5) as _, i}
-            <tr class="skeleton-row" role="row">
+            <tr class="skeleton-row">
               {#each columns as column}
-                <td role="cell" class={getAlignClass(column)}>
+                <td class={getAlignClass(column)}>
                   <div class="skeleton-bar"></div>
                 </td>
               {/each}
@@ -259,8 +259,8 @@
           {/each}
         {:else if sortedData.length === 0}
           <!-- Empty state -->
-          <tr role="row">
-            <td colspan={columns.length} class="empty-state" role="cell">
+          <tr>
+            <td colspan={columns.length} class="empty-state">
               <div class="empty-content">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                   <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
@@ -277,7 +277,6 @@
               class:selected={isRowSelected(row)}
               class:clickable={!!onRowClick}
               class:alternate={alternateRows && index % 2 === 1}
-              role="row"
               tabindex={onRowClick ? 0 : -1}
               on:click={(e) => handleRowClick(row, index, e)}
               on:keydown={(e) => handleKeyDown(e, row, index)}
@@ -285,7 +284,6 @@
             >
               {#each columns as column}
                 <td
-                  role="cell"
                   class={getAlignClass(column)}
                   class:cell-status={column.type === 'status'}
                   class:cell-actions={column.type === 'actions'}
