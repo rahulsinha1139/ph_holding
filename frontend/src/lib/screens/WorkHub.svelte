@@ -1234,7 +1234,6 @@
 
   .tabs button,
   .selectable,
-  .task-actions button,
   .actions button {
     font: inherit;
   }
@@ -1471,9 +1470,7 @@
     margin-bottom: 6px;
   }
 
-  .task-card p,
   .timeline-item p,
-  .mini-card span,
   .employee-chip span {
     margin-top: 6px;
     color: var(--text-secondary);
@@ -1637,7 +1634,6 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .mini-card strong,
   .timeline-item strong,
   .project-row strong,
   .employee-chip strong {

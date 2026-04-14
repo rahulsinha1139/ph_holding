@@ -229,27 +229,6 @@
         padding: 20px 24px;
     }
 
-    /* CashPositionWidget sidebar removed - dashboard now full width */
-
-    .placeholder {
-        padding: 48px;
-        text-align: center;
-        color: #6e6e73;
-    }
-
-    .placeholder h2 {
-        font-family: var(--font-display);
-        font-size: 18px;
-        font-weight: 500;
-        margin: 0 0 8px 0;
-        color: #1d1d1f;
-    }
-
-    .placeholder p {
-        font-size: 14px;
-        margin: 0;
-    }
-
     @media (max-width: 768px) {
         .header {
             padding: 24px 16px 0;

@@ -64,7 +64,7 @@
     });
 </script>
 
-<div class="ahs-dashboard">
+<div class="ahs-dashboard" data-embedded={embedded ? 'true' : undefined}>
     <!-- Year Selector -->
     <div class="controls">
         <div class="year-selector">
