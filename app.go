@@ -499,11 +499,13 @@ func (a *App) startup(ctx context.Context) {
 		})
 
 		if ctx != nil {
-			runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
+			if _, dialogErr := runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
 				Type:    runtime.ErrorDialog,
 				Title:   "Database Connection Error",
 				Message: sanitizedMsg, // User sees sanitized message only
-			})
+			}); dialogErr != nil {
+				log.Printf("WARNING: failed to show database connection dialog: %v", dialogErr)
+			}
 		} else {
 			// Fallback: Write sanitized message to stderr
 			fmt.Fprintf(os.Stderr, "FATAL DATABASE ERROR: %s\n", sanitizedMsg)
@@ -1332,7 +1334,9 @@ func (a *App) runCustomMigrations() {
 	if err := a.db.AutoMigrate(&CompanyBankAccount{}); err != nil {
 		log.Printf("⚠️ CompanyBankAccount migration: %v", err)
 	}
-	a.SeedCompanyBankAccounts()
+	if err := a.SeedCompanyBankAccounts(); err != nil {
+		log.Printf("WARNING: failed to seed company bank accounts: %v", err)
+	}
 
 	// Migration 5: Currency exchange rates table
 	if err := a.db.AutoMigrate(&CurrencyExchangeRate{}); err != nil {
@@ -8579,7 +8583,9 @@ func (a *App) GetCRMSupplierDashboard() CRMSupplierDashboard {
 	// 2. Detect the latest year with data (handles future system dates)
 	var latestYear int
 	row := a.db.Raw("SELECT MAX(CAST(strftime('%Y', invoice_date) AS INTEGER)) FROM supplier_invoices WHERE deleted_at IS NULL").Row()
-	row.Scan(&latestYear)
+	if err := row.Scan(&latestYear); err != nil {
+		log.Printf("WARNING: failed to detect supplier invoice latest year: %v", err)
+	}
 	if latestYear == 0 {
 		latestYear = time.Now().Year()
 	}
@@ -10065,7 +10071,9 @@ func (a *App) UpdateFolderPaths(paths map[string]string) error {
 	if a.config.App.EnableFileWatcher && a.fileWatcher != nil {
 		if a.fileWatcher.IsRunning() {
 			log.Printf("🔄 Restarting file watcher with updated paths...")
-			a.fileWatcher.Stop()
+			if err := a.fileWatcher.Stop(); err != nil {
+				log.Printf("WARNING: failed to stop file watcher during settings refresh: %v", err)
+			}
 		}
 
 		// Update watcher config
@@ -10299,9 +10307,7 @@ func detectGPUViaWMIC() (*GPUDetectionInfo, error) {
 		}
 		if strings.HasPrefix(line, "AdapterRAM=") {
 			ramStr := strings.TrimPrefix(line, "AdapterRAM=")
-			var ram int64
-			n, err := fmt.Sscanf(ramStr, "%d", &ram)
-			if err == nil && n > 0 && ram > 0 {
+			if ram, ok := parseLeadingInt64(ramStr, "windows gpu adapter ram"); ok && ram > 0 {
 				info.Memory = ram / (1024 * 1024) // Bytes to MB
 				log.Printf("🎯 WMIC found VRAM: %d MB", info.Memory)
 			}
@@ -10344,14 +10350,12 @@ func detectGPUViaMacOS() (*GPUDetectionInfo, error) {
 		}
 		if strings.HasPrefix(line, "VRAM") || strings.HasPrefix(line, "Memory:") {
 			valStr := strings.TrimSpace(strings.SplitN(line, ":", 2)[1])
-			var vram int64
-			if strings.Contains(valStr, "GB") {
-				fmt.Sscanf(valStr, "%d", &vram)
-				vram *= 1024 // Convert GB to MB
-			} else {
-				fmt.Sscanf(valStr, "%d", &vram)
+			if vram, ok := parseLeadingInt64(valStr, "macos gpu memory"); ok {
+				if strings.Contains(valStr, "GB") {
+					vram *= 1024 // Convert GB to MB
+				}
+				info.Memory = vram
 			}
-			info.Memory = vram
 		}
 	}
 
@@ -10409,9 +10413,7 @@ func detectGPUViaCUDA() (*GPUDetectionInfo, error) {
 
 	// Parse memory (format: "12288 MiB")
 	memStr := strings.TrimSpace(parts[1])
-	var memMB int64
-	n, err := fmt.Sscanf(memStr, "%d", &memMB)
-	if err == nil && n > 0 {
+	if memMB, ok := parseLeadingInt64(memStr, "nvidia-smi memory"); ok {
 		info.Memory = memMB
 		log.Printf("🎯 nvidia-smi found GPU: %s (%d MB VRAM, driver %s)",
 			info.DeviceName, info.Memory, info.Driver)
@@ -10521,27 +10523,27 @@ func (a *App) DetectSystemInfo() (SystemInfo, error) {
 		if output, err := cmd.Output(); err == nil {
 			for _, line := range strings.Split(string(output), "\n") {
 				if strings.HasPrefix(line, "TotalVisibleMemorySize=") {
-					var memKB int64
-					fmt.Sscanf(strings.TrimPrefix(line, "TotalVisibleMemorySize="), "%d", &memKB)
-					info.RAM = fmt.Sprintf("%dGB", memKB/(1024*1024))
+					if memKB, ok := parseLeadingInt64(strings.TrimPrefix(line, "TotalVisibleMemorySize="), "windows total visible memory"); ok {
+						info.RAM = fmt.Sprintf("%dGB", memKB/(1024*1024))
+					}
 				}
 			}
 		}
 	case "darwin":
 		if out, err := exec.Command("sysctl", "-n", "hw.memsize").Output(); err == nil {
-			var memBytes int64
-			fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &memBytes)
-			info.RAM = fmt.Sprintf("%dGB", memBytes/(1024*1024*1024))
+			if memBytes, ok := parseLeadingInt64(strings.TrimSpace(string(out)), "macos total memory"); ok {
+				info.RAM = fmt.Sprintf("%dGB", memBytes/(1024*1024*1024))
+			}
 		}
 	default:
 		// Linux: read /proc/meminfo
 		if data, err := os.ReadFile("/proc/meminfo"); err == nil {
 			for _, line := range strings.Split(string(data), "\n") {
 				if strings.HasPrefix(line, "MemTotal:") {
-					var memKB int64
-					fmt.Sscanf(strings.TrimPrefix(line, "MemTotal:"), "%d", &memKB)
-					info.RAM = fmt.Sprintf("%dGB", memKB/(1024*1024))
-					break
+					if memKB, ok := parseLeadingInt64(strings.TrimPrefix(line, "MemTotal:"), "linux total memory"); ok {
+						info.RAM = fmt.Sprintf("%dGB", memKB/(1024*1024))
+						break
+					}
 				}
 			}
 		}
@@ -12496,6 +12498,26 @@ func parseIntString(raw, context string) int {
 	}
 
 	return value
+}
+
+func parseLeadingInt64(raw, context string) (int64, bool) {
+	cleaned := strings.TrimSpace(strings.ReplaceAll(raw, ",", ""))
+	if cleaned == "" {
+		return 0, false
+	}
+
+	token := cleaned
+	if fields := strings.Fields(cleaned); len(fields) > 0 {
+		token = fields[0]
+	}
+
+	value, err := strconv.ParseInt(token, 10, 64)
+	if err != nil {
+		log.Printf("WARNING: failed to parse int64 for %s: %v", context, err)
+		return 0, false
+	}
+
+	return value, true
 }
 
 func getFloatField(data map[string]interface{}, key string) float64 {
