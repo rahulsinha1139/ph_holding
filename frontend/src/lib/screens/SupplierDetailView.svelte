@@ -29,6 +29,18 @@
   let showContactModal = false;
   let contactForm = { contact_name: '', job_title: '', email: '', phone: '', address: '', is_primary_contact: false };
 
+  const noteTypeId = 'supplier-note-type';
+  const noteContentId = 'supplier-note-content';
+  const issueOrderRefId = 'supplier-issue-order-ref';
+  const issueDescriptionId = 'supplier-issue-description';
+  const issueCostId = 'supplier-issue-cost';
+  const contactNameId = 'supplier-contact-name';
+  const contactJobTitleId = 'supplier-contact-job-title';
+  const contactEmailId = 'supplier-contact-email';
+  const contactPhoneId = 'supplier-contact-phone';
+  const contactAddressId = 'supplier-contact-address';
+  const contactPrimaryId = 'supplier-contact-primary';
+
   function getInvoiceOpenBalance(invoice: any): number {
     return Number(invoice?.outstanding_bhd || 0) || 0;
   }
@@ -394,30 +406,30 @@
                 <h3 class="section-title">EDIT SUPPLIER</h3>
                 <div class="edit-form">
                   <div class="form-row">
-                    <div class="form-group"><label>Supplier Name</label><input type="text" bind:value={editForm.supplier_name} /></div>
-                    <div class="form-group"><label>Supplier Code</label><input type="text" bind:value={editForm.supplier_code} /></div>
+                    <div class="form-group"><label for="supplier-name">Supplier Name</label><input id="supplier-name" type="text" bind:value={editForm.supplier_name} /></div>
+                    <div class="form-group"><label for="supplier-code">Supplier Code</label><input id="supplier-code" type="text" bind:value={editForm.supplier_code} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Primary Contact</label><input type="text" bind:value={editForm.primary_contact} /></div>
-                    <div class="form-group"><label>Email</label><input type="email" bind:value={editForm.email} /></div>
+                    <div class="form-group"><label for="supplier-primary-contact">Primary Contact</label><input id="supplier-primary-contact" type="text" bind:value={editForm.primary_contact} /></div>
+                    <div class="form-group"><label for="supplier-email">Email</label><input id="supplier-email" type="email" bind:value={editForm.email} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Phone</label><input type="text" bind:value={editForm.phone} /></div>
-                    <div class="form-group"><label>Country</label><input type="text" bind:value={editForm.country} /></div>
+                    <div class="form-group"><label for="supplier-phone">Phone</label><input id="supplier-phone" type="text" bind:value={editForm.phone} /></div>
+                    <div class="form-group"><label for="supplier-country">Country</label><input id="supplier-country" type="text" bind:value={editForm.country} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Payment Terms</label>
-                      <select bind:value={editForm.payment_terms}>
+                    <div class="form-group"><label for="supplier-payment-terms">Payment Terms</label>
+                      <select id="supplier-payment-terms" bind:value={editForm.payment_terms}>
                         <option value="Net 30">Net 30</option><option value="Net 60">Net 60</option>
                         <option value="Net 90">Net 90</option><option value="CIA">CIA</option>
                         <option value="COD">COD</option><option value="LC">LC</option>
                       </select>
                     </div>
-                    <div class="form-group"><label>Lead Time (Days)</label><input type="number" bind:value={editForm.lead_time_days} /></div>
+                    <div class="form-group"><label for="supplier-lead-time">Lead Time (Days)</label><input id="supplier-lead-time" type="number" bind:value={editForm.lead_time_days} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Address</label><input type="text" bind:value={editForm.address} /></div>
-                    <div class="form-group"><label>Tax ID</label><input type="text" bind:value={editForm.tax_id} /></div>
+                    <div class="form-group"><label for="supplier-address">Address</label><input id="supplier-address" type="text" bind:value={editForm.address} /></div>
+                    <div class="form-group"><label for="supplier-tax-id">Tax ID</label><input id="supplier-tax-id" type="text" bind:value={editForm.tax_id} /></div>
                   </div>
                   <div class="form-actions">
                     <Button variant="secondary" on:click={cancelEdit} disabled={saveLoading}>Cancel</Button>
@@ -588,12 +600,13 @@
 </div>
 
 {#if showNoteModal}
-  <div class="modal-backdrop" on:click={() => showNoteModal = false}>
-    <div class="modal" on:click|stopPropagation>
+  <div class="modal-backdrop">
+    <button class="modal-backdrop-layer" type="button" aria-label="Close add note modal" on:click={() => showNoteModal = false}></button>
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Add Note">
       <h3>Add Note</h3>
       <div class="form-group">
-        <label>Type</label>
-        <select bind:value={newNoteType}>
+        <label for={noteTypeId}>Type</label>
+        <select id={noteTypeId} bind:value={newNoteType}>
           <option value="general">General</option>
           <option value="delivery">Delivery</option>
           <option value="quality">Quality</option>
@@ -601,8 +614,8 @@
         </select>
       </div>
       <div class="form-group">
-        <label>Content</label>
-        <textarea bind:value={newNoteContent} rows="4" placeholder="Enter note..."></textarea>
+        <label for={noteContentId}>Content</label>
+        <textarea id={noteContentId} bind:value={newNoteContent} rows="4" placeholder="Enter note..."></textarea>
       </div>
       <div class="modal-actions">
         <Button variant="ghost" on:click={() => showNoteModal = false}>Cancel</Button>
@@ -613,20 +626,21 @@
 {/if}
 
 {#if showIssueModal}
-  <div class="modal-backdrop" on:click={() => showIssueModal = false}>
-    <div class="modal" on:click|stopPropagation>
+  <div class="modal-backdrop">
+    <button class="modal-backdrop-layer" type="button" aria-label="Close report issue modal" on:click={() => showIssueModal = false}></button>
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Report Issue">
       <h3>Report Issue</h3>
       <div class="form-group">
-        <label>Order Reference</label>
-        <input type="text" bind:value={newIssueOrderRef} placeholder="PO or order number" />
+        <label for={issueOrderRefId}>Order Reference</label>
+        <input id={issueOrderRefId} type="text" bind:value={newIssueOrderRef} placeholder="PO or order number" />
       </div>
       <div class="form-group">
-        <label>Description</label>
-        <textarea bind:value={newIssueDescription} rows="4" placeholder="Describe the issue..."></textarea>
+        <label for={issueDescriptionId}>Description</label>
+        <textarea id={issueDescriptionId} bind:value={newIssueDescription} rows="4" placeholder="Describe the issue..."></textarea>
       </div>
       <div class="form-group">
-        <label>Cost Impact (BHD)</label>
-        <input type="number" step="0.001" bind:value={newIssueCost} placeholder="0.000" />
+        <label for={issueCostId}>Cost Impact (BHD)</label>
+        <input id={issueCostId} type="number" step="0.001" bind:value={newIssueCost} placeholder="0.000" />
       </div>
       <div class="modal-actions">
         <Button variant="ghost" on:click={() => showIssueModal = false}>Cancel</Button>
@@ -637,31 +651,33 @@
 {/if}
 
 {#if showContactModal}
-  <div class="modal-backdrop" on:click={() => showContactModal = false}>
-    <div class="modal" on:click|stopPropagation>
+  <div class="modal-backdrop">
+    <button class="modal-backdrop-layer" type="button" aria-label="Close add contact modal" on:click={() => showContactModal = false}></button>
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Add Contact">
       <h3>Add Contact</h3>
       <div class="form-group">
-        <label>Name *</label>
-        <input type="text" bind:value={contactForm.contact_name} placeholder="Contact person name" />
+        <label for={contactNameId}>Name *</label>
+        <input id={contactNameId} type="text" bind:value={contactForm.contact_name} placeholder="Contact person name" />
       </div>
       <div class="form-group">
-        <label>Job Title</label>
-        <input type="text" bind:value={contactForm.job_title} placeholder="e.g. Sales Manager" />
+        <label for={contactJobTitleId}>Job Title</label>
+        <input id={contactJobTitleId} type="text" bind:value={contactForm.job_title} placeholder="e.g. Sales Manager" />
       </div>
       <div class="form-group">
-        <label>Email</label>
-        <input type="email" bind:value={contactForm.email} placeholder="email@company.com" />
+        <label for={contactEmailId}>Email</label>
+        <input id={contactEmailId} type="email" bind:value={contactForm.email} placeholder="email@company.com" />
       </div>
       <div class="form-group">
-        <label>Phone</label>
-        <input type="text" bind:value={contactForm.phone} placeholder="+49 123 456 7890" />
+        <label for={contactPhoneId}>Phone</label>
+        <input id={contactPhoneId} type="text" bind:value={contactForm.phone} placeholder="+49 123 456 7890" />
       </div>
       <div class="form-group">
-        <label>Address</label>
-        <textarea bind:value={contactForm.address} rows="2" placeholder="Address"></textarea>
+        <label for={contactAddressId}>Address</label>
+        <textarea id={contactAddressId} bind:value={contactForm.address} rows="2" placeholder="Address"></textarea>
       </div>
       <div class="form-group">
-        <label><input type="checkbox" bind:checked={contactForm.is_primary_contact} /> Primary Contact</label>
+        <label for={contactPrimaryId}>Primary Contact</label>
+        <input id={contactPrimaryId} type="checkbox" bind:checked={contactForm.is_primary_contact} />
       </div>
       <div class="modal-actions">
         <Button variant="ghost" on:click={() => showContactModal = false}>Cancel</Button>
@@ -912,8 +928,9 @@
   .note-date { font-size: 12px; color: var(--text-muted); }
   .note-content { margin: 0; font-size: 14px; line-height: 1.5; }
 
-  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-  .modal { background: var(--surface); padding: 24px; border-radius: 12px; width: 500px; max-height: 80vh; overflow-y: auto; }
+  .modal-backdrop { position: fixed; inset: 0; background: transparent; display: flex; align-items: center; justify-content: center; z-index: 1000; }
+  .modal-backdrop-layer { position: absolute; inset: 0; border: 0; padding: 0; background: rgba(0,0,0,0.5); cursor: pointer; }
+  .modal { position: relative; z-index: 1; background: var(--surface); padding: 24px; border-radius: 12px; width: 500px; max-height: 80vh; overflow-y: auto; }
   .modal h3 { margin: 0 0 16px 0; }
   .form-group { margin-bottom: 16px; }
   .form-group label { display: block; font-size: 12px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; }
