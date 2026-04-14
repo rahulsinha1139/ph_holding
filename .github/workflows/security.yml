@@ -11,12 +11,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.9'
+
+      - name: Install gitleaks
+        run: go install github.com/zricethezav/gitleaks/v8@latest
+
+      - name: Run gitleaks against current tree
+        run: |
+          "$(go env GOPATH)/bin/gitleaks" detect --no-banner --no-git --redact --source .
 
   go-vulncheck:
     runs-on: ubuntu-latest

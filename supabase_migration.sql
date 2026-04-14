@@ -4,7 +4,7 @@
 -- Run against: postgres.xkyydcxxkzjbnsrmzkpp @ aws-1-ap-southeast-1.pooler.supabase.com
 --
 -- INSTRUCTIONS:
---   PGPASSWORD='PHHoldings2026' /opt/homebrew/opt/libpq/bin/psql \
+--   PGPASSWORD="$SUPABASE_DB_PASSWORD" /opt/homebrew/opt/libpq/bin/psql \
 --     -h aws-1-ap-southeast-1.pooler.supabase.com -p 5432 \
 --     -U postgres.xkyydcxxkzjbnsrmzkpp -d postgres \
 --     -f supabase_migration.sql

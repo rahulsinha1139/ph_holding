@@ -135,6 +135,30 @@
     dispatch('back');
   }
 
+  function closeDeleteConfirm() {
+    showDeleteConfirm = false;
+  }
+
+  function closeNoteModal() {
+    showNoteModal = false;
+  }
+
+  function closeContactModal() {
+    showContactModal = false;
+  }
+
+  function handleBackdropClick(event: MouseEvent, closeAction: () => void) {
+    if (event.target !== event.currentTarget) return;
+    closeAction();
+  }
+
+  function handleBackdropKeydown(event: KeyboardEvent, closeAction: () => void) {
+    if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      closeAction();
+    }
+  }
+
   function formatDate(date: any): string {
     if (!date) return 'N/A';
     try {
@@ -305,37 +329,37 @@
                 <h3 class="section-title">EDIT CUSTOMER</h3>
                 <div class="edit-form">
                   <div class="form-row">
-                    <div class="form-group"><label>Business Name</label><input type="text" bind:value={editForm.business_name} /></div>
-                    <div class="form-group"><label>Customer Code</label><input type="text" bind:value={editForm.customer_code} /></div>
+                    <div class="form-group"><label for="customer-business-name">Business Name</label><input id="customer-business-name" type="text" bind:value={editForm.business_name} /></div>
+                    <div class="form-group"><label for="customer-code">Customer Code</label><input id="customer-code" type="text" bind:value={editForm.customer_code} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Customer Type</label><input type="text" bind:value={editForm.customer_type} /></div>
-                    <div class="form-group"><label>Industry</label><input type="text" bind:value={editForm.industry} /></div>
+                    <div class="form-group"><label for="customer-type">Customer Type</label><input id="customer-type" type="text" bind:value={editForm.customer_type} /></div>
+                    <div class="form-group"><label for="customer-industry">Industry</label><input id="customer-industry" type="text" bind:value={editForm.industry} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Address</label><input type="text" bind:value={editForm.address_line1} /></div>
-                    <div class="form-group"><label>City</label><input type="text" bind:value={editForm.city} /></div>
+                    <div class="form-group"><label for="customer-address">Address</label><input id="customer-address" type="text" bind:value={editForm.address_line1} /></div>
+                    <div class="form-group"><label for="customer-city">City</label><input id="customer-city" type="text" bind:value={editForm.city} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Country</label><input type="text" bind:value={editForm.country} /></div>
-                    <div class="form-group"><label>TRN</label><input type="text" bind:value={editForm.trn} /></div>
+                    <div class="form-group"><label for="customer-country">Country</label><input id="customer-country" type="text" bind:value={editForm.country} /></div>
+                    <div class="form-group"><label for="customer-trn">TRN</label><input id="customer-trn" type="text" bind:value={editForm.trn} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Phone</label><input type="text" bind:value={editForm.phone} placeholder="+973 17 XXXXXX" /></div>
-                    <div class="form-group"><label>Mobile Number</label><input type="text" bind:value={editForm.mobile_number} placeholder="+973 3XXX XXXX" /></div>
+                    <div class="form-group"><label for="customer-phone">Phone</label><input id="customer-phone" type="text" bind:value={editForm.phone} placeholder="+973 17 XXXXXX" /></div>
+                    <div class="form-group"><label for="customer-mobile">Mobile Number</label><input id="customer-mobile" type="text" bind:value={editForm.mobile_number} placeholder="+973 3XXX XXXX" /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Email</label><input type="email" bind:value={editForm.email} placeholder="email@company.com" /></div>
-                    <div class="form-group"><label>VAT Number</label><input type="text" bind:value={editForm.vat_number} /></div>
+                    <div class="form-group"><label for="customer-email">Email</label><input id="customer-email" type="email" bind:value={editForm.email} placeholder="email@company.com" /></div>
+                    <div class="form-group"><label for="customer-vat">VAT Number</label><input id="customer-vat" type="text" bind:value={editForm.vat_number} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Payment Grade</label>
-                      <select bind:value={editForm.payment_grade}>
+                    <div class="form-group"><label for="customer-payment-grade">Payment Grade</label>
+                      <select id="customer-payment-grade" bind:value={editForm.payment_grade}>
                         <option value="A">A</option><option value="B">B</option>
                         <option value="C">C</option><option value="D">D</option>
                       </select>
                     </div>
-                    <div class="form-group"><label>Payment Terms (Days)</label><input type="number" bind:value={editForm.payment_terms_days} /></div>
+                    <div class="form-group"><label for="customer-payment-terms">Payment Terms (Days)</label><input id="customer-payment-terms" type="number" bind:value={editForm.payment_terms_days} /></div>
                   </div>
                   <div class="form-actions">
                     <Button variant="secondary" on:click={cancelEdit} disabled={saveLoading}>Cancel</Button>
@@ -510,14 +534,21 @@
   {/if}
 
   {#if showDeleteConfirm}
-    <div class="delete-overlay" on:click={() => showDeleteConfirm = false}>
-      <div class="delete-modal" on:click|stopPropagation>
-        <h3 style="margin: 0 0 12px 0; color: #e74c3c;">Delete Customer</h3>
+    <div
+      class="delete-overlay"
+      role="button"
+      tabindex="0"
+      aria-label="Close delete customer confirmation"
+      on:click={(event) => handleBackdropClick(event, closeDeleteConfirm)}
+      on:keydown={(event) => handleBackdropKeydown(event, closeDeleteConfirm)}
+    >
+      <div class="delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-customer-title">
+        <h3 id="delete-customer-title" style="margin: 0 0 12px 0; color: #e74c3c;">Delete Customer</h3>
         <p style="margin: 0 0 20px 0; color: var(--text-secondary);">
           Are you sure you want to delete <strong>{profile.business_name}</strong>? This action will soft-delete the customer record.
         </p>
         <div style="display: flex; gap: 8px; justify-content: flex-end;">
-          <Button variant="secondary" size="sm" on:click={() => showDeleteConfirm = false} disabled={deleteLoading}>Cancel</Button>
+          <Button variant="secondary" size="sm" on:click={closeDeleteConfirm} disabled={deleteLoading}>Cancel</Button>
           <Button variant="primary" size="sm" on:click={handleDeleteCustomer} disabled={deleteLoading} style="background: #e74c3c; border-color: #e74c3c;">
             {deleteLoading ? 'Deleting...' : 'Delete'}
           </Button>
@@ -528,12 +559,19 @@
 </div>
 
 {#if showNoteModal}
-  <div class="modal-backdrop" on:click={() => showNoteModal = false}>
-    <div class="modal" on:click|stopPropagation>
-      <h3>Add Note</h3>
+  <div
+    class="modal-backdrop"
+    role="button"
+    tabindex="0"
+    aria-label="Close add note modal"
+    on:click={(event) => handleBackdropClick(event, closeNoteModal)}
+    on:keydown={(event) => handleBackdropKeydown(event, closeNoteModal)}
+  >
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-note-title">
+      <h3 id="add-note-title">Add Note</h3>
       <div class="form-group">
-        <label>Type</label>
-        <select bind:value={newNoteType}>
+        <label for="note-type">Type</label>
+        <select id="note-type" bind:value={newNoteType}>
           <option value="general">General</option>
           <option value="delivery">Delivery</option>
           <option value="payment">Payment</option>
@@ -541,11 +579,11 @@
         </select>
       </div>
       <div class="form-group">
-        <label>Content</label>
-        <textarea bind:value={newNoteContent} rows="4" placeholder="Enter note..."></textarea>
+        <label for="note-content">Content</label>
+        <textarea id="note-content" bind:value={newNoteContent} rows="4" placeholder="Enter note..."></textarea>
       </div>
       <div class="modal-actions">
-        <Button variant="ghost" on:click={() => showNoteModal = false}>Cancel</Button>
+        <Button variant="ghost" on:click={closeNoteModal}>Cancel</Button>
         <Button variant="primary" on:click={saveNote}>Save Note</Button>
       </div>
     </div>
@@ -553,34 +591,43 @@
 {/if}
 
 {#if showContactModal}
-  <div class="modal-backdrop" on:click={() => showContactModal = false}>
-    <div class="modal" on:click|stopPropagation>
-      <h3>Add Contact</h3>
+  <div
+    class="modal-backdrop"
+    role="button"
+    tabindex="0"
+    aria-label="Close add contact modal"
+    on:click={(event) => handleBackdropClick(event, closeContactModal)}
+    on:keydown={(event) => handleBackdropKeydown(event, closeContactModal)}
+  >
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-contact-title">
+      <h3 id="add-contact-title">Add Contact</h3>
       <div class="form-group">
-        <label>Name *</label>
-        <input type="text" bind:value={contactForm.contact_name} placeholder="Contact person name" />
+        <label for="contact-name">Name *</label>
+        <input id="contact-name" type="text" bind:value={contactForm.contact_name} placeholder="Contact person name" />
       </div>
       <div class="form-group">
-        <label>Job Title</label>
-        <input type="text" bind:value={contactForm.job_title} placeholder="e.g. Procurement Manager" />
+        <label for="contact-job-title">Job Title</label>
+        <input id="contact-job-title" type="text" bind:value={contactForm.job_title} placeholder="e.g. Procurement Manager" />
       </div>
       <div class="form-group">
-        <label>Email</label>
-        <input type="email" bind:value={contactForm.email} placeholder="email@company.com" />
+        <label for="contact-email">Email</label>
+        <input id="contact-email" type="email" bind:value={contactForm.email} placeholder="email@company.com" />
       </div>
       <div class="form-group">
-        <label>Phone</label>
-        <input type="text" bind:value={contactForm.phone} placeholder="+973 1234 5678" />
+        <label for="contact-phone">Phone</label>
+        <input id="contact-phone" type="text" bind:value={contactForm.phone} placeholder="+973 1234 5678" />
       </div>
       <div class="form-group">
-        <label>Address</label>
-        <textarea bind:value={contactForm.address} rows="2" placeholder="Address"></textarea>
+        <label for="contact-address">Address</label>
+        <textarea id="contact-address" bind:value={contactForm.address} rows="2" placeholder="Address"></textarea>
       </div>
       <div class="form-group">
-        <label><input type="checkbox" bind:checked={contactForm.is_primary_contact} /> Primary Contact</label>
+        <label for="contact-primary">
+          <input id="contact-primary" type="checkbox" bind:checked={contactForm.is_primary_contact} /> Primary Contact
+        </label>
       </div>
       <div class="modal-actions">
-        <Button variant="ghost" on:click={() => showContactModal = false}>Cancel</Button>
+        <Button variant="ghost" on:click={closeContactModal}>Cancel</Button>
         <Button variant="primary" on:click={saveContact}>Save Contact</Button>
       </div>
     </div>

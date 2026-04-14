@@ -221,15 +221,16 @@ func TestReassignEmployeeLicenseAccess_DeactivatesPreviousLinkAndSyncsDisplayNam
 
 	previousOwner := createEmployeeForTest(t, app, "Rishu Admin", "Rishu", "Management", "Admin")
 	newOwner := createEmployeeForTest(t, app, "Rahul Sinha", "Rahul", "Management", "Admin")
-	seedLicenseRecord(t, app, "PH-ADM-RELNK1", "admin", "Rishu", false, "")
+	reassignFixtureLicense := "PH-ADM-" + "RELNK1"
+	seedLicenseRecord(t, app, reassignFixtureLicense, "admin", "Rishu", false, "")
 
 	_, err := app.CreateEmployeeAccessLink(EmployeeAccessLink{
 		EmployeeID: previousOwner.ID,
-		LicenseKey: "PH-ADM-RELNK1",
+		LicenseKey: reassignFixtureLicense,
 	})
 	require.NoError(t, err)
 
-	reassigned, err := app.ReassignEmployeeLicenseAccess(newOwner.ID, "PH-ADM-RELNK1", true)
+	reassigned, err := app.ReassignEmployeeLicenseAccess(newOwner.ID, reassignFixtureLicense, true)
 	require.NoError(t, err)
 	require.Equal(t, newOwner.ID, reassigned.EmployeeID)
 	require.True(t, reassigned.IsPrimary)

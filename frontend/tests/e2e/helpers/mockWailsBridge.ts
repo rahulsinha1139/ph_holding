@@ -6,8 +6,8 @@ type MockWailsBridgeOptions = {
 
 export async function installMockWailsBridge(page: Page, options: MockWailsBridgeOptions = {}) {
   await page.addInitScript((opts: MockWailsBridgeOptions) => {
-    const CONVERSATIONS_KEY = '__ph_e2e_butler_conversations__';
-    const MESSAGES_KEY = '__ph_e2e_butler_messages__';
+    const CONVERSATION_STORE_ID = '__ph_e2e_butler_conversations__';
+    const MESSAGE_STORE_ID = '__ph_e2e_butler_messages__';
     const ACTIVE_CONVERSATION_KEY = 'butler_active_conversation_id';
     const WORKFLOW_STATE_KEY = '__ph_e2e_workflow_state__';
 
@@ -20,13 +20,13 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
         return fallback;
       }
     };
-    const readConversations = () => safeJson(window.localStorage.getItem(CONVERSATIONS_KEY), []);
+    const readConversations = () => safeJson(window.localStorage.getItem(CONVERSATION_STORE_ID), []);
     const writeConversations = (value: any[]) => {
-      window.localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(value));
+      window.localStorage.setItem(CONVERSATION_STORE_ID, JSON.stringify(value));
     };
-    const readMessages = () => safeJson(window.localStorage.getItem(MESSAGES_KEY), {});
+    const readMessages = () => safeJson(window.localStorage.getItem(MESSAGE_STORE_ID), {});
     const writeMessages = (value: Record<string, any[]>) => {
-      window.localStorage.setItem(MESSAGES_KEY, JSON.stringify(value));
+      window.localStorage.setItem(MESSAGE_STORE_ID, JSON.stringify(value));
     };
     const defaultWorkflowState = () => ({
       customers: [

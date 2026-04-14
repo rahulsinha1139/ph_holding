@@ -180,13 +180,19 @@
     </nav>
     
     <!-- SYNC STATUS -->
-    <div class="sync-status" on:click={triggerSync} title={syncStatus.online ? "Click to sync now" : statusLabel}>
+    <button
+        type="button"
+        class="sync-status"
+        on:click={triggerSync}
+        title={syncStatus.online ? "Click to sync now" : statusLabel}
+        aria-label={syncStatus.online ? "Sync now" : statusLabel}
+    >
         <div class="sync-indicator" style="background-color: {statusColor}"></div>
         <span class="sync-label">{statusLabel}</span>
         {#if syncLoading}
             <span class="sync-spinner"></span>
         {/if}
-    </div>
+    </button>
 
     <!-- USER FOOTER -->
     <div class="sidebar-footer">
@@ -354,8 +360,16 @@
         gap: 8px;
         padding: 10px 16px;
         border-top: 1px solid var(--border);
+        border-left: none;
+        border-right: none;
+        border-bottom: none;
+        background: transparent;
+        width: 100%;
+        text-align: left;
+        font: inherit;
         cursor: pointer;
         transition: background-color var(--transition-fast);
+        appearance: none;
     }
 
     .sync-status:hover {

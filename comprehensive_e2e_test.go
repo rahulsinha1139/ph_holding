@@ -468,9 +468,9 @@ func TestSetAPIKeys_EncryptsToDatabase(t *testing.T) {
 	app := setupFullTestApp(t)
 
 	err := app.SetAPIKeys(map[string]string{
-		"mistral_key":   "test-mistral-key-12345",
-		"openai_key":    "sk-test-openai-67890",
-		"anthropic_key": "sk-ant-test-abcdef",
+		"mistral_key":   "fixture-mistral-token",
+		"openai_key":    "fixture-openai-token",
+		"anthropic_key": "fixture-anthropic-token",
 	})
 	require.NoError(t, err)
 

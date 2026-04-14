@@ -191,6 +191,22 @@
     };
   }
 
+  function closePaymentModal() {
+    showPaymentModal = false;
+  }
+
+  function handlePaymentBackdropClick(event: MouseEvent) {
+    if (event.target !== event.currentTarget) return;
+    closePaymentModal();
+  }
+
+  function handlePaymentBackdropKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      closePaymentModal();
+    }
+  }
+
   async function recordPayment() {
     if (!paymentForm.invoice_id || paymentForm.amount <= 0) {
       toast.danger('Please select an invoice and enter a valid amount');
@@ -267,13 +283,20 @@
 
 <!-- Record Payment Modal -->
 {#if showPaymentModal}
-  <div class="modal-overlay" on:click|self={() => showPaymentModal = false}>
-    <div class="modal" in:fade={{ duration: 150 }}>
-      <h2>Record Supplier Payment</h2>
+  <div
+    class="modal-overlay"
+    role="button"
+    tabindex="0"
+    aria-label="Close supplier payment modal"
+    on:click={handlePaymentBackdropClick}
+    on:keydown={handlePaymentBackdropKeydown}
+  >
+    <div class="modal" in:fade={{ duration: 150 }} role="dialog" aria-modal="true" aria-labelledby="supplier-payment-modal-title">
+      <h2 id="supplier-payment-modal-title">Record Supplier Payment</h2>
 
       <div class="form-group">
-        <label>Supplier Invoice</label>
-        <select bind:value={paymentForm.invoice_id}>
+        <label for="supplier-payment-invoice">Supplier Invoice</label>
+        <select id="supplier-payment-invoice" bind:value={paymentForm.invoice_id}>
           <option value="">Select invoice...</option>
           {#each invoices as inv}
             <option value={inv.id}>
@@ -285,12 +308,12 @@
 
       <div class="form-row">
         <div class="form-group">
-          <label>Amount</label>
-          <input type="number" step="0.001" bind:value={paymentForm.amount} />
+          <label for="supplier-payment-amount">Amount</label>
+          <input id="supplier-payment-amount" type="number" step="0.001" bind:value={paymentForm.amount} />
         </div>
         <div class="form-group">
-          <label>Currency</label>
-          <select bind:value={paymentForm.currency}>
+          <label for="supplier-payment-currency">Currency</label>
+          <select id="supplier-payment-currency" bind:value={paymentForm.currency}>
             <option value="BHD">BHD</option>
             <option value="USD">USD</option>
             <option value="EUR">EUR</option>
@@ -301,22 +324,22 @@
 
       <div class="form-row">
         <div class="form-group">
-          <label>Payment Method</label>
-          <select bind:value={paymentForm.method}>
+          <label for="supplier-payment-method">Payment Method</label>
+          <select id="supplier-payment-method" bind:value={paymentForm.method}>
             {#each paymentMethods as method}
               <option value={method}>{method}</option>
             {/each}
           </select>
         </div>
         <div class="form-group">
-          <label>Date</label>
-          <input type="date" bind:value={paymentForm.date} />
+          <label for="supplier-payment-date">Date</label>
+          <input id="supplier-payment-date" type="date" bind:value={paymentForm.date} />
         </div>
       </div>
 
       <div class="form-group">
-        <label>Reference</label>
-        <input type="text" bind:value={paymentForm.reference} placeholder="Cheque/transfer reference" />
+        <label for="supplier-payment-reference">Reference</label>
+        <input id="supplier-payment-reference" type="text" bind:value={paymentForm.reference} placeholder="Cheque/transfer reference" />
       </div>
 
       <div class="modal-actions">

@@ -525,7 +525,19 @@
     }
 
     // Handle backdrop click - show confirmation if dirty
-    function handleBackdropClick() {
+    function handleBackdropClick(event: MouseEvent, onClose: () => void) {
+        if (event.target !== event.currentTarget) return;
+        onClose();
+    }
+
+    function handleBackdropKeydown(event: KeyboardEvent, onClose: () => void) {
+        if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onClose();
+        }
+    }
+
+    function requestClose() {
         if (isDirty) {
             showCloseConfirmation = true;
         } else {
@@ -905,11 +917,18 @@
 <svelte:window on:keydown={handleKeydown} />
 
 {#if show}
-    <div class="modal-backdrop" transition:fade={{ duration: 200 }} on:click={handleBackdropClick}>
+    <div
+        class="modal-backdrop"
+        transition:fade={{ duration: 200 }}
+        role="button"
+        tabindex="0"
+        aria-label="Close document capture modal"
+        on:click={(event) => handleBackdropClick(event, requestClose)}
+        on:keydown={(event) => handleBackdropKeydown(event, requestClose)}
+    >
         <div
             class="modal"
             transition:scale={{ duration: 200, start: 0.95 }}
-            on:click|stopPropagation
             role="dialog"
             aria-modal="true"
             aria-labelledby="modal-title"
@@ -933,11 +952,12 @@
                     </div>
                 {:else if ocrResult}
                     <!-- Document Type Selector -->
-                    <div class="type-selector">
-                        <label class="type-label">Document Type</label>
+                    <fieldset class="type-selector">
+                        <legend class="type-label">Document Type</legend>
                         <div class="type-options">
                             {#each documentTypes as docType}
                                 <button
+                                    type="button"
                                     class="type-option"
                                     class:selected={selectedType === docType.id}
                                     on:click={() => selectedType = docType.id}
@@ -947,7 +967,7 @@
                                 </button>
                             {/each}
                         </div>
-                    </div>
+                    </fieldset>
 
                     {#if butlerAnalyzing}
                         <div class="butler-status-bar">
@@ -1015,6 +1035,7 @@
                                                     <div class="autocomplete-dropdown">
                                                         {#each filteredCustomers as customer}
                                                             <button
+                                                                type="button"
                                                                 class="dropdown-item"
                                                                 class:selected={selectedCustomerId === customer.id}
                                                                 on:mousedown|preventDefault={() => selectCustomer(customer)}
@@ -1054,6 +1075,7 @@
                                                     <div class="autocomplete-dropdown">
                                                         {#each filteredSuppliers as supplier}
                                                             <button
+                                                                type="button"
                                                                 class="dropdown-item"
                                                                 class:selected={selectedSupplierId === supplier.id}
                                                                 on:mousedown|preventDefault={() => selectSupplier(supplier)}
@@ -1280,9 +1302,23 @@
 
 <!-- Close Confirmation Modal -->
 {#if showCloseConfirmation}
-    <div class="modal-backdrop confirmation-backdrop" transition:fade={{ duration: 150 }} on:click={cancelClose}>
-        <div class="confirmation-modal" on:click|stopPropagation transition:scale={{ duration: 150, start: 0.95 }}>
-            <h3>Unsaved Changes</h3>
+    <div
+        class="modal-backdrop confirmation-backdrop"
+        transition:fade={{ duration: 150 }}
+        role="button"
+        tabindex="0"
+        aria-label="Dismiss close confirmation"
+        on:click={(event) => handleBackdropClick(event, cancelClose)}
+        on:keydown={(event) => handleBackdropKeydown(event, cancelClose)}
+    >
+        <div
+            class="confirmation-modal"
+            transition:scale={{ duration: 150, start: 0.95 }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="close-confirmation-title"
+        >
+            <h3 id="close-confirmation-title">Unsaved Changes</h3>
             <p>You have unsaved changes. Are you sure you want to close?</p>
             <div class="confirmation-actions">
                 <button class="btn-secondary" on:click={cancelClose}>Keep Editing</button>
@@ -1294,13 +1330,28 @@
 
 <!-- Duplicate Warning Modal -->
 {#if showDuplicateWarning}
-    <div class="modal-backdrop" transition:fade={{ duration: 150 }} on:click={() => showDuplicateWarning = false}>
-        <div class="warning-modal" transition:scale={{ duration: 150, start: 0.95 }} on:click|stopPropagation role="alertdialog">
+    <div
+        class="modal-backdrop"
+        transition:fade={{ duration: 150 }}
+        role="button"
+        tabindex="0"
+        aria-label="Dismiss duplicate warning"
+        on:click={(event) => handleBackdropClick(event, () => showDuplicateWarning = false)}
+        on:keydown={(event) => handleBackdropKeydown(event, () => showDuplicateWarning = false)}
+    >
+        <div
+            class="warning-modal"
+            transition:scale={{ duration: 150, start: 0.95 }}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="duplicate-warning-title"
+            aria-describedby="duplicate-warning-body"
+        >
             <div class="warning-header">
                 <span class="warning-icon">!</span>
-                <h3>Similar Document Exists</h3>
+                <h3 id="duplicate-warning-title">Similar Document Exists</h3>
             </div>
-            <div class="warning-body">
+            <div class="warning-body" id="duplicate-warning-body">
                 <p>A similar RFQ/Opportunity was found:</p>
                 <div class="existing-rfq-card">
                     <div class="rfq-detail">
@@ -1465,6 +1516,8 @@
 
     /* Type Selector */
     .type-selector {
+        border: 0;
+        padding: 0;
         margin-bottom: 16px;
     }
 
@@ -1494,6 +1547,16 @@
         border-radius: 8px;
         cursor: pointer;
         transition: all 0.2s ease;
+    }
+
+    .type-option:focus-visible,
+    .dropdown-item:focus-visible,
+    .btn-secondary:focus-visible,
+    .btn-primary:focus-visible,
+    .btn-outline:focus-visible,
+    .btn-danger:focus-visible {
+        outline: 2px solid #15803d;
+        outline-offset: 2px;
     }
 
     .type-option:hover {
