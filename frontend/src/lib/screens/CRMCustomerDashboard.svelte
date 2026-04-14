@@ -53,6 +53,13 @@
     dispatch('select', { id: customerId });
   }
 
+  function handleCustomerItemKeydown(event: KeyboardEvent, customerId: string) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      selectCustomer(customerId);
+    }
+  }
+
   async function saveCustomer() {
     if (!newCustomer.business_name.trim()) {
       toast.warning('Please enter business name');
@@ -114,8 +121,8 @@
     <!-- Year Selector -->
     <div class="year-selector-row">
       <div class="year-selector">
-        <label class="year-label">FINANCIAL YEAR</label>
-        <select bind:value={selectedYear} on:change={handleYearChange} class="year-select">
+        <label class="year-label" for="financial-year-select">FINANCIAL YEAR</label>
+        <select id="financial-year-select" bind:value={selectedYear} on:change={handleYearChange} class="year-select">
           {#each availableYears as yr}
             <option value={yr}>{yr === 0 ? 'All Years' : yr}</option>
           {/each}
@@ -166,7 +173,14 @@
         <h3 class="section-title">TOP 10 BY REVENUE</h3>
         <div class="top-list">
           {#each dashboard.top_customers || [] as customer, i}
-            <div class="top-item" on:click={() => selectCustomer(customer.id)}>
+            <div
+              class="top-item"
+              role="button"
+              tabindex="0"
+              aria-label={`Open customer ${customer.business_name}`}
+              on:click={() => selectCustomer(customer.id)}
+              on:keydown={(event) => handleCustomerItemKeydown(event, customer.id)}
+            >
               <span class="rank">{i + 1}</span>
               <span class="name">{customer.business_name}</span>
               <div class="bar-container">
@@ -258,7 +272,14 @@
 
       <div class="customer-grid">
         {#each filteredCustomers as customer}
-          <div class="customer-card" on:click={() => selectCustomer(customer.id)}>
+          <div
+            class="customer-card"
+            role="button"
+            tabindex="0"
+            aria-label={`Open customer ${customer.business_name}`}
+            on:click={() => selectCustomer(customer.id)}
+            on:keydown={(event) => handleCustomerItemKeydown(event, customer.id)}
+          >
             <div class="card-header">
               <span class="customer-name">{customer.business_name}</span>
               <span class="grade-badge grade-{customer.payment_grade?.toLowerCase()}">{customer.payment_grade}</span>
@@ -285,21 +306,27 @@
 </div>
 
 {#if showCreateModal}
-  <div class="modal-backdrop" on:click={() => showCreateModal = false}>
-    <div class="modal" on:click|stopPropagation>
-      <h3>Create New Customer</h3>
+  <div class="modal-backdrop">
+    <button
+      type="button"
+      class="modal-backdrop-button"
+      aria-label="Close create customer dialog"
+      on:click={() => showCreateModal = false}
+    ></button>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-customer-title">
+      <h3 id="create-customer-title">Create New Customer</h3>
       <div class="form-grid">
         <div class="form-group">
-          <label>Business Name <span class="required">*</span></label>
-          <input type="text" bind:value={newCustomer.business_name} placeholder="Company name" />
+          <label for="customer-business-name">Business Name <span class="required">*</span></label>
+          <input id="customer-business-name" type="text" bind:value={newCustomer.business_name} placeholder="Company name" />
         </div>
         <div class="form-group">
-          <label>Customer Code</label>
-          <input type="text" bind:value={newCustomer.customer_code} placeholder="Auto-generated if empty" />
+          <label for="customer-code">Customer Code</label>
+          <input id="customer-code" type="text" bind:value={newCustomer.customer_code} placeholder="Auto-generated if empty" />
         </div>
         <div class="form-group">
-          <label>Customer Type</label>
-          <select bind:value={newCustomer.customer_type}>
+          <label for="customer-type">Customer Type</label>
+          <select id="customer-type" bind:value={newCustomer.customer_type}>
             <option value="Corporate">Corporate</option>
             <option value="Government">Government</option>
             <option value="SME">SME</option>
@@ -307,8 +334,8 @@
           </select>
         </div>
         <div class="form-group">
-          <label>Payment Grade</label>
-          <select bind:value={newCustomer.payment_grade}>
+          <label for="customer-payment-grade">Payment Grade</label>
+          <select id="customer-payment-grade" bind:value={newCustomer.payment_grade}>
             <option value="A">Grade A</option>
             <option value="B">Grade B</option>
             <option value="C">Grade C</option>
@@ -316,24 +343,24 @@
           </select>
         </div>
         <div class="form-group full-width">
-          <label>Address</label>
-          <input type="text" bind:value={newCustomer.address_line1} placeholder="Street address" />
+          <label for="customer-address">Address</label>
+          <input id="customer-address" type="text" bind:value={newCustomer.address_line1} placeholder="Street address" />
         </div>
         <div class="form-group">
-          <label>City</label>
-          <input type="text" bind:value={newCustomer.city} placeholder="City" />
+          <label for="customer-city">City</label>
+          <input id="customer-city" type="text" bind:value={newCustomer.city} placeholder="City" />
         </div>
         <div class="form-group">
-          <label>Country</label>
-          <input type="text" bind:value={newCustomer.country} placeholder="Country" />
+          <label for="customer-country">Country</label>
+          <input id="customer-country" type="text" bind:value={newCustomer.country} placeholder="Country" />
         </div>
         <div class="form-group">
-          <label>TRN</label>
-          <input type="text" bind:value={newCustomer.trn} placeholder="Tax registration number" />
+          <label for="customer-trn">TRN</label>
+          <input id="customer-trn" type="text" bind:value={newCustomer.trn} placeholder="Tax registration number" />
         </div>
         <div class="form-group">
-          <label>Industry</label>
-          <input type="text" bind:value={newCustomer.industry} placeholder="Industry sector" />
+          <label for="customer-industry">Industry</label>
+          <input id="customer-industry" type="text" bind:value={newCustomer.industry} placeholder="Industry sector" />
         </div>
       </div>
       <div class="modal-actions">
@@ -467,6 +494,12 @@
     padding: 4px 0;
     cursor: pointer;
     border-radius: 4px;
+  }
+
+  .top-item:focus-visible,
+  .customer-card:focus-visible {
+    outline: 2px solid var(--brand-indigo);
+    outline-offset: 2px;
   }
 
   .top-item:hover {
@@ -699,20 +732,31 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1000;
   }
 
+  .modal-backdrop-button {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    background: rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+  }
+
   .modal {
+    position: relative;
     background: var(--surface);
     padding: 24px;
     border-radius: 12px;
     width: 600px;
     max-height: 80vh;
     overflow-y: auto;
+    z-index: 1;
   }
 
   .modal h3 {
