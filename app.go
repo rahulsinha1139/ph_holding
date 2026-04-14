@@ -203,9 +203,12 @@ func (a *App) getAppPaths() *ApplicationPaths {
 		// CWD not writable — use platform data directory
 		if homeDir, hErr := os.UserHomeDir(); hErr == nil {
 			dataDir := filepath.Join(homeDir, ".local", "share", "AsymmFlow")
-			os.MkdirAll(dataDir, 0755)
-			log.Printf("CWD not writable, using data dir: %s", dataDir)
-			projectRoot = dataDir
+			if mkErr := os.MkdirAll(dataDir, 0755); mkErr != nil {
+				log.Printf("Failed to create fallback data dir %s: %v", dataDir, mkErr)
+			} else {
+				log.Printf("CWD not writable, using data dir: %s", dataDir)
+				projectRoot = dataDir
+			}
 		}
 	}
 
@@ -251,17 +254,24 @@ func rotateLogFile(logPath string, maxSize int64, keepCount int) {
 
 	// Delete the oldest rotated log
 	oldest := fmt.Sprintf("%s.%d", logPath, keepCount)
-	os.Remove(oldest)
+	if err := os.Remove(oldest); err != nil && !os.IsNotExist(err) {
+		log.Printf("Warning: failed to prune rotated log %s: %v", oldest, err)
+	}
 
 	// Shift existing rotated logs: .4 → .5, .3 → .4, etc.
 	for i := keepCount - 1; i >= 1; i-- {
 		src := fmt.Sprintf("%s.%d", logPath, i)
 		dst := fmt.Sprintf("%s.%d", logPath, i+1)
-		os.Rename(src, dst)
+		if err := os.Rename(src, dst); err != nil && !os.IsNotExist(err) {
+			log.Printf("Warning: failed to rotate log %s -> %s: %v", src, dst, err)
+		}
 	}
 
 	// Rotate current log to .1
-	os.Rename(logPath, logPath+".1")
+	if err := os.Rename(logPath, logPath+".1"); err != nil && !os.IsNotExist(err) {
+		log.Printf("Warning: failed to rotate active log %s: %v", logPath, err)
+		return
+	}
 	log.Printf("Log file rotated (was %d MB)", info.Size()/(1024*1024))
 }
 
@@ -273,14 +283,18 @@ func (a *App) startup(ctx context.Context) {
 
 	// EARLY diagnostic — write to /tmp before anything else
 	earlyDiag := filepath.Join(os.TempDir(), "asymmflow_startup.log")
-	os.Remove(earlyDiag)
+	if err := os.Remove(earlyDiag); err != nil && !os.IsNotExist(err) {
+		log.Printf("Warning: failed to reset early startup log %s: %v", earlyDiag, err)
+	}
 	if f, err := os.Create(earlyDiag); err == nil {
 		fmt.Fprintf(f, "%s STARTUP BEGIN\n", time.Now().Format("15:04:05.000"))
 		fmt.Fprintf(f, "%s CWD: %s\n", time.Now().Format("15:04:05.000"), func() string { d, _ := os.Getwd(); return d }())
 		if ex, err := os.Executable(); err == nil {
 			fmt.Fprintf(f, "%s EXE: %s\n", time.Now().Format("15:04:05.000"), ex)
 		}
-		f.Close()
+		if err := f.Close(); err != nil {
+			log.Printf("Warning: failed to close early startup log %s: %v", earlyDiag, err)
+		}
 	}
 
 	// 1. Setup File Logging with rotation (FIX: Handle error, store file handle for cleanup)
@@ -440,9 +454,12 @@ func (a *App) startup(ctx context.Context) {
 				}
 
 				if dataDir != "" {
-					os.MkdirAll(dataDir, 0755)
-					dbPath = filepath.Join(dataDir, dbName)
-					log.Printf("DB will be created in data directory: %s", dbPath)
+					if err := os.MkdirAll(dataDir, 0755); err != nil {
+						log.Printf("Failed to create data directory %s: %v", dataDir, err)
+					} else {
+						dbPath = filepath.Join(dataDir, dbName)
+						log.Printf("DB will be created in data directory: %s", dbPath)
+					}
 				}
 			}
 		}
@@ -516,8 +533,16 @@ func (a *App) startup(ctx context.Context) {
 		}
 
 		// Additional PRAGMAs not settable via DSN
-		sqlDB.Exec("PRAGMA temp_store = MEMORY")
-		sqlDB.Exec("PRAGMA mmap_size = 268435456")
+		if _, err := sqlDB.Exec("PRAGMA temp_store = MEMORY"); err != nil {
+			AppLogger.Warn("Failed to set temp_store pragma", map[string]interface{}{
+				"error": err.Error(),
+			})
+		}
+		if _, err := sqlDB.Exec("PRAGMA mmap_size = 268435456"); err != nil {
+			AppLogger.Warn("Failed to set mmap_size pragma", map[string]interface{}{
+				"error": err.Error(),
+			})
+		}
 		log.Println("SQLite PRAGMAs applied (WAL + busy_timeout via DSN, temp_store + mmap_size manual)")
 	}
 
@@ -549,14 +574,20 @@ func (a *App) startup(ctx context.Context) {
 	// Startup diagnostic: write progress to known location
 	diagPath := filepath.Join(os.TempDir(), "asymmflow_startup.log")
 	diagLog := func(msg string) {
-		f, _ := os.OpenFile(diagPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if f != nil {
+		f, err := os.OpenFile(diagPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Printf("Warning: failed to open startup log %s: %v", diagPath, err)
+		} else {
 			fmt.Fprintf(f, "%s %s\n", time.Now().Format("15:04:05.000"), msg)
-			f.Close()
+			if err := f.Close(); err != nil {
+				log.Printf("Warning: failed to close startup log %s: %v", diagPath, err)
+			}
 		}
 		log.Println(msg)
 	}
-	os.Remove(diagPath) // Fresh start
+	if err := os.Remove(diagPath); err != nil && !os.IsNotExist(err) {
+		log.Printf("Warning: failed to reset startup log %s: %v", diagPath, err)
+	}
 	diagLog(fmt.Sprintf("STARTUP: DB path = %s", dbPath))
 
 	// Auto-migrate the schema - Full ERP schema
@@ -1241,8 +1272,12 @@ func (a *App) shutdown(ctx context.Context) {
 
 	log.Println("AsymmFlow shut down complete")
 	if a.logFile != nil {
-		a.logFile.Sync()  // Flush buffers to disk before closing
-		a.logFile.Close() // Close after final log message
+		if err := a.logFile.Sync(); err != nil {
+			log.Printf("Warning: failed to sync log file: %v", err)
+		}
+		if err := a.logFile.Close(); err != nil {
+			log.Printf("Warning: failed to close log file: %v", err)
+		}
 	}
 }
 
@@ -10590,8 +10625,12 @@ func (a *App) ValidateFolder(path string) (bool, error) {
 	if err != nil {
 		return false, newError("NOT_WRITABLE", "Directory is not writable", err.Error())
 	}
-	f.Close()
-	os.Remove(testFile)
+	if err := f.Close(); err != nil {
+		return false, newError("WRITE_TEST_CLOSE_FAILED", "Directory test file could not be finalized", err.Error())
+	}
+	if err := os.Remove(testFile); err != nil && !os.IsNotExist(err) {
+		return false, newError("WRITE_TEST_CLEANUP_FAILED", "Directory test file could not be cleaned up", err.Error())
+	}
 
 	log.Printf("✅ Folder validated: %s", path)
 	return true, nil
@@ -11102,8 +11141,11 @@ func (a *App) RunInitialScan() (InitialScanResult, error) {
 		if scanPath == "" {
 			continue
 		}
-		filepath.Walk(scanPath, func(path string, info os.FileInfo, err error) error {
+		if err := filepath.Walk(scanPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
+				if err != nil {
+					result.Warnings = append(result.Warnings, fmt.Sprintf("Scan warning for %s: %v", path, err))
+				}
 				return nil
 			}
 			ext := strings.ToLower(filepath.Ext(path))
@@ -11115,7 +11157,9 @@ func (a *App) RunInitialScan() (InitialScanResult, error) {
 				}
 			}
 			return nil
-		})
+		}); err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("Failed to scan %s: %v", scanPath, err))
+		}
 	}
 
 	result.ScanDuration = time.Since(startTime).Milliseconds()
@@ -12515,10 +12559,14 @@ func (a *App) GetOCRStats() (map[string]interface{}, error) {
 	a.db.Model(&OCRDocument{}).Count(&stats.TotalDocuments)
 
 	// Average confidence
-	a.db.Model(&OCRDocument{}).Select("AVG(confidence)").Row().Scan(&stats.AvgConfidence)
+	if err := a.db.Model(&OCRDocument{}).Select("AVG(confidence)").Row().Scan(&stats.AvgConfidence); err != nil {
+		log.Printf("Warning: failed to query OCR average confidence: %v", err)
+	}
 
 	// Total cost
-	a.db.Model(&OCRDocument{}).Select("SUM(cost)").Row().Scan(&stats.TotalCost)
+	if err := a.db.Model(&OCRDocument{}).Select("SUM(cost)").Row().Scan(&stats.TotalCost); err != nil {
+		log.Printf("Warning: failed to query OCR total cost: %v", err)
+	}
 
 	// DNA cache hits
 	a.db.Model(&OCRDocument{}).Where("dna_cache_hit = ?", true).Count(&stats.DNACacheHits)
