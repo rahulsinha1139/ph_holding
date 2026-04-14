@@ -311,21 +311,36 @@ func (a *App) ExportVATReturnData(year, quarter int) (string, error) {
 	defer file.Close()
 
 	writer := csv.NewWriter(file)
+	writeRow := func(row []string) error {
+		if err := writer.Write(row); err != nil {
+			return fmt.Errorf("failed to write VAT CSV row %q: %w", row, err)
+		}
+		return nil
+	}
 
 	// Header
-	writer.Write([]string{"Category", "Amount (BHD)", "VAT (BHD)", "Notes"})
+	if err := writeRow([]string{"Category", "Amount (BHD)", "VAT (BHD)", "Notes"}); err != nil {
+		return "", err
+	}
 
 	// Data rows
-	writer.Write([]string{"Standard-Rated Supplies (10%)", fmt.Sprintf("%.3f", standardRatedSupplies), fmt.Sprintf("%.3f", vatCollected), fmt.Sprintf("%d invoices", len(invoices))})
-	writer.Write([]string{"Credit Notes", fmt.Sprintf("-%.3f", cnDeductions), fmt.Sprintf("-%.3f", cnVATDeductions), fmt.Sprintf("%d credit notes", len(creditNotes))})
-	writer.Write([]string{"Net Standard-Rated Supplies", fmt.Sprintf("%.3f", netSupplies), fmt.Sprintf("%.3f", netVAT), ""})
-	writer.Write([]string{"Zero-Rated Supplies", fmt.Sprintf("%.3f", zeroRated), "0.000", ""})
-	writer.Write([]string{"Exempt Supplies", fmt.Sprintf("%.3f", exempt), "0.000", ""})
-	writer.Write([]string{"", "", "", ""})
-	writer.Write([]string{"TOTAL OUTPUT VAT", "", fmt.Sprintf("%.3f", netVAT), fmt.Sprintf("Period: Q%d %d", quarter, year)})
-	writer.Write([]string{"", "", "", ""})
-	writer.Write([]string{"TRN", phTradingTRN, "", phTradingName})
-	writer.Write([]string{"Period", fmt.Sprintf("Q%d %d", quarter, year), fmt.Sprintf("%s to %s", startDate.Format("2006-01-02"), endDate.AddDate(0, 0, -1).Format("2006-01-02")), ""})
+	rows := [][]string{
+		{"Standard-Rated Supplies (10%)", fmt.Sprintf("%.3f", standardRatedSupplies), fmt.Sprintf("%.3f", vatCollected), fmt.Sprintf("%d invoices", len(invoices))},
+		{"Credit Notes", fmt.Sprintf("-%.3f", cnDeductions), fmt.Sprintf("-%.3f", cnVATDeductions), fmt.Sprintf("%d credit notes", len(creditNotes))},
+		{"Net Standard-Rated Supplies", fmt.Sprintf("%.3f", netSupplies), fmt.Sprintf("%.3f", netVAT), ""},
+		{"Zero-Rated Supplies", fmt.Sprintf("%.3f", zeroRated), "0.000", ""},
+		{"Exempt Supplies", fmt.Sprintf("%.3f", exempt), "0.000", ""},
+		{"", "", "", ""},
+		{"TOTAL OUTPUT VAT", "", fmt.Sprintf("%.3f", netVAT), fmt.Sprintf("Period: Q%d %d", quarter, year)},
+		{"", "", "", ""},
+		{"TRN", phTradingTRN, "", phTradingName},
+		{"Period", fmt.Sprintf("Q%d %d", quarter, year), fmt.Sprintf("%s to %s", startDate.Format("2006-01-02"), endDate.AddDate(0, 0, -1).Format("2006-01-02")), ""},
+	}
+	for _, row := range rows {
+		if err := writeRow(row); err != nil {
+			return "", err
+		}
+	}
 
 	// Flush CSV writer and check for write errors
 	writer.Flush()

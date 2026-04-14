@@ -45,7 +45,9 @@ func (a *App) handleReportGenerate(ctx context.Context, job *Job) error {
 
 	// Update progress
 	job.Progress = 10
-	a.jobQueue.updateJob(job)
+	if err := a.jobQueue.updateJob(job); err != nil {
+		return fmt.Errorf("failed to persist report job progress: %w", err)
+	}
 
 	// Get report data
 	dateRange := calculateDateRange(input.DateRange.Start, input.DateRange.End)
@@ -55,7 +57,9 @@ func (a *App) handleReportGenerate(ctx context.Context, job *Job) error {
 	}
 
 	job.Progress = 30
-	a.jobQueue.updateJob(job)
+	if err := a.jobQueue.updateJob(job); err != nil {
+		return fmt.Errorf("failed to persist report job progress: %w", err)
+	}
 
 	// Generate file based on format
 	var filePath string
@@ -80,7 +84,9 @@ func (a *App) handleReportGenerate(ctx context.Context, job *Job) error {
 	}
 
 	job.Progress = 90
-	a.jobQueue.updateJob(job)
+	if err := a.jobQueue.updateJob(job); err != nil {
+		return fmt.Errorf("failed to persist report job progress: %w", err)
+	}
 
 	// Get file info
 	fileInfo, err := os.Stat(filePath)
@@ -350,36 +356,41 @@ func (a *App) addFinancialReportToPDF(pdf *gofpdf.Fpdf, data ReportData) {
 func (a *App) generateExcelReport(category string, data ReportData, dateRange struct{ Start, End string }) (string, error) {
 	f := excelize.NewFile()
 	defer f.Close()
+	xl := newGuardedExcelFile(f)
 
 	sheetName := "Report"
-	index, _ := f.NewSheet(sheetName)
+	index := xl.NewSheet(sheetName)
 	f.SetActiveSheet(index)
 
 	// Title
-	f.SetCellValue(sheetName, "A1", fmt.Sprintf("PH Holdings - %s Report", titleCase(category)))
-	titleStyle, _ := f.NewStyle(&excelize.Style{
+	xl.SetCellValue(sheetName, "A1", fmt.Sprintf("PH Holdings - %s Report", titleCase(category)))
+	titleStyle := xl.NewStyle(&excelize.Style{
 		Font: &excelize.Font{Bold: true, Size: 16},
 	})
-	f.SetCellStyle(sheetName, "A1", "A1", titleStyle)
+	xl.SetCellStyle(sheetName, "A1", "A1", titleStyle)
 
 	// Metadata
-	f.SetCellValue(sheetName, "A2", fmt.Sprintf("Generated: %s", time.Now().Format("2006-01-02 15:04:05")))
-	f.SetCellValue(sheetName, "A3", fmt.Sprintf("Date Range: %s to %s", dateRange.Start, dateRange.End))
+	xl.SetCellValue(sheetName, "A2", fmt.Sprintf("Generated: %s", time.Now().Format("2006-01-02 15:04:05")))
+	xl.SetCellValue(sheetName, "A3", fmt.Sprintf("Date Range: %s to %s", dateRange.Start, dateRange.End))
 
 	// Category-specific content
 	switch category {
 	case "sales":
-		a.addSalesReportToExcel(f, sheetName, data)
+		a.addSalesReportToExcel(xl, sheetName, data)
 	case "customers":
-		a.addCustomersReportToExcel(f, sheetName, data)
+		a.addCustomersReportToExcel(xl, sheetName, data)
 	case "operations":
-		a.addOperationsReportToExcel(f, sheetName, data)
+		a.addOperationsReportToExcel(xl, sheetName, data)
 	case "inventory":
-		a.addInventoryReportToExcel(f, sheetName, data)
+		a.addInventoryReportToExcel(xl, sheetName, data)
 	case "financial":
-		a.addFinancialReportToExcel(f, sheetName, data)
+		a.addFinancialReportToExcel(xl, sheetName, data)
 	default:
 		return "", fmt.Errorf("unknown report category: %s", category)
+	}
+
+	if err := xl.Err(); err != nil {
+		return "", fmt.Errorf("failed to populate Excel report: %w", err)
 	}
 
 	// Save to file
@@ -389,175 +400,176 @@ func (a *App) generateExcelReport(category string, data ReportData, dateRange st
 	filename := fmt.Sprintf("%s_report_%s.xlsx", category, timestamp)
 	filePath := filepath.Join(exportDir, filename)
 
-	if err := f.SaveAs(filePath); err != nil {
-		return "", fmt.Errorf("failed to save Excel: %w", err)
+	xl.SaveAs(filePath)
+	if err := xl.Err(); err != nil {
+		return "", fmt.Errorf("failed to save Excel report: %w", err)
 	}
 
 	return filePath, nil
 }
 
-func (a *App) addSalesReportToExcel(f *excelize.File, sheet string, data ReportData) {
+func (a *App) addSalesReportToExcel(xl *guardedExcelFile, sheet string, data ReportData) {
 	// Headers
-	headerStyle, _ := f.NewStyle(&excelize.Style{
+	headerStyle := xl.NewStyle(&excelize.Style{
 		Font: &excelize.Font{Bold: true},
 		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E0E0E0"}, Pattern: 1},
 	})
 
 	// Metrics
-	f.SetCellValue(sheet, "A5", "Key Metrics")
-	f.SetCellStyle(sheet, "A5", "A5", headerStyle)
-	f.SetCellValue(sheet, "A6", "Win Rate")
-	f.SetCellValue(sheet, "B6", data.WinRate)
-	f.SetCellValue(sheet, "A7", "Conversion Rate")
-	f.SetCellValue(sheet, "B7", data.ConversionRate)
-	f.SetCellValue(sheet, "A8", "Avg Deal Size (BHD)")
-	f.SetCellValue(sheet, "B8", data.AvgDealSize)
+	xl.SetCellValue(sheet, "A5", "Key Metrics")
+	xl.SetCellStyle(sheet, "A5", "A5", headerStyle)
+	xl.SetCellValue(sheet, "A6", "Win Rate")
+	xl.SetCellValue(sheet, "B6", data.WinRate)
+	xl.SetCellValue(sheet, "A7", "Conversion Rate")
+	xl.SetCellValue(sheet, "B7", data.ConversionRate)
+	xl.SetCellValue(sheet, "A8", "Avg Deal Size (BHD)")
+	xl.SetCellValue(sheet, "B8", data.AvgDealSize)
 
 	// Format percentages
-	f.SetCellStyle(sheet, "B6", "B7", getPercentStyle(f))
-	f.SetCellStyle(sheet, "B8", "B8", getCurrencyStyle(f))
+	xl.SetCellStyle(sheet, "B6", "B7", getPercentStyle(xl))
+	xl.SetCellStyle(sheet, "B8", "B8", getCurrencyStyle(xl))
 
 	// Pipeline table
 	row := 10
-	f.SetCellValue(sheet, "A"+fmt.Sprint(row), "Pipeline by Stage")
-	f.SetCellStyle(sheet, "A"+fmt.Sprint(row), "A"+fmt.Sprint(row), headerStyle)
+	xl.SetCellValue(sheet, "A"+fmt.Sprint(row), "Pipeline by Stage")
+	xl.SetCellStyle(sheet, "A"+fmt.Sprint(row), "A"+fmt.Sprint(row), headerStyle)
 	row++
 
-	f.SetCellValue(sheet, "A"+fmt.Sprint(row), "Stage")
-	f.SetCellValue(sheet, "B"+fmt.Sprint(row), "Count")
-	f.SetCellValue(sheet, "C"+fmt.Sprint(row), "Value (BHD)")
-	f.SetCellStyle(sheet, "A"+fmt.Sprint(row), "C"+fmt.Sprint(row), headerStyle)
+	xl.SetCellValue(sheet, "A"+fmt.Sprint(row), "Stage")
+	xl.SetCellValue(sheet, "B"+fmt.Sprint(row), "Count")
+	xl.SetCellValue(sheet, "C"+fmt.Sprint(row), "Value (BHD)")
+	xl.SetCellStyle(sheet, "A"+fmt.Sprint(row), "C"+fmt.Sprint(row), headerStyle)
 	row++
 
 	for _, stage := range data.Pipeline {
-		f.SetCellValue(sheet, "A"+fmt.Sprint(row), stage.Stage)
-		f.SetCellValue(sheet, "B"+fmt.Sprint(row), stage.Count)
-		f.SetCellValue(sheet, "C"+fmt.Sprint(row), stage.Value)
-		f.SetCellStyle(sheet, "C"+fmt.Sprint(row), "C"+fmt.Sprint(row), getCurrencyStyle(f))
+		xl.SetCellValue(sheet, "A"+fmt.Sprint(row), stage.Stage)
+		xl.SetCellValue(sheet, "B"+fmt.Sprint(row), stage.Count)
+		xl.SetCellValue(sheet, "C"+fmt.Sprint(row), stage.Value)
+		xl.SetCellStyle(sheet, "C"+fmt.Sprint(row), "C"+fmt.Sprint(row), getCurrencyStyle(xl))
 		row++
 	}
 }
 
-func (a *App) addCustomersReportToExcel(f *excelize.File, sheet string, data ReportData) {
-	headerStyle, _ := f.NewStyle(&excelize.Style{
+func (a *App) addCustomersReportToExcel(xl *guardedExcelFile, sheet string, data ReportData) {
+	headerStyle := xl.NewStyle(&excelize.Style{
 		Font: &excelize.Font{Bold: true},
 		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E0E0E0"}, Pattern: 1},
 	})
 
-	f.SetCellValue(sheet, "A5", "Customer Metrics")
-	f.SetCellStyle(sheet, "A5", "A5", headerStyle)
-	f.SetCellValue(sheet, "A6", "Avg Payment Days")
-	f.SetCellValue(sheet, "B6", data.AvgPaymentDays)
-	f.SetCellValue(sheet, "A7", "Collection Efficiency")
-	f.SetCellValue(sheet, "B7", data.CollectionEff)
-	f.SetCellStyle(sheet, "B7", "B7", getPercentStyle(f))
+	xl.SetCellValue(sheet, "A5", "Customer Metrics")
+	xl.SetCellStyle(sheet, "A5", "A5", headerStyle)
+	xl.SetCellValue(sheet, "A6", "Avg Payment Days")
+	xl.SetCellValue(sheet, "B6", data.AvgPaymentDays)
+	xl.SetCellValue(sheet, "A7", "Collection Efficiency")
+	xl.SetCellValue(sheet, "B7", data.CollectionEff)
+	xl.SetCellStyle(sheet, "B7", "B7", getPercentStyle(xl))
 
 	row := 9
-	f.SetCellValue(sheet, "A"+fmt.Sprint(row), "Grade Distribution")
-	f.SetCellStyle(sheet, "A"+fmt.Sprint(row), "A"+fmt.Sprint(row), headerStyle)
+	xl.SetCellValue(sheet, "A"+fmt.Sprint(row), "Grade Distribution")
+	xl.SetCellStyle(sheet, "A"+fmt.Sprint(row), "A"+fmt.Sprint(row), headerStyle)
 	row++
 
-	f.SetCellValue(sheet, "A"+fmt.Sprint(row), "Grade")
-	f.SetCellValue(sheet, "B"+fmt.Sprint(row), "Customers")
-	f.SetCellValue(sheet, "C"+fmt.Sprint(row), "Percentage")
-	f.SetCellStyle(sheet, "A"+fmt.Sprint(row), "C"+fmt.Sprint(row), headerStyle)
+	xl.SetCellValue(sheet, "A"+fmt.Sprint(row), "Grade")
+	xl.SetCellValue(sheet, "B"+fmt.Sprint(row), "Customers")
+	xl.SetCellValue(sheet, "C"+fmt.Sprint(row), "Percentage")
+	xl.SetCellStyle(sheet, "A"+fmt.Sprint(row), "C"+fmt.Sprint(row), headerStyle)
 	row++
 
 	for _, grade := range data.GradeDistribution {
-		f.SetCellValue(sheet, "A"+fmt.Sprint(row), grade.Grade)
-		f.SetCellValue(sheet, "B"+fmt.Sprint(row), grade.Count)
-		f.SetCellValue(sheet, "C"+fmt.Sprint(row), grade.Percentage/100)
-		f.SetCellStyle(sheet, "C"+fmt.Sprint(row), "C"+fmt.Sprint(row), getPercentStyle(f))
+		xl.SetCellValue(sheet, "A"+fmt.Sprint(row), grade.Grade)
+		xl.SetCellValue(sheet, "B"+fmt.Sprint(row), grade.Count)
+		xl.SetCellValue(sheet, "C"+fmt.Sprint(row), grade.Percentage/100)
+		xl.SetCellStyle(sheet, "C"+fmt.Sprint(row), "C"+fmt.Sprint(row), getPercentStyle(xl))
 		row++
 	}
 }
 
-func (a *App) addOperationsReportToExcel(f *excelize.File, sheet string, data ReportData) {
-	headerStyle, _ := f.NewStyle(&excelize.Style{
+func (a *App) addOperationsReportToExcel(xl *guardedExcelFile, sheet string, data ReportData) {
+	headerStyle := xl.NewStyle(&excelize.Style{
 		Font: &excelize.Font{Bold: true},
 		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E0E0E0"}, Pattern: 1},
 	})
 
-	f.SetCellValue(sheet, "A5", "Operations Metrics")
-	f.SetCellStyle(sheet, "A5", "A5", headerStyle)
-	f.SetCellValue(sheet, "A6", "Avg Lead Time (days)")
-	f.SetCellValue(sheet, "B6", data.AvgLeadTime)
-	f.SetCellValue(sheet, "A7", "On-Time Delivery")
-	f.SetCellValue(sheet, "B7", data.OnTimeDelivery)
-	f.SetCellStyle(sheet, "B7", "B7", getPercentStyle(f))
-	f.SetCellValue(sheet, "A8", "Pending Shipments")
-	f.SetCellValue(sheet, "B8", data.PendingShipments)
+	xl.SetCellValue(sheet, "A5", "Operations Metrics")
+	xl.SetCellStyle(sheet, "A5", "A5", headerStyle)
+	xl.SetCellValue(sheet, "A6", "Avg Lead Time (days)")
+	xl.SetCellValue(sheet, "B6", data.AvgLeadTime)
+	xl.SetCellValue(sheet, "A7", "On-Time Delivery")
+	xl.SetCellValue(sheet, "B7", data.OnTimeDelivery)
+	xl.SetCellStyle(sheet, "B7", "B7", getPercentStyle(xl))
+	xl.SetCellValue(sheet, "A8", "Pending Shipments")
+	xl.SetCellValue(sheet, "B8", data.PendingShipments)
 }
 
-func (a *App) addInventoryReportToExcel(f *excelize.File, sheet string, data ReportData) {
-	headerStyle, _ := f.NewStyle(&excelize.Style{
+func (a *App) addInventoryReportToExcel(xl *guardedExcelFile, sheet string, data ReportData) {
+	headerStyle := xl.NewStyle(&excelize.Style{
 		Font: &excelize.Font{Bold: true},
 		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E0E0E0"}, Pattern: 1},
 	})
 
-	f.SetCellValue(sheet, "A5", "Inventory Metrics")
-	f.SetCellStyle(sheet, "A5", "A5", headerStyle)
-	f.SetCellValue(sheet, "A6", "Total Items")
-	f.SetCellValue(sheet, "B6", data.TotalItems)
-	f.SetCellValue(sheet, "A7", "Total Value (BHD)")
-	f.SetCellValue(sheet, "B7", data.TotalValue)
-	f.SetCellStyle(sheet, "B7", "B7", getCurrencyStyle(f))
-	f.SetCellValue(sheet, "A8", "Low Stock Alerts")
-	f.SetCellValue(sheet, "B8", data.LowStockAlerts)
+	xl.SetCellValue(sheet, "A5", "Inventory Metrics")
+	xl.SetCellStyle(sheet, "A5", "A5", headerStyle)
+	xl.SetCellValue(sheet, "A6", "Total Items")
+	xl.SetCellValue(sheet, "B6", data.TotalItems)
+	xl.SetCellValue(sheet, "A7", "Total Value (BHD)")
+	xl.SetCellValue(sheet, "B7", data.TotalValue)
+	xl.SetCellStyle(sheet, "B7", "B7", getCurrencyStyle(xl))
+	xl.SetCellValue(sheet, "A8", "Low Stock Alerts")
+	xl.SetCellValue(sheet, "B8", data.LowStockAlerts)
 }
 
-func (a *App) addFinancialReportToExcel(f *excelize.File, sheet string, data ReportData) {
-	headerStyle, _ := f.NewStyle(&excelize.Style{
+func (a *App) addFinancialReportToExcel(xl *guardedExcelFile, sheet string, data ReportData) {
+	headerStyle := xl.NewStyle(&excelize.Style{
 		Font: &excelize.Font{Bold: true},
 		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E0E0E0"}, Pattern: 1},
 	})
 
-	f.SetCellValue(sheet, "A5", "Financial Health")
-	f.SetCellStyle(sheet, "A5", "A5", headerStyle)
-	f.SetCellValue(sheet, "A6", "Cash Balance (BHD)")
-	f.SetCellValue(sheet, "B6", data.CashBalance)
-	f.SetCellValue(sheet, "A7", "Monthly Burn (BHD)")
-	f.SetCellValue(sheet, "B7", data.MonthlyBurn)
-	f.SetCellValue(sheet, "A8", "Cash Runway (months)")
-	f.SetCellValue(sheet, "B8", data.RunwayMonths)
-	f.SetCellStyle(sheet, "B6", "B7", getCurrencyStyle(f))
+	xl.SetCellValue(sheet, "A5", "Financial Health")
+	xl.SetCellStyle(sheet, "A5", "A5", headerStyle)
+	xl.SetCellValue(sheet, "A6", "Cash Balance (BHD)")
+	xl.SetCellValue(sheet, "B6", data.CashBalance)
+	xl.SetCellValue(sheet, "A7", "Monthly Burn (BHD)")
+	xl.SetCellValue(sheet, "B7", data.MonthlyBurn)
+	xl.SetCellValue(sheet, "A8", "Cash Runway (months)")
+	xl.SetCellValue(sheet, "B8", data.RunwayMonths)
+	xl.SetCellStyle(sheet, "B6", "B7", getCurrencyStyle(xl))
 
 	// MRR
 	row := 10
-	f.SetCellValue(sheet, "A"+fmt.Sprint(row), "Monthly Recurring Revenue")
-	f.SetCellStyle(sheet, "A"+fmt.Sprint(row), "A"+fmt.Sprint(row), headerStyle)
+	xl.SetCellValue(sheet, "A"+fmt.Sprint(row), "Monthly Recurring Revenue")
+	xl.SetCellStyle(sheet, "A"+fmt.Sprint(row), "A"+fmt.Sprint(row), headerStyle)
 	row++
-	f.SetCellValue(sheet, "A"+fmt.Sprint(row), "Current MRR (BHD)")
-	f.SetCellValue(sheet, "B"+fmt.Sprint(row), data.MRR)
-	f.SetCellStyle(sheet, "B"+fmt.Sprint(row), "B"+fmt.Sprint(row), getCurrencyStyle(f))
+	xl.SetCellValue(sheet, "A"+fmt.Sprint(row), "Current MRR (BHD)")
+	xl.SetCellValue(sheet, "B"+fmt.Sprint(row), data.MRR)
+	xl.SetCellStyle(sheet, "B"+fmt.Sprint(row), "B"+fmt.Sprint(row), getCurrencyStyle(xl))
 	row++
-	f.SetCellValue(sheet, "A"+fmt.Sprint(row), "MRR Target (BHD)")
-	f.SetCellValue(sheet, "B"+fmt.Sprint(row), data.MRRTarget)
-	f.SetCellStyle(sheet, "B"+fmt.Sprint(row), "B"+fmt.Sprint(row), getCurrencyStyle(f))
+	xl.SetCellValue(sheet, "A"+fmt.Sprint(row), "MRR Target (BHD)")
+	xl.SetCellValue(sheet, "B"+fmt.Sprint(row), data.MRRTarget)
+	xl.SetCellStyle(sheet, "B"+fmt.Sprint(row), "B"+fmt.Sprint(row), getCurrencyStyle(xl))
 	row += 2
 
 	// Overdue receivables
-	f.SetCellValue(sheet, "A"+fmt.Sprint(row), "Overdue Receivables")
-	f.SetCellStyle(sheet, "A"+fmt.Sprint(row), "A"+fmt.Sprint(row), headerStyle)
+	xl.SetCellValue(sheet, "A"+fmt.Sprint(row), "Overdue Receivables")
+	xl.SetCellStyle(sheet, "A"+fmt.Sprint(row), "A"+fmt.Sprint(row), headerStyle)
 	row++
-	f.SetCellValue(sheet, "A"+fmt.Sprint(row), "Aging")
-	f.SetCellValue(sheet, "B"+fmt.Sprint(row), "Amount (BHD)")
-	f.SetCellStyle(sheet, "A"+fmt.Sprint(row), "B"+fmt.Sprint(row), headerStyle)
+	xl.SetCellValue(sheet, "A"+fmt.Sprint(row), "Aging")
+	xl.SetCellValue(sheet, "B"+fmt.Sprint(row), "Amount (BHD)")
+	xl.SetCellStyle(sheet, "A"+fmt.Sprint(row), "B"+fmt.Sprint(row), headerStyle)
 	row++
 
 	for _, bucket := range data.Overdue {
-		f.SetCellValue(sheet, "A"+fmt.Sprint(row), bucket.Days)
-		f.SetCellValue(sheet, "B"+fmt.Sprint(row), bucket.Amount)
-		f.SetCellStyle(sheet, "B"+fmt.Sprint(row), "B"+fmt.Sprint(row), getCurrencyStyle(f))
+		xl.SetCellValue(sheet, "A"+fmt.Sprint(row), bucket.Days)
+		xl.SetCellValue(sheet, "B"+fmt.Sprint(row), bucket.Amount)
+		xl.SetCellStyle(sheet, "B"+fmt.Sprint(row), "B"+fmt.Sprint(row), getCurrencyStyle(xl))
 		row++
 	}
 
 	// Total formula
-	f.SetCellValue(sheet, "A"+fmt.Sprint(row), "TOTAL")
+	xl.SetCellValue(sheet, "A"+fmt.Sprint(row), "TOTAL")
 	startRow := row - len(data.Overdue)
 	endRow := row - 1
-	f.SetCellFormula(sheet, "B"+fmt.Sprint(row), fmt.Sprintf("=SUM(B%d:B%d)", startRow, endRow))
-	f.SetCellStyle(sheet, "A"+fmt.Sprint(row), "B"+fmt.Sprint(row), headerStyle)
+	xl.SetCellFormula(sheet, "B"+fmt.Sprint(row), fmt.Sprintf("=SUM(B%d:B%d)", startRow, endRow))
+	xl.SetCellStyle(sheet, "A"+fmt.Sprint(row), "B"+fmt.Sprint(row), headerStyle)
 }
 
 // =============================================================================
@@ -571,7 +583,10 @@ func (a *App) generateCSVReport(category string, data ReportData, dateRange stru
 	filename := fmt.Sprintf("%s_report_%s.csv", category, timestamp)
 	filePath := filepath.Join(exportDir, filename)
 
-	dataJSON, _ := json.Marshal(data)
+	dataJSON, err := json.Marshal(data)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal CSV report payload: %w", err)
+	}
 	return a.exportReportToCSV(filePath, category, string(dataJSON))
 }
 
@@ -601,19 +616,17 @@ func calculateDateRange(start, end string) string {
 	return "year"
 }
 
-func getPercentStyle(f *excelize.File) int {
-	style, _ := f.NewStyle(&excelize.Style{
+func getPercentStyle(xl *guardedExcelFile) int {
+	return xl.NewStyle(&excelize.Style{
 		NumFmt: 10, // 0.00%
 	})
-	return style
 }
 
-func getCurrencyStyle(f *excelize.File) int {
-	style, _ := f.NewStyle(&excelize.Style{
-		NumFmt: 164, // Custom format
+func getCurrencyStyle(xl *guardedExcelFile) int {
+	return xl.NewStyle(&excelize.Style{
+		NumFmt:       164, // Custom format
 		CustomNumFmt: stringPtr("#,##0.00"),
 	})
-	return style
 }
 
 func stringPtr(s string) *string {
