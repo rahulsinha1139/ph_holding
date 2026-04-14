@@ -39,17 +39,17 @@ type FinancialYearSummary struct {
 	NetProfit     float64 `json:"net_profit"`
 
 	// Balance Sheet - Assets
-	PlantEquipment    float64 `json:"plant_equipment"`
-	RightOfUse        float64 `json:"right_of_use"`
-	InvestmentProp    float64 `json:"investment_property"`
-	Inventories       float64 `json:"inventories"`
-	TradeReceivables  float64 `json:"trade_receivables"`
-	FixedDeposits     float64 `json:"fixed_deposits"`
-	RelatedPartyRecv  float64 `json:"related_party_receivable"`
-	CashEquivalents   float64 `json:"cash_equivalents"`
-	TotalAssets       float64 `json:"total_assets"`
-	CurrentAssets     float64 `json:"current_assets"`
-	NonCurrentAssets  float64 `json:"non_current_assets"`
+	PlantEquipment   float64 `json:"plant_equipment"`
+	RightOfUse       float64 `json:"right_of_use"`
+	InvestmentProp   float64 `json:"investment_property"`
+	Inventories      float64 `json:"inventories"`
+	TradeReceivables float64 `json:"trade_receivables"`
+	FixedDeposits    float64 `json:"fixed_deposits"`
+	RelatedPartyRecv float64 `json:"related_party_receivable"`
+	CashEquivalents  float64 `json:"cash_equivalents"`
+	TotalAssets      float64 `json:"total_assets"`
+	CurrentAssets    float64 `json:"current_assets"`
+	NonCurrentAssets float64 `json:"non_current_assets"`
 
 	// Balance Sheet - Liabilities & Equity
 	ShareCapital       float64 `json:"share_capital"`
@@ -89,17 +89,17 @@ func getVerifiedFS2024Data() map[int]FinancialYearSummary {
 			NetProfit:     672908.0,
 
 			// Balance Sheet - from FS2024 page 6
-			PlantEquipment:    44695.0,
-			RightOfUse:        50502.0,
-			InvestmentProp:    420000.0,
-			Inventories:       7781.0,
-			TradeReceivables:  117073.0,
-			FixedDeposits:     50000.0,
-			RelatedPartyRecv:  34726.0,
-			CashEquivalents:   569219.0,
-			TotalAssets:       1294000.0,
-			CurrentAssets:     778803.0,
-			NonCurrentAssets:  515197.0,
+			PlantEquipment:   44695.0,
+			RightOfUse:       50502.0,
+			InvestmentProp:   420000.0,
+			Inventories:      7781.0,
+			TradeReceivables: 117073.0,
+			FixedDeposits:    50000.0,
+			RelatedPartyRecv: 34726.0,
+			CashEquivalents:  569219.0,
+			TotalAssets:      1294000.0,
+			CurrentAssets:    778803.0,
+			NonCurrentAssets: 515197.0,
 
 			ShareCapital:       300000.0,
 			StatutoryReserve:   143690.0,
@@ -132,17 +132,17 @@ func getVerifiedFS2024Data() map[int]FinancialYearSummary {
 			NetProfit:     20715.0,
 
 			// Balance Sheet - from FS2024 page 6
-			PlantEquipment:    40405.0,
-			RightOfUse:        40402.0,
-			InvestmentProp:    420000.0,
-			Inventories:       5104.0,
-			TradeReceivables:  123393.0,
-			FixedDeposits:     50000.0,
-			RelatedPartyRecv:  34726.0,
-			CashEquivalents:   413295.0,
-			TotalAssets:       1127325.0,
-			CurrentAssets:     626518.0,
-			NonCurrentAssets:  500807.0,
+			PlantEquipment:   40405.0,
+			RightOfUse:       40402.0,
+			InvestmentProp:   420000.0,
+			Inventories:      5104.0,
+			TradeReceivables: 123393.0,
+			FixedDeposits:    50000.0,
+			RelatedPartyRecv: 34726.0,
+			CashEquivalents:  413295.0,
+			TotalAssets:      1127325.0,
+			CurrentAssets:    626518.0,
+			NonCurrentAssets: 500807.0,
 
 			ShareCapital:       300000.0,
 			StatutoryReserve:   145762.0,
@@ -222,7 +222,7 @@ func (a *App) calculateFinancialYearFromTally(year int) (*FinancialYearSummary, 
 		// Estimate operating expenses proportionally
 		summary.StaffCosts = fs2024.StaffCosts * revenueRatio * 0.9 // Assume some economies
 		summary.AdminExpenses = fs2024.AdminExpenses * revenueRatio
-		summary.Depreciation = fs2024.Depreciation // Fixed assets don't change much
+		summary.Depreciation = fs2024.Depreciation        // Fixed assets don't change much
 		summary.FinanceCosts = fs2024.FinanceCosts * 0.95 // Slight decrease assumed
 		summary.OtherIncome = fs2024.OtherIncome * revenueRatio
 
@@ -621,8 +621,7 @@ func (a *App) GetAvailableFinancialYears() ([]int, error) {
 	if err == nil {
 		for _, yearStr := range invoiceYears {
 			if yearStr != "" {
-				var year int
-				fmt.Sscanf(yearStr, "%d", &year)
+				year := parseIntString(yearStr, "financial year invoice year")
 				if year > 0 && year != 2023 && year != 2024 {
 					yearsMap[year] = true
 				}
@@ -639,8 +638,7 @@ func (a *App) GetAvailableFinancialYears() ([]int, error) {
 	if err == nil {
 		for _, yearStr := range offerYears {
 			if yearStr != "" {
-				var year int
-				fmt.Sscanf(yearStr, "%d", &year)
+				year := parseIntString(yearStr, "financial year offer year")
 				if year > 0 {
 					yearsMap[year] = true
 				}
@@ -657,8 +655,7 @@ func (a *App) GetAvailableFinancialYears() ([]int, error) {
 	if err == nil {
 		for _, yearStr := range bankYears {
 			if yearStr != "" {
-				var year int
-				fmt.Sscanf(yearStr, "%d", &year)
+				year := parseIntString(yearStr, "financial year bank year")
 				if year > 0 {
 					yearsMap[year] = true
 				}

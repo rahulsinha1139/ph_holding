@@ -141,8 +141,7 @@ func (a *App) ImportTallyInvoices(year int) (*TallyImportResult, error) {
 			}
 
 			amountStr := strings.TrimSpace(row[amountCol])
-			var amount float64
-			fmt.Sscanf(strings.ReplaceAll(amountStr, ",", ""), "%f", &amount)
+			amount := parseDecimalString(amountStr, "tally invoice amount")
 
 			// Validate amount is reasonable (skip NaN and extreme values)
 			if amount < 0 || amount > 100000000 {
@@ -310,8 +309,7 @@ func (a *App) ImportTallyPurchases(year int) (*TallyImportResult, error) {
 			}
 
 			amountStr := strings.TrimSpace(row[amountCol])
-			var amount float64
-			fmt.Sscanf(strings.ReplaceAll(amountStr, ",", ""), "%f", &amount)
+			amount := parseDecimalString(amountStr, "tally supplier invoice amount")
 
 			if amount < 0 || amount > 100000000 {
 				result.Errors++
@@ -453,13 +451,12 @@ func (a *App) ImportARDefaulters() (*TallyImportResult, error) {
 		}
 
 		outstandingStr := strings.TrimSpace(row[outstandingCol])
-		var outstanding float64
-		fmt.Sscanf(strings.ReplaceAll(outstandingStr, ",", ""), "%f", &outstanding)
+		outstanding := parseDecimalString(outstandingStr, "tally customer outstanding amount")
 
 		var daysOverdue int
 		if daysCol != -1 && daysCol < len(row) {
 			daysStr := strings.TrimSpace(row[daysCol])
-			fmt.Sscanf(daysStr, "%d", &daysOverdue)
+			daysOverdue = parseIntString(daysStr, "tally customer overdue days")
 		}
 
 		// Update customer record
@@ -591,8 +588,7 @@ func (a *App) ImportSupplierPaymentsFromFile() (*TallyImportResult, error) {
 		}
 
 		amountStr := strings.TrimSpace(row[amountCol])
-		var amount float64
-		fmt.Sscanf(strings.ReplaceAll(amountStr, ",", ""), "%f", &amount)
+		amount := parseDecimalString(amountStr, "tally payment amount")
 
 		currency := "BHD"
 		if currencyCol != -1 && currencyCol < len(row) {
@@ -764,8 +760,8 @@ func (a *App) parseExcelDate(cell string) (time.Time, error) {
 	}
 
 	// Try Excel numeric date (days since 1900-01-01)
-	var excelDate float64
-	if _, err := fmt.Sscanf(cell, "%f", &excelDate); err == nil && excelDate > 0 {
+	excelDate := parseDecimalString(cell, "tally excel date")
+	if excelDate > 0 {
 		// Excel epoch: December 30, 1899 (accounting for Excel's 1900 leap year bug)
 		excelEpoch := time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
 		return excelEpoch.Add(time.Duration(excelDate * 24 * float64(time.Hour))), nil
@@ -791,69 +787,69 @@ func findColumn(colMap map[string]int, variants ...string) int {
 
 // TallyPLReport represents a Profit & Loss statement for a given year from Tally imports
 type TallyPLReport struct {
-	Year              int                `json:"year"`
-	GeneratedAt       time.Time          `json:"generated_at"`
+	Year        int       `json:"year"`
+	GeneratedAt time.Time `json:"generated_at"`
 
 	// REVENUE SECTION
-	SalesRevenue      float64            `json:"sales_revenue"`
-	OtherIncome       float64            `json:"other_income"`
-	TotalRevenue      float64            `json:"total_revenue"`
+	SalesRevenue float64 `json:"sales_revenue"`
+	OtherIncome  float64 `json:"other_income"`
+	TotalRevenue float64 `json:"total_revenue"`
 
 	// COST OF GOODS SOLD
-	Purchases         float64            `json:"purchases"`
-	CostOfGoodsSold   float64            `json:"cost_of_goods_sold"`
-	GrossProfit       float64            `json:"gross_profit"`
-	GrossProfitMargin float64            `json:"gross_profit_margin"` // percentage
+	Purchases         float64 `json:"purchases"`
+	CostOfGoodsSold   float64 `json:"cost_of_goods_sold"`
+	GrossProfit       float64 `json:"gross_profit"`
+	GrossProfitMargin float64 `json:"gross_profit_margin"` // percentage
 
 	// OPERATING EXPENSES (categorized if possible)
-	OperatingExpenses float64            `json:"operating_expenses"`
+	OperatingExpenses float64 `json:"operating_expenses"`
 
 	// NET PROFIT
-	NetProfit         float64            `json:"net_profit"`
-	NetProfitMargin   float64            `json:"net_profit_margin"` // percentage
+	NetProfit       float64 `json:"net_profit"`
+	NetProfitMargin float64 `json:"net_profit_margin"` // percentage
 
 	// Supporting metrics
-	InvoiceCount      int                `json:"invoice_count"`
-	PurchaseCount     int                `json:"purchase_count"`
-	Currency          string             `json:"currency"`
+	InvoiceCount  int    `json:"invoice_count"`
+	PurchaseCount int    `json:"purchase_count"`
+	Currency      string `json:"currency"`
 
 	// Breakdown details (optional, for drill-down)
-	MonthlyBreakdown  []MonthlyPLBreakdown `json:"monthly_breakdown,omitempty"`
+	MonthlyBreakdown []MonthlyPLBreakdown `json:"monthly_breakdown,omitempty"`
 }
 
 // MonthlyPLBreakdown provides monthly granularity
 type MonthlyPLBreakdown struct {
-	Month        int     `json:"month"`
-	MonthName    string  `json:"month_name"`
-	Revenue      float64 `json:"revenue"`
-	Purchases    float64 `json:"purchases"`
-	GrossProfit  float64 `json:"gross_profit"`
-	NetProfit    float64 `json:"net_profit"`
+	Month       int     `json:"month"`
+	MonthName   string  `json:"month_name"`
+	Revenue     float64 `json:"revenue"`
+	Purchases   float64 `json:"purchases"`
+	GrossProfit float64 `json:"gross_profit"`
+	NetProfit   float64 `json:"net_profit"`
 }
 
 // TallyBalanceSheet represents a Balance Sheet as of a given date from Tally data
 type TallyBalanceSheet struct {
-	AsOfDate          time.Time          `json:"as_of_date"`
-	Year              int                `json:"year"`
-	GeneratedAt       time.Time          `json:"generated_at"`
+	AsOfDate    time.Time `json:"as_of_date"`
+	Year        int       `json:"year"`
+	GeneratedAt time.Time `json:"generated_at"`
 
 	// ASSETS
-	Cash              float64            `json:"cash"`
-	AccountsReceivable float64           `json:"accounts_receivable"`
-	Inventory         float64            `json:"inventory"`
-	TotalCurrentAssets float64           `json:"total_current_assets"`
-	TotalAssets       float64            `json:"total_assets"`
+	Cash               float64 `json:"cash"`
+	AccountsReceivable float64 `json:"accounts_receivable"`
+	Inventory          float64 `json:"inventory"`
+	TotalCurrentAssets float64 `json:"total_current_assets"`
+	TotalAssets        float64 `json:"total_assets"`
 
 	// LIABILITIES
-	AccountsPayable   float64            `json:"accounts_payable"`
-	TotalCurrentLiabilities float64      `json:"total_current_liabilities"`
-	TotalLiabilities  float64            `json:"total_liabilities"`
+	AccountsPayable         float64 `json:"accounts_payable"`
+	TotalCurrentLiabilities float64 `json:"total_current_liabilities"`
+	TotalLiabilities        float64 `json:"total_liabilities"`
 
 	// EQUITY
-	RetainedEarnings  float64            `json:"retained_earnings"`
-	TotalEquity       float64            `json:"total_equity"`
+	RetainedEarnings float64 `json:"retained_earnings"`
+	TotalEquity      float64 `json:"total_equity"`
 
-	Currency          string             `json:"currency"`
+	Currency string `json:"currency"`
 }
 
 // GenerateProfitAndLoss generates a P&L report for the given year from imported Tally data
