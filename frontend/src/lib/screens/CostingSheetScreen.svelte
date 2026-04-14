@@ -1052,6 +1052,17 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     let deletingCosting = false;
     let currentCostingId: number | null = null;
 
+    const sectionFieldId = (section: string, field: string) => `costing-${section}-${field}`;
+    const lineItemFieldId = (index: number, field: string) => `costing-line-${index}-${field}`;
+    const costBreakdownFieldId = (index: number, field: string) => `costing-cost-${index}-${field}`;
+
+    function handleRevisionKeydown(event: KeyboardEvent, rev: any) {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            selectRevision(rev);
+        }
+    }
+
     // Phase 5: Delete costing sheet handler
     async function handleDeleteCosting() {
         const rfqId = getSelectedRFQId();
@@ -1194,8 +1205,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     </p>
                     <div class="selector-grid">
                         <div class="form-group selector-dropdown">
-                            <label>Opportunity / RFQ</label>
-                            <select bind:value={selectedOpportunityId} on:change={handleOpportunitySelect} class="input">
+                            <label for={sectionFieldId('selector', 'opportunity')}>Opportunity / RFQ</label>
+                            <select id={sectionFieldId('selector', 'opportunity')} bind:value={selectedOpportunityId} on:change={handleOpportunitySelect} class="input">
                                 <option value="">-- Select an Opportunity --</option>
                                 {#each opportunities as opp}
                                     <option value={String(opp.id)}>
@@ -1279,6 +1290,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 class:active={rev.is_active}
                                 class:selected={selectedRevision?.id === rev.id}
                                 on:click={() => selectRevision(rev)}
+                                on:keydown={(event) => handleRevisionKeydown(event, rev)}
                                 role="button"
                                 tabindex="0"
                             >
@@ -1329,8 +1341,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     <!-- Row 1: Core fields always visible -->
                     <div class="header-row-3col tight">
                         <div class="field-group">
-                            <label>Customer *</label>
-                            <select bind:value={header.customerId} on:change={handleCustomerChange} class="input">
+                            <label for={sectionFieldId('header', 'customer')}>Customer *</label>
+                            <select id={sectionFieldId('header', 'customer')} bind:value={header.customerId} on:change={handleCustomerChange} class="input">
                                 <option value="">Select customer...</option>
                                 {#each customers as c}
                                     <option value={c.id}>{c.business_name}</option>
@@ -1338,37 +1350,37 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             </select>
                         </div>
                         <div class="field-group">
-                            <label>Contact Person</label>
-                            <input type="text" bind:value={header.contactPerson} class="input" placeholder="Name" />
+                            <label for={sectionFieldId('header', 'contact-person')}>Contact Person</label>
+                            <input id={sectionFieldId('header', 'contact-person')} type="text" bind:value={header.contactPerson} class="input" placeholder="Name" />
                         </div>
                         <div class="field-group">
-                            <label>RFQ Reference</label>
-                            <input type="text" bind:value={header.rfqReference} class="input" placeholder="RFQ / Enquiry ref" />
+                            <label for={sectionFieldId('header', 'rfq-reference')}>RFQ Reference</label>
+                            <input id={sectionFieldId('header', 'rfq-reference')} type="text" bind:value={header.rfqReference} class="input" placeholder="RFQ / Enquiry ref" />
                         </div>
                     </div>
 
                     <!-- Row 2: Document + commercial -->
                     <div class="header-row-6col tight">
                         <div class="field-group">
-                            <label>Division</label>
-                            <select bind:value={header.division} class="input-sm">
+                            <label for={sectionFieldId('header', 'division')}>Division</label>
+                            <select id={sectionFieldId('header', 'division')} bind:value={header.division} class="input-sm">
                                 {#each divisionOptions as div}<option value={div}>{div}</option>{/each}
                             </select>
                         </div>
                         <div class="field-group">
-                            <label>Date</label>
-                            <input type="date" bind:value={header.date} class="input-sm" />
+                            <label for={sectionFieldId('header', 'date')}>Date</label>
+                            <input id={sectionFieldId('header', 'date')} type="date" bind:value={header.date} class="input-sm" />
                         </div>
                         <div class="field-group">
-                            <label>Prepared By</label>
-                            <select bind:value={header.preparedBy} class="input-sm">
+                            <label for={sectionFieldId('header', 'prepared-by')}>Prepared By</label>
+                            <select id={sectionFieldId('header', 'prepared-by')} bind:value={header.preparedBy} class="input-sm">
                                 <option value="">Select...</option>
                                 {#each staffList as staff}<option value={staff.name}>{staff.name}</option>{/each}
                             </select>
                         </div>
                         <div class="field-group">
-                            <label>Doc Type</label>
-                            <select bind:value={header.quoteType} class="input-sm">
+                            <label for={sectionFieldId('header', 'doc-type')}>Doc Type</label>
+                            <select id={sectionFieldId('header', 'doc-type')} bind:value={header.quoteType} class="input-sm">
                                 <option value="Quotation">Quotation</option>
                                 <option value="Budgetary Quote">Budgetary Quote</option>
                                 <option value="Budgetary Estimate">Budgetary Est.</option>
@@ -1377,46 +1389,46 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             </select>
                         </div>
                         <div class="field-group">
-                            <label>Folder No.</label>
-                            <input type="text" bind:value={header.folderNumber} class="input-sm" placeholder="42-26" />
+                            <label for={sectionFieldId('header', 'folder-number')}>Folder No.</label>
+                            <input id={sectionFieldId('header', 'folder-number')} type="text" bind:value={header.folderNumber} class="input-sm" placeholder="42-26" />
                         </div>
                         <div class="field-group">
-                            <label>Costing ID</label>
-                            <input type="text" bind:value={header.costingId} class="input-sm" placeholder="Auto" />
+                            <label for={sectionFieldId('header', 'costing-id')}>Costing ID</label>
+                            <input id={sectionFieldId('header', 'costing-id')} type="text" bind:value={header.costingId} class="input-sm" placeholder="Auto" />
                         </div>
                     </div>
 
                     <!-- Row 3: Terms (always visible - needed for every quote) -->
                     <div class="header-row-3col tight">
                         <div class="field-group">
-                            <label>Payment Terms</label>
-                            <select bind:value={header.paymentTerms} class="input-sm">
+                            <label for={sectionFieldId('header', 'payment-terms')}>Payment Terms</label>
+                            <select id={sectionFieldId('header', 'payment-terms')} bind:value={header.paymentTerms} class="input-sm">
                                 {#each paymentTermsOptions as opt}<option value={opt}>{opt}</option>{/each}
                             </select>
                         </div>
                         <div class="field-group">
-                            <label>Delivery Terms</label>
-                            <select bind:value={header.deliveryTerms} class="input-sm">
+                            <label for={sectionFieldId('header', 'delivery-terms')}>Delivery Terms</label>
+                            <select id={sectionFieldId('header', 'delivery-terms')} bind:value={header.deliveryTerms} class="input-sm">
                                 {#each deliveryTermsOptions as opt}<option value={opt}>{opt}</option>{/each}
                             </select>
                         </div>
                         <div class="field-group">
-                            <label>Est. Delivery</label>
-                            <select bind:value={header.estDelivery} class="input-sm">
+                            <label for={sectionFieldId('header', 'estimated-delivery')}>Est. Delivery</label>
+                            <select id={sectionFieldId('header', 'estimated-delivery')} bind:value={header.estDelivery} class="input-sm">
                                 {#each deliveryOptions as opt}<option value={opt}>{opt}</option>{/each}
                             </select>
                         </div>
                     </div>
                     <div class="header-row-3col tight">
                         <div class="field-group full-span">
-                            <label>Subject</label>
-                            <input type="text" bind:value={header.subject} class="input-sm" placeholder="Subject line for customer PDF" />
+                            <label for={sectionFieldId('header', 'subject')}>Subject</label>
+                            <input id={sectionFieldId('header', 'subject')} type="text" bind:value={header.subject} class="input-sm" placeholder="Subject line for customer PDF" />
                         </div>
                     </div>
                     <div class="header-row-3col tight">
                         <div class="field-group full-span">
-                            <label>PDF Body</label>
-                            <textarea bind:value={quotationBody} class="input-sm textarea-sm" rows="4" placeholder="Opening body / cover note shown before the line items"></textarea>
+                            <label for={sectionFieldId('header', 'pdf-body')}>PDF Body</label>
+                            <textarea id={sectionFieldId('header', 'pdf-body')} bind:value={quotationBody} class="input-sm textarea-sm" rows="4" placeholder="Opening body / cover note shown before the line items"></textarea>
                         </div>
                     </div>
 
@@ -1429,54 +1441,54 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     <div class="advanced-section">
                         <div class="header-row-6col tight">
                             <div class="field-group">
-                                <label>Order Type</label>
-                                <select bind:value={header.orderType} class="input-sm">
+                                <label for={sectionFieldId('advanced', 'order-type')}>Order Type</label>
+                                <select id={sectionFieldId('advanced', 'order-type')} bind:value={header.orderType} class="input-sm">
                                     {#each orderTypeOptions as opt}<option value={opt}>{opt}</option>{/each}
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>Origin</label>
-                                <select bind:value={header.countryOfOrigin} class="input-sm">
+                                <label for={sectionFieldId('advanced', 'origin')}>Origin</label>
+                                <select id={sectionFieldId('advanced', 'origin')} bind:value={header.countryOfOrigin} class="input-sm">
                                     {#each countryOptions as opt}<option value={opt.code}>{opt.code}</option>{/each}
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>COC/COO</label>
-                                <select bind:value={header.cocCoo} class="input-sm">
+                                <label for={sectionFieldId('advanced', 'coc-coo')}>COC/COO</label>
+                                <select id={sectionFieldId('advanced', 'coc-coo')} bind:value={header.cocCoo} class="input-sm">
                                     {#each certificateOptions as opt}<option value={opt}>{opt}</option>{/each}
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>Test Cert</label>
-                                <select bind:value={header.testCertificate} class="input-sm">
+                                <label for={sectionFieldId('advanced', 'test-certificate')}>Test Cert</label>
+                                <select id={sectionFieldId('advanced', 'test-certificate')} bind:value={header.testCertificate} class="input-sm">
                                     {#each certificateOptions as opt}<option value={opt}>{opt}</option>{/each}
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>Install</label>
-                                <select bind:value={header.installation} class="input-sm">
+                                <label for={sectionFieldId('advanced', 'installation')}>Install</label>
+                                <select id={sectionFieldId('advanced', 'installation')} bind:value={header.installation} class="input-sm">
                                     <option value="Yes">Yes</option><option value="No">No</option>
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>Commission</label>
-                                <select bind:value={header.commissioning} class="input-sm">
+                                <label for={sectionFieldId('advanced', 'commissioning')}>Commission</label>
+                                <select id={sectionFieldId('advanced', 'commissioning')} bind:value={header.commissioning} class="input-sm">
                                     <option value="Yes">Yes</option><option value="No">No</option>
                                 </select>
                             </div>
                         </div>
                         <div class="header-row-3col tight">
                             <div class="field-group">
-                                <label>Place of Supply</label>
-                                <select bind:value={header.placeOfSupply} class="input-sm">
+                                <label for={sectionFieldId('advanced', 'place-of-supply')}>Place of Supply</label>
+                                <select id={sectionFieldId('advanced', 'place-of-supply')} bind:value={header.placeOfSupply} class="input-sm">
                                     <option value="Kingdom of Bahrain">Kingdom of Bahrain</option>
                                     <option value="GCC">GCC Member State</option>
                                     <option value="Export">Export (Outside GCC)</option>
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>Tax Category</label>
-                                <select bind:value={header.taxCategory} class="input-sm">
+                                <label for={sectionFieldId('advanced', 'tax-category')}>Tax Category</label>
+                                <select id={sectionFieldId('advanced', 'tax-category')} bind:value={header.taxCategory} class="input-sm">
                                     <option value="Standard">Standard Rate (10%)</option>
                                     <option value="Zero-rated">Zero-rated</option>
                                     <option value="Exempt">Exempt</option>
@@ -1484,8 +1496,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label>Customer TRN</label>
-                                <input type="text" bind:value={header.customerTRN} class="input-sm" placeholder="Tax Reg. Number" />
+                                <label for={sectionFieldId('advanced', 'customer-trn')}>Customer TRN</label>
+                                <input id={sectionFieldId('advanced', 'customer-trn')} type="text" bind:value={header.customerTRN} class="input-sm" placeholder="Tax Reg. Number" />
                             </div>
                         </div>
                     </div>
@@ -1501,28 +1513,28 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         <div class="line-row-top">
                             <span class="sl-no">{i + 1}</span>
                             <div class="field-inline">
-                                <label>Equipment</label>
-                                <input type="text" bind:value={item.equipment} class="input-sm" placeholder="Product name" />
+                                <label for={lineItemFieldId(i, 'equipment')}>Equipment</label>
+                                <input id={lineItemFieldId(i, 'equipment')} type="text" bind:value={item.equipment} class="input-sm" placeholder="Product name" />
                             </div>
                             <div class="field-inline">
-                                <label>Model</label>
-                                <input type="text" bind:value={item.model} class="input-sm" placeholder="Model #" />
+                                <label for={lineItemFieldId(i, 'model')}>Model</label>
+                                <input id={lineItemFieldId(i, 'model')} type="text" bind:value={item.model} class="input-sm" placeholder="Model #" />
                             </div>
                             <div class="field-inline compact">
-                                <label>Qty</label>
-                                <input type="number" bind:value={item.quantity} class="input-sm qty" min="1" on:change={calculateAll} />
+                                <label for={lineItemFieldId(i, 'quantity')}>Qty</label>
+                                <input id={lineItemFieldId(i, 'quantity')} type="number" bind:value={item.quantity} class="input-sm qty" min="1" on:change={calculateAll} />
                             </div>
                             <div class="field-inline compact">
-                                <label>Currency</label>
-                                <select bind:value={item.currency} class="input-sm" on:change={() => handleCurrencyChange(i)}>
+                                <label for={lineItemFieldId(i, 'currency')}>Currency</label>
+                                <select id={lineItemFieldId(i, 'currency')} bind:value={item.currency} class="input-sm" on:change={() => handleCurrencyChange(i)}>
                                     {#each currencyOptions as c}
                                         <option value={c.code}>{c.code}</option>
                                     {/each}
                                 </select>
                             </div>
                             <div class="field-inline exchange-rate">
-                                <label>Exch. Rate</label>
-                                <input type="number" bind:value={item.exchangeRate} class="input-sm money" step="0.0001" min="0.0001" on:change={calculateAll} />
+                                <label for={lineItemFieldId(i, 'exchange-rate')}>Exch. Rate</label>
+                                <input id={lineItemFieldId(i, 'exchange-rate')} type="number" bind:value={item.exchangeRate} class="input-sm money" step="0.0001" min="0.0001" on:change={calculateAll} />
                             </div>
                             {#if lineItems.length > 1}
                                 <button class="btn-remove" on:click={() => removeLineItem(i)} title="Remove item" aria-label={`Remove line item ${i + 1}`}>×</button>
@@ -1534,20 +1546,21 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         <!-- Line 2: Pricing -->
                         <div class="line-row-pricing">
                             <div class="field-inline">
-                                <label>Unit Price (FOB)</label>
-                                <input type="number" bind:value={item.fobForeign} class="input-sm money" step="0.001" on:change={calculateAll} placeholder="0.000" />
+                                <label for={lineItemFieldId(i, 'fob')}>Unit Price (FOB)</label>
+                                <input id={lineItemFieldId(i, 'fob')} type="number" bind:value={item.fobForeign} class="input-sm money" step="0.001" on:change={calculateAll} placeholder="0.000" />
                             </div>
                             <div class="field-inline">
-                                <label>Freight %</label>
-                                <input type="number" bind:value={item.freightPercent} class="input-sm money" step="0.01" min="0" on:change={calculateAll} placeholder="0.00" />
+                                <label for={lineItemFieldId(i, 'freight-percent')}>Freight %</label>
+                                <input id={lineItemFieldId(i, 'freight-percent')} type="number" bind:value={item.freightPercent} class="input-sm money" step="0.01" min="0" on:change={calculateAll} placeholder="0.00" />
                             </div>
                             <div class="field-inline">
-                                <label>Misc Cost</label>
-                                <input type="number" bind:value={item.otherCosts} class="input-sm money" step="0.001" min="0" on:change={calculateAll} placeholder="0.000" title="Miscellaneous costs (internal)" />
+                                <label for={lineItemFieldId(i, 'misc-cost')}>Misc Cost</label>
+                                <input id={lineItemFieldId(i, 'misc-cost')} type="number" bind:value={item.otherCosts} class="input-sm money" step="0.001" min="0" on:change={calculateAll} placeholder="0.000" title="Miscellaneous costs (internal)" />
                             </div>
                             <div class="field-inline">
-                                <label>Quote Price</label>
+                                <label for={lineItemFieldId(i, 'quote-price')}>Quote Price</label>
                                 <input
+                                    id={lineItemFieldId(i, 'quote-price')}
                                     type="number"
                                     class="input-sm money sell-price"
                                     class:user-overridden={item.userPriceSet && item.userPrice > 0}
@@ -1559,7 +1572,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 />
                             </div>
                             <div class="line-total">
-                                <label>Total (BHD)</label>
+                                <span class="field-label">Total (BHD)</span>
                                 <span class="calc-value highlight">{formatBHD(item.totalSuggestedPrice)}</span>
                             </div>
                         </div>
@@ -1596,23 +1609,23 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             </div>
                             <div class="cost-row">
                                 <div class="cost-input">
-                                    <label>Customs %</label>
-                                    <input type="number" bind:value={item.customsPercent} class="input-xs" on:change={calculateAll} />
+                                    <label for={costBreakdownFieldId(i, 'customs-percent')}>Customs %</label>
+                                    <input id={costBreakdownFieldId(i, 'customs-percent')} type="number" bind:value={item.customsPercent} class="input-xs" on:change={calculateAll} />
                                 </div>
                                 <div class="cost-input">
-                                    <label>Handling %</label>
-                                    <input type="number" bind:value={item.handlingPercent} class="input-xs" on:change={calculateAll} />
+                                    <label for={costBreakdownFieldId(i, 'handling-percent')}>Handling %</label>
+                                    <input id={costBreakdownFieldId(i, 'handling-percent')} type="number" bind:value={item.handlingPercent} class="input-xs" on:change={calculateAll} />
                                 </div>
                                 <div class="cost-input">
-                                    <label>Finance %</label>
-                                    <input type="number" bind:value={item.financePercent} class="input-xs" on:change={calculateAll} />
+                                    <label for={costBreakdownFieldId(i, 'finance-percent')}>Finance %</label>
+                                    <input id={costBreakdownFieldId(i, 'finance-percent')} type="number" bind:value={item.financePercent} class="input-xs" on:change={calculateAll} />
                                 </div>
                                 <div class="cost-input">
-                                    <label>Markup %</label>
-                                    <input type="number" bind:value={item.marginPercent} class="input-xs" min="0" max="99" on:change={calculateAll} />
+                                    <label for={costBreakdownFieldId(i, 'markup-percent')}>Markup %</label>
+                                    <input id={costBreakdownFieldId(i, 'markup-percent')} type="number" bind:value={item.marginPercent} class="input-xs" min="0" max="99" on:change={calculateAll} />
                                 </div>
                                 <div class="cost-input">
-                                    <label>Total Cost</label>
+                                    <span class="field-label">Total Cost</span>
                                     <span class="cost-value">{formatBHD(item.totalCost)}</span>
                                 </div>
                                 <!-- Issue #7: Copy costs button - only on first item -->
@@ -2040,7 +2053,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         gap: 1px;
     }
 
-    .line-total label {
+    .line-total .field-label {
         font-size: 9px;
         font-weight: 600;
         color: var(--text-tertiary, #9ca3af);
@@ -2230,7 +2243,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         gap: 4px;
     }
 
-    .cost-input label {
+    .cost-input label,
+    .cost-input .field-label {
         font-size: 10px;
         color: var(--text-muted);
     }
@@ -2591,10 +2605,6 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
 
     /* FIX #23: Disable hover animation "dance" on costing inputs */
     /* Prevents headache-inducing box highlighting when hovering over qty/price/margin fields */
-    .line-item-row input:hover,
-    .line-item-row input:focus,
-    .line-item-row select:hover,
-    .line-item-row select:focus,
     .cost-breakdown input:hover,
     .cost-breakdown input:focus,
     .input-sm:hover,
@@ -2606,13 +2616,6 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     }
 
     /* Remove any parent container hover effects that cause visual dance */
-    .line-item-row:hover {
-        transform: none !important;
-        transition: none !important;
-        border-left-color: var(--brand-indigo, #6366f1);
-        background: transparent !important;
-    }
-
     .cost-breakdown:hover {
         transform: none !important;
         transition: none !important;
