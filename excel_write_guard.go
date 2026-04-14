@@ -27,6 +27,10 @@ func (g *guardedExcelFile) File() *excelize.File {
 	return g.file
 }
 
+func (g *guardedExcelFile) Close() error {
+	return g.file.Close()
+}
+
 func (g *guardedExcelFile) NewStyle(style *excelize.Style) int {
 	id, err := g.file.NewStyle(style)
 	g.capture(err)
@@ -79,4 +83,10 @@ func (g *guardedExcelFile) GetSheetIndex(sheet string) int {
 	idx, err := g.file.GetSheetIndex(sheet)
 	g.capture(err)
 	return idx
+}
+
+func (g *guardedExcelFile) ColumnName(col int) string {
+	name, err := excelize.ColumnNumberToName(col)
+	g.capture(err)
+	return name
 }
