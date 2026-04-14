@@ -9,16 +9,11 @@
   export let showClose: boolean = true;
 
   const dispatch = createEventDispatcher();
+  const modalTitleId = `wabi-modal-title-${Math.random().toString(36).slice(2, 8)}`;
 
   function close() {
     open = false;
     dispatch('close');
-  }
-
-  function handleOverlayClick(e: MouseEvent) {
-    if (closeOnOverlay && e.target === e.currentTarget) {
-      close();
-    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -38,27 +33,33 @@
 <svelte:window on:keydown={handleKeydown} />
 
 {#if open}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div
     class="modal-overlay"
-    on:click={handleOverlayClick}
     in:fade={{ duration: 200 }}
     out:fade={{ duration: 150 }}
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="modal-title"
   >
-    <div 
+    <button
+      type="button"
+      class="modal-backdrop"
+      aria-label="Close modal"
+      tabindex="-1"
+      disabled={!closeOnOverlay}
+      on:click={close}
+    ></button>
+    <div
       class="modal-container"
       style="max-width: {sizes[size]}"
       in:fade={{ duration: 150 }}
       out:fade={{ duration: 100 }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={title ? modalTitleId : undefined}
+      aria-label={!title ? 'Modal dialog' : undefined}
     >
       {#if title || showClose}
         <header class="modal-header">
           {#if title}
-            <h2 id="modal-title" class="modal-title">{title}</h2>
+            <h2 id={modalTitleId} class="modal-title">{title}</h2>
           {/if}
           {#if showClose}
             <button class="modal-close" on:click={close} aria-label="Close modal">
@@ -85,8 +86,6 @@
   .modal-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(28, 28, 28, 0.4);
-    backdrop-filter: blur(4px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -94,7 +93,24 @@
     z-index: 1000;
   }
 
+  .modal-backdrop {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    background: rgba(28, 28, 28, 0.4);
+    backdrop-filter: blur(4px);
+    cursor: pointer;
+  }
+
+  .modal-backdrop:disabled {
+    cursor: default;
+  }
+
   .modal-container {
+    position: relative;
+    z-index: 1;
     background: var(--surface, #ffffff);
     border: 1px solid rgba(0, 0, 0, 0.08);
     border-radius: 18px;

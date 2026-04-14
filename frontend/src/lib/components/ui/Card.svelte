@@ -6,27 +6,42 @@
   $: ariaLabel = $$props['aria-label'] || undefined;
 </script>
 
-<div
-  class="card"
-  class:card-elevated={variant === 'elevated'}
-  class:card-accent={variant === 'accent'}
-  class:card-hoverable={hoverable}
-  class:padding-sm={padding === 'sm'}
-  class:padding-md={padding === 'md'}
-  class:padding-lg={padding === 'lg'}
-  aria-label={ariaLabel}
-  role={hoverable ? 'button' : undefined}
-  tabindex={hoverable ? 0 : undefined}
-  on:click
-  on:keydown
->
-  <slot />
-</div>
+{#if hoverable}
+  <button
+    type="button"
+    class="card"
+    class:card-elevated={variant === 'elevated'}
+    class:card-accent={variant === 'accent'}
+    class:card-hoverable={hoverable}
+    class:padding-sm={padding === 'sm'}
+    class:padding-md={padding === 'md'}
+    class:padding-lg={padding === 'lg'}
+    aria-label={ariaLabel}
+    on:click
+    on:keydown
+  >
+    <slot />
+  </button>
+{:else}
+  <div
+    class="card"
+    class:card-elevated={variant === 'elevated'}
+    class:card-accent={variant === 'accent'}
+    class:card-hoverable={hoverable}
+    class:padding-sm={padding === 'sm'}
+    class:padding-md={padding === 'md'}
+    class:padding-lg={padding === 'lg'}
+    aria-label={ariaLabel}
+  >
+    <slot />
+  </div>
+{/if}
 
 <style>
   .card {
     background: var(--surface);
     border-radius: var(--border-radius);
+    border: none;
     box-shadow: var(--shadow-sm);
     transition: box-shadow var(--transition-fast);
   }
