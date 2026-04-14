@@ -258,9 +258,9 @@ func extractRegionPixels(img image.Image, rect image.Rectangle) ([]byte, int, in
 	for y := rect.Min.Y; y < rect.Max.Y; y++ {
 		for x := rect.Min.X; x < rect.Max.X; x++ {
 			r, g, b, _ := img.At(x, y).RGBA()
-			pixels[idx] = byte(r >> 8)
-			pixels[idx+1] = byte(g >> 8)
-			pixels[idx+2] = byte(b >> 8)
+			pixels[idx] = rgbaToByte(r >> 8)
+			pixels[idx+1] = rgbaToByte(g >> 8)
+			pixels[idx+2] = rgbaToByte(b >> 8)
 			idx += 3
 		}
 	}
@@ -322,4 +322,11 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func rgbaToByte(v uint32) byte {
+	if v > 0xFF {
+		return 0xFF
+	}
+	return byte(v)
 }

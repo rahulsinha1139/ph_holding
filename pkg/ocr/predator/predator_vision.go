@@ -149,10 +149,10 @@ func (p *PredatorVision) applyUVChannel(img image.Image) image.Image {
 			gf = clamp(gf*1.1, 0, 255)
 
 			result.Set(x, y, color.RGBA{
-				R: uint8(rf),
-				G: uint8(gf),
-				B: uint8(uvComponent),
-				A: uint8(a >> 8),
+				R: uint8(uint32(rf) & 0xff),
+				G: uint8(uint32(gf) & 0xff),
+				B: uint8(uint32(uvComponent) & 0xff),
+				A: uint8((a >> 8) & 0xff),
 			})
 		}
 	}
@@ -327,10 +327,10 @@ func (p *PredatorVision) applyAdaptiveFocus(img image.Image) image.Image {
 			newB := clamp(float64(b>>8)+factor*(float64(b>>8)-avgB), 0, 255)
 
 			result.Set(x+bounds.Min.X, y+bounds.Min.Y, color.RGBA{
-				R: uint8(newR),
-				G: uint8(newG),
-				B: uint8(newB),
-				A: uint8(a >> 8),
+				R: uint8(uint32(newR) & 0xff),
+				G: uint8(uint32(newG) & 0xff),
+				B: uint8(uint32(newB) & 0xff),
+				A: uint8((a >> 8) & 0xff),
 			})
 		}
 	}
