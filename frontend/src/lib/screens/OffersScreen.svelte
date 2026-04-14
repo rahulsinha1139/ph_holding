@@ -178,6 +178,13 @@
     }
   }
 
+  function handleGlobalKeydown(event: KeyboardEvent) {
+    if (event.key !== "Escape") return;
+    if (showFollowUpModal) {
+      showFollowUpModal = false;
+    }
+  }
+
   async function loadPendingFollowUps() {
     try {
       pendingFollowUps = await GetPendingFollowUps() || [];
@@ -1053,7 +1060,7 @@
     </Button>
   </svelte:fragment>
 
-  <div class="offers-container">
+  <div class="offers-container" data-embedded={embedded}>
     <!-- Warning: Offers with no line items -->
     {#if actionableOffersWithNoItems.length > 0}
       <div class="no-items-warning">
@@ -1345,16 +1352,16 @@
               <!-- Row 1: Equipment & Model -->
               <div class="form-row-3">
                 <div class="form-field">
-                  <label>Equipment</label>
-                  <input type="text" bind:value={item.equipment} placeholder="Product/Equipment name" class="input-field" />
+                  <label for={`item-${index}-equipment`}>Equipment</label>
+                  <input id={`item-${index}-equipment`} type="text" bind:value={item.equipment} placeholder="Product/Equipment name" class="input-field" />
                 </div>
                 <div class="form-field">
-                  <label>Model</label>
-                  <input type="text" bind:value={item.model} placeholder="Model number" class="input-field" />
+                  <label for={`item-${index}-model`}>Model</label>
+                  <input id={`item-${index}-model`} type="text" bind:value={item.model} placeholder="Model number" class="input-field" />
                 </div>
                 <div class="form-field">
-                  <label>Currency</label>
-                  <select bind:value={item.currency} class="input-field">
+                  <label for={`item-${index}-currency`}>Currency</label>
+                  <select id={`item-${index}-currency`} bind:value={item.currency} class="input-field">
                     <option value="BHD">BHD</option>
                     <option value="EUR">EUR</option>
                     <option value="USD">USD</option>
@@ -1365,48 +1372,48 @@
 
               <!-- Row 2: Specification -->
               <div class="form-field full-width">
-                <label>Specification</label>
-                <input type="text" bind:value={item.specification} placeholder="Technical specification" class="input-field" />
+                <label for={`item-${index}-specification`}>Specification</label>
+                <input id={`item-${index}-specification`} type="text" bind:value={item.specification} placeholder="Technical specification" class="input-field" />
               </div>
 
               <!-- Row 3: Detailed Description -->
               <div class="form-field full-width">
-                <label>Detailed Description</label>
-                <textarea bind:value={item.detailed_description} rows="2" placeholder="Extended specifications, codes, approvals..." class="input-field textarea"></textarea>
+                <label for={`item-${index}-detailed-description`}>Detailed Description</label>
+                <textarea id={`item-${index}-detailed-description`} bind:value={item.detailed_description} rows="2" placeholder="Extended specifications, codes, approvals..." class="input-field textarea"></textarea>
               </div>
 
               <!-- Row 4: Cost Fields -->
               <div class="form-row-4">
                 <div class="form-field">
-                  <label>Quantity</label>
-                  <input type="number" bind:value={item.quantity} min="1" step="1" class="input-field" />
+                  <label for={`item-${index}-quantity`}>Quantity</label>
+                  <input id={`item-${index}-quantity`} type="number" bind:value={item.quantity} min="1" step="1" class="input-field" />
                 </div>
                 <div class="form-field">
-                  <label>FOB</label>
-                  <input type="number" bind:value={item.fob} min="0" step="0.001" class="input-field" />
+                  <label for={`item-${index}-fob`}>FOB</label>
+                  <input id={`item-${index}-fob`} type="number" bind:value={item.fob} min="0" step="0.001" class="input-field" />
                 </div>
                 <div class="form-field">
-                  <label>Freight</label>
-                  <input type="number" bind:value={item.freight} min="0" step="0.001" class="input-field" />
+                  <label for={`item-${index}-freight`}>Freight</label>
+                  <input id={`item-${index}-freight`} type="number" bind:value={item.freight} min="0" step="0.001" class="input-field" />
                 </div>
                 <div class="form-field">
-                  <label>Total Cost</label>
-                  <input type="number" bind:value={item.total_cost} min="0" step="0.001" class="input-field" readonly />
+                  <label for={`item-${index}-total-cost`}>Total Cost</label>
+                  <input id={`item-${index}-total-cost`} type="number" bind:value={item.total_cost} min="0" step="0.001" class="input-field" readonly />
                 </div>
               </div>
 
               <!-- Row 5: Pricing -->
               <div class="form-row-4">
                 <div class="form-field">
-                  <label>Margin %</label>
-                  <input type="number" bind:value={item.margin_percent} min="0" max="99" step="1" class="input-field" />
+                  <label for={`item-${index}-margin`}>Margin %</label>
+                  <input id={`item-${index}-margin`} type="number" bind:value={item.margin_percent} min="0" max="99" step="1" class="input-field" />
                 </div>
                 <div class="form-field">
-                  <label>Unit Price (BHD)</label>
-                  <input type="number" bind:value={item.unit_price} min="0" step="0.001" class="input-field highlight-field" />
+                  <label for={`item-${index}-unit-price`}>Unit Price (BHD)</label>
+                  <input id={`item-${index}-unit-price`} type="number" bind:value={item.unit_price} min="0" step="0.001" class="input-field highlight-field" />
                 </div>
                 <div class="form-field">
-                  <label>Line Total</label>
+                  <div class="label">Line Total</div>
                   <div class="calculated-value">{(item.quantity * item.unit_price).toFixed(3)} BHD</div>
                 </div>
                 <div></div>
@@ -1518,20 +1525,23 @@
   </svelte:fragment>
 </WabiModal>
 
+<svelte:window on:keydown={handleGlobalKeydown} />
+
 <!-- Follow-Up Modal -->
 {#if showFollowUpModal}
-  <div class="followup-overlay" on:click|self={() => showFollowUpModal = false}>
+  <div class="followup-overlay">
+    <button type="button" class="followup-dismiss" aria-label="Close follow-up modal" on:click={() => showFollowUpModal = false}></button>
     <div class="followup-modal" in:fade={{ duration: 150 }}>
       <h3>Schedule Follow-Up</h3>
       <p class="followup-offer">Offer: {followUpOffer?.offer_number || followUpOffer?.id?.slice(0,8)}</p>
       <div class="followup-form">
         <div class="form-group">
-          <label>Follow-Up Date</label>
-          <input type="date" bind:value={followUpDate} min={new Date().toISOString().split('T')[0]} />
+          <label for="followup-date">Follow-Up Date</label>
+          <input id="followup-date" type="date" bind:value={followUpDate} min={new Date().toISOString().split('T')[0]} />
         </div>
         <div class="form-group">
-          <label>Notes</label>
-          <textarea bind:value={followUpNotes} placeholder="What to follow up on..." rows="3"></textarea>
+          <label for="followup-notes">Notes</label>
+          <textarea id="followup-notes" bind:value={followUpNotes} placeholder="What to follow up on..." rows="3"></textarea>
         </div>
         <div class="followup-actions">
           <button class="btn-cancel" on:click={() => showFollowUpModal = false}>Cancel</button>
@@ -1568,8 +1578,8 @@
       <div class="view-header">
         <div class="view-header-main">
           <div class="editable-offer-number">
-            <label class="meta-label">Offer #</label>
-            <input type="text" bind:value={viewOffer.offer_number} class="input-inline input-inline-lg" placeholder="Offer number" />
+            <label class="meta-label" for="view-offer-number">Offer #</label>
+            <input id="view-offer-number" type="text" bind:value={viewOffer.offer_number} class="input-inline input-inline-lg" placeholder="Offer number" />
           </div>
           <StatusBadge status={viewOffer.stage || 'Quoted'} />
         </div>
@@ -1596,37 +1606,37 @@
           </div>
           <!-- Row 2: Editable Reference & Terms -->
           <div class="meta-item">
-            <label class="meta-label">Folder Number</label>
-            <input type="text" bind:value={viewOffer.folder_number} class="input-inline" placeholder="Folder #" />
+            <label class="meta-label" for="view-folder-number">Folder Number</label>
+            <input id="view-folder-number" type="text" bind:value={viewOffer.folder_number} class="input-inline" placeholder="Folder #" />
           </div>
           <div class="meta-item">
-            <label class="meta-label">Customer Reference</label>
-            <input type="text" bind:value={viewOffer.customer_reference} class="input-inline" placeholder="RFQ / enquiry ref" />
+            <label class="meta-label" for="view-customer-reference">Customer Reference</label>
+            <input id="view-customer-reference" type="text" bind:value={viewOffer.customer_reference} class="input-inline" placeholder="RFQ / enquiry ref" />
           </div>
           <div class="meta-item">
-            <label class="meta-label">Payment Terms</label>
-            <input type="text" bind:value={viewOffer.payment_terms} class="input-inline" placeholder="e.g. Net 30" />
+            <label class="meta-label" for="view-payment-terms">Payment Terms</label>
+            <input id="view-payment-terms" type="text" bind:value={viewOffer.payment_terms} class="input-inline" placeholder="e.g. Net 30" />
           </div>
           <div class="meta-item">
-            <label class="meta-label">Delivery Terms</label>
-            <input type="text" bind:value={viewOffer.delivery_terms} class="input-inline" placeholder="e.g. DAP Bahrain" />
+            <label class="meta-label" for="view-delivery-terms">Delivery Terms</label>
+            <input id="view-delivery-terms" type="text" bind:value={viewOffer.delivery_terms} class="input-inline" placeholder="e.g. DAP Bahrain" />
           </div>
           <!-- Row 3: Attention Details (editable) -->
           <div class="meta-item">
-            <label class="meta-label">Attention Person</label>
-            <input type="text" bind:value={viewOffer.attention_person} class="input-inline" placeholder="Contact name" />
+            <label class="meta-label" for="view-attention-person">Attention Person</label>
+            <input id="view-attention-person" type="text" bind:value={viewOffer.attention_person} class="input-inline" placeholder="Contact name" />
           </div>
           <div class="meta-item">
-            <label class="meta-label">Company</label>
-            <input type="text" bind:value={viewOffer.attention_company} class="input-inline" placeholder="Company name" />
+            <label class="meta-label" for="view-company">Company</label>
+            <input id="view-company" type="text" bind:value={viewOffer.attention_company} class="input-inline" placeholder="Company name" />
           </div>
           <div class="meta-item">
-            <label class="meta-label">Attention Phone</label>
-            <input type="text" bind:value={viewOffer.attention_phone} class="input-inline" placeholder="Phone" />
+            <label class="meta-label" for="view-attention-phone">Attention Phone</label>
+            <input id="view-attention-phone" type="text" bind:value={viewOffer.attention_phone} class="input-inline" placeholder="Phone" />
           </div>
           <div class="meta-item">
-            <label class="meta-label">Issued By</label>
-            <input type="text" bind:value={viewOffer.issued_by} class="input-inline" placeholder="Name" />
+            <label class="meta-label" for="view-issued-by">Issued By</label>
+            <input id="view-issued-by" type="text" bind:value={viewOffer.issued_by} class="input-inline" placeholder="Name" />
           </div>
         </div>
       </div>
@@ -1918,6 +1928,16 @@
     z-index: 1000;
   }
 
+  .followup-dismiss {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    appearance: none;
+    cursor: pointer;
+  }
+
   .followup-modal {
     background: var(--surface, #fff);
     border-radius: 12px;
@@ -1925,6 +1945,8 @@
     width: 400px;
     max-width: 90vw;
     box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+    position: relative;
+    z-index: 1;
   }
 
   .followup-modal h3 {
@@ -2261,13 +2283,6 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-  }
-
-  .offer-number {
-    margin: 0;
-    font-size: 22px;
-    font-weight: 700;
-    color: var(--onyx, #1D1D1F);
   }
 
   /* Inline editable inputs for view modal */

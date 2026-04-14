@@ -501,7 +501,7 @@
   });
 </script>
 
-<div class="page">
+    <div class="page" data-embedded={embedded}>
   <header class="header">
     <div class="header-content">
       <h1>Settings.</h1>
@@ -543,8 +543,9 @@
         <div class="section" in:fade>
           <h3>General Identity</h3>
           <div class="form-group">
-            <label>Company Name</label>
+            <label for="company-name">Company Name</label>
             <input
+              id="company-name"
               type="text"
               bind:value={settings.companyName}
               class="input-clean"
@@ -552,8 +553,8 @@
           </div>
           <div class="row">
             <div class="form-group half">
-              <label>Base Currency</label>
-              <select bind:value={settings.currency} class="input-clean">
+              <label for="base-currency">Base Currency</label>
+              <select id="base-currency" bind:value={settings.currency} class="input-clean">
                 <option value="BHD">BHD (Bahraini Dinar)</option>
                 <option value="USD">USD (US Dollar)</option>
                 <option value="EUR">EUR (Euro)</option>
@@ -564,8 +565,8 @@
             </div>
             <!-- Dark mode commented out - not yet functional
             <div class="form-group half">
-              <label>Interface Theme</label>
-              <select bind:value={settings.theme} class="input-clean">
+              <label for="interface-theme">Interface Theme</label>
+              <select id="interface-theme" bind:value={settings.theme} class="input-clean">
                 <option value="light">Light (Milestoners)</option>
                 <option value="dark">Dark (Onyx)</option>
                 <option value="system">System Default</option>
@@ -600,9 +601,10 @@
           {#each Object.keys(settings.folders) as key}
             {#if key !== "extra_paths"}
               <div class="form-group">
-                <label>{key.replace("_path", "").toUpperCase()}</label>
+                <label for={`folder-${key}`}>{key.replace("_path", "").toUpperCase()}</label>
                 <div class="input-group">
                   <input
+                    id={`folder-${key}`}
                     type="text"
                     bind:value={settings.folders[key]}
                     class="input-clean"
@@ -621,11 +623,12 @@
           <h3>Artificial Intelligence</h3>
 
           <div class="form-group">
-            <label>AIML API Key <span style="font-size:0.8em; color: var(--accent);">(Butler primary — Grok 4)</span></label>
+            <label for="aiml-api-key">AIML API Key <span style="font-size:0.8em; color: var(--accent);">(Butler primary — Grok 4)</span></label>
             <p style="font-size:0.8em; color: var(--text-muted); margin: 2px 0 6px;">Powers Butler AI chat with Grok's large context window. Get key at api.aimlapi.com</p>
             <div class="input-group">
               {#if showKeyInput}
                 <input
+                  id="aiml-api-key"
                   type="text"
                   bind:value={settings.apiKeys.aimlapi_key}
                   class="input-clean"
@@ -633,6 +636,7 @@
                 />
               {:else}
                 <input
+                  id="aiml-api-key"
                   type="password"
                   bind:value={settings.apiKeys.aimlapi_key}
                   class="input-clean"
@@ -647,9 +651,9 @@
           </div>
 
           <div class="form-group">
-            <label>Grok Model</label>
+            <label for="grok-model">Grok Model</label>
             <p style="font-size:0.8em; color: var(--text-muted); margin: 2px 0 6px;">Select the backend model for Butler chat. It will fallback automatically if the model is unavailable.</p>
-            <select class="input-clean" bind:value={settings.apiKeys.aiml_model}>
+            <select id="grok-model" class="input-clean" bind:value={settings.apiKeys.aiml_model}>
               <option value="grok-4.1">grok-4.1</option>
               <option value="grok-4">grok-4</option>
               <option value="grok-2-vision-1212">grok-2-vision-1212</option>
@@ -659,11 +663,12 @@
           </div>
 
           <div class="form-group" style="margin-top: 16px;">
-            <label>Mistral API Key <span style="font-size:0.8em; color: var(--text-muted);">(OCR/document analysis + fallback chat)</span></label>
+            <label for="mistral-api-key">Mistral API Key <span style="font-size:0.8em; color: var(--text-muted);">(OCR/document analysis + fallback chat)</span></label>
             <p style="font-size:0.8em; color: var(--text-muted); margin: 2px 0 6px;">Used for "Analyze with Butler" document OCR. Falls back to this if AIML key not set.</p>
             <div class="input-group">
               {#if showMistralKey}
                 <input
+                  id="mistral-api-key"
                   type="text"
                   bind:value={settings.apiKeys.mistral_key}
                   class="input-clean"
@@ -671,6 +676,7 @@
                 />
               {:else}
                 <input
+                  id="mistral-api-key"
                   type="password"
                   bind:value={settings.apiKeys.mistral_key}
                   class="input-clean"
@@ -718,16 +724,18 @@
           <h3>Financial Rules</h3>
           <div class="row">
             <div class="form-group half">
-              <label>Default Margin (%)</label>
+              <label for="default-margin">Default Margin (%)</label>
               <input
+                id="default-margin"
                 type="number"
                 bind:value={settings.business.default_margin}
                 class="input-clean"
               />
             </div>
             <div class="form-group half">
-              <label>VAT Rate (%)</label>
+              <label for="vat-rate">VAT Rate (%)</label>
               <input
+                id="vat-rate"
                 type="number"
                 bind:value={settings.business.vat_rate}
                 class="input-clean"
@@ -796,8 +804,9 @@
             <div class="edit-rate-form" style="margin-top: 1.5rem; padding: 1rem; background: var(--surface-elevated); border-radius: 8px;">
               <h4>Update {editingCurrency} Rate</h4>
               <div class="form-group">
-                <label>New Rate (1 {editingCurrency} = ? BHD)</label>
+                <label for="new-rate">New Rate (1 {editingCurrency} = ? BHD)</label>
                 <input
+                  id="new-rate"
                   type="number"
                   step="0.0001"
                   min="0.0001"
@@ -807,8 +816,9 @@
                 />
               </div>
               <div class="form-group">
-                <label>Notes (optional)</label>
+                <label for="rate-notes">Notes (optional)</label>
                 <input
+                  id="rate-notes"
                   type="text"
                   bind:value={rateNotes}
                   class="input-clean"
@@ -843,8 +853,8 @@
           <p class="hint">Import historical data from Tally Excel exports. Files are loaded from Data_for_database/Tally_data directory.</p>
 
           <div class="form-group">
-            <label>Import Year</label>
-            <input type="number" bind:value={importYear} class="input-clean" min="2000" max="2030" />
+            <label for="import-year">Import Year</label>
+            <input id="import-year" type="number" bind:value={importYear} class="input-clean" min="2000" max="2030" />
           </div>
 
           <div class="import-actions">
@@ -896,15 +906,15 @@
           <p class="hint">Generate Profit & Loss and Balance Sheet reports from imported Tally data.</p>
 
           <div class="form-group">
-            <label>Report Year</label>
+            <label for="report-year">Report Year</label>
             {#if availableYears.length > 0}
-              <select bind:value={reportYear} class="input-clean">
+              <select id="report-year" bind:value={reportYear} class="input-clean">
                 {#each availableYears as yr}
                   <option value={yr}>{yr}</option>
                 {/each}
               </select>
             {:else}
-              <input type="number" bind:value={reportYear} class="input-clean" min="2000" max="2030" />
+              <input id="report-year" type="number" bind:value={reportYear} class="input-clean" min="2000" max="2030" />
               <p class="hint-small">No imported data found. Import Tally data first.</p>
             {/if}
           </div>
@@ -1044,37 +1054,37 @@
           <p class="hint">Configure remote database sync via Supabase for multi-device access.</p>
 
           <div class="form-group">
-            <label>Supabase URL</label>
-            <input type="text" bind:value={supabaseForm.url} class="input-clean" placeholder="https://xxxx.supabase.co" />
+            <label for="supabase-url">Supabase URL</label>
+            <input id="supabase-url" type="text" bind:value={supabaseForm.url} class="input-clean" placeholder="https://xxxx.supabase.co" />
           </div>
           <div class="form-group">
-            <label>Anon Key</label>
-            <input type="password" bind:value={supabaseForm.anonKey} class="input-clean" placeholder="eyJ..." />
+            <label for="supabase-anon-key">Anon Key</label>
+            <input id="supabase-anon-key" type="password" bind:value={supabaseForm.anonKey} class="input-clean" placeholder="eyJ..." />
           </div>
           <div class="form-group">
-            <label>Service Key</label>
-            <input type="password" bind:value={supabaseForm.serviceKey} class="input-clean" placeholder="eyJ..." />
+            <label for="supabase-service-key">Service Key</label>
+            <input id="supabase-service-key" type="password" bind:value={supabaseForm.serviceKey} class="input-clean" placeholder="eyJ..." />
           </div>
 
           <h3>Database Connection</h3>
           <div class="row">
             <div class="form-group half">
-              <label>DB Host</label>
-              <input type="text" bind:value={supabaseForm.dbHost} class="input-clean" placeholder="db.xxxx.supabase.co" />
+              <label for="db-host">DB Host</label>
+              <input id="db-host" type="text" bind:value={supabaseForm.dbHost} class="input-clean" placeholder="db.xxxx.supabase.co" />
             </div>
             <div class="form-group half">
-              <label>DB Port</label>
-              <input type="text" bind:value={supabaseForm.dbPort} class="input-clean" />
+              <label for="db-port">DB Port</label>
+              <input id="db-port" type="text" bind:value={supabaseForm.dbPort} class="input-clean" />
             </div>
           </div>
           <div class="row">
             <div class="form-group half">
-              <label>DB Name</label>
-              <input type="text" bind:value={supabaseForm.dbName} class="input-clean" placeholder="postgres" />
+              <label for="db-name">DB Name</label>
+              <input id="db-name" type="text" bind:value={supabaseForm.dbName} class="input-clean" placeholder="postgres" />
             </div>
             <div class="form-group half">
-              <label>DB Password</label>
-              <input type="password" bind:value={supabaseForm.dbPassword} class="input-clean" placeholder="Database password" />
+              <label for="db-password">DB Password</label>
+              <input id="db-password" type="password" bind:value={supabaseForm.dbPassword} class="input-clean" placeholder="Database password" />
             </div>
           </div>
 
@@ -1779,10 +1789,6 @@
     font-size: 12px;
     color: var(--steel, #86868B);
     margin-top: 4px;
-  }
-  .hint-small a {
-    color: var(--onyx, #1D1D1F);
-    text-decoration: underline;
   }
   .hint-inline {
     font-size: 12px;
