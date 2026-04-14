@@ -966,7 +966,7 @@ func extractTextFromRTF(rtf string) string {
 					if i+3 < len(rtf) {
 						// Try to decode hex character
 						hexStr := rtf[i+2 : i+4]
-						if val, err := strconv.ParseInt(hexStr, 16, 8); err == nil {
+						if val, err := strconv.ParseUint(hexStr, 16, 8); err == nil {
 							result.WriteByte(byte(val))
 						}
 						i += 3

@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -105,5 +106,26 @@ func BenchmarkIsVectorPDF(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		isVectorPDF(path)
+	}
+}
+
+func TestExtractTextFromRTF_DecodesHexEscapes(t *testing.T) {
+	rtf := "{\\rtf1\\ansi Hello \\'41\\'42\\'43 world}"
+
+	text := extractTextFromRTF(rtf)
+	if !strings.Contains(text, "Hello ABC world") {
+		t.Fatalf("extractTextFromRTF() = %q, want decoded hex text", text)
+	}
+}
+
+func TestExtractTextFromRTF_IgnoresInvalidHexEscapes(t *testing.T) {
+	rtf := "{\\rtf1\\ansi Keep \\'zz text}"
+
+	text := extractTextFromRTF(rtf)
+	if strings.Contains(text, "zz") {
+		t.Fatalf("extractTextFromRTF() = %q, should not emit invalid hex bytes", text)
+	}
+	if !strings.Contains(text, "Keep") || !strings.Contains(text, "text") {
+		t.Fatalf("extractTextFromRTF() = %q, expected surrounding plain text to survive", text)
 	}
 }
