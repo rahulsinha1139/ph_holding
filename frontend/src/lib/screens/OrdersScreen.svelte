@@ -608,6 +608,13 @@
     showDetailModal = true;
   }
 
+  function handleOrderItemKeydown(event: KeyboardEvent, row: main.Order) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      void handleRowClick(row);
+    }
+  }
+
   // Quick actions
   async function handleCreateDeliveryNote(order: main.Order) {
     // Set pending DN creation in store (DeliveryNotesScreen will consume on mount)
@@ -837,7 +844,14 @@
             </div>
             <div class="orders-list">
               {#each yearOrders as order}
-                <div class="order-item" on:click={() => handleRowClick(order)}>
+                <div
+                  class="order-item"
+                  role="button"
+                  tabindex="0"
+                  aria-label={`Open order ${order.order_number}${order.customer_name ? ` for ${order.customer_name}` : ''}`}
+                  on:click={() => handleRowClick(order)}
+                  on:keydown={(event) => handleOrderItemKeydown(event, order)}
+                >
                   <div class="order-left">
                     <span class="order-number">{order.order_number}</span>
                     <span class="order-customer">{order.customer_name}</span>
@@ -867,7 +881,14 @@
           </div>
           <div class="orders-list">
             {#each undatedOrders as order}
-              <div class="order-item" on:click={() => handleRowClick(order)}>
+              <div
+                class="order-item"
+                role="button"
+                tabindex="0"
+                aria-label={`Open order ${order.order_number}${order.customer_name ? ` for ${order.customer_name}` : ''}`}
+                on:click={() => handleRowClick(order)}
+                on:keydown={(event) => handleOrderItemKeydown(event, order)}
+              >
                 <div class="order-left">
                   <span class="order-number">{order.order_number}</span>
                   <span class="order-customer">{order.customer_name}</span>
@@ -1488,6 +1509,11 @@
   .order-item:hover {
     background: var(--bg-hover, #f0f0f0);
     border-color: var(--text-muted, #999);
+  }
+
+  .order-item:focus-visible {
+    outline: 2px solid var(--primary, #4f46e5);
+    outline-offset: 2px;
   }
 
   .order-left {

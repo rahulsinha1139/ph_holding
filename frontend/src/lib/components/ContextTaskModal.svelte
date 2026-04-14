@@ -61,6 +61,13 @@
     dispatch("close");
   }
 
+  function handleWindowKeydown(event: KeyboardEvent) {
+    if (!open) return;
+    if (event.key === "Escape") {
+      close();
+    }
+  }
+
   async function save() {
     if (!taskTitle.trim()) {
       toast.warning("Task title is required");
@@ -91,21 +98,18 @@
   }
 </script>
 
+<svelte:window on:keydown={handleWindowKeydown} />
+
 {#if open}
   <div
     class="modal-backdrop"
-    role="presentation"
-    tabindex="0"
-    on:click={close}
-    on:keydown={(event) => event.key === "Escape" && close()}
   >
+    <button class="backdrop-layer" type="button" aria-label="Close task modal" tabindex="-1" on:click={close}></button>
     <div
       class="modal-card"
       role="dialog"
       aria-modal="true"
-      tabindex="-1"
-      on:click|stopPropagation
-      on:keydown|stopPropagation
+      aria-label={title}
     >
       <div class="modal-head">
         <div>
@@ -158,15 +162,29 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.45);
-    display: flex;
-    align-items: center;
-    justify-content: center;
     z-index: 1200;
+    display: grid;
+    place-items: center;
     padding: 20px;
   }
 
+  .backdrop-layer {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    padding: 0;
+    background: rgba(0, 0, 0, 0.45);
+    border-radius: 0;
+    cursor: default;
+  }
+
+  .backdrop-layer:focus {
+    outline: none;
+  }
+
   .modal-card {
+    position: relative;
+    z-index: 1;
     width: min(720px, 100%);
     border-radius: 18px;
     border: 1px solid var(--border);
