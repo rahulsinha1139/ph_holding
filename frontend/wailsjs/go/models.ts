@@ -7889,6 +7889,7 @@ export namespace main {
 	    payment_date?: time.Time;
 	    payment_ref: string;
 	    payment_method: string;
+	    outstanding_bhd: number;
 	    ocr_document_id: string;
 	    ocr_confidence: number;
 	    discrepancy_reason: string;
@@ -7935,6 +7936,7 @@ export namespace main {
 	        this.payment_date = this.convertValues(source["payment_date"], time.Time);
 	        this.payment_ref = source["payment_ref"];
 	        this.payment_method = source["payment_method"];
+	        this.outstanding_bhd = source["outstanding_bhd"];
 	        this.ocr_document_id = source["ocr_document_id"];
 	        this.ocr_confidence = source["ocr_confidence"];
 	        this.discrepancy_reason = source["discrepancy_reason"];

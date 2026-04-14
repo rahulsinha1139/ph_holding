@@ -14571,6 +14571,23 @@ func (a *App) GetCurrentUserRole() string {
 		}
 	}
 
+	// License fallback: the app can be fully licensed before a device/user
+	// session is established, especially during developer/master-key smoke tests.
+	if a.db != nil {
+		deviceHash := a.getDeviceHash()
+		var license LicenseKey
+
+		if a.developerMasterKeyEnabled() {
+			if err := a.db.Where("key = ? AND activated = 1", masterKey).First(&license).Error; err == nil {
+				return strings.TrimSpace(license.Role)
+			}
+		}
+
+		if err := a.db.Where("device_hash = ? AND activated = 1", deviceHash).First(&license).Error; err == nil {
+			return strings.TrimSpace(license.Role)
+		}
+	}
+
 	// Final fallback: staff role (least privilege principle)
 	return "staff"
 }
