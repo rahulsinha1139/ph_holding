@@ -76,13 +76,25 @@
     },
     office: { outlook_enabled: false, excel_enabled: false },
     business: { default_margin: 20, vat_rate: 10 },
+    sync: {
+      enabled: false,
+      db_host: "",
+      db_port: "5432",
+      db_name: "postgres",
+      db_user: "postgres",
+      db_password: "",
+      db_sslmode: "require",
+    },
+    ocr: {
+      engine_url: "https://api.asymmetrica.ai/engine",
+      service_token: "",
+    },
   };
 
   let userRole = 'staff';
   let importYear = 2025;
   let importing = false;
   let importResult: any = null;
-  let supabaseForm = { url: '', anonKey: '', serviceKey: '', dbHost: '', dbPort: '5432', dbName: 'postgres', dbPassword: '' };
   let testingConnection = false;
   let reportYear = 2025;
   let generatingReport = false;
@@ -118,7 +130,7 @@
     { id: "currency", label: "Currency Rates" },
     ...(isAdmin ? [{ id: "data", label: "Data Import" }] : []),
     ...(isAdmin ? [{ id: "reports", label: "Financial Reports" }] : []),
-    ...(isAdmin ? [{ id: "sync", label: "Supabase Sync" }] : []),
+    ...(isAdmin ? [{ id: "sync", label: "Remote Sync" }] : []),
   ];
 
   async function importTallyAll() {
@@ -234,22 +246,22 @@
   }
 
   async function testSupabase() {
-    if (!supabaseForm.dbHost || !supabaseForm.dbPassword) {
-      toast.warning('DB Host and Password are required');
+    if (!settings.sync.db_host || !settings.sync.db_password || settings.sync.db_password.includes('*') || settings.sync.db_password === '(not set)' || settings.sync.db_password === '(not configured)') {
+      toast.warning('Enter the remote DB host and actual password first');
       return;
     }
     testingConnection = true;
     try {
       const ok = await TestSupabaseConnection(
-        supabaseForm.dbHost,
-        supabaseForm.dbPort || '5432',
-        'postgres',
-        supabaseForm.dbPassword,
-        supabaseForm.dbName || 'postgres',
-        'require'
+        settings.sync.db_host,
+        settings.sync.db_port || '5432',
+        settings.sync.db_user || 'postgres',
+        settings.sync.db_password,
+        settings.sync.db_name || 'postgres',
+        settings.sync.db_sslmode || 'require'
       );
       if (ok) {
-        toast.success('Supabase connection successful');
+        toast.success('Remote PostgreSQL connection successful');
       } else {
         toast.danger('Connection failed - check credentials');
       }
@@ -1050,48 +1062,67 @@
         </div>
       {:else if activeSection === "sync"}
         <div class="section" in:fade>
-          <h3>Supabase Connection</h3>
-          <p class="hint">Configure remote database sync via Supabase for multi-device access.</p>
+          <h3>Remote PostgreSQL Sync</h3>
+          <p class="hint">Configure the VPS PostgreSQL target used for multi-device sync. Your local SQLite database remains the seeded offline source of truth for build and flow testing.</p>
 
-          <div class="form-group">
-            <label for="supabase-url">Supabase URL</label>
-            <input id="supabase-url" type="text" bind:value={supabaseForm.url} class="input-clean" placeholder="https://xxxx.supabase.co" />
-          </div>
-          <div class="form-group">
-            <label for="supabase-anon-key">Anon Key</label>
-            <input id="supabase-anon-key" type="password" bind:value={supabaseForm.anonKey} class="input-clean" placeholder="eyJ..." />
-          </div>
-          <div class="form-group">
-            <label for="supabase-service-key">Service Key</label>
-            <input id="supabase-service-key" type="password" bind:value={supabaseForm.serviceKey} class="input-clean" placeholder="eyJ..." />
+          <div class="toggle-row">
+            <input id="sync-enabled" type="checkbox" bind:checked={settings.sync.enabled} />
+            <label for="sync-enabled">Enable remote database sync</label>
           </div>
 
           <h3>Database Connection</h3>
           <div class="row">
             <div class="form-group half">
               <label for="db-host">DB Host</label>
-              <input id="db-host" type="text" bind:value={supabaseForm.dbHost} class="input-clean" placeholder="db.xxxx.supabase.co" />
+              <input id="db-host" type="text" bind:value={settings.sync.db_host} class="input-clean" placeholder="5.223.95.178" />
             </div>
             <div class="form-group half">
               <label for="db-port">DB Port</label>
-              <input id="db-port" type="text" bind:value={supabaseForm.dbPort} class="input-clean" />
+              <input id="db-port" type="text" bind:value={settings.sync.db_port} class="input-clean" />
             </div>
           </div>
           <div class="row">
             <div class="form-group half">
               <label for="db-name">DB Name</label>
-              <input id="db-name" type="text" bind:value={supabaseForm.dbName} class="input-clean" placeholder="postgres" />
+              <input id="db-name" type="text" bind:value={settings.sync.db_name} class="input-clean" placeholder="asymmflow" />
+            </div>
+            <div class="form-group half">
+              <label for="db-user">DB User</label>
+              <input id="db-user" type="text" bind:value={settings.sync.db_user} class="input-clean" placeholder="postgres" />
+            </div>
+          </div>
+          <div class="row">
+            <div class="form-group half">
+              <label for="db-sslmode">SSL Mode</label>
+              <select id="db-sslmode" bind:value={settings.sync.db_sslmode} class="input-clean">
+                <option value="disable">disable</option>
+                <option value="require">require</option>
+                <option value="verify-ca">verify-ca</option>
+                <option value="verify-full">verify-full</option>
+              </select>
             </div>
             <div class="form-group half">
               <label for="db-password">DB Password</label>
-              <input id="db-password" type="password" bind:value={supabaseForm.dbPassword} class="input-clean" placeholder="Database password" />
+              <input id="db-password" type="password" bind:value={settings.sync.db_password} class="input-clean" placeholder="Remote database password" />
             </div>
           </div>
 
           <div class="action-row">
             <button class="btn-secondary" on:click={testSupabase} disabled={testingConnection}>
-              {testingConnection ? 'Testing...' : 'Test Connection'}
+              {testingConnection ? 'Testing...' : 'Test Remote DB'}
             </button>
+          </div>
+
+          <h3>OCR Runtime</h3>
+          <p class="hint">Configure the Asymm Engine endpoint and service token used for OCR and document runtime analysis.</p>
+
+          <div class="form-group">
+            <label for="ocr-engine-url">Engine URL</label>
+            <input id="ocr-engine-url" type="text" bind:value={settings.ocr.engine_url} class="input-clean" placeholder="https://api.asymmetrica.ai/engine" />
+          </div>
+          <div class="form-group">
+            <label for="ocr-service-token">Service Token</label>
+            <input id="ocr-service-token" type="password" bind:value={settings.ocr.service_token} class="input-clean" placeholder="Runtime service token" />
           </div>
 
           <h3>Operational Status</h3>

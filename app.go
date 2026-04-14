@@ -923,10 +923,15 @@ func (a *App) startup(ctx context.Context) {
 	})
 	AppLogger.Info("AIML model provider registered (Grok model preference)", nil)
 
-	diagLog("STARTUP: Initializing DBManager...")
-	a.InitDBManager()
+	if err := a.refreshRuntimeIntegrations(); err != nil {
+		AppLogger.Warn("Runtime integration settings refresh failed", map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
+
+	diagLog("STARTUP: Remote integrations ready")
 	a.StartCollaborativeSyncLoop(8 * time.Second)
-	diagLog("STARTUP: DBManager done")
+	diagLog("STARTUP: Collaboration sync loop ready")
 	a.dbSyncService = newDBSyncService(a)
 
 	diagLog("STARTUP: Initializing assets...")
@@ -9297,12 +9302,12 @@ func (a *App) GetSettings() (map[string]interface{}, error) {
 			"reports_path":   getSettingOrDefault(userSettings, "folders.reports_path", ""),
 		},
 		"apiKeys": map[string]interface{}{
-			"aimlapi_key":    maskSecret(getSettingOrDefault(userSettings, "apiKeys.aimlapi_key", "").(string)),
+			"aimlapi_key":    a.getMaskedStoredSecret("apiKeys.aimlapi_key", "apiKeys.aimlapi_key", userSettings),
 			"aiml_model":     getSettingOrDefault(userSettings, "apiKeys.aiml_model", getAIMLModelID()).(string),
-			"openai_key":     maskSecret(getSettingOrDefault(userSettings, "apiKeys.openai_key", "").(string)),
-			"anthropic_key":  maskSecret(getSettingOrDefault(userSettings, "apiKeys.anthropic_key", "").(string)),
-			"mistral_key":    maskSecret(getSettingOrDefault(userSettings, "apiKeys.mistral_key", "").(string)),
-			"azure_endpoint": getSettingOrDefault(userSettings, "apiKeys.azure_endpoint", ""),
+			"openai_key":     a.getMaskedStoredSecret("apiKeys.openai_key", "apiKeys.openai_key", userSettings),
+			"anthropic_key":  a.getMaskedStoredSecret("apiKeys.anthropic_key", "apiKeys.anthropic_key", userSettings),
+			"mistral_key":    a.getMaskedStoredSecret("apiKeys.mistral_key", "apiKeys.mistral_key", userSettings),
+			"azure_endpoint": a.getStoredSettingValue("apiKeys.azure_endpoint", "apiKeys.azure_endpoint", userSettings),
 		},
 		"gpu": map[string]interface{}{
 			"detected":    getSettingOrDefault(userSettings, "gpu.detected", false),
@@ -9318,6 +9323,32 @@ func (a *App) GetSettings() (map[string]interface{}, error) {
 		"business": map[string]interface{}{
 			"default_margin": getSettingOrDefault(userSettings, "business.default_margin", 20),
 			"vat_rate":       getSettingOrDefault(userSettings, "business.vat_rate", 10),
+		},
+		"sync": map[string]interface{}{
+			"enabled":    getSettingOrDefault(userSettings, "sync.enabled", cfg.Supabase.Enabled),
+			"db_host":    getSettingOrDefault(userSettings, "sync.db_host", cfg.Supabase.DBHost),
+			"db_port":    getSettingOrDefault(userSettings, "sync.db_port", cfg.Supabase.DBPort),
+			"db_name":    getSettingOrDefault(userSettings, "sync.db_name", cfg.Supabase.DBName),
+			"db_user":    getSettingOrDefault(userSettings, "sync.db_user", cfg.Supabase.DBUser),
+			"db_sslmode": getSettingOrDefault(userSettings, "sync.db_sslmode", cfg.Supabase.DBSSLMode),
+			"db_password": a.getMaskedStoredSecret(
+				runtimeRemoteDBPasswordSettingKey,
+				"sync.db_password",
+				userSettings,
+			),
+		},
+		"ocr": map[string]interface{}{
+			"engine_url": getSettingOrDefault(userSettings, "ocr.engine_url", func() string {
+				if a.ocrService != nil && strings.TrimSpace(a.ocrService.flyEndpoint) != "" {
+					return a.ocrService.flyEndpoint
+				}
+				return "https://api.asymmetrica.ai/engine"
+			}()),
+			"service_token": a.getMaskedStoredSecret(
+				runtimeOCRServiceTokenSettingKey,
+				"ocr.service_token",
+				userSettings,
+			),
 		},
 	}
 
@@ -9360,6 +9391,8 @@ func (a *App) UpdateSettings(settings map[string]interface{}) error {
 		return newError("CONFIG_NOT_LOADED", "Configuration not available", "")
 	}
 
+	settingsToPersist := cloneSettingsMap(settings)
+
 	// Update in-memory config for folder paths (used by OneDrive integrations)
 	if folders, ok := settings["folders"].(map[string]interface{}); ok {
 		if path, ok := folders["rfq_path"].(string); ok {
@@ -9378,39 +9411,71 @@ func (a *App) UpdateSettings(settings map[string]interface{}) error {
 
 	// Update in-memory API keys (used by AI integrations)
 	if apiKeys, ok := settings["apiKeys"].(map[string]interface{}); ok {
-		// Only update if not masked
-		if key, ok := apiKeys["aimlapi_key"].(string); ok && key != "" && !strings.Contains(key, "*") {
-			a.config.AI.APIKey = key
+		apiKeyUpdates := make(map[string]string)
+		if key, ok := apiKeys["aimlapi_key"].(string); ok && !isSecretPlaceholder(key) {
+			apiKeyUpdates["aimlapi_key"] = key
 		}
-		if key, ok := apiKeys["openai_key"].(string); ok && key != "" && !strings.Contains(key, "*") {
-			// Store OpenAI key if needed for future use
+		if key, ok := apiKeys["openai_key"].(string); ok && !isSecretPlaceholder(key) {
+			apiKeyUpdates["openai_key"] = key
 		}
-		if key, ok := apiKeys["anthropic_key"].(string); ok && key != "" && !strings.Contains(key, "*") {
-			// Store Anthropic key if needed for future use
+		if key, ok := apiKeys["anthropic_key"].(string); ok && !isSecretPlaceholder(key) {
+			apiKeyUpdates["anthropic_key"] = key
 		}
-		// Mistral API key - used by Butler AI
-		if key, ok := apiKeys["mistral_key"].(string); ok && key != "" && !strings.Contains(key, "*") {
-			log.Println("AI configuration updated")
+		if key, ok := apiKeys["mistral_key"].(string); ok && !isSecretPlaceholder(key) {
+			apiKeyUpdates["mistral_key"] = key
 		}
-		if model, ok := apiKeys["aiml_model"].(string); ok {
-			model = strings.TrimSpace(model)
-			if model != "" {
-				if err := setRuntimeEnv("AIML_MODEL", model); err != nil {
-					return err
-				}
-				if a.settingsService != nil {
-					if err := a.settingsService.SetSetting("apiKeys.aiml_model", model, "apiKeys", false); err != nil {
-						log.Printf("⚠ Failed to persist AIML model preference: %v", err)
-					}
-				}
-				log.Println("AI model preference updated")
+		if endpoint, ok := apiKeys["azure_endpoint"].(string); ok && strings.TrimSpace(endpoint) != "" {
+			apiKeyUpdates["azure_endpoint"] = endpoint
+		}
+		if model, ok := apiKeys["aiml_model"].(string); ok && strings.TrimSpace(model) != "" {
+			apiKeyUpdates["aiml_model"] = strings.TrimSpace(model)
+		}
+		if len(apiKeyUpdates) > 0 {
+			if err := a.SetAPIKeys(apiKeyUpdates); err != nil {
+				return err
 			}
 		}
 	}
 
-	// Persist full settings to JSON file
-	if err := a.saveUserSettings(settings); err != nil {
+	if syncSettings, ok := settings["sync"].(map[string]interface{}); ok {
+		if password, ok := syncSettings["db_password"].(string); ok {
+			if err := a.persistSecretSetting(runtimeRemoteDBPasswordSettingKey, password, "runtime"); err != nil {
+				return fmt.Errorf("persist remote database password: %w", err)
+			}
+		}
+	}
+
+	if ocrSettings, ok := settings["ocr"].(map[string]interface{}); ok {
+		if token, ok := ocrSettings["service_token"].(string); ok {
+			if err := a.persistSecretSetting(runtimeOCRServiceTokenSettingKey, token, "runtime"); err != nil {
+				return fmt.Errorf("persist OCR runtime token: %w", err)
+			}
+		}
+	}
+
+	if apiKeys, ok := settingsToPersist["apiKeys"].(map[string]interface{}); ok {
+		delete(apiKeys, "aimlapi_key")
+		delete(apiKeys, "openai_key")
+		delete(apiKeys, "anthropic_key")
+		delete(apiKeys, "mistral_key")
+		delete(apiKeys, "azure_endpoint")
+	}
+
+	if syncSettings, ok := settingsToPersist["sync"].(map[string]interface{}); ok {
+		delete(syncSettings, "db_password")
+	}
+
+	if ocrSettings, ok := settingsToPersist["ocr"].(map[string]interface{}); ok {
+		delete(ocrSettings, "service_token")
+	}
+
+	// Persist sanitized settings to JSON file
+	if err := a.saveUserSettings(settingsToPersist); err != nil {
 		return fmt.Errorf("failed to save settings: %w", err)
+	}
+
+	if err := a.refreshRuntimeIntegrations(); err != nil {
+		return fmt.Errorf("refresh runtime integrations: %w", err)
 	}
 
 	log.Printf("✅ Settings updated and persisted to settings.json")

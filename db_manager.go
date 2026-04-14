@@ -496,6 +496,9 @@ func (a *App) InitDBManager() {
 	}
 
 	cfg := LoadSupabaseConfig()
+	if a.config != nil {
+		a.config.Supabase = cfg
+	}
 	a.dbManager = NewDBManager(a.db, cfg)
 
 	// Try to connect to Supabase (non-blocking)

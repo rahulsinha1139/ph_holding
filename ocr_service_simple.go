@@ -89,8 +89,11 @@ func NewSimpleOCRService() (*SimpleOCRService, error) {
 	log.Println("🌸 Initializing Simple OCR Service...")
 
 	// Asymmetrica Runtime endpoint (previously Fly.io, now VPS asymm-engine).
-	// Resolution order: ASYMM_ENGINE_URL > legacy FLY_OCR_URL > hardcoded default.
+	// Resolution order: ASYMM_ENGINE_URL > persisted app runtime > legacy FLY_OCR_URL > hardcoded default.
 	engineEndpoint := os.Getenv("ASYMM_ENGINE_URL")
+	if engineEndpoint == "" {
+		engineEndpoint = os.Getenv("ASYMMFLOW_OCR_ENGINE_URL")
+	}
 	if engineEndpoint == "" {
 		engineEndpoint = os.Getenv("FLY_OCR_URL") // legacy fallback
 	}
@@ -327,9 +330,11 @@ func (s *SimpleOCRService) processImage(filePath, docType string) (*OCRResultSim
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// Auth: prefer the new ASYMM_SERVICE_TOKEN env var, fall back to the
-	// legacy ASYMM_API_KEY for backward compat during the transition.
+	// Auth: prefer the new ASYMM_SERVICE_TOKEN env var, then the persisted
+	// runtime token, then the legacy ASYMM_API_KEY for backward compatibility.
 	if token := os.Getenv("ASYMM_SERVICE_TOKEN"); token != "" {
+		req.Header.Set("X-Asymm-Service-Token", token)
+	} else if token := os.Getenv("ASYMMFLOW_OCR_SERVICE_TOKEN"); token != "" {
 		req.Header.Set("X-Asymm-Service-Token", token)
 	} else if apiKey := os.Getenv("ASYMM_API_KEY"); apiKey != "" {
 		req.Header.Set("X-Asymm-Service-Token", apiKey)
@@ -1134,8 +1139,11 @@ func (s *SimpleOCRService) callFlyOCR(filePath, docType string) (*OCRResultSimpl
 		}
 		req.Header.Set("Content-Type", "application/json")
 
-		// Auth: prefer ASYMM_SERVICE_TOKEN, fall back to legacy ASYMM_API_KEY.
+		// Auth: prefer ASYMM_SERVICE_TOKEN, then the persisted runtime token,
+		// then the legacy ASYMM_API_KEY.
 		if token := os.Getenv("ASYMM_SERVICE_TOKEN"); token != "" {
+			req.Header.Set("X-Asymm-Service-Token", token)
+		} else if token := os.Getenv("ASYMMFLOW_OCR_SERVICE_TOKEN"); token != "" {
 			req.Header.Set("X-Asymm-Service-Token", token)
 		} else if apiKey := os.Getenv("ASYMM_API_KEY"); apiKey != "" {
 			req.Header.Set("X-Asymm-Service-Token", apiKey)

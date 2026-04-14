@@ -639,7 +639,7 @@ func (c *Config) EnsureOneDrivePaths() error {
 // loadDatabaseConfig loads Supabase config for cloud sync (SQLite is primary)
 func loadDatabaseConfig() SupabaseConfig {
 	// Check if cloud sync is enabled
-	enableSync := getEnvBool("ENABLE_CLOUD_SYNC", false)
+	enableSync := getEnvBool("ENABLE_CLOUD_SYNC", getEnvBool("ASYMMFLOW_REMOTE_SYNC_ENABLED", false))
 
 	// Priority 1: DATABASE_URL (if provided by hosting platform)
 	databaseURL := getEnv("DATABASE_URL", "")
@@ -659,12 +659,12 @@ func loadDatabaseConfig() SupabaseConfig {
 		URL:           getEnv("SUPABASE_URL", ""),
 		AnonKey:       getEnv("SUPABASE_ANON_KEY", ""),
 		ServiceKey:    getEnv("SUPABASE_SERVICE_KEY", ""),
-		DBHost:        getEnv("SUPABASE_DB_HOST", ""),
-		DBPort:        getEnv("SUPABASE_DB_PORT", "5432"),
-		DBName:        getEnv("SUPABASE_DB_NAME", "postgres"),
-		DBUser:        getEnv("SUPABASE_DB_USER", "postgres"),
-		DBPassword:    getEnv("SUPABASE_DB_PASSWORD", ""),
-		DBSSLMode:     getEnv("SUPABASE_DB_SSLMODE", "require"),
+		DBHost:        getEnv("SUPABASE_DB_HOST", getEnv("ASYMMFLOW_REMOTE_DB_HOST", "")),
+		DBPort:        getEnv("SUPABASE_DB_PORT", getEnv("ASYMMFLOW_REMOTE_DB_PORT", "5432")),
+		DBName:        getEnv("SUPABASE_DB_NAME", getEnv("ASYMMFLOW_REMOTE_DB_NAME", "postgres")),
+		DBUser:        getEnv("SUPABASE_DB_USER", getEnv("ASYMMFLOW_REMOTE_DB_USER", "postgres")),
+		DBPassword:    getEnv("SUPABASE_DB_PASSWORD", getEnv("ASYMMFLOW_REMOTE_DB_PASSWORD", "")),
+		DBSSLMode:     getEnv("SUPABASE_DB_SSLMODE", getEnv("ASYMMFLOW_REMOTE_DB_SSLMODE", "require")),
 		StorageBucket: getEnv("SUPABASE_STORAGE_BUCKET", "reports"),
 	}
 
