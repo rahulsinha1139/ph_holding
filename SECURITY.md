@@ -19,6 +19,10 @@ The current position is:
 
 Until a dedicated security mailbox is established, please report security issues privately to the product operator or maintainer and do not open a public issue containing exploit details.
 
+See also:
+
+- `docs/VULNERABILITY_DISCLOSURE.md`
+
 When reporting, include:
 
 - affected feature or workflow
@@ -60,7 +64,15 @@ The trust-signal workstream currently focuses on:
 - baseline CI checks for quality and security scanning
 - evidence logging for drills, scans, and hardening work
 
+Related repository docs:
+
+- `docs/BUYER_SECURITY_OVERVIEW.md`
+- `docs/DEPLOYMENT_MODES.md`
+- `docs/ARCHITECTURE_AND_DATA_FLOW.md`
+- `docs/BACKUP_AND_RECOVERY.md`
+- `docs/RBAC_AND_APPROVALS.md`
+- `docs/THREAT_MODEL.md`
+
 ## Scope Notes
 
 This policy describes the repository posture and reporting path. It does not claim external certification.
-

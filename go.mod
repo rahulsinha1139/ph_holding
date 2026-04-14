@@ -2,6 +2,8 @@ module ph_holdings_app
 
 go 1.24.0
 
+toolchain go1.25.9
+
 require (
 	github.com/bep/debounce v1.2.1
 	github.com/fsnotify/fsnotify v1.9.0
