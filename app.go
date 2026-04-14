@@ -15410,6 +15410,35 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	pdf := &gopdf.GoPdf{}
 	pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4}) // 595 x 842 points
 	pdf.AddPage()
+	renderErr := error(nil)
+	setFont := func(family, style string, size int) {
+		if renderErr != nil {
+			return
+		}
+		if err := pdf.SetFont(family, style, size); err != nil {
+			renderErr = fmt.Errorf("failed to set costing PDF font %s/%s/%d: %w", family, style, size, err)
+		}
+	}
+	drawCell := func(text string) {
+		if renderErr != nil {
+			return
+		}
+		if err := pdf.Cell(nil, text); err != nil {
+			preview := text
+			if len(preview) > 48 {
+				preview = preview[:48] + "..."
+			}
+			renderErr = fmt.Errorf("failed to render costing PDF cell %q: %w", preview, err)
+		}
+	}
+	drawImage := func(path string) {
+		if renderErr != nil {
+			return
+		}
+		if err := pdf.Image(path, 0, 0, &gopdf.Rect{W: 595, H: 842}); err != nil {
+			renderErr = fmt.Errorf("failed to render costing PDF letterhead %s: %w", path, err)
+		}
+	}
 
 	// Load font - cross-platform font search
 	fontCandidates := []string{
@@ -15454,7 +15483,7 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	// Draw letterhead background
 	if letterheadPath != "" {
 		if _, err := os.Stat(letterheadPath); err == nil {
-			pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+			drawImage(letterheadPath)
 		}
 	}
 
@@ -15466,27 +15495,27 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	// === QUOTATION TITLE ===
 	currentY := 90.0
 	if hasBold {
-		pdf.SetFont("mainBold", "", 16)
+		setFont("mainBold", "", 16)
 	} else {
-		pdf.SetFont("main", "", 16)
+		setFont("main", "", 16)
 	}
 	quoteTitle := "QUOTATION"
 	if data.QuoteType != "" {
 		quoteTitle = strings.ToUpper(data.QuoteType)
 	}
 	pdf.SetXY(220, currentY)
-	pdf.Cell(nil, quoteTitle)
+	drawCell(quoteTitle)
 
 	// Quotation number on right
-	pdf.SetFont("main", "", 10)
+	setFont("main", "", 10)
 	pdf.SetXY(rightMargin-120, currentY)
-	pdf.Cell(nil, "Ref: "+data.CostingId)
+	drawCell("Ref: " + data.CostingId)
 	pdf.SetXY(rightMargin-120, currentY+14)
-	pdf.Cell(nil, "Date: "+data.Date)
+	drawCell("Date: " + data.Date)
 
 	// === CUSTOMER & PROJECT INFO ===
 	currentY = 130.0
-	pdf.SetFont("main", "", 9)
+	setFont("main", "", 9)
 
 	subjectLine := strings.TrimSpace(data.Subject)
 	if subjectLine == "" {
@@ -15509,13 +15538,13 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 		y := infoY
 		infoY += 14
 		if hasBold {
-			pdf.SetFont("mainBold", "", 9)
+			setFont("mainBold", "", 9)
 		}
 		pdf.SetXY(leftMargin, y)
-		pdf.Cell(nil, info.label+":")
-		pdf.SetFont("main", "", 9)
+		drawCell(info.label + ":")
+		setFont("main", "", 9)
 		pdf.SetXY(leftMargin+70, y)
-		pdf.Cell(nil, info.value)
+		drawCell(info.value)
 	}
 
 	// Right column: Terms
@@ -15533,13 +15562,13 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 		y := termsY
 		termsY += 14
 		if hasBold {
-			pdf.SetFont("mainBold", "", 9)
+			setFont("mainBold", "", 9)
 		}
 		pdf.SetXY(330, y)
-		pdf.Cell(nil, info.label+":")
-		pdf.SetFont("main", "", 9)
+		drawCell(info.label + ":")
+		setFont("main", "", 9)
 		pdf.SetXY(420, y)
-		pdf.Cell(nil, info.value)
+		drawCell(info.value)
 	}
 
 	// Body paragraph before the table
@@ -15548,11 +15577,11 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	if bodyText == "" {
 		bodyText = "We thank you for the opportunity and are pleased to submit our techno-commercial offer for your review. Please find our pricing and scope below."
 	}
-	pdf.SetFont("main", "", 9)
+	setFont("main", "", 9)
 	bodyLines := wrapText(bodyText, 95)
 	for _, line := range bodyLines {
 		pdf.SetXY(leftMargin, currentY)
-		pdf.Cell(nil, line)
+		drawCell(line)
 		currentY += 12
 	}
 
@@ -15572,13 +15601,13 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 
 	// Draw header text
 	if hasBold {
-		pdf.SetFont("mainBold", "", 8)
+		setFont("mainBold", "", 8)
 	} else {
-		pdf.SetFont("main", "", 8)
+		setFont("main", "", 8)
 	}
 	for i, header := range headers {
 		pdf.SetXY(colX[i]+2, currentY)
-		pdf.Cell(nil, header)
+		drawCell(header)
 	}
 	_ = colW // Used for reference
 
@@ -15588,7 +15617,7 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	pdf.Line(leftMargin, currentY, rightMargin, currentY)
 
 	// Draw line items
-	pdf.SetFont("main", "", 8)
+	setFont("main", "", 8)
 	for _, item := range data.LineItems {
 		// Check if we need a new page (leave room for item + possible description)
 		estimatedHeight := 24.0
@@ -15604,7 +15633,7 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 			pdf.AddPage()
 			if letterheadPath != "" {
 				if _, err := os.Stat(letterheadPath); err == nil {
-					pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+					drawImage(letterheadPath)
 				}
 			}
 			currentY = 90.0
@@ -15613,7 +15642,7 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 		rowY := currentY + 4
 		// Sl No
 		pdf.SetXY(colX[0]+2, rowY)
-		pdf.Cell(nil, fmt.Sprintf("%d", item.SlNo))
+		drawCell(fmt.Sprintf("%d", item.SlNo))
 
 		// Description (Equipment - Model)
 		desc := item.Equipment
@@ -15621,34 +15650,34 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 			desc += "\nModel: " + item.Model
 		}
 		if hasBold {
-			pdf.SetFont("mainBold", "", 8)
+			setFont("mainBold", "", 8)
 		}
 		pdf.SetXY(colX[1]+2, rowY)
-		pdf.Cell(nil, item.Equipment)
+		drawCell(item.Equipment)
 
 		// Model on next line
 		descY := rowY + 10
 		if item.Model != "" {
-			pdf.SetFont("main", "", 7)
+			setFont("main", "", 7)
 			pdf.SetXY(colX[1]+2, descY)
-			pdf.Cell(nil, "Model: "+item.Model)
+			drawCell("Model: " + item.Model)
 			descY += 9
 		}
 
 		// Long Code and Detailed Description are shown ONLY on Annexure page (not page 1)
-		pdf.SetFont("main", "", 8)
+		setFont("main", "", 8)
 
 		// Quantity
 		pdf.SetXY(colX[2]+2, rowY)
-		pdf.Cell(nil, fmt.Sprintf("%d PC", item.Quantity))
+		drawCell(fmt.Sprintf("%d PC", item.Quantity))
 
 		// Unit Price
 		pdf.SetXY(colX[3]+2, rowY)
-		pdf.Cell(nil, fmt.Sprintf("%.3f", item.SuggestedPrice))
+		drawCell(fmt.Sprintf("%.3f", item.SuggestedPrice))
 
 		// Total
 		pdf.SetXY(colX[4]+2, rowY)
-		pdf.Cell(nil, fmt.Sprintf("%.3f", item.TotalPrice))
+		drawCell(fmt.Sprintf("%.3f", item.TotalPrice))
 
 		// Dynamic row height based on content
 		minRowY := descY + 4
@@ -15676,30 +15705,30 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	totalsX := 380.0
 	valuesX := 470.0
 
-	pdf.SetFont("main", "", 9)
+	setFont("main", "", 9)
 
 	// Subtotal
 	pdf.SetXY(totalsX, currentY)
-	pdf.Cell(nil, "Subtotal:")
+	drawCell("Subtotal:")
 	pdf.SetXY(valuesX, currentY)
-	pdf.Cell(nil, fmt.Sprintf("%.3f BHD", data.Subtotal))
+	drawCell(fmt.Sprintf("%.3f BHD", data.Subtotal))
 
 	// Discount (if any)
 	if data.Discount > 0 {
 		currentY += 14
 		pdf.SetXY(totalsX, currentY)
-		pdf.Cell(nil, "Discount:")
+		drawCell("Discount:")
 		pdf.SetXY(valuesX, currentY)
-		pdf.Cell(nil, fmt.Sprintf("-%.3f BHD", data.Discount))
+		drawCell(fmt.Sprintf("-%.3f BHD", data.Discount))
 	}
 
 	// Net Amount
 	if data.Discount > 0 {
 		currentY += 14
 		pdf.SetXY(totalsX, currentY)
-		pdf.Cell(nil, "Net Amount:")
+		drawCell("Net Amount:")
 		pdf.SetXY(valuesX, currentY)
-		pdf.Cell(nil, fmt.Sprintf("%.3f BHD", data.NetAmount))
+		drawCell(fmt.Sprintf("%.3f BHD", data.NetAmount))
 	}
 
 	// VAT
@@ -15710,31 +15739,31 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 		displayVatRate = 10.0 // Fallback for old data without VatRate
 	}
 	vatLabel := fmt.Sprintf("VAT (%.0f%%)", displayVatRate)
-	pdf.Cell(nil, vatLabel+":")
+	drawCell(vatLabel + ":")
 	pdf.SetXY(valuesX, currentY)
-	pdf.Cell(nil, fmt.Sprintf("%.3f BHD", data.VAT))
+	drawCell(fmt.Sprintf("%.3f BHD", data.VAT))
 
 	// Grand Total (bold)
 	currentY += 18
 	if hasBold {
-		pdf.SetFont("mainBold", "", 11)
+		setFont("mainBold", "", 11)
 	} else {
-		pdf.SetFont("main", "", 11)
+		setFont("main", "", 11)
 	}
 	pdf.SetXY(totalsX, currentY)
-	pdf.Cell(nil, "Grand Total:")
+	drawCell("Grand Total:")
 	pdf.SetXY(valuesX, currentY)
-	pdf.Cell(nil, fmt.Sprintf("%.3f BHD", data.GrandTotal))
+	drawCell(fmt.Sprintf("%.3f BHD", data.GrandTotal))
 
 	// === VALIDITY NOTE ===
 	currentY += 30
-	pdf.SetFont("main", "", 8)
+	setFont("main", "", 8)
 	pdf.SetXY(leftMargin, currentY)
-	pdf.Cell(nil, "This quotation is valid for 30 days from the date of issue.")
+	drawCell("This quotation is valid for 30 days from the date of issue.")
 
 	currentY += 12
 	pdf.SetXY(leftMargin, currentY)
-	pdf.Cell(nil, "Prices are exclusive of VAT unless otherwise stated. Delivery subject to availability.")
+	drawCell("Prices are exclusive of VAT unless otherwise stated. Delivery subject to availability.")
 
 	// === ANNEXURE PAGE (Detailed Specifications) ===
 	hasDetailedSpecs := false
@@ -15748,21 +15777,21 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 		pdf.AddPage()
 		if letterheadPath != "" {
 			if _, err := os.Stat(letterheadPath); err == nil {
-				pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+				drawImage(letterheadPath)
 			}
 		}
 		annexY := 90.0
 		if hasBold {
-			pdf.SetFont("mainBold", "", 14)
+			setFont("mainBold", "", 14)
 		} else {
-			pdf.SetFont("main", "", 14)
+			setFont("main", "", 14)
 		}
 		pdf.SetXY(leftMargin, annexY)
-		pdf.Cell(nil, "ANNEXURE - 1")
+		drawCell("ANNEXURE - 1")
 		annexY += 20
-		pdf.SetFont("main", "", 9)
+		setFont("main", "", 9)
 		pdf.SetXY(leftMargin, annexY)
-		pdf.Cell(nil, "Detailed Long Codes and Specifications")
+		drawCell("Detailed Long Codes and Specifications")
 		annexY += 16
 
 		for _, item := range data.LineItems {
@@ -15773,30 +15802,30 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 				pdf.AddPage()
 				if letterheadPath != "" {
 					if _, err := os.Stat(letterheadPath); err == nil {
-						pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+						drawImage(letterheadPath)
 					}
 				}
 				annexY = 90.0
 			}
 
 			if hasBold {
-				pdf.SetFont("mainBold", "", 9)
+				setFont("mainBold", "", 9)
 			}
 			pdf.SetXY(leftMargin, annexY)
-			pdf.Cell(nil, fmt.Sprintf("%d. %s", item.SlNo, item.Equipment))
+			drawCell(fmt.Sprintf("%d. %s", item.SlNo, item.Equipment))
 			annexY += 12
 
-			pdf.SetFont("main", "", 8)
+			setFont("main", "", 8)
 			if item.Model != "" {
 				pdf.SetXY(leftMargin+10, annexY)
-				pdf.Cell(nil, "Model: "+item.Model)
+				drawCell("Model: " + item.Model)
 				annexY += 10
 			}
 			if item.LongCode != "" {
 				codeLines := wrapText("Long Code: "+item.LongCode, 90)
 				for _, cl := range codeLines {
 					pdf.SetXY(leftMargin+10, annexY)
-					pdf.Cell(nil, cl)
+					drawCell(cl)
 					annexY += 10
 				}
 			}
@@ -15807,13 +15836,13 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 						pdf.AddPage()
 						if letterheadPath != "" {
 							if _, err := os.Stat(letterheadPath); err == nil {
-								pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+								drawImage(letterheadPath)
 							}
 						}
 						annexY = 90.0
 					}
 					pdf.SetXY(leftMargin+10, annexY)
-					pdf.Cell(nil, dl)
+					drawCell(dl)
 					annexY += 10
 				}
 			}
@@ -15827,28 +15856,28 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 		// Add letterhead to T&C page
 		if letterheadPath != "" {
 			if _, err := os.Stat(letterheadPath); err == nil {
-				pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+				drawImage(letterheadPath)
 			}
 		}
 
 		// T&C Title
 		tcY := 90.0
 		if hasBold {
-			pdf.SetFont("mainBold", "", 14)
+			setFont("mainBold", "", 14)
 		} else {
-			pdf.SetFont("main", "", 14)
+			setFont("main", "", 14)
 		}
 		pdf.SetXY(leftMargin, tcY)
-		pdf.Cell(nil, "TERMS AND CONDITIONS")
+		drawCell("TERMS AND CONDITIONS")
 
 		// Reference back to quotation
-		pdf.SetFont("main", "", 9)
+		setFont("main", "", 9)
 		pdf.SetXY(rightMargin-120, tcY)
-		pdf.Cell(nil, "Ref: "+data.CostingId)
+		drawCell("Ref: " + data.CostingId)
 
 		// T&C Content - Split by newlines first to preserve paragraph structure
 		tcY += 30
-		pdf.SetFont("main", "", 9)
+		setFont("main", "", 9)
 
 		// Split T&C by newlines to preserve paragraph breaks
 		paragraphs := strings.Split(data.TermsAndConditions, "\n")
@@ -15864,7 +15893,7 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 				pdf.AddPage()
 				if letterheadPath != "" {
 					if _, err := os.Stat(letterheadPath); err == nil {
-						pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+						drawImage(letterheadPath)
 					}
 				}
 				tcY = 90.0
@@ -15875,10 +15904,10 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 			if isHeader {
 				tcY += 8 // Extra space before numbered sections
 				if hasBold {
-					pdf.SetFont("mainBold", "", 9)
+					setFont("mainBold", "", 9)
 				}
 			} else {
-				pdf.SetFont("main", "", 9)
+				setFont("main", "", 9)
 			}
 
 			// Wrap long paragraphs to fit page width
@@ -15888,24 +15917,27 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 					pdf.AddPage()
 					if letterheadPath != "" {
 						if _, err := os.Stat(letterheadPath); err == nil {
-							pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+							drawImage(letterheadPath)
 						}
 					}
 					tcY = 90.0
 				}
 				pdf.SetXY(leftMargin, tcY)
-				pdf.Cell(nil, line)
+				drawCell(line)
 				tcY += 12
 			}
 
 			// Reset to normal font after header
 			if isHeader {
-				pdf.SetFont("main", "", 9)
+				setFont("main", "", 9)
 			}
 		}
 	}
 
 	// Save PDF
+	if renderErr != nil {
+		return "", renderErr
+	}
 	if err := pdf.WritePdf(outputPath); err != nil {
 		return "", fmt.Errorf("failed to write PDF: %v", err)
 	}
