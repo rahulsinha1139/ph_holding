@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // =============================================================================
@@ -76,6 +77,11 @@ func (a *App) CreateBankStatement(statement *BankStatement) error {
 	if statement.Status == "" {
 		statement.Status = "Imported"
 	}
+	if strings.TrimSpace(statement.Division) == "" {
+		statement.Division = a.resolveBankAccountDivision(statement.BankAccountID)
+	} else {
+		statement.Division = normalizeDivisionName(statement.Division)
+	}
 
 	if err := a.db.Create(statement).Error; err != nil {
 		log.Printf("CreateBankStatement error: %v", err)
@@ -97,6 +103,12 @@ func (a *App) UpdateBankStatement(id string, updates map[string]interface{}) err
 	}
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
+	}
+	if bankAccountID, ok := updates["bank_account_id"].(string); ok && strings.TrimSpace(bankAccountID) != "" {
+		updates["division"] = a.resolveBankAccountDivision(bankAccountID)
+	}
+	if division, ok := updates["division"].(string); ok && strings.TrimSpace(division) != "" {
+		updates["division"] = normalizeDivisionName(division)
 	}
 
 	result := a.db.Model(&BankStatement{}).Where("id = ?", id).Updates(updates)
@@ -184,10 +196,51 @@ func (a *App) UpdateBankStatementLine(lineID string, updates map[string]interfac
 		return fmt.Errorf("database not initialized")
 	}
 
-	result := a.db.Model(&BankStatementLine{}).Where("id = ?", lineID).Updates(updates)
-	if result.Error != nil {
-		log.Printf("UpdateBankStatementLine error: %v", result.Error)
+	var originalLine BankStatementLine
+	editedMatchedLine := false
+
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&originalLine, "id = ?", lineID).Error; err != nil {
+			return fmt.Errorf("line not found: %w", err)
+		}
+
+		sanitizedUpdates, err := sanitizeBankStatementLineUpdates(originalLine, updates)
+		if err != nil {
+			return err
+		}
+		if len(sanitizedUpdates) == 0 {
+			return nil
+		}
+
+		if originalLine.IsMatched {
+			if err := clearBankStatementLineMatchTx(tx, lineID); err != nil {
+				return err
+			}
+			editedMatchedLine = true
+		}
+
+		if err := tx.Model(&BankStatementLine{}).Where("id = ?", lineID).Updates(sanitizedUpdates).Error; err != nil {
+			return fmt.Errorf("failed to update line: %w", err)
+		}
+
+		return refreshBankStatementRollupTx(tx, originalLine.BankStatementID)
+	})
+	if err != nil {
+		log.Printf("UpdateBankStatementLine error: %v", err)
 		return fmt.Errorf("operation failed. Please try again or contact support")
+	}
+
+	if editedMatchedLine {
+		previousMatch := originalLine.MatchedInvoiceIDs
+		if previousMatch == "" {
+			previousMatch = originalLine.MatchedPaymentID
+		}
+		a.LogReconciliationAction(originalLine.BankStatementID, &lineID, "UNMATCH",
+			map[string]interface{}{
+				"previous_match": previousMatch,
+				"reason":         "Line edited during OCR review",
+			},
+			a.getCurrentUserID(), false, 1.0, "Line edited during OCR review")
 	}
 
 	return nil
@@ -202,44 +255,61 @@ func (a *App) CreateBankStatementLine(statementID string, line map[string]interf
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	// Get next line number
-	var maxLineNum int
-	a.db.Model(&BankStatementLine{}).Where("bank_statement_id = ?", statementID).
-		Select("COALESCE(MAX(line_number), 0)").Scan(&maxLineNum)
-
-	parseFloat := func(v interface{}) float64 {
-		switch val := v.(type) {
-		case float64:
-			return val
-		case string:
-			f, _ := strconv.ParseFloat(strings.ReplaceAll(val, ",", ""), 64)
-			return f
+	var newLine BankStatementLine
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		var maxLineNum int
+		if err := tx.Model(&BankStatementLine{}).Where("bank_statement_id = ?", statementID).
+			Select("COALESCE(MAX(line_number), 0)").Scan(&maxLineNum).Error; err != nil {
+			return fmt.Errorf("failed to determine next line number: %w", err)
 		}
-		return 0
-	}
 
-	newLine := BankStatementLine{
-		Base:            Base{ID: uuid.New().String()},
-		BankStatementID: statementID,
-		LineNumber:      maxLineNum + 1,
-		Description:     fmt.Sprintf("%v", line["description"]),
-		Reference:       fmt.Sprintf("%v", line["reference"]),
-		Debit:           parseFloat(line["debit"]),
-		Credit:          parseFloat(line["credit"]),
-		Balance:         parseFloat(line["balance"]),
-		MatchType:       "Unmatched",
-	}
+		debit, err := parseBankStatementAmountValue(line["debit"])
+		if err != nil {
+			return err
+		}
+		credit, err := parseBankStatementAmountValue(line["credit"])
+		if err != nil {
+			return err
+		}
+		balance, err := parseBankStatementAmountValue(line["balance"])
+		if err != nil {
+			return err
+		}
+		if err := validateBankStatementAmounts(debit, credit); err != nil {
+			return err
+		}
 
-	if dateStr, ok := line["transaction_date"].(string); ok && dateStr != "" {
-		newLine.TransactionDate = parseDate(dateStr)
-		newLine.ValueDate = newLine.TransactionDate
-	} else {
-		newLine.TransactionDate = time.Now()
-		newLine.ValueDate = time.Now()
-	}
+		transactionDate, err := parseBankStatementDateValue(line["transaction_date"])
+		if err != nil {
+			return err
+		}
+		description := strings.TrimSpace(fmt.Sprintf("%v", line["description"]))
+		if description == "" {
+			return fmt.Errorf("description is required")
+		}
 
-	if err := a.db.Create(&newLine).Error; err != nil {
-		return nil, fmt.Errorf("failed to create line: %w", err)
+		newLine = BankStatementLine{
+			Base:            Base{ID: uuid.New().String()},
+			BankStatementID: statementID,
+			LineNumber:      maxLineNum + 1,
+			TransactionDate: transactionDate,
+			ValueDate:       transactionDate,
+			Description:     description,
+			Reference:       strings.TrimSpace(fmt.Sprintf("%v", line["reference"])),
+			Debit:           debit,
+			Credit:          credit,
+			Balance:         balance,
+			MatchType:       "Unmatched",
+		}
+
+		if err := tx.Create(&newLine).Error; err != nil {
+			return fmt.Errorf("failed to create line: %w", err)
+		}
+
+		return refreshBankStatementRollupTx(tx, statementID)
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	log.Printf("➕ Bank statement line created: %s in statement %s", newLine.ID, statementID)
@@ -256,10 +326,29 @@ func (a *App) DeleteBankStatementLine(lineID string) error {
 		return fmt.Errorf("database not initialized")
 	}
 
-	// Get line details for audit log
 	var line BankStatementLine
-	if err := a.db.First(&line, "id = ?", lineID).Error; err != nil {
-		return fmt.Errorf("line not found: %w", err)
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&line, "id = ?", lineID).Error; err != nil {
+			return fmt.Errorf("line not found: %w", err)
+		}
+
+		if err := tx.Model(&PayrollPayout{}).
+			Where("bank_statement_line_id = ?", lineID).
+			Updates(map[string]interface{}{
+				"bank_statement_line_id": nil,
+				"updated_at":             time.Now(),
+			}).Error; err != nil {
+			return fmt.Errorf("failed to unlink payroll payout from deleted line: %w", err)
+		}
+
+		if err := tx.Delete(&BankStatementLine{}, "id = ?", lineID).Error; err != nil {
+			return fmt.Errorf("failed to delete line: %w", err)
+		}
+
+		return refreshBankStatementRollupTx(tx, line.BankStatementID)
+	})
+	if err != nil {
+		return err
 	}
 
 	// SECURITY: Audit log BEFORE deletion
@@ -285,12 +374,185 @@ func (a *App) DeleteBankStatementLine(lineID string) error {
 		)
 	}
 
-	result := a.db.Delete(&BankStatementLine{}, "id = ?", lineID)
-	if result.Error != nil {
-		return fmt.Errorf("failed to delete line: %w", result.Error)
+	log.Printf("🗑️ Bank statement line deleted: %s", lineID)
+	return nil
+}
+
+func sanitizeBankStatementLineUpdates(existing BankStatementLine, updates map[string]interface{}) (map[string]interface{}, error) {
+	sanitized := make(map[string]interface{})
+
+	for key, value := range updates {
+		switch key {
+		case "transaction_date":
+			transactionDate, err := parseBankStatementDateValue(value)
+			if err != nil {
+				return nil, err
+			}
+			sanitized["transaction_date"] = transactionDate
+			sanitized["value_date"] = transactionDate
+		case "description":
+			description := strings.TrimSpace(fmt.Sprintf("%v", value))
+			if description == "" {
+				return nil, fmt.Errorf("description is required")
+			}
+			sanitized["description"] = description
+		case "reference":
+			sanitized["reference"] = strings.TrimSpace(fmt.Sprintf("%v", value))
+		case "debit", "credit", "balance":
+			amount, err := parseBankStatementAmountValue(value)
+			if err != nil {
+				return nil, err
+			}
+			sanitized[key] = amount
+		}
 	}
 
-	log.Printf("🗑️ Bank statement line deleted: %s", lineID)
+	debit := existing.Debit
+	if value, ok := sanitized["debit"].(float64); ok {
+		debit = value
+	}
+	credit := existing.Credit
+	if value, ok := sanitized["credit"].(float64); ok {
+		credit = value
+	}
+
+	if err := validateBankStatementAmounts(debit, credit); err != nil {
+		return nil, err
+	}
+
+	return sanitized, nil
+}
+
+func parseBankStatementAmountValue(value interface{}) (float64, error) {
+	switch val := value.(type) {
+	case nil:
+		return 0, nil
+	case float64:
+		return roundBHD(val), nil
+	case float32:
+		return roundBHD(float64(val)), nil
+	case int:
+		return float64(val), nil
+	case int64:
+		return float64(val), nil
+	case string:
+		trimmed := strings.TrimSpace(val)
+		if trimmed == "" {
+			return 0, nil
+		}
+		parsed, err := strconv.ParseFloat(strings.ReplaceAll(trimmed, ",", ""), 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid amount: %q", val)
+		}
+		return roundBHD(parsed), nil
+	default:
+		return 0, fmt.Errorf("invalid amount value")
+	}
+}
+
+func parseBankStatementDateValue(value interface{}) (time.Time, error) {
+	switch val := value.(type) {
+	case time.Time:
+		if val.IsZero() {
+			return time.Time{}, fmt.Errorf("transaction date is required")
+		}
+		return val, nil
+	case string:
+		trimmed := strings.TrimSpace(val)
+		if trimmed == "" {
+			return time.Time{}, fmt.Errorf("transaction date is required")
+		}
+		parsed := parseDate(trimmed)
+		if parsed.IsZero() {
+			return time.Time{}, fmt.Errorf("invalid transaction date")
+		}
+		return parsed, nil
+	default:
+		return time.Time{}, fmt.Errorf("invalid transaction date")
+	}
+}
+
+func validateBankStatementAmounts(debit, credit float64) error {
+	if debit < 0 || credit < 0 {
+		return fmt.Errorf("debit and credit must be non-negative")
+	}
+	if debit == 0 && credit == 0 {
+		return fmt.Errorf("either debit or credit must be non-zero")
+	}
+	if debit > 0 && credit > 0 {
+		return fmt.Errorf("cannot have both debit and credit on the same line")
+	}
+	return nil
+}
+
+func clearBankStatementLineMatchTx(tx *gorm.DB, lineID string) error {
+	if err := tx.Model(&PayrollPayout{}).
+		Where("bank_statement_line_id = ?", lineID).
+		Updates(map[string]interface{}{
+			"bank_statement_line_id": nil,
+			"updated_at":             time.Now(),
+		}).Error; err != nil {
+		return fmt.Errorf("failed to unlink payroll payout from bank line: %w", err)
+	}
+
+	return tx.Model(&BankStatementLine{}).Where("id = ?", lineID).Updates(map[string]interface{}{
+		"is_matched":          false,
+		"match_type":          "Unmatched",
+		"match_confidence":    0,
+		"matched_invoice_ids": "",
+		"matched_payment_id":  "",
+		"matched_expense_id":  nil,
+		"matched_journal_id":  "",
+	}).Error
+}
+
+func refreshBankStatementRollupTx(tx *gorm.DB, statementID string) error {
+	var statement BankStatement
+	if err := tx.First(&statement, "id = ?", statementID).Error; err != nil {
+		return fmt.Errorf("statement not found: %w", err)
+	}
+
+	var rollup struct {
+		TotalDebits  float64
+		TotalCredits float64
+		DebitCount   int64
+		CreditCount  int64
+	}
+
+	if err := tx.Model(&BankStatementLine{}).
+		Select(`
+			COALESCE(SUM(debit), 0) as total_debits,
+			COALESCE(SUM(credit), 0) as total_credits,
+			COALESCE(SUM(CASE WHEN debit > 0 THEN 1 ELSE 0 END), 0) as debit_count,
+			COALESCE(SUM(CASE WHEN credit > 0 THEN 1 ELSE 0 END), 0) as credit_count
+		`).
+		Where("bank_statement_id = ?", statementID).
+		Scan(&rollup).Error; err != nil {
+		return fmt.Errorf("failed to calculate statement totals: %w", err)
+	}
+
+	expectedClosing := roundBHD(statement.OpeningBalance + rollup.TotalCredits - rollup.TotalDebits)
+	discrepancy := roundBHD(math.Abs(expectedClosing - statement.ClosingBalance))
+	isValid := discrepancy <= 0.001
+
+	updateMap := map[string]interface{}{
+		"total_debits":       roundBHD(rollup.TotalDebits),
+		"total_credits":      roundBHD(rollup.TotalCredits),
+		"debit_count":        int(rollup.DebitCount),
+		"credit_count":       int(rollup.CreditCount),
+		"balance_verified":   isValid,
+		"discrepancy_amount": discrepancy,
+	}
+	if statement.Status == "Reconciled" || statement.Status == "Verified" {
+		updateMap["status"] = "InProgress"
+		updateMap["reconciled_at"] = nil
+		updateMap["reconciled_by"] = ""
+	}
+
+	if err := tx.Model(&BankStatement{}).Where("id = ?", statementID).Updates(updateMap).Error; err != nil {
+		return fmt.Errorf("failed to update statement totals: %w", err)
+	}
+
 	return nil
 }
 
@@ -309,6 +571,7 @@ func (a *App) GetCashPosition() (map[string]interface{}, error) {
 
 	type AccountPosition struct {
 		BankAccountID     string    `json:"bank_account_id"`
+		Division          string    `json:"division"`
 		BankName          string    `json:"bank_name"`
 		AccountNumber     string    `json:"account_number"`
 		Currency          string    `json:"currency"`
@@ -322,6 +585,7 @@ func (a *App) GetCashPosition() (map[string]interface{}, error) {
 	err := a.db.Raw(`
 		SELECT
 			ba.id as bank_account_id,
+			COALESCE(ba.division, 'PH Trading') as division,
 			ba.bank_name,
 			ba.account_number,
 			ba.currency,
@@ -429,7 +693,7 @@ func (a *App) ValidateStatementBalance(statementID string) (bool, float64, error
 		"discrepancy_amount": discrepancy,
 		"total_debits":       totals.TotalDebits,
 		"total_credits":      totals.TotalCredits,
-		"debit_count":        0,  // Will be updated by trigger or separate query
+		"debit_count":        0, // Will be updated by trigger or separate query
 		"credit_count":       0,
 	})
 
@@ -629,12 +893,12 @@ func (a *App) GetReconciliationStats(bankAccountID string) (map[string]interface
 		Scan(&latestDate)
 
 	return map[string]interface{}{
-		"bank_account_id":       bankAccountID,
-		"total_statements":      stats.TotalStatements,
-		"reconciled_statements": stats.ReconciledStatements,
+		"bank_account_id":        bankAccountID,
+		"total_statements":       stats.TotalStatements,
+		"reconciled_statements":  stats.ReconciledStatements,
 		"in_progress_statements": stats.InProgressStatements,
-		"imported_statements":   stats.ImportedStatements,
-		"latest_statement_date": latestDate,
+		"imported_statements":    stats.ImportedStatements,
+		"latest_statement_date":  latestDate,
 	}, nil
 }
 

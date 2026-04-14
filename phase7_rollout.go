@@ -313,9 +313,6 @@ func (a *App) RerunPhase7FollowUpBackfill() (Phase7ActionResult, error) {
 }
 
 func (a *App) canAccessPhase7Rollout() bool {
-	if err := a.requirePermission("settings:view"); err == nil {
-		return true
-	}
 	return a.requirePermission("settings:update") == nil
 }
 

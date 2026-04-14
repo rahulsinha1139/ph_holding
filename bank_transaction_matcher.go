@@ -88,6 +88,10 @@ func (a *App) AutoMatchBankLines(statementID string) (*BankReconciliationMatchRe
 
 	matchedCount := 0
 	autoMatchedCount := 0
+	statementDivision := normalizeDivisionName(statement.Division)
+	if strings.TrimSpace(statementDivision) == "" {
+		statementDivision = a.resolveBankAccountDivision(statement.BankAccountID)
+	}
 
 	for i := range lines {
 		line := &lines[i]
@@ -117,9 +121,9 @@ func (a *App) AutoMatchBankLines(statementID string) (*BankReconciliationMatchRe
 
 		switch txType {
 		case TxTypeCustomerPayment, TxTypeChequeReceived:
-			matched, matchedID, confidence = a.matchToCustomerInvoice(line, invoiceNumbers, customerName)
+			matched, matchedID, confidence = a.matchToCustomerInvoice(line, invoiceNumbers, customerName, statementDivision)
 		case TxTypeSupplierPayment, TxTypeChequeIssued:
-			matched, matchedID, confidence = a.matchToSupplierPayment(line, poNumbers, supplierName)
+			matched, matchedID, confidence = a.matchToSupplierPayment(line, poNumbers, supplierName, statementDivision)
 		case TxTypeBankFee, TxTypeSwiftCharge, TxTypeVATOnFee, TxTypeBGFee, TxTypeCorrespondentCharge:
 			// Auto-create expense entry for bank fees
 			a.createExpenseFromBankLine(line, txType)
@@ -326,11 +330,12 @@ func extractBankEntityName(description string, knownCustomers, knownSuppliers []
 // =============================================================================
 
 // matchToCustomerInvoice attempts to match a credit line to customer invoices
-func (a *App) matchToCustomerInvoice(line *BankStatementLine, invoiceNumbers []string, customerName string) (bool, string, float64) {
+func (a *App) matchToCustomerInvoice(line *BankStatementLine, invoiceNumbers []string, customerName string, division string) (bool, string, float64) {
+	division = normalizeDivisionName(division)
 	// Try matching by invoice number first
 	for _, invNum := range invoiceNumbers {
 		var invoice Invoice
-		err := a.db.Where("invoice_number LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(invNum)+"%").First(&invoice).Error
+		err := a.db.Where("invoice_number LIKE ? ESCAPE '\\\\' AND division = ?", "%"+escapeLikeWildcards(invNum)+"%", division).First(&invoice).Error
 		if err == nil {
 			// Found matching invoice
 			return true, invoice.ID, 0.95
@@ -344,8 +349,8 @@ func (a *App) matchToCustomerInvoice(line *BankStatementLine, invoiceNumbers []s
 		if err == nil {
 			// Found customer, look for matching invoice amount
 			var invoice Invoice
-			err = a.db.Where("customer_id = ? AND grand_total_bhd = ? AND status = ?",
-				customer.ID, line.Credit, "Outstanding").First(&invoice).Error
+			err = a.db.Where("customer_id = ? AND grand_total_bhd = ? AND division = ? AND status IN ?",
+				customer.ID, line.Credit, division, []string{"Sent", "Overdue", "PartiallyPaid"}).First(&invoice).Error
 			if err == nil {
 				return true, invoice.ID, 0.85
 			}
@@ -354,7 +359,7 @@ func (a *App) matchToCustomerInvoice(line *BankStatementLine, invoiceNumbers []s
 
 	// Try matching by amount only (low confidence)
 	var invoice Invoice
-	err := a.db.Where("grand_total_bhd = ? AND status = ?", line.Credit, "Outstanding").First(&invoice).Error
+	err := a.db.Where("grand_total_bhd = ? AND division = ? AND status IN ?", line.Credit, division, []string{"Sent", "Overdue", "PartiallyPaid"}).First(&invoice).Error
 	if err == nil {
 		return true, invoice.ID, 0.60
 	}
@@ -363,11 +368,12 @@ func (a *App) matchToCustomerInvoice(line *BankStatementLine, invoiceNumbers []s
 }
 
 // matchToSupplierPayment attempts to match a debit line to supplier payments
-func (a *App) matchToSupplierPayment(line *BankStatementLine, poNumbers []string, supplierName string) (bool, string, float64) {
+func (a *App) matchToSupplierPayment(line *BankStatementLine, poNumbers []string, supplierName string, division string) (bool, string, float64) {
+	division = normalizeDivisionName(division)
 	// Try matching by PO number
 	for _, poNum := range poNumbers {
 		var po PurchaseOrder
-		err := a.db.Where("po_number LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(poNum)+"%").First(&po).Error
+		err := a.db.Where("po_number LIKE ? ESCAPE '\\\\' AND division = ?", "%"+escapeLikeWildcards(poNum)+"%", division).First(&po).Error
 		if err == nil {
 			return true, po.ID, 0.90
 		}
@@ -379,8 +385,8 @@ func (a *App) matchToSupplierPayment(line *BankStatementLine, poNumbers []string
 		err := a.db.Where("supplier_name LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(supplierName)+"%").First(&supplier).Error
 		if err == nil {
 			var invoice SupplierInvoice
-			err = a.db.Where("supplier_id = ? AND total_bhd = ? AND status != ?",
-				supplier.ID, line.Debit, "Paid").First(&invoice).Error
+			err = a.db.Where("supplier_id = ? AND total_bhd = ? AND division = ? AND status != ?",
+				supplier.ID, line.Debit, division, "Paid").First(&invoice).Error
 			if err == nil {
 				return true, invoice.ID, 0.80
 			}
@@ -398,6 +404,7 @@ func (a *App) matchToSupplierPayment(line *BankStatementLine, poNumbers []string
 func (a *App) createExpenseFromBankLine(line *BankStatementLine, txType string) error {
 	expense := BankExpenseEntry{
 		BankStatementLineID: line.ID,
+		Division:            a.resolveBankStatementDivision(line.BankStatementID),
 		ExpenseDate:         line.TransactionDate,
 		Description:         line.Description,
 		Category:            txType,
@@ -430,6 +437,7 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 	if err := a.db.First(&line, "id = ?", lineID).Error; err != nil {
 		return fmt.Errorf("line not found: %w", err)
 	}
+	statementDivision := a.resolveBankStatementDivision(line.BankStatementID)
 
 	if line.IsMatched {
 		return fmt.Errorf("line already matched")
@@ -441,16 +449,25 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 	case "CUSTOMER_INVOICE":
 		var inv Invoice
 		if err := a.db.First(&inv, "id = ?", entityID).Error; err == nil {
+			if normalizeDivisionName(inv.Division) != statementDivision {
+				return fmt.Errorf("cannot match %s bank line to %s invoice", statementDivision, normalizeDivisionName(inv.Division))
+			}
 			entityAmount = inv.GrandTotalBHD
 		}
 	case "SUPPLIER_INVOICE":
 		var sinv SupplierInvoice
 		if err := a.db.First(&sinv, "id = ?", entityID).Error; err == nil {
+			if a.resolveSupplierInvoiceDivision(sinv) != statementDivision {
+				return fmt.Errorf("cannot match %s bank line to %s supplier invoice", statementDivision, a.resolveSupplierInvoiceDivision(sinv))
+			}
 			entityAmount = sinv.TotalBHD
 		}
 	case "SUPPLIER_PAYMENT":
 		var payment SupplierPayment
 		if err := a.db.First(&payment, "id = ?", entityID).Error; err == nil {
+			if normalizeDivisionName(payment.Division) != statementDivision {
+				return fmt.Errorf("cannot match %s bank line to %s supplier payment", statementDivision, normalizeDivisionName(payment.Division))
+			}
 			entityAmount = payment.AmountBHD
 		}
 	case "PAYROLL_PAYOUT":

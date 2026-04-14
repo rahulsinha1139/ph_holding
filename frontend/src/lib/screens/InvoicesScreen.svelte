@@ -48,6 +48,7 @@
 
   // Props
   export let embedded = false;
+  export let company: 'PH Trading' | 'AHS Trading' = 'PH Trading';
 
   // Types
   type StatusFilter = 'All' | 'Draft' | 'Sent' | 'Paid' | 'Overdue' | 'PartiallyPaid';
@@ -92,6 +93,7 @@
     country_of_origin?: string;
     payment_terms?: string;
     delivery_terms?: string;
+    division?: string;
   }
 
   interface Order {
@@ -102,6 +104,7 @@
     order_date: any;
     grand_total_bhd: number;
     status: string;
+    division?: string;
   }
 
   interface DeliveryNote {
@@ -166,7 +169,7 @@
     loadingCreditNotes = true;
     try {
       const data = await ListCreditNotes(100, 0);
-      creditNotes = data || [];
+      creditNotes = (data || []).filter((note: any) => matchesCompany(note.division));
     } catch (err) {
       console.error('Failed to load credit notes:', err);
       creditNotes = [];
@@ -256,6 +259,10 @@
   let editLoading = false;
   let editInvoice: any = null;
   let pdfLoadingMap: Record<string, boolean> = {};
+
+  function matchesCompany(division?: string) {
+    return (division || 'PH Trading') === company;
+  }
 
   // P1-1 FIX: Track which invoice is being sent to prevent double-clicks
   let sendingInvoiceId: string | null = null;
@@ -551,7 +558,7 @@
     hasMore = true;
     try {
       const data = await ListCustomerInvoices(PAGE_SIZE, 0);
-      invoices = data || [];
+      invoices = (data || []).filter((invoice) => matchesCompany(invoice.division));
       currentPage = 1;
       totalLoaded = invoices.length;
       hasMore = invoices.length === PAGE_SIZE;
@@ -579,7 +586,7 @@
       const data = await ListCustomerInvoices(PAGE_SIZE, offset);
 
       if (data && data.length > 0) {
-        invoices = [...invoices, ...data];
+        invoices = [...invoices, ...data.filter((invoice) => matchesCompany(invoice.division))];
         currentPage++;
         totalLoaded = invoices.length;
         hasMore = data.length === PAGE_SIZE;
@@ -600,7 +607,7 @@
     try {
       const allOrders = await ListOrders(500, 0);
       orders = (allOrders || []).filter(
-        (order) => order.status !== 'Complete' && order.status !== 'Invoiced'
+        (order) => matchesCompany(order.division) && order.status !== 'Complete' && order.status !== 'Invoiced'
       );
       devLog.info(`Loaded ${orders.length} unfulfilled orders`);
     } catch (err) {
@@ -737,6 +744,11 @@
     loadInvoices();
     loadCreditNotes();
   });
+
+  $: if (company) {
+    loadInvoices();
+    loadCreditNotes();
+  }
 </script>
 
 <PageLayout title="Invoices" subtitle="Customer billing and receivables management" {embedded}>

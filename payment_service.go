@@ -130,6 +130,7 @@ func (a *App) RecordPayment(invoiceID string, amount float64, method string, dat
 		Reference:      reference,
 		DaysToPayment:  daysToPayment,
 		IdempotencyKey: idempotencyKey,
+		Division:       normalizeDivisionName(invoice.Division),
 	}
 
 	// Create payment
@@ -618,6 +619,7 @@ func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 		tx.Rollback()
 		return nil, newError("INVOICE_NOT_FOUND", "Linked invoice not found", err.Error())
 	}
+	payment.Division = normalizeDivisionName(invoice.Division)
 
 	// P2 FIX: Reject payments on non-payable invoices (same as RecordPayment)
 	nonPayableStatuses := map[string]bool{"Cancelled": true, "Void": true, "Proforma": true}

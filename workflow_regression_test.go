@@ -15,20 +15,30 @@ func migrateWorkflowRegressionTables(t *testing.T, app *App) {
 		&Role{},
 		&User{},
 		&LicenseKey{},
+		&CustomerMaster{},
+		&EntityNote{},
 		&RFQData{},
 		&CostingSheetData{},
 		&Opportunity{},
 		&Offer{},
 		&OfferItem{},
+		&OfferNote{},
 		&Order{},
 		&OrderItem{},
 		&Invoice{},
+		&DBInvoiceItem{},
+		&Payment{},
 		&SupplierMaster{},
 		&SupplierInvoice{},
+		&SupplierInvoiceItem{},
 		&SupplierPayment{},
 		&BankStatement{},
 		&BankStatementLine{},
 		&BankReconciliationAuditLog{},
+		&Employee{},
+		&TaskItem{},
+		&TaskComment{},
+		&Notification{},
 	))
 }
 
@@ -66,6 +76,148 @@ func TestGetOpportunityLineItems_FallsBackToProductDetails(t *testing.T) {
 	require.Equal(t, 2.0, items[0].Quantity)
 	require.Equal(t, 540.758, items[0].UnitPrice)
 	require.Equal(t, 1081.516, items[0].TotalPrice)
+}
+
+func TestBuildFullContext_IncludesCrossModuleDatabaseAndWorkAccess(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	adminRole := Role{
+		Base:        Base{ID: uuid.New().String()},
+		Name:        "admin",
+		DisplayName: "Admin",
+		Permissions: `["*","finance:view","intelligence:chat","tasks:view","notifications:view"]`,
+		IsActive:    true,
+	}
+	require.NoError(t, app.db.Create(&adminRole).Error)
+	app.currentUser = &User{
+		Base:     Base{ID: "butler-admin"},
+		Username: "butler-admin",
+		RoleName: "admin",
+		RoleID:   adminRole.ID,
+		Role:     adminRole,
+	}
+	app.currentUserID = "butler-admin"
+
+	customer := CustomerMaster{
+		Base:          Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		CustomerID:    "C-BAPCO-001",
+		BusinessName:  "BAPCO",
+		CustomerGrade: "A",
+		PaymentGrade:  "A",
+		Industry:      "Energy",
+	}
+	require.NoError(t, app.db.Create(&customer).Error)
+
+	require.NoError(t, app.db.Create(&EntityNote{
+		Base:       Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		EntityType: "customer",
+		EntityID:   customer.ID,
+		NoteType:   "general",
+		Content:    "BAPCO prefers calibration packs and consolidated follow-up notes.",
+	}).Error)
+
+	offer := Offer{
+		Base:          Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferNumber:   "OFF-CTX-001",
+		CustomerID:    customer.CustomerID,
+		CustomerName:  customer.BusinessName,
+		QuotationDate: time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC),
+		ValidityDate:  time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC),
+		Stage:         "Quoted",
+		TotalValueBHD: 1500,
+		Division:      "PH Trading",
+	}
+	require.NoError(t, app.db.Create(&offer).Error)
+	require.NoError(t, app.db.Create(&OfferItem{
+		Base:          Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferID:       offer.ID,
+		LineNumber:    1,
+		Description:   "Calibration service visit",
+		Equipment:     "Flowmeter Calibration",
+		Model:         "CAL-PACK",
+		Quantity:      2,
+		UnitPrice:     750,
+		TotalPrice:    1500,
+		MarginPercent: 32,
+	}).Error)
+	require.NoError(t, app.db.Create(&OfferNote{
+		Base:     Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferID:  offer.ID,
+		NoteDate: time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC),
+		Content:  "Customer requested split pricing and service mobilization note.",
+	}).Error)
+
+	statement := BankStatement{
+		Base:            Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		BankAccountID:   "bank-1",
+		StatementNumber: "BS-CTX-001",
+		StatementDate:   time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
+		PeriodStart:     time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+		PeriodEnd:       time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
+		Status:          "Imported",
+		Notes:           "BAPCO statement contains Peri follow-up marker for unmatched service receipts.",
+		Division:        "PH Trading",
+	}
+	require.NoError(t, app.db.Create(&statement).Error)
+
+	peri := Employee{
+		Base:             Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		EmployeeCode:     "EMP-002",
+		FullName:         "Peri",
+		PreferredName:    "Peri",
+		Department:       "Operations",
+		JobTitle:         "Coordinator",
+		EmploymentStatus: "active",
+		IsActive:         true,
+		Notes:            "Handles service coordination and follow-up tasks.",
+	}
+	require.NoError(t, app.db.Create(&peri).Error)
+
+	task := TaskItem{
+		Base:               Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		Title:              "Review BAPCO calibration follow-up",
+		Description:        "Check statement note and confirm the service offer line items.",
+		Status:             "open",
+		Priority:           "high",
+		TaskType:           "service",
+		AssigneeEmployeeID: &peri.ID,
+		CreatorEmployeeID:  peri.ID,
+		CustomerID:         &customer.ID,
+	}
+	require.NoError(t, app.db.Create(&task).Error)
+	require.NoError(t, app.db.Create(&TaskComment{
+		Base:       Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		TaskID:     task.ID,
+		EmployeeID: peri.ID,
+		Body:       "Peri noted that the bank statement and offer notes need a single client response.",
+	}).Error)
+
+	ctx := app.buildFullContext(Intent{
+		RawQuery:   "How many tasks are assigned to Peri and what notes or bank statements do we have for BAPCO?",
+		Domain:     "general",
+		EntityName: "BAPCO",
+		PersonName: "Peri",
+	})
+
+	workData, ok := ctx["work_data"].(map[string]interface{})
+	require.True(t, ok)
+	require.NotEmpty(t, workData["tasks"])
+
+	databaseAccess, ok := ctx["database_access"].(map[string]interface{})
+	require.True(t, ok)
+
+	notesLedger, ok := databaseAccess["notes_ledger"].(map[string]interface{})
+	require.True(t, ok)
+	require.NotEmpty(t, notesLedger["bank_statement_notes"])
+	require.NotEmpty(t, notesLedger["offer_notes"])
+
+	commercialRecords, ok := databaseAccess["commercial_records"].(map[string]interface{})
+	require.True(t, ok)
+	offers, ok := commercialRecords["offers"].([]map[string]interface{})
+	require.True(t, ok)
+	require.NotEmpty(t, offers)
+	require.NotEmpty(t, offers[0]["line_items"])
 }
 
 func TestGetOpportunityLineItems_FallsBackWhenLinkedOfferHasNoItems(t *testing.T) {

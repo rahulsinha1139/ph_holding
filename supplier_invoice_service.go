@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,7 +73,15 @@ func (a *App) CreateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 		var po PurchaseOrder
 		if err := a.db.Where("id = ?", inv.PurchaseOrderID).First(&po).Error; err == nil {
 			inv.PONumber = po.PONumber
+			if strings.TrimSpace(inv.Division) == "" {
+				inv.Division = a.resolvePurchaseOrderDivision(po)
+			}
 		}
+	}
+	if strings.TrimSpace(inv.Division) == "" {
+		inv.Division = a.resolveSupplierInvoiceDivision(inv)
+	} else {
+		inv.Division = normalizeDivisionName(inv.Division)
 	}
 
 	// Check for duplicate invoice number for same supplier
@@ -260,7 +269,15 @@ func (a *App) UpdateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 		var po PurchaseOrder
 		if err := a.db.Where("id = ?", inv.PurchaseOrderID).First(&po).Error; err == nil {
 			inv.PONumber = po.PONumber
+			if strings.TrimSpace(inv.Division) == "" {
+				inv.Division = a.resolvePurchaseOrderDivision(po)
+			}
 		}
+	}
+	if strings.TrimSpace(inv.Division) == "" {
+		inv.Division = a.resolveSupplierInvoiceDivision(inv)
+	} else {
+		inv.Division = normalizeDivisionName(inv.Division)
 	}
 
 	// Update timestamp
@@ -326,7 +343,15 @@ func (a *App) UpdateSupplierInvoiceWithPayment(inv SupplierInvoice, createPaymen
 		var po PurchaseOrder
 		if err := tx.Where("id = ?", inv.PurchaseOrderID).First(&po).Error; err == nil {
 			inv.PONumber = po.PONumber
+			if strings.TrimSpace(inv.Division) == "" {
+				inv.Division = a.resolvePurchaseOrderDivision(po)
+			}
 		}
+	}
+	if strings.TrimSpace(inv.Division) == "" {
+		inv.Division = a.resolveSupplierInvoiceDivision(inv)
+	} else {
+		inv.Division = normalizeDivisionName(inv.Division)
 	}
 
 	inv.UpdatedAt = time.Now()

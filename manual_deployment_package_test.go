@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +21,12 @@ type deploymentEmployeeKey struct {
 	Role        string
 	Key         string
 	Activated   bool
+}
+
+type deploymentRoleKeySpec struct {
+	Role        string
+	DisplayName string
+	Notes       string
 }
 
 func resolveDeploymentSource(candidates ...string) (string, error) {
@@ -52,21 +61,10 @@ func copySanitizedDeploymentDB(src, dst string) error {
 		return err
 	}
 
-	if err := db.Exec(`
-		UPDATE license_keys
-		SET activated = 0,
-		    activated_at = NULL,
-		    device_hash = ''
-		WHERE activated = 1
-	`).Error; err != nil {
+	if err := sanitizeDeploymentDatabase(db); err != nil {
 		return err
 	}
-
-	if err := db.Exec(`
-		DELETE FROM license_keys
-		WHERE role = 'developer'
-		   OR key LIKE 'PH-DEV-%'
-	`).Error; err != nil {
+	if err := ensureDeploymentLetterheadAssets(db); err != nil {
 		return err
 	}
 
@@ -80,9 +78,177 @@ func copySanitizedDeploymentDB(src, dst string) error {
 	return nil
 }
 
+func sanitizeDeploymentDatabase(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+
+	if db.Migrator().HasTable("license_keys") {
+		if err := db.Exec(`
+			UPDATE license_keys
+			SET activated = 0,
+			    activated_at = NULL,
+			    device_hash = ''
+			WHERE activated = 1
+		`).Error; err != nil {
+			return err
+		}
+
+		if err := db.Exec(`
+			DELETE FROM license_keys
+			WHERE role = 'developer'
+			   OR key LIKE 'PH-DEV-%'
+		`).Error; err != nil {
+			return err
+		}
+	}
+
+	if db.Migrator().HasTable("expense_entries") {
+		if db.Migrator().HasTable("expense_approvals") {
+			if err := db.Exec(`
+				DELETE FROM expense_approvals
+				WHERE expense_entry_id IN (
+					SELECT id FROM expense_entries
+					WHERE source_type = 'payroll' OR cost_center = 'Payroll'
+				)
+			`).Error; err != nil {
+				return err
+			}
+		}
+		if db.Migrator().HasTable("expense_allocations") {
+			if err := db.Exec(`
+				DELETE FROM expense_allocations
+				WHERE expense_entry_id IN (
+					SELECT id FROM expense_entries
+					WHERE source_type = 'payroll' OR cost_center = 'Payroll'
+				)
+			`).Error; err != nil {
+				return err
+			}
+		}
+		if db.Migrator().HasTable("expense_attachments") {
+			if err := db.Exec(`
+				DELETE FROM expense_attachments
+				WHERE expense_entry_id IN (
+					SELECT id FROM expense_entries
+					WHERE source_type = 'payroll' OR cost_center = 'Payroll'
+				)
+			`).Error; err != nil {
+				return err
+			}
+		}
+		if err := db.Exec(`
+			DELETE FROM expense_entries
+			WHERE source_type = 'payroll' OR cost_center = 'Payroll'
+		`).Error; err != nil {
+			return err
+		}
+	}
+
+	if db.Migrator().HasTable("journal_entries") {
+		if db.Migrator().HasTable("journal_lines") {
+			if err := db.Exec(`
+				DELETE FROM journal_lines
+				WHERE entry_id IN (
+					SELECT id FROM journal_entries
+					WHERE source_type IN ('payroll_run', 'payroll_payout')
+				)
+			`).Error; err != nil {
+				return err
+			}
+		}
+		if err := db.Exec(`
+			DELETE FROM journal_entries
+			WHERE source_type IN ('payroll_run', 'payroll_payout')
+		`).Error; err != nil {
+			return err
+		}
+	}
+
+	for _, table := range []string{
+		"payroll_components",
+		"payroll_run_items",
+		"payroll_payouts",
+		"payroll_runs",
+		"payroll_periods",
+		"employee_compensation_profiles",
+	} {
+		if db.Migrator().HasTable(table) {
+			if err := db.Exec("DELETE FROM " + table).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 func cleanupSQLiteSidecars(dbPath string) {
 	_ = os.Remove(dbPath + "-wal")
 	_ = os.Remove(dbPath + "-shm")
+}
+
+func ensureDeploymentLetterheadAssets(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+
+	assets := []struct {
+		Name        string
+		FileName    string
+		Description string
+	}{
+		{
+			Name:        AssetLetterhead,
+			FileName:    "PH Trading Quotation Template.png",
+			Description: "PH Trading letterhead template for PDF generation",
+		},
+		{
+			Name:        AssetLetterheadAHS,
+			FileName:    "AHS Trading Letterhead.jpg",
+			Description: "AHS Trading letterhead template for PDF generation",
+		},
+	}
+
+	for _, assetSpec := range assets {
+		var count int64
+		if err := db.Model(&Asset{}).Where("name = ?", assetSpec.Name).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+
+		sourcePath, err := resolveDeploymentSource(
+			filepath.Join("CRITICAL_PH_CONTEXT_SSOT", assetSpec.FileName),
+			filepath.Join("deploy_package", "data", assetSpec.FileName),
+			filepath.Join("build", "bin", "data", assetSpec.FileName),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to resolve %s: %w", assetSpec.Name, err)
+		}
+
+		data, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return err
+		}
+
+		encoded := base64.StdEncoding.EncodeToString(data)
+		record := Asset{
+			ID:          assetSpec.Name,
+			Name:        assetSpec.Name,
+			Description: assetSpec.Description,
+			MimeType:    getMimeType(filepath.Ext(sourcePath)),
+			Data:        encoded,
+			Size:        int64(len(data)),
+		}
+
+		if err := db.Where("name = ?", assetSpec.Name).Assign(record).FirstOrCreate(&record).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func copyDeploymentDir(src, dst string) error {
@@ -114,6 +280,9 @@ func sanitizeAppBundle(appPath string, deploymentEnv []byte, dbSrc string) error
 	if err := os.MkdirAll(filepath.Join(resourcesDir, "data"), 0755); err != nil {
 		return err
 	}
+	if err := syncDeploymentAppIcon(resourcesDir); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(resourcesDir, ".env"), deploymentEnv, 0644); err != nil {
 		return err
 	}
@@ -121,8 +290,35 @@ func sanitizeAppBundle(appPath string, deploymentEnv []byte, dbSrc string) error
 	if err := copySanitizedDeploymentDB(dbSrc, dbDst); err != nil {
 		return err
 	}
+	for _, assetFile := range []string{
+		"PH Trading Quotation Template.png",
+		"AHS Trading Letterhead.jpg",
+	} {
+		src, err := resolveDeploymentSource(
+			filepath.Join("CRITICAL_PH_CONTEXT_SSOT", assetFile),
+			filepath.Join("deploy_package", "data", assetFile),
+		)
+		if err != nil {
+			return err
+		}
+		if err := copyDeploymentFile(src, filepath.Join(resourcesDir, "data", assetFile)); err != nil {
+			return err
+		}
+	}
 	cleanupSQLiteSidecars(dbDst)
 	return nil
+}
+
+func syncDeploymentAppIcon(resourcesDir string) error {
+	iconSrc, err := resolveDeploymentSource(
+		filepath.Join("build", "iconfile.icns"),
+		filepath.Join("build", "darwin", "iconfile.icns"),
+	)
+	if err != nil {
+		return nil
+	}
+	iconDst := filepath.Join(resourcesDir, "iconfile.icns")
+	return copyDeploymentFile(iconSrc, iconDst)
 }
 
 func TestPrepareDeploymentPackage(t *testing.T) {
@@ -144,15 +340,13 @@ func TestPrepareDeploymentPackage(t *testing.T) {
 	}
 
 	if os.Getenv("FLUSH_EMPLOYEE_KEYS") == "1" {
-		if err := db.Where("activated = 0").Delete(&LicenseKey{}).Error; err != nil {
-			t.Fatalf("failed to flush unactivated keys: %v", err)
+		if err := resetDeploymentLicensePool(app, db); err != nil {
+			t.Fatalf("failed to rebuild deployment license pool: %v", err)
 		}
-		if err := app.SeedLicenseKeys(); err != nil {
-			t.Fatalf("failed to seed generic keys: %v", err)
-		}
-		if err := app.SeedEmployeeKeys(); err != nil {
-			t.Fatalf("failed to seed employee keys: %v", err)
-		}
+	}
+
+	if err := ensureDeploymentRoleTestKeys(db); err != nil {
+		t.Fatalf("failed to ensure deployment role test keys: %v", err)
 	}
 
 	var employeeKeys []deploymentEmployeeKey
@@ -166,6 +360,7 @@ func TestPrepareDeploymentPackage(t *testing.T) {
 				WHEN 'manager' THEN 2
 				WHEN 'sales' THEN 3
 				WHEN 'operations' THEN 4
+				WHEN 'staff' THEN 5
 				ELSE 99
 			END,
 			display_name
@@ -201,13 +396,6 @@ func TestPrepareDeploymentPackage(t *testing.T) {
 		t.Fatalf("failed to locate mac app bundle: %v", err)
 	}
 
-	macBinary, err := resolveDeploymentSource(
-		filepath.Join("build", "bin", "AsymmFlow.app", "Contents", "MacOS", "AsymmFlow"),
-		filepath.Join("deploy_package", "AsymmFlow"),
-	)
-	if err != nil {
-		t.Fatalf("failed to resolve mac binary: %v", err)
-	}
 	winBinary, err := resolveDeploymentSource(
 		filepath.Join("build", "bin", "AsymmFlow.exe"),
 		filepath.Join("deploy_package", "AsymmFlow.exe"),
@@ -218,18 +406,26 @@ func TestPrepareDeploymentPackage(t *testing.T) {
 	envSrc := filepath.Join("deploy_package", ".env")
 	dbSrc := filepath.Join(".", "ph_holdings.db")
 	templateImage := filepath.Join("deploy_package", "data", "PH Trading Quotation Template.png")
+	ahsTemplateImage := filepath.Join("CRITICAL_PH_CONTEXT_SSOT", "AHS Trading Letterhead.jpg")
 
 	copyTargets := []struct {
 		src string
 		dst string
 	}{
-		{macBinary, filepath.Join(packageDir, "AsymmFlow")},
 		{winBinary, filepath.Join(packageDir, "AsymmFlow.exe")},
-		{macBinary, filepath.Join("deploy_package", "AsymmFlow")},
 		{winBinary, filepath.Join("deploy_package", "AsymmFlow.exe")},
 		{envSrc, filepath.Join(packageDir, ".env")},
 		{envSrc, filepath.Join("deploy_package", ".env")},
 		{templateImage, filepath.Join(packageDir, "data", "PH Trading Quotation Template.png")},
+		{ahsTemplateImage, filepath.Join(packageDir, "data", "AHS Trading Letterhead.jpg")},
+		{templateImage, filepath.Join("deploy_package", "data", "PH Trading Quotation Template.png")},
+		{ahsTemplateImage, filepath.Join("deploy_package", "data", "AHS Trading Letterhead.jpg")},
+		{filepath.Join("docs", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md"), filepath.Join(packageDir, "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md")},
+		{filepath.Join("docs", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf"), filepath.Join(packageDir, "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf")},
+		{filepath.Join("docs", "MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md"), filepath.Join(packageDir, "MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md")},
+		{filepath.Join("docs", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md"), filepath.Join("deploy_package", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md")},
+		{filepath.Join("docs", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf"), filepath.Join("deploy_package", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf")},
+		{filepath.Join("docs", "MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md"), filepath.Join("deploy_package", "MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md")},
 	}
 
 	for _, target := range copyTargets {
@@ -336,6 +532,12 @@ func buildDeploymentEnvText(src string) ([]byte, error) {
 		filtered = append(filtered, line)
 	}
 	text = strings.TrimRight(strings.Join(filtered, "\n"), "\n")
+	if text != "" {
+		text += "\n"
+	}
+	// Force deployment builds to use the packaged database instead of any stale
+	// machine-level runtime DB that may already exist on the client device.
+	text += "DATABASE_PATH=data/ph_holdings.db\n"
 	return []byte(text), nil
 }
 
@@ -347,7 +549,7 @@ func buildLicenseKeysText(keys []deploymentEmployeeKey, generatedAt time.Time) s
 	b.WriteString("===============================================================================\n\n")
 	b.WriteString("INSTRUCTIONS:\n")
 	b.WriteString("  1. Copy the deploy_package folder to your PC\n")
-	b.WriteString("  2. Run AsymmFlow.exe (Windows) or AsymmFlow (Mac)\n")
+	b.WriteString("  2. Run AsymmFlow.exe (Windows) or open AsymmFlow.app (Mac)\n")
 	b.WriteString("  3. Enter YOUR license key when prompted\n")
 	b.WriteString("  4. Each key works on ONE PC only - do not share keys\n\n")
 
@@ -360,6 +562,7 @@ func buildLicenseKeysText(keys []deploymentEmployeeKey, generatedAt time.Time) s
 		{"manager", "MANAGER", "Dashboard, Finance, Operations, CRM, Intelligence"},
 		{"sales", "SALES", "Dashboard, Opportunities, CRM, Intelligence"},
 		{"operations", "OPERATIONS", "Dashboard, Operations Hub, Intelligence"},
+		{"staff", "STAFF", "Dashboard, Work, Notifications, Intelligence"},
 	}
 
 	for _, rt := range roleTitles {
@@ -378,14 +581,16 @@ func buildLicenseKeysText(keys []deploymentEmployeeKey, generatedAt time.Time) s
 	b.WriteString("===============================================================================\n")
 	b.WriteString("                    ROLE ACCESS MATRIX\n")
 	b.WriteString("===============================================================================\n\n")
-	b.WriteString("  Screen            Admin   Manager   Sales   Operations\n")
-	b.WriteString("  -------           -----   -------   -----   ----------\n")
-	b.WriteString("  Dashboard           Y       Y         Y        Y\n")
-	b.WriteString("  Opportunities       Y       Y         Y        -\n")
-	b.WriteString("  Operations          Y       Y         -        Y\n")
-	b.WriteString("  Finance Hub         Y       Y         -        -\n")
-	b.WriteString("  Relationships       Y       Y         Y        -\n")
-	b.WriteString("  Intelligence        Y       Y         Y        Y\n\n")
+	b.WriteString("  Screen            Admin   Manager   Sales   Operations   Staff\n")
+	b.WriteString("  -------           -----   -------   -----   ----------   -----\n")
+	b.WriteString("  Dashboard           Y       Y         Y        Y           Y\n")
+	b.WriteString("  Opportunities       Y       Y         Y        -           -\n")
+	b.WriteString("  Operations          Y       Y         -        Y           -\n")
+	b.WriteString("  Finance Hub         Y       Y         -        -           -\n")
+	b.WriteString("  Work                Y       Y         Y        Y           Y\n")
+	b.WriteString("  Notifications       Y       Y         Y        Y           Y\n")
+	b.WriteString("  Relationships       Y       Y         Y        -           -\n")
+	b.WriteString("  Intelligence        Y       Y         Y        Y           Y\n\n")
 	b.WriteString("===============================================================================\n")
 	b.WriteString("  SUPPORT: Contact Abhie (SPOC) for key issues or new key requests\n")
 	b.WriteString("  CLOUD SYNC: Auto-syncs every 10 minutes when online\n")
@@ -402,32 +607,46 @@ func buildInstallGuideText(generatedAt time.Time) string {
 QUICK START (3 Steps)
 ---------------------
 
-  1. COPY this entire folder to your PC
+  1. COPY this entire folder to your PC as-is
      - Windows: C:\AsymmFlow\
      - Mac: ~/AsymmFlow/
+     - Do NOT move AsymmFlow.exe or AsymmFlow.app out of this folder
+     - Do NOT separate the app from the data/ folder
 
   2. RUN the application
      - Windows: Double-click AsymmFlow.exe
-     - Mac: Run ./AsymmFlow from Terminal
+     - Mac: Open AsymmFlow.app
 
   3. ENTER your license key when prompted
-     - See LICENSE_KEYS.txt for your personal key
+     - See LICENSE_KEYS.txt for the role test key you want to use
      - Key activates on first use and binds to your PC
 
 That's it! The app will open to the Dashboard.
+
+
+IMPORTANT DATABASE RULE
+-----------------------
+
+  - This deployment package is pinned to data/ph_holdings.db via the packaged .env.
+  - Keep .env, the app binary/bundle, and the data/ folder together.
+  - On upgrades, replace the whole AsymmFlow folder/package.
+  - Do NOT copy only a new .exe or .app onto an older folder.
 
 
 FOLDER STRUCTURE
 ----------------
 
   deploy_package/
-  ├── AsymmFlow              <- The application (Mac)
+  ├── AsymmFlow.app          <- The application (Mac)
   ├── AsymmFlow.exe          <- The application (Windows)
   ├── .env                   <- Cloud sync configuration
   ├── data/
   │   ├── ph_holdings.db     <- Database with all company data
   │   └── PH Trading Quotation Template.png
-  ├── LICENSE_KEYS.txt       <- Employee license keys
+  ├── LICENSE_KEYS.txt       <- One test key per client role
+  ├── DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md
+  ├── DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf
+  ├── MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md
   └── INSTALL_GUIDE.txt      <- This file
 
 
@@ -459,11 +678,72 @@ TROUBLESHOOTING
   Database locked             Close other app instances
   Data not syncing            Check internet connection, wait 10 min
   Empty dashboard             Make sure data/ph_holdings.db exists
+  Wrong or old database       Verify .env still says DATABASE_PATH=data/ph_holdings.db
+  Wrong or old database       Replace the whole package folder, not just the app binary
 
   For all issues: Contact Abhie (SPOC)
-
 ===============================================================================
   PH Trading WLL | Powered by Asymmetrica Mathematical Organism
 ===============================================================================
 `, generatedAt.Format("2006-01-02"))
+}
+
+func resetDeploymentLicensePool(app *App, db *gorm.DB) error {
+	if app == nil || db == nil {
+		return fmt.Errorf("deployment license pool requires initialized app/db")
+	}
+	if err := db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&LicenseKey{}).Error; err != nil {
+		return err
+	}
+	return ensureDeploymentRoleTestKeys(db)
+}
+
+func ensureDeploymentRoleTestKeys(db *gorm.DB) error {
+	for _, candidate := range deploymentRoleKeySpecs() {
+		var existing LicenseKey
+		if err := db.Where("role = ? AND display_name = ?", candidate.Role, candidate.DisplayName).First(&existing).Error; err == nil {
+			if err := db.Model(&existing).Updates(map[string]interface{}{
+				"activated":    false,
+				"activated_at": nil,
+				"device_hash":  "",
+				"notes":        candidate.Notes,
+				"created_by":   "deployment-package",
+			}).Error; err != nil {
+				return err
+			}
+			continue
+		}
+
+		prefix, ok := rolePrefixes[candidate.Role]
+		if !ok {
+			return fmt.Errorf("no license prefix configured for role %s", candidate.Role)
+		}
+		randomBytes := make([]byte, 3)
+		if _, err := rand.Read(randomBytes); err != nil {
+			return err
+		}
+		record := LicenseKey{
+			Key:         fmt.Sprintf("PH-%s-%s", prefix, strings.ToUpper(hex.EncodeToString(randomBytes))),
+			Role:        candidate.Role,
+			DisplayName: candidate.DisplayName,
+			Activated:   false,
+			Notes:       candidate.Notes,
+			CreatedBy:   "deployment-package",
+		}
+		if err := db.Create(&record).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func deploymentRoleKeySpecs() []deploymentRoleKeySpec {
+	return []deploymentRoleKeySpec{
+		{Role: "admin", DisplayName: "Admin Test", Notes: "Deployment validation admin key"},
+		{Role: "manager", DisplayName: "Manager Test", Notes: "Deployment validation manager key"},
+		{Role: "sales", DisplayName: "Sales Test", Notes: "Deployment validation sales key"},
+		{Role: "operations", DisplayName: "Operations Test", Notes: "Deployment validation operations key"},
+		{Role: "staff", DisplayName: "Staff Test", Notes: "Deployment validation staff key"},
+	}
 }

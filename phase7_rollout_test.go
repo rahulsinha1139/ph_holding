@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ func newPhase7TestApp(t *testing.T) *App {
 	if err := db.AutoMigrate(
 		&Setting{},
 		&User{},
+		&LicenseKey{},
 		&Employee{},
 		&EmployeeAccessLink{},
 		&FollowUpTask{},
@@ -223,5 +225,40 @@ func TestRerunPhase7FollowUpBackfillDoesNotDuplicateMigratedTasks(t *testing.T) 
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("expected exactly 1 migrated task after rerun, got %d", len(tasks))
+	}
+}
+
+func TestPhase7RolloutRequiresSettingsUpdatePermission(t *testing.T) {
+	app := newPhase7TestApp(t)
+	app.currentUser = &User{
+		Base: Base{ID: "viewer-user"},
+		Role: Role{
+			Name:        "Viewer",
+			Permissions: `["settings:view"]`,
+		},
+	}
+
+	summary := app.GetPilotReadinessSummary()
+	if summary.TotalEmployees != 0 {
+		t.Fatalf("expected rollout summary to be hidden for settings:view role, got total employees %d", summary.TotalEmployees)
+	}
+
+	rows, err := app.ListPilotReadinessRows(true)
+	if err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("expected access denied listing rollout rows, got rows=%v err=%v", rows, err)
+	}
+
+	checklist, err := app.GetPilotDeploymentChecklist()
+	if err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("expected access denied loading checklist, got checklist=%v err=%v", checklist, err)
+	}
+
+	audit, err := app.GetDeploymentDataAudit()
+	if err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("expected access denied loading deployment audit, got audit=%+v err=%v", audit, err)
+	}
+
+	if _, err := app.ExportPilotSupportBundle(); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("expected access denied exporting support bundle, got err=%v", err)
 	}
 }

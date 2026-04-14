@@ -18,6 +18,7 @@ const isDesktop = () => Boolean((window as any)?.go?.main?.App);
 export interface EmployeeCompensationProfile {
   id: string;
   employee_id: string;
+  division?: string;
   employee_name?: string;
   job_title?: string;
   pay_frequency?: string;
@@ -38,6 +39,7 @@ export interface EmployeeCompensationProfile {
 export interface PayrollPeriod {
   id: string;
   name: string;
+  division?: string;
   period_start: string;
   period_end: string;
   payment_date?: string;
@@ -79,6 +81,7 @@ export interface PayrollPayout {
   payroll_run_id: string;
   payroll_run_item_id: string;
   employee_id: string;
+  division?: string;
   employee_name?: string;
   run_number?: string;
   scheduled_at?: string;
@@ -95,6 +98,7 @@ export interface PayrollRun {
   id: string;
   run_number: string;
   payroll_period_id: string;
+  division?: string;
   period_name?: string;
   status: string;
   generated_at?: string;

@@ -128,6 +128,7 @@ func (a *App) ensureCriticalDeploymentFoundations() error {
 	if err := a.EnsurePayrollFoundation(); err != nil {
 		failures = append(failures, fmt.Sprintf("payroll foundation: %v", err))
 	}
+	a.ensureCrossModuleSchemaExtensions()
 	if err := a.EnsurePhase7Rollout(); err != nil {
 		failures = append(failures, fmt.Sprintf("phase 7 rollout: %v", err))
 	}

@@ -8,6 +8,7 @@
 //   - PH-MGR-X4Y5Z6 = Manager
 //   - PH-SLS-M7N8O9 = Sales
 //   - PH-OPS-P0Q1R2 = Operations
+//   - PH-STF-S1T2U3 = Staff
 //
 // ARCHITECTURE:
 //   1. Key binds to PC (device hash)
@@ -80,6 +81,7 @@ var rolePrefixes = map[string]string{
 	"manager":    "MGR",
 	"sales":      "SLS",
 	"operations": "OPS",
+	"staff":      "STF",
 	"developer":  "DEV", // Developer/test keys with full admin access
 }
 
@@ -89,6 +91,7 @@ var prefixToRole = map[string]string{
 	"MGR": "manager",
 	"SLS": "sales",
 	"OPS": "operations",
+	"STF": "staff",
 	"DEV": "admin", // DEV keys get admin permissions
 }
 
@@ -178,7 +181,7 @@ func (a *App) GenerateLicenseKey(role, notes, createdBy string) (string, error) 
 	role = strings.ToLower(role)
 	prefix, ok := rolePrefixes[role]
 	if !ok {
-		return "", fmt.Errorf("invalid role: %s (valid: admin, manager, sales, operations)", role)
+		return "", fmt.Errorf("invalid role: %s (valid: admin, manager, sales, operations, staff)", role)
 	}
 
 	// Generate cryptographically random key instead of deterministic hash
@@ -597,7 +600,7 @@ func (a *App) EnsureLicenseTableExists() error {
 func (a *App) SeedLicenseKeys() error {
 	log.Println("🔑 SeedLicenseKeys: Starting...")
 
-	roles := []string{"admin", "manager", "sales", "operations", "developer"}
+	roles := []string{"admin", "manager", "sales", "operations", "staff", "developer"}
 	targetPerRole := 10
 	var totalSeeded int
 

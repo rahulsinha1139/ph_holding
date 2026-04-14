@@ -1027,6 +1027,7 @@ export namespace main {
 	    version: number;
 	    created_by: string;
 	    bank_statement_line_id: string;
+	    division: string;
 	    expense_date: time.Time;
 	    description: string;
 	    category: string;
@@ -1049,6 +1050,7 @@ export namespace main {
 	        this.version = source["version"];
 	        this.created_by = source["created_by"];
 	        this.bank_statement_line_id = source["bank_statement_line_id"];
+	        this.division = source["division"];
 	        this.expense_date = this.convertValues(source["expense_date"], time.Time);
 	        this.description = source["description"];
 	        this.category = source["category"];
@@ -1276,6 +1278,8 @@ export namespace main {
 	    imported_from: string;
 	    import_method: string;
 	    ocr_confidence: number;
+	    notes: string;
+	    division: string;
 	    balance_verified: boolean;
 	    discrepancy_amount: number;
 	    lines?: BankStatementLine[];
@@ -1309,6 +1313,8 @@ export namespace main {
 	        this.imported_from = source["imported_from"];
 	        this.import_method = source["import_method"];
 	        this.ocr_confidence = source["ocr_confidence"];
+	        this.notes = source["notes"];
+	        this.division = source["division"];
 	        this.balance_verified = source["balance_verified"];
 	        this.discrepancy_amount = source["discrepancy_amount"];
 	        this.lines = this.convertValues(source["lines"], BankStatementLine);
@@ -1684,6 +1690,7 @@ export namespace main {
 	}
 	export class CompanyBankAccount {
 	    id: string;
+	    division: string;
 	    bank_name: string;
 	    account_name: string;
 	    account_number: string;
@@ -1703,6 +1710,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
+	        this.division = source["division"];
 	        this.bank_name = source["bank_name"];
 	        this.account_name = source["account_name"];
 	        this.account_number = source["account_number"];
@@ -3448,6 +3456,7 @@ export namespace main {
 	    vat_percent: number;
 	    grand_total_bhd: number;
 	    status: string;
+	    division: string;
 	    applied_at?: time.Time;
 	    credit_note_hash: string;
 	    items: CreditNoteItem[];
@@ -3475,6 +3484,7 @@ export namespace main {
 	        this.vat_percent = source["vat_percent"];
 	        this.grand_total_bhd = source["grand_total_bhd"];
 	        this.status = source["status"];
+	        this.division = source["division"];
 	        this.applied_at = this.convertValues(source["applied_at"], time.Time);
 	        this.credit_note_hash = source["credit_note_hash"];
 	        this.items = this.convertValues(source["items"], CreditNoteItem);
@@ -5628,6 +5638,18 @@ export namespace main {
 	    overdue_amount: number;
 	    overdue_count: number;
 	    avg_invoice_size: number;
+	    source: string;
+	    is_audited: boolean;
+	    cost_of_sales: number;
+	    gross_profit: number;
+	    staff_costs: number;
+	    admin_expenses: number;
+	    net_profit: number;
+	    cash_equivalents: number;
+	    trade_receivables: number;
+	    total_assets: number;
+	    total_liabilities: number;
+	    total_equity: number;
 	    has_data: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -5646,6 +5668,18 @@ export namespace main {
 	        this.overdue_amount = source["overdue_amount"];
 	        this.overdue_count = source["overdue_count"];
 	        this.avg_invoice_size = source["avg_invoice_size"];
+	        this.source = source["source"];
+	        this.is_audited = source["is_audited"];
+	        this.cost_of_sales = source["cost_of_sales"];
+	        this.gross_profit = source["gross_profit"];
+	        this.staff_costs = source["staff_costs"];
+	        this.admin_expenses = source["admin_expenses"];
+	        this.net_profit = source["net_profit"];
+	        this.cash_equivalents = source["cash_equivalents"];
+	        this.trade_receivables = source["trade_receivables"];
+	        this.total_assets = source["total_assets"];
+	        this.total_liabilities = source["total_liabilities"];
+	        this.total_equity = source["total_equity"];
 	        this.has_data = source["has_data"];
 	    }
 	}
@@ -5798,6 +5832,7 @@ export namespace main {
 	    version: number;
 	    created_by: string;
 	    employee_id: string;
+	    division: string;
 	    pay_frequency: string;
 	    currency: string;
 	    base_salary: number;
@@ -5826,6 +5861,7 @@ export namespace main {
 	        this.version = source["version"];
 	        this.created_by = source["created_by"];
 	        this.employee_id = source["employee_id"];
+	        this.division = source["division"];
 	        this.pay_frequency = source["pay_frequency"];
 	        this.currency = source["currency"];
 	        this.base_salary = source["base_salary"];
@@ -6211,6 +6247,7 @@ export namespace main {
 	    version: number;
 	    created_by: string;
 	    entry_number: string;
+	    division: string;
 	    expense_date: time.Time;
 	    due_date?: time.Time;
 	    description: string;
@@ -6260,6 +6297,7 @@ export namespace main {
 	        this.version = source["version"];
 	        this.created_by = source["created_by"];
 	        this.entry_number = source["entry_number"];
+	        this.division = source["division"];
 	        this.expense_date = this.convertValues(source["expense_date"], time.Time);
 	        this.due_date = this.convertValues(source["due_date"], time.Time);
 	        this.description = source["description"];
@@ -7889,6 +7927,7 @@ export namespace main {
 	    payment_method: string;
 	    ocr_document_id: string;
 	    ocr_confidence: number;
+	    division: string;
 	    discrepancy_reason: string;
 	    dispute_reason: string;
 	    journal_entry_id: string;
@@ -7935,6 +7974,7 @@ export namespace main {
 	        this.payment_method = source["payment_method"];
 	        this.ocr_document_id = source["ocr_document_id"];
 	        this.ocr_confidence = source["ocr_confidence"];
+	        this.division = source["division"];
 	        this.discrepancy_reason = source["discrepancy_reason"];
 	        this.dispute_reason = source["dispute_reason"];
 	        this.journal_entry_id = source["journal_entry_id"];
@@ -8047,6 +8087,7 @@ export namespace main {
 	    approved_by: string;
 	    approved_at?: time.Time;
 	    updated_by: string;
+	    division: string;
 	    items?: PurchaseOrderItem[];
 	
 	    static createFrom(source: any = {}) {
@@ -8080,6 +8121,7 @@ export namespace main {
 	        this.approved_by = source["approved_by"];
 	        this.approved_at = this.convertValues(source["approved_at"], time.Time);
 	        this.updated_by = source["updated_by"];
+	        this.division = source["division"];
 	        this.items = this.convertValues(source["items"], PurchaseOrderItem);
 	    }
 	
@@ -8401,6 +8443,7 @@ export namespace main {
 	    discount_percent: number;
 	    quote_type: string;
 	    vat_rate: number;
+	    division: string;
 	    coc_coo: string;
 	    test_certificate: string;
 	    installation: string;
@@ -8447,6 +8490,7 @@ export namespace main {
 	        this.discount_percent = source["discount_percent"];
 	        this.quote_type = source["quote_type"];
 	        this.vat_rate = source["vat_rate"];
+	        this.division = source["division"];
 	        this.coc_coo = source["coc_coo"];
 	        this.test_certificate = source["test_certificate"];
 	        this.installation = source["installation"];
@@ -9601,6 +9645,7 @@ export namespace main {
 	export class OfferUpdateData {
 	    customer_id: string;
 	    customer_name: string;
+	    division: string;
 	    project_name: string;
 	    folder_number: string;
 	    quotation_date: string;
@@ -9630,6 +9675,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
 	        this.customer_name = source["customer_name"];
+	        this.division = source["division"];
 	        this.project_name = source["project_name"];
 	        this.folder_number = source["folder_number"];
 	        this.quotation_date = source["quotation_date"];
@@ -9765,6 +9811,7 @@ export namespace main {
 	    customer_name: string;
 	    customer_grade: string;
 	    salesperson: string;
+	    division: string;
 	    year: number;
 	    opp_number: number;
 	    folder_name: string;
@@ -9813,6 +9860,7 @@ export namespace main {
 	        this.customer_name = source["customer_name"];
 	        this.customer_grade = source["customer_grade"];
 	        this.salesperson = source["salesperson"];
+	        this.division = source["division"];
 	        this.year = source["year"];
 	        this.opp_number = source["opp_number"];
 	        this.folder_name = source["folder_name"];
@@ -10230,6 +10278,7 @@ export namespace main {
 	    journal_entry_id: string;
 	    bank_account_id: string;
 	    reference: string;
+	    division: string;
 	    updated_by: string;
 	
 	    static createFrom(source: any = {}) {
@@ -10253,6 +10302,7 @@ export namespace main {
 	        this.journal_entry_id = source["journal_entry_id"];
 	        this.bank_account_id = source["bank_account_id"];
 	        this.reference = source["reference"];
+	        this.division = source["division"];
 	        this.updated_by = source["updated_by"];
 	    }
 	
@@ -10429,6 +10479,7 @@ export namespace main {
 	    payroll_run_id: string;
 	    payroll_run_item_id: string;
 	    employee_id: string;
+	    division: string;
 	    scheduled_at?: time.Time;
 	    paid_at?: time.Time;
 	    amount: number;
@@ -10454,6 +10505,7 @@ export namespace main {
 	        this.payroll_run_id = source["payroll_run_id"];
 	        this.payroll_run_item_id = source["payroll_run_item_id"];
 	        this.employee_id = source["employee_id"];
+	        this.division = source["division"];
 	        this.scheduled_at = this.convertValues(source["scheduled_at"], time.Time);
 	        this.paid_at = this.convertValues(source["paid_at"], time.Time);
 	        this.amount = source["amount"];
@@ -10491,6 +10543,7 @@ export namespace main {
 	    version: number;
 	    created_by: string;
 	    name: string;
+	    division: string;
 	    period_start: time.Time;
 	    period_end: time.Time;
 	    payment_date?: time.Time;
@@ -10509,6 +10562,7 @@ export namespace main {
 	        this.version = source["version"];
 	        this.created_by = source["created_by"];
 	        this.name = source["name"];
+	        this.division = source["division"];
 	        this.period_start = this.convertValues(source["period_start"], time.Time);
 	        this.period_end = this.convertValues(source["period_end"], time.Time);
 	        this.payment_date = this.convertValues(source["payment_date"], time.Time);
@@ -10616,6 +10670,7 @@ export namespace main {
 	    created_by: string;
 	    run_number: string;
 	    payroll_period_id: string;
+	    division: string;
 	    status: string;
 	    generated_at?: time.Time;
 	    approved_at?: time.Time;
@@ -10651,6 +10706,7 @@ export namespace main {
 	        this.created_by = source["created_by"];
 	        this.run_number = source["run_number"];
 	        this.payroll_period_id = source["payroll_period_id"];
+	        this.division = source["division"];
 	        this.status = source["status"];
 	        this.generated_at = this.convertValues(source["generated_at"], time.Time);
 	        this.approved_at = this.convertValues(source["approved_at"], time.Time);
@@ -11533,6 +11589,7 @@ export namespace main {
 	    version: number;
 	    created_by: string;
 	    name: string;
+	    division: string;
 	    description: string;
 	    category_id: string;
 	    vendor_id?: string;
@@ -11562,6 +11619,7 @@ export namespace main {
 	        this.version = source["version"];
 	        this.created_by = source["created_by"];
 	        this.name = source["name"];
+	        this.division = source["division"];
 	        this.description = source["description"];
 	        this.category_id = source["category_id"];
 	        this.vendor_id = source["vendor_id"];
@@ -12566,6 +12624,7 @@ export namespace main {
 	    journal_entry_id: string;
 	    bank_account_id: string;
 	    updated_by: string;
+	    division: string;
 	    supplier_name: string;
 	    invoice_number: string;
 	
@@ -12593,6 +12652,7 @@ export namespace main {
 	        this.journal_entry_id = source["journal_entry_id"];
 	        this.bank_account_id = source["bank_account_id"];
 	        this.updated_by = source["updated_by"];
+	        this.division = source["division"];
 	        this.supplier_name = source["supplier_name"];
 	        this.invoice_number = source["invoice_number"];
 	    }

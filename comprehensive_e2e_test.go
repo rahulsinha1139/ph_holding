@@ -351,7 +351,7 @@ func TestBankAccount_SeedAndEncryption(t *testing.T) {
 	// across client machines and invoice PDFs can read them directly.
 	banks, err := app.GetActiveBankAccounts()
 	require.NoError(t, err)
-	require.Len(t, banks, 4, "Should have 4 seeded bank accounts")
+	require.Len(t, banks, 5, "Should have PH and AHS seeded bank accounts")
 
 	// Verify decrypted values are readable (not gibberish)
 	nbb := banks[0]
@@ -362,6 +362,16 @@ func TestBankAccount_SeedAndEncryption(t *testing.T) {
 	ahli := banks[1]
 	assert.Equal(t, "0010521957001", ahli.AccountNumber)
 	assert.Equal(t, "BH04AUBB00010521957001", ahli.IBAN)
+
+	var ahsBank *CompanyBankAccount
+	for i := range banks {
+		if banks[i].Division == "AHS Trading" {
+			ahsBank = &banks[i]
+			break
+		}
+	}
+	require.NotNil(t, ahsBank, "AHS should have a seeded bank account")
+	assert.Equal(t, "216114100100", ahsBank.AccountNumber)
 
 	// Verify data remains plaintext in the raw DB as well
 	var rawBank CompanyBankAccount
@@ -449,7 +459,7 @@ func TestBankAccount_GetAll(t *testing.T) {
 
 	banks, err := app.GetAllBankAccounts()
 	require.NoError(t, err)
-	assert.Len(t, banks, 4)
+	assert.Len(t, banks, 5)
 
 	// All should have decrypted values
 	for _, bank := range banks {
@@ -532,7 +542,7 @@ func TestKeyRotation_EndToEnd(t *testing.T) {
 	// Verify bank accounts still readable
 	banks, err := app.GetActiveBankAccounts()
 	require.NoError(t, err)
-	require.Len(t, banks, 4)
+	require.Len(t, banks, 5)
 	assert.Equal(t, "99570076", banks[0].AccountNumber, "Bank data should survive rotation")
 
 	// Verify settings still readable

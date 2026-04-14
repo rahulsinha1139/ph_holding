@@ -65,6 +65,7 @@
     updated_at?: any;
     estimated_margin?: number;
     items?: any[];
+    division?: string;
     days_until_expiry?: number;
     is_expiring_soon?: boolean;
     is_expired?: boolean;
@@ -95,6 +96,7 @@
   let offers: OfferDisplay[] = [];
   let filteredOffers: OfferDisplay[] = [];
   let loading = true;
+  let selectedCompany: 'PH Trading' | 'AHS Trading' = 'PH Trading';
   let selectedStage: OfferStage = 'all';
   let offersWithNoItems: any[] = [];
   let legacyOfferShells: any[] = [];
@@ -207,6 +209,7 @@
   }
 
   let formData = {
+    division: 'PH Trading',
     customer_id: '',
     customer_name: '',
     project_name: '',
@@ -376,13 +379,15 @@
     { value: 'Lost', label: 'Lost', count: 0 }
   ];
 
+  $: companyScopedOffers = offers.filter((offer) => (offer.division || 'PH Trading') === selectedCompany);
+
   // Computed: Update tab counts
   $: {
-    stageTabs[0].count = offers.length;
-    stageTabs[1].count = offers.filter(o => o.stage === 'RFQ').length;
-    stageTabs[2].count = offers.filter(o => o.stage === 'Quoted').length;
-    stageTabs[3].count = offers.filter(o => o.stage === 'Won').length;
-    stageTabs[4].count = offers.filter(o => o.stage === 'Lost').length;
+    stageTabs[0].count = companyScopedOffers.length;
+    stageTabs[1].count = companyScopedOffers.filter(o => o.stage === 'RFQ').length;
+    stageTabs[2].count = companyScopedOffers.filter(o => o.stage === 'Quoted').length;
+    stageTabs[3].count = companyScopedOffers.filter(o => o.stage === 'Won').length;
+    stageTabs[4].count = companyScopedOffers.filter(o => o.stage === 'Lost').length;
   }
 
   $: legacyOfferShells = offersWithNoItems.filter((item) => item?.is_legacy_shell);
@@ -391,9 +396,9 @@
   // Computed: Filter offers by selected stage
   $: {
     if (selectedStage === 'all') {
-      filteredOffers = offers;
+      filteredOffers = companyScopedOffers;
     } else {
-      filteredOffers = offers.filter(o => o.stage === selectedStage);
+      filteredOffers = companyScopedOffers.filter(o => o.stage === selectedStage);
     }
   }
 
@@ -439,6 +444,7 @@
       created_at: offer.created_at,
       updated_at: offer.updated_at,
       items: offer.items || [],
+      division: offer.division || 'PH Trading',
       days_until_expiry: daysUntilExpiry,
       is_expired: daysUntilExpiry < 0,
       is_expiring_soon: daysUntilExpiry >= 0 && daysUntilExpiry <= 7,
@@ -468,6 +474,11 @@
 
   function normalizeName(value: string) {
     return (value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  function handleCompanySelect(company: string) {
+    selectedCompany = company === 'AHS Trading' ? 'AHS Trading' : 'PH Trading';
+    selectedStage = 'all';
   }
 
   function resolveCustomerFromOffer(customerId: string, customerName: string) {
@@ -516,6 +527,7 @@
     const resolvedCustomer = resolveCustomerFromOffer((offer as any).customer_id || '', offer.customer_name || '');
 
     formData = {
+      division: offer.division || selectedCompany,
       customer_id: resolvedCustomer.customer_id,
       customer_name: resolvedCustomer.customer_name,
       project_name: offer.project_name || '',
@@ -610,7 +622,7 @@
     try {
       const customer = customers.find(c => c.id === formData.customer_id);
       const costingData = {
-        division: 'PH Trading',
+        division: formData.division || selectedCompany,
         date: formData.quotation_date,
         preparedBy: '',
         customerName: customer?.business_name || formData.customer_name,
@@ -815,6 +827,7 @@
       // Open edit modal pre-filled with the lost offer's data for a new quote
       const resolvedCustomer = resolveCustomerFromOffer((offer as any).customer_id || '', offer.customer_name || '');
       formData = {
+        division: offer.division || selectedCompany,
         customer_id: resolvedCustomer.customer_id,
         customer_name: resolvedCustomer.customer_name,
         project_name: offer.project_name || '',
@@ -912,6 +925,7 @@
       await UpdateOfferFull(viewOffer.id, {
         customer_id: '',
         customer_name: viewOffer.customer_name || '',
+        division: viewOffer.division || 'PH Trading',
         project_name: viewOffer.project_name || '',
         folder_number: viewOffer.folder_number || '',
         quotation_date: viewOffer.quotation_date ? new Date(viewOffer.quotation_date).toISOString().split('T')[0] : '',
@@ -1082,6 +1096,19 @@
 
     <!-- Stage Filter Tabs -->
     <Card padding="sm">
+      <div class="company-toggle" role="tablist" aria-label="Filter offers by company">
+        {#each ['PH Trading', 'AHS Trading'] as company}
+          <button
+            class="company-toggle-btn"
+            class:active={selectedCompany === company}
+            role="tab"
+            aria-selected={selectedCompany === company}
+            on:click={() => handleCompanySelect(company)}
+          >
+            {company}
+          </button>
+        {/each}
+      </div>
       <div class="stage-tabs" role="tablist" aria-label="Filter offers by stage">
         {#each stageTabs as tab}
           <button
@@ -1118,7 +1145,7 @@
       <Card padding="md">
         <div class="stat">
           <div class="stat-label">Total Offers</div>
-          <div class="stat-value">{offers.length}</div>
+          <div class="stat-value">{companyScopedOffers.length}</div>
         </div>
       </Card>
 
@@ -1126,7 +1153,7 @@
         <div class="stat">
           <div class="stat-label">Total Value</div>
           <div class="stat-value">
-            {offers.reduce((sum, o) => sum + o.total_value_bhd, 0).toFixed(3)} BHD
+            {companyScopedOffers.reduce((sum, o) => sum + o.total_value_bhd, 0).toFixed(3)} BHD
           </div>
         </div>
       </Card>
@@ -1135,7 +1162,7 @@
         <div class="stat">
           <div class="stat-label">Expiring Soon</div>
           <div class="stat-value stat-warning">
-            {offers.filter(o => o.is_expiring_soon).length}
+            {companyScopedOffers.filter(o => o.is_expiring_soon).length}
           </div>
         </div>
       </Card>
@@ -1145,8 +1172,8 @@
           <div class="stat-label">Win Rate</div>
           <div class="stat-value stat-success">
             {(() => {
-              const won = offers.filter(o => o.stage === 'Won').length;
-              const lost = offers.filter(o => o.stage === 'Lost').length;
+              const won = companyScopedOffers.filter(o => o.stage === 'Won').length;
+              const lost = companyScopedOffers.filter(o => o.stage === 'Lost').length;
               const closed = won + lost;
               return closed > 0 ? ((won / closed) * 100).toFixed(1) : '0.0';
             })()}%
@@ -1751,6 +1778,40 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
+  }
+
+  .company-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    margin-bottom: 12px;
+    background: var(--surface-muted, #f3f4f6);
+    border-radius: 12px;
+    width: fit-content;
+  }
+
+  .company-toggle-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .company-toggle-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.5);
+  }
+
+  .company-toggle-btn.active {
+    background: var(--carbon, #1f2937);
+    color: white;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
   }
 
   /* Stage Tabs */

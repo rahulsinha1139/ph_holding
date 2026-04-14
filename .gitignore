@@ -86,3 +86,4 @@ mac_dev_setup/
 # === AI Tool Config (local only) ===
 .agent/
 .claude/
+.gitnexus

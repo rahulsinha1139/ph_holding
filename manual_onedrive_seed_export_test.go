@@ -120,19 +120,21 @@ type oneDriveSeedDBOpportunity struct {
 }
 
 type oneDriveSeedSummary struct {
-	GeneratedAt                 time.Time `json:"generated_at"`
-	RootPath                    string    `json:"root_path"`
-	DatabasePath                string    `json:"database_path"`
-	DealsScanned                int       `json:"deals_scanned"`
-	DealsWithCostings           int       `json:"deals_with_costings"`
-	CostingFilesParsed          int       `json:"costing_files_parsed"`
-	LineItemsExtracted          int       `json:"line_items_extracted"`
-	UnresolvedCustomerMatches   int       `json:"unresolved_customer_matches"`
-	CurrentDB2026OpportunityRows int      `json:"current_db_2026_opportunity_rows"`
-	CurrentDB2026OneDriveRows   int       `json:"current_db_2026_onedrive_rows"`
-	MissingInDB                 int       `json:"missing_in_db"`
-	MultipleDBMatches           int       `json:"multiple_db_matches"`
-	OutputDir                   string    `json:"output_dir"`
+	GeneratedAt               time.Time `json:"generated_at"`
+	RootPath                  string    `json:"root_path"`
+	DatabasePath              string    `json:"database_path"`
+	ImportYear                int       `json:"import_year"`
+	ImportSource              string    `json:"import_source"`
+	DealsScanned              int       `json:"deals_scanned"`
+	DealsWithCostings         int       `json:"deals_with_costings"`
+	CostingFilesParsed        int       `json:"costing_files_parsed"`
+	LineItemsExtracted        int       `json:"line_items_extracted"`
+	UnresolvedCustomerMatches int       `json:"unresolved_customer_matches"`
+	CurrentDBOpportunityRows  int       `json:"current_db_opportunity_rows"`
+	CurrentDBOneDriveRows     int       `json:"current_db_onedrive_rows"`
+	MissingInDB               int       `json:"missing_in_db"`
+	MultipleDBMatches         int       `json:"multiple_db_matches"`
+	OutputDir                 string    `json:"output_dir"`
 }
 
 type oneDriveFolderIdentity struct {
@@ -144,21 +146,16 @@ type oneDriveFolderIdentity struct {
 	Title              string
 }
 
-func TestManualExport2026OneDriveSeed(t *testing.T) {
-	rootPath := os.Getenv("ONEDRIVE_IMPORT_ROOT")
-	if rootPath == "" {
-		rootPath = "/Users/rahulsinha/Downloads/OneDrive_2026-03-31/Offers 2026"
-	}
-
-	dbPath := os.Getenv("ONEDRIVE_IMPORT_DB")
-	if dbPath == "" {
-		dbPath = filepath.Join(".", "ph_holdings.db")
-	}
+func TestManualExportOneDriveSeed(t *testing.T) {
+	rootPath := defaultOneDriveImportRoot()
+	dbPath := resolveOneDriveImportDBPath()
+	importYear := resolveOneDriveImportYear(rootPath)
+	importSource := oneDriveOpportunitySource(importYear)
 
 	stamp := time.Now().Format("20060102_150405")
 	outputDir := os.Getenv("ONEDRIVE_SEED_OUTPUT_DIR")
 	if outputDir == "" {
-		outputDir = filepath.Join("reports", "onedrive_2026_seed_"+stamp)
+		outputDir = filepath.Join("reports", fmt.Sprintf("onedrive_seed_%d_%s", importYear, stamp))
 	}
 
 	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
@@ -186,8 +183,8 @@ func TestManualExport2026OneDriveSeed(t *testing.T) {
 	if err := db.Raw(`
 		SELECT id, folder_number, folder_name, customer_name, title, stage, source, year
 		FROM opportunities
-		WHERE year = 2026
-	`).Scan(&dbRows).Error; err != nil {
+		WHERE year = ?
+	`, importYear).Scan(&dbRows).Error; err != nil {
 		t.Fatalf("failed to load db opportunities: %v", err)
 	}
 
@@ -480,19 +477,21 @@ func TestManualExport2026OneDriveSeed(t *testing.T) {
 	}
 
 	summary := oneDriveSeedSummary{
-		GeneratedAt:                  time.Now(),
-		RootPath:                     rootPath,
-		DatabasePath:                 dbPath,
-		DealsScanned:                 len(scan.Deals),
-		DealsWithCostings:            dealsWithCostings,
-		CostingFilesParsed:           totalParsedCostings,
-		LineItemsExtracted:           totalLineItems,
-		UnresolvedCustomerMatches:    unresolvedMatches,
-		CurrentDB2026OpportunityRows: len(dbRows),
-		CurrentDB2026OneDriveRows:    countDBRowsBySource(dbRows, "2026_onedrive"),
-		MissingInDB:                  missingInDB,
-		MultipleDBMatches:            multipleDBMatches,
-		OutputDir:                    outputDir,
+		GeneratedAt:               time.Now(),
+		RootPath:                  rootPath,
+		DatabasePath:              dbPath,
+		ImportYear:                importYear,
+		ImportSource:              importSource,
+		DealsScanned:              len(scan.Deals),
+		DealsWithCostings:         dealsWithCostings,
+		CostingFilesParsed:        totalParsedCostings,
+		LineItemsExtracted:        totalLineItems,
+		UnresolvedCustomerMatches: unresolvedMatches,
+		CurrentDBOpportunityRows:  len(dbRows),
+		CurrentDBOneDriveRows:     countDBRowsBySource(dbRows, importSource),
+		MissingInDB:               missingInDB,
+		MultipleDBMatches:         multipleDBMatches,
+		OutputDir:                 outputDir,
 	}
 	if err := writeSeedJSON(filepath.Join(outputDir, "summary.json"), summary); err != nil {
 		t.Fatalf("failed to write summary json: %v", err)

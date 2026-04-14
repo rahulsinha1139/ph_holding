@@ -392,20 +392,20 @@ func (a *App) CreateProformaInvoice(orderID string) (Invoice, error) {
 
 	// Build proforma invoice directly (skip fulfillment tracking)
 	invoice := Invoice{
-		InvoiceNumber: invoiceNumber,
-		OrderID:       order.ID,
-		CustomerID:    order.CustomerID,
-		CustomerName:  order.CustomerName,
-		InvoiceDate:   time.Now(),
-		DueDate:       time.Now().AddDate(0, 0, 30),
-		Status:        "Proforma",
-		SubtotalBHD:   order.TotalValueBHD,
-		VATPercent:    10.0,
-		VATBHD:        order.TotalValueBHD * 0.10,
-		GrandTotalBHD: order.TotalValueBHD * 1.10,
+		InvoiceNumber:  invoiceNumber,
+		OrderID:        order.ID,
+		CustomerID:     order.CustomerID,
+		CustomerName:   order.CustomerName,
+		InvoiceDate:    time.Now(),
+		DueDate:        time.Now().AddDate(0, 0, 30),
+		Status:         "Proforma",
+		SubtotalBHD:    order.TotalValueBHD,
+		VATPercent:     10.0,
+		VATBHD:         order.TotalValueBHD * 0.10,
+		GrandTotalBHD:  order.TotalValueBHD * 1.10,
 		OutstandingBHD: 0.0, // Proforma has no outstanding balance
-		PaymentTerms:  order.PaymentTerms,
-		Division:      order.Division,
+		PaymentTerms:   order.PaymentTerms,
+		Division:       normalizeDivisionName(order.Division),
 	}
 
 	// Copy line items from order
@@ -615,6 +615,7 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		DiscountPercent:   order.DiscountPercent,
 		PaymentTerms:      order.PaymentTerms,
 		DeliveryTerms:     order.DeliveryTerms,
+		Division:          normalizeDivisionName(order.Division),
 		// Margin fields - will be calculated from items
 		TotalSupplierCostBHD: 0.0,
 		GrossMarginBHD:       0.0,
@@ -1304,9 +1305,9 @@ func (a *App) MarkCustomerInvoicePaid(id string, paymentDate time.Time, paymentR
 	if err := tx.Model(&Invoice{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
-			"status":         "Paid",
+			"status":          "Paid",
 			"outstanding_bhd": 0.0,
-			"updated_at":     now,
+			"updated_at":      now,
 		}).Error; err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to mark invoice as paid: %w", err)
@@ -1531,8 +1532,8 @@ func (a *App) RecordPartialPayment(id string, paymentAmount float64, paymentDate
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
 			"outstanding_bhd": newOutstanding,
-			"status":         newStatus,
-			"updated_at":     now,
+			"status":          newStatus,
+			"updated_at":      now,
 		}).Error; err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to record partial payment: %w", err)

@@ -12,6 +12,10 @@ import (
 )
 
 func TestApplyCustomerReferenceSeedToLiveDB(t *testing.T) {
+	if os.Getenv("CUSTOMER_REFERENCE_SEED_COMMIT") != "1" {
+		t.Skip("set CUSTOMER_REFERENCE_SEED_COMMIT=1 to apply the customer reference seed to the live database")
+	}
+
 	dbPath := filepath.Join(".", "ph_holdings.db")
 	seedPath := filepath.Join("data", "customer_reference_seed.tsv")
 

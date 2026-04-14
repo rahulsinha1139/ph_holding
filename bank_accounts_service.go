@@ -1,8 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPANY BANK ACCOUNTS SERVICE
 //
-// MISSION: Manage PH Trading's bank account details for invoice PDFs
-//          Provides the 4 official bank accounts used on all invoices
+// MISSION: Manage PH Trading and AHS Trading bank account details for invoices and reconciliation
+//          Provides the official bank accounts used across finance workflows
 //
 // USED BY: Invoice PDF generation (bank details section)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -10,16 +10,19 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
-// CompanyBankAccount stores PH Trading's bank account details for invoices
+// CompanyBankAccount stores division-aware bank account details for invoices and reconciliation.
 type CompanyBankAccount struct {
 	ID            string    `gorm:"primaryKey;size:36" json:"id"`
+	Division      string    `gorm:"size:100;default:'PH Trading'" json:"division"`
 	BankName      string    `gorm:"not null;size:100" json:"bank_name"`
 	AccountName   string    `gorm:"not null;size:100" json:"account_name"`
 	AccountNumber string    `gorm:"not null;size:50" json:"account_number"`
@@ -38,8 +41,8 @@ type CompanyBankAccount struct {
 
 func (CompanyBankAccount) TableName() string { return "company_bank_accounts" }
 
-// SeedCompanyBankAccounts creates the 4 PH Trading bank accounts
-// Called on app startup to ensure bank details are always available
+// SeedCompanyBankAccounts creates the official PH/AHS bank accounts.
+// Called on app startup to ensure bank details are always available.
 func (a *App) SeedCompanyBankAccounts() error {
 	if a.db == nil {
 		return nil
@@ -48,6 +51,7 @@ func (a *App) SeedCompanyBankAccounts() error {
 	banks := []CompanyBankAccount{
 		{
 			ID:            "bank-nbb",
+			Division:      "PH Trading",
 			BankName:      "National Bank of Bahrain BSC",
 			AccountName:   "P H TRADING WLL",
 			AccountNumber: "99570076",
@@ -61,6 +65,7 @@ func (a *App) SeedCompanyBankAccounts() error {
 		},
 		{
 			ID:            "bank-ahli",
+			Division:      "PH Trading",
 			BankName:      "Ahli United Bank",
 			AccountName:   "P H TRADING WLL",
 			AccountNumber: "0010521957001",
@@ -74,6 +79,7 @@ func (a *App) SeedCompanyBankAccounts() error {
 		},
 		{
 			ID:            "bank-alsalam",
+			Division:      "PH Trading",
 			BankName:      "Al Salam Bank",
 			AccountName:   "P H TRADING WLL",
 			AccountNumber: "205220101000",
@@ -87,6 +93,7 @@ func (a *App) SeedCompanyBankAccounts() error {
 		},
 		{
 			ID:            "bank-bbk",
+			Division:      "PH Trading",
 			BankName:      "BBK",
 			AccountName:   "P H TRADING WLL",
 			AccountNumber: "100000451009",
@@ -98,18 +105,55 @@ func (a *App) SeedCompanyBankAccounts() error {
 			CreatedAt:     time.Now(),
 			UpdatedAt:     time.Now(),
 		},
+		{
+			ID:            "bank-ahs-alsalam",
+			Division:      "AHS Trading",
+			BankName:      "Al Salam Bank",
+			AccountName:   "AHS TRADING W.L.L.",
+			AccountNumber: "216114100100",
+			IBAN:          "BH42ALSA00216114100100",
+			SwiftBIC:      "ALSABHBM",
+			Currency:      "BHD",
+			IsActive:      true,
+			DisplayOrder:  10,
+			CreatedAt:     time.Now(),
+			UpdatedAt:     time.Now(),
+		},
 	}
 
 	for _, bank := range banks {
-		// Use FirstOrCreate to avoid duplicates
-		result := a.db.Where("id = ?", bank.ID).FirstOrCreate(&bank)
-		if result.Error != nil {
-			log.Printf("⚠️ Failed to seed bank account %s: %v", bank.ID, result.Error)
+		var existing CompanyBankAccount
+		result := a.db.Where("id = ?", bank.ID).First(&existing)
+		if result.Error == nil {
+			updates := map[string]interface{}{
+				"division":       normalizeDivisionName(firstNonEmptyString(bank.Division, existing.Division)),
+				"bank_name":      bank.BankName,
+				"account_name":   bank.AccountName,
+				"account_number": bank.AccountNumber,
+				"iban":           bank.IBAN,
+				"swift_bic":      bank.SwiftBIC,
+				"currency":       bank.Currency,
+				"is_active":      bank.IsActive,
+				"display_order":  bank.DisplayOrder,
+				"updated_at":     time.Now(),
+			}
+			if err := a.db.Model(&existing).Updates(updates).Error; err != nil {
+				log.Printf("⚠️ Failed to refresh bank account %s: %v", bank.ID, err)
+				return err
+			}
+			continue
+		}
+		if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			log.Printf("⚠️ Failed to inspect bank account %s: %v", bank.ID, result.Error)
 			return result.Error
+		}
+		if err := a.db.Create(&bank).Error; err != nil {
+			log.Printf("⚠️ Failed to seed bank account %s: %v", bank.ID, err)
+			return err
 		}
 	}
 
-	log.Println("✅ Company bank accounts seeded (4 banks)")
+	log.Println("✅ Company bank accounts seeded/refreshed")
 	return nil
 }
 
@@ -206,6 +250,7 @@ func (a *App) CreateBankAccount(account CompanyBankAccount) (*CompanyBankAccount
 	if account.Currency == "" {
 		account.Currency = "BHD"
 	}
+	account.Division = normalizeDivisionName(account.Division)
 
 	// Default is_active to true
 	account.IsActive = true
@@ -248,6 +293,9 @@ func (a *App) UpdateBankAccount(id string, updates map[string]interface{}) (*Com
 
 	// Set updated_at
 	updates["updated_at"] = time.Now()
+	if division, ok := updates["division"].(string); ok {
+		updates["division"] = normalizeDivisionName(division)
+	}
 
 	// Apply updates
 	err = a.db.Model(&account).Updates(updates).Error

@@ -107,10 +107,9 @@
         { id: "opportunities", label: "Opportunities", icon: "target", permission: "offers:view" },
         { id: "operations", label: "Operations", icon: "layers", permission: "po:view" }, // Supplier-side ops: POs, Supplier Invoices - requires po:view
         { id: "finance", label: "Finance", icon: "bar-chart", permission: "finance:view" }, // HIDDEN for staff/sales
-        { id: "work", label: "Work", icon: "check-square", permission: "tasks:view" },
+        { id: "work", label: "Work", icon: "check-square", permission: null },
         { id: "people", label: "People", icon: "briefcase", permission: "hr:view" },
         { id: "notifications", label: "Notifications", icon: "bell", permission: null },
-        { id: "deployment", label: "Deployment", icon: "shield", permission: "settings:view" },
         { id: "relationships", label: "Relationships", icon: "users", permission: "customers:view" },
         { id: "intelligence", label: "Intelligence", icon: "zap", permission: "intelligence:chat" },
         // OneDrive import disabled — manual folder download + extraction in next session
@@ -180,13 +179,13 @@
     </nav>
     
     <!-- SYNC STATUS -->
-    <div class="sync-status" on:click={triggerSync} title={syncStatus.online ? "Click to sync now" : statusLabel}>
+    <button class="sync-status" on:click={triggerSync} title={syncStatus.online ? "Click to sync now" : statusLabel} type="button">
         <div class="sync-indicator" style="background-color: {statusColor}"></div>
         <span class="sync-label">{statusLabel}</span>
         {#if syncLoading}
             <span class="sync-spinner"></span>
         {/if}
-    </div>
+    </button>
 
     <!-- USER FOOTER -->
     <div class="sidebar-footer">
@@ -353,9 +352,16 @@
         align-items: center;
         gap: 8px;
         padding: 10px 16px;
+        width: 100%;
         border-top: 1px solid var(--border);
+        border-left: 0;
+        border-right: 0;
+        border-bottom: 0;
+        background: transparent;
         cursor: pointer;
         transition: background-color var(--transition-fast);
+        text-align: left;
+        font: inherit;
     }
 
     .sync-status:hover {

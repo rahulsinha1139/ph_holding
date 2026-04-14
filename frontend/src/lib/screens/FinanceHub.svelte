@@ -15,10 +15,13 @@
     // import BookBankReconciliationScreen from "./BookBankReconciliationScreen.svelte";
     // import FXRevaluationScreen from "./FXRevaluationScreen.svelte";
     // import AuditTrailViewer from "./AuditTrailViewer.svelte";
-    import AHSDashboard from "./AHSDashboard.svelte";
     import ErrorBoundary from "../components/ErrorBoundary.svelte";
+    import AHSDashboard from "./AHSDashboard.svelte";
+
+    export let params = {};
 
     let activeTab = "dashboard";
+    let lastAppliedRouteKey = "";
 
     // E2: Company selector - 'PH Trading' is the default, 'AHS Trading' is the sister company
     let selectedCompany = "PH Trading";
@@ -49,8 +52,12 @@
 
     function handleFinanceNavigate(event) {
         const nextTab = event?.detail?.tab;
+        const nextCompany = event?.detail?.company;
         if (nextTab && tabs.some((tab) => tab.id === nextTab)) {
             activeTab = nextTab;
+        }
+        if (companies.includes(nextCompany)) {
+            selectedCompany = nextCompany;
         }
     }
 
@@ -61,6 +68,25 @@
     onDestroy(() => {
         window.removeEventListener("finance:navigate", handleFinanceNavigate);
     });
+
+    $: {
+        const requestedTab = params?.tab;
+        const requestedCompany = params?.company;
+        const nextRouteKey = JSON.stringify({
+            tab: requestedTab || "",
+            company: requestedCompany || "",
+        });
+
+        if (nextRouteKey !== lastAppliedRouteKey) {
+            if (requestedTab && tabs.some((tab) => tab.id === requestedTab)) {
+                activeTab = requestedTab;
+            }
+            if (companies.includes(requestedCompany)) {
+                selectedCompany = requestedCompany;
+            }
+            lastAppliedRouteKey = nextRouteKey;
+        }
+    }
 </script>
 
 <ErrorBoundary name="Finance Hub">
@@ -83,42 +109,39 @@
             </div>
 
             <nav class="tabs">
-                {#if selectedCompany === 'PH Trading'}
-                    {#each tabs as tab}
-                        <button
-                            class="tab"
-                            class:active={activeTab === tab.id}
-                            on:click={() => (activeTab = tab.id)}
-                        >
-                            {tab.label}
-                        </button>
-                    {/each}
-                {:else}
-                    <button class="tab active">AHS Trading Dashboard</button>
-                {/if}
+                {#each tabs as tab}
+                    <button
+                        class="tab"
+                        class:active={activeTab === tab.id}
+                        on:click={() => (activeTab = tab.id)}
+                    >
+                        {tab.label}
+                    </button>
+                {/each}
             </nav>
         </header>
 
         <main class="content">
-            {#if selectedCompany === 'AHS Trading'}
-                <!-- E2: AHS Trading Dashboard -->
-                <AHSDashboard embedded={true} />
-            {:else if activeTab === "dashboard"}
-                <FinancialDashboard embedded={true} />
+            {#if activeTab === "dashboard"}
+                {#if selectedCompany === 'AHS Trading'}
+                    <AHSDashboard embedded={true} />
+                {:else}
+                    <FinancialDashboard embedded={true} />
+                {/if}
             {:else if activeTab === "invoices"}
-                <InvoicesScreen embedded={true} on:navigate={handleNavigate} />
+                <InvoicesScreen embedded={true} company={selectedCompany} on:navigate={handleNavigate} />
             {:else if activeTab === "payments"}
-                <PaymentsScreen embedded={true} on:navigate={handleNavigate} />
+                <PaymentsScreen embedded={true} company={selectedCompany} on:navigate={handleNavigate} />
             {:else if activeTab === "payments_made"}
-                <SupplierPaymentsScreen embedded={true} on:navigate={handleNavigate} />
+                <SupplierPaymentsScreen embedded={true} company={selectedCompany} on:navigate={handleNavigate} />
             {:else if activeTab === "expenses"}
-                <ExpensesScreen embedded={true} mode="workspace" />
+                <ExpensesScreen embedded={true} mode="workspace" company={selectedCompany} />
             {:else if activeTab === "expense_approvals"}
-                <ExpensesScreen embedded={true} mode="approvals" />
+                <ExpensesScreen embedded={true} mode="approvals" company={selectedCompany} />
             {:else if activeTab === "payroll_runs"}
-                <PayrollScreen embedded={true} mode="workspace" />
+                <PayrollScreen embedded={true} mode="workspace" company={selectedCompany} />
             {:else if activeTab === "bank_recon"}
-                <BankReconciliationScreen embedded={true} />
+                <BankReconciliationScreen embedded={true} company={selectedCompany} />
             <!-- Developing later:
             {:else if activeTab === "cheques"}
                 <ChequeRegisterScreen embedded={true} />

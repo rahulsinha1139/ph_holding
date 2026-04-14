@@ -91,25 +91,25 @@
   }
 </script>
 
+<svelte:window on:keydown={(event) => event.key === "Escape" && open && close()} />
+
 {#if open}
   <div
     class="modal-backdrop"
     role="presentation"
-    tabindex="0"
     on:click={close}
-    on:keydown={(event) => event.key === "Escape" && close()}
   >
     <div
       class="modal-card"
       role="dialog"
       aria-modal="true"
       tabindex="-1"
+      aria-labelledby="context-task-modal-title"
       on:click|stopPropagation
-      on:keydown|stopPropagation
     >
       <div class="modal-head">
         <div>
-          <h3>{title}</h3>
+          <h3 id="context-task-modal-title">{title}</h3>
           {#if subtitle}
             <p>{subtitle}</p>
           {/if}

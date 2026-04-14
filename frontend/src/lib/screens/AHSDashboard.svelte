@@ -27,12 +27,18 @@
         return `${sign}BHD ${abs.toFixed(0)}`;
     };
 
+    const fmtSignedCompact = (val: number) => {
+        if (val === null || val === undefined) return 'BHD 0';
+        if (val === 0) return 'BHD 0';
+        return fmtCompact(val);
+    };
+
     async function loadYears() {
         try {
             const years = await GetFinancialReportYears();
             if (years && years.length > 0) {
-                availableYears = years;
-                selectedYear = years[0] || new Date().getFullYear();
+                availableYears = Array.from(new Set([2024, 2023, ...years])).sort((a, b) => b - a);
+                selectedYear = availableYears[0] || new Date().getFullYear();
             } else {
                 availableYears = [new Date().getFullYear(), 2025, 2024, 2023];
             }
@@ -78,6 +84,15 @@
         <div class="company-badge">AHS Trading WLL</div>
     </div>
 
+    {#if data?.source}
+        <div class="source-strip">
+            <span>{data.source}</span>
+            {#if data.is_audited}
+                <span>Audited</span>
+            {/if}
+        </div>
+    {/if}
+
     {#if loading}
         <div class="loading-container">
             <WabiSpinner size="lg" />
@@ -107,22 +122,22 @@
             <div class="kpi-card">
                 <div class="kpi-label">Revenue</div>
                 <div class="kpi-value">{fmtCompact(data.revenue)}</div>
-                <div class="kpi-sub">{data.invoice_count} invoices</div>
+                <div class="kpi-sub">{data.is_audited ? 'Audited annual revenue' : `${data.invoice_count} invoices`}</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">Orders</div>
-                <div class="kpi-value">{data.order_count}</div>
-                <div class="kpi-sub">FY{selectedYear}</div>
+                <div class="kpi-label">Net Result</div>
+                <div class="kpi-value">{fmtSignedCompact(data.net_profit)}</div>
+                <div class="kpi-sub">{data.net_profit < 0 ? 'Net loss' : 'Net profit'}</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">Outstanding AR</div>
-                <div class="kpi-value">{fmtCompact(data.outstanding_ar)}</div>
-                <div class="kpi-sub">{data.overdue_count} overdue</div>
+                <div class="kpi-label">Cash</div>
+                <div class="kpi-value">{fmtCompact(data.cash_equivalents)}</div>
+                <div class="kpi-sub">Cash and bank balances</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">Collected</div>
-                <div class="kpi-value">{fmtCompact(data.paid_amount)}</div>
-                <div class="kpi-sub">Avg invoice: {fmtCurrency(data.avg_invoice_size)}</div>
+                <div class="kpi-label">Total Assets</div>
+                <div class="kpi-value">{fmtCompact(data.total_assets)}</div>
+                <div class="kpi-sub">Equity: {fmtCompact(data.total_equity)}</div>
             </div>
         </div>
 
@@ -142,28 +157,44 @@
                         <td class="number-col">{fmtCurrency(data.revenue)}</td>
                     </tr>
                     <tr>
-                        <td>Invoice Count</td>
-                        <td class="number-col">{data.invoice_count}</td>
+                        <td>Cost of Sales</td>
+                        <td class="number-col">{fmtCurrency(data.cost_of_sales)}</td>
                     </tr>
                     <tr>
-                        <td>Order Count</td>
-                        <td class="number-col">{data.order_count}</td>
+                        <td>Gross Profit</td>
+                        <td class="number-col">{fmtCurrency(data.gross_profit)}</td>
                     </tr>
                     <tr>
-                        <td>Payments Collected</td>
-                        <td class="number-col">{fmtCurrency(data.paid_amount)}</td>
+                        <td>Staff Costs</td>
+                        <td class="number-col">{fmtCurrency(data.staff_costs)}</td>
                     </tr>
                     <tr>
-                        <td>Outstanding Receivables</td>
-                        <td class="number-col">{fmtCurrency(data.outstanding_ar)}</td>
+                        <td>Administrative Expenses</td>
+                        <td class="number-col">{fmtCurrency(data.admin_expenses)}</td>
                     </tr>
-                    <tr class:overdue={data.overdue_amount > 0}>
-                        <td>Overdue Amount</td>
-                        <td class="number-col">{fmtCurrency(data.overdue_amount)}</td>
+                    <tr class:overdue={data.net_profit < 0}>
+                        <td>Net Result</td>
+                        <td class="number-col">{fmtCurrency(data.net_profit)}</td>
                     </tr>
                     <tr>
-                        <td>Average Invoice Size</td>
-                        <td class="number-col">{fmtCurrency(data.avg_invoice_size)}</td>
+                        <td>Trade Receivables</td>
+                        <td class="number-col">{fmtCurrency(data.trade_receivables)}</td>
+                    </tr>
+                    <tr>
+                        <td>Cash & Bank</td>
+                        <td class="number-col">{fmtCurrency(data.cash_equivalents)}</td>
+                    </tr>
+                    <tr>
+                        <td>Total Assets</td>
+                        <td class="number-col">{fmtCurrency(data.total_assets)}</td>
+                    </tr>
+                    <tr>
+                        <td>Total Liabilities</td>
+                        <td class="number-col">{fmtCurrency(data.total_liabilities)}</td>
+                    </tr>
+                    <tr>
+                        <td>Total Equity</td>
+                        <td class="number-col">{fmtCurrency(data.total_equity)}</td>
                     </tr>
                 </tbody>
             </table>
@@ -217,6 +248,19 @@
         font-weight: 600;
         color: #6e6e73;
         letter-spacing: 0.02em;
+    }
+
+    .source-strip {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 18px;
+        padding: 10px 14px;
+        border-radius: 10px;
+        background: linear-gradient(135deg, rgba(232, 245, 233, 0.9), rgba(244, 247, 240, 0.9));
+        color: #3b4a3f;
+        font-size: 12px;
+        font-weight: 600;
     }
 
     .loading-container {

@@ -319,6 +319,12 @@ export function DeleteCustomerInvoice(arg1:string):Promise<void>;
 
 export function DeleteDeliveryNote(arg1:string):Promise<void>;
 
+export function DeleteExpenseCategory(arg1:string):Promise<void>;
+
+export function DeleteExpenseEntry(arg1:string):Promise<void>;
+
+export function DeleteExpenseVendor(arg1:string):Promise<void>;
+
 export function DeleteFXRate(arg1:string):Promise<void>;
 
 export function DeleteGRN(arg1:string):Promise<void>;
@@ -338,6 +344,8 @@ export function DeleteQuickCapture(arg1:string):Promise<void>;
 export function DeleteRFQ(arg1:number):Promise<void>;
 
 export function DeleteRFQWithCascade(arg1:number,arg2:boolean):Promise<main.DeleteCascadeResult>;
+
+export function DeleteRecurringExpense(arg1:string):Promise<void>;
 
 export function DeleteRemoteReport(arg1:string):Promise<void>;
 

@@ -139,6 +139,7 @@ var (
 	supplierKeywords   = []string{"supplier", "vendor", "source", "endress", "hauser", "servomex", "landis", "gyr", "e+h", "bought from", "purchased from", "procurement", "supply chain", "top supplier", "lead time", "delivery time", "reliable", "on time", "supplier performance", "qc rate", "quality"}
 	financialKeywords  = []string{"cash", "payment", "invoice", "receivable", "payable", "balance", "revenue", "profit", "margin", "ar", "aging", "dso", "outstanding", "collection", "money", "owe", "owes", "paid", "unpaid", "earned", "income", "expense", "cashflow", "cash flow", "how much did we", "total sales", "turnover", "gross", "net", "bhd", "fiscal", "financial year", "days to pay", "payment speed", "slow payer", "fast payer", "days sales outstanding", "margin by", "profit by"}
 	operationsKeywords = []string{"quote", "rfq", "order", "pipeline", "delivery", "purchase", "costing", "offer", "grn", "shipment", "po", "purchase order", "win rate", "conversion", "open orders", "pending", "active orders", "quotation", "expir", "validity", "expire", "lapsing", "about to expire", "win loss", "lost reason", "competition", "competitor", "abb", "won", "lost deals", "service", "maintenance", "calibration", "install", "installation", "commission", "commissioning", "repair", "visit"}
+	workKeywords       = []string{"task", "tasks", "assigned", "assignee", "employee", "employees", "staff", "notification", "notifications", "workload", "work queue", "my work", "team board", "commented", "comment", "blocked task", "blocked reason", "collaborative", "project task"}
 	riskKeywords       = []string{"overdue", "late", "risk", "aging", "collection", "blocked", "dispute", "critical", "warning", "defaulter", "slow payer", "bad debt", "credit block", "action item", "what should", "what do i", "today", "urgent", "priorit", "focus", "stuck", "follow up", "pending approval", "awaiting", "service due", "warranty", "calibration due", "cashflow", "cash flow"}
 	marketKeywords     = []string{"price", "market", "competitor", "trend", "industry", "steel", "instrumentation"}
 
@@ -160,22 +161,34 @@ func classifyIntent(query string) Intent {
 		Keywords:   []string{},
 	}
 
-	// Count keyword matches per domain
-	scores := map[string]int{
-		"customer":   countKeywordMatches(queryLower, customerKeywords),
-		"supplier":   countKeywordMatches(queryLower, supplierKeywords),
-		"financial":  countKeywordMatches(queryLower, financialKeywords),
-		"operations": countKeywordMatches(queryLower, operationsKeywords),
-		"risk":       countKeywordMatches(queryLower, riskKeywords),
-		"market":     countKeywordMatches(queryLower, marketKeywords),
+	customerScore := countKeywordMatches(queryLower, customerKeywords)
+	supplierScore := countKeywordMatches(queryLower, supplierKeywords)
+	workScore := countKeywordMatches(queryLower, workKeywords)
+	financialScore := countKeywordMatches(queryLower, financialKeywords)
+	operationsScore := countKeywordMatches(queryLower, operationsKeywords)
+	riskScore := countKeywordMatches(queryLower, riskKeywords)
+	marketScore := countKeywordMatches(queryLower, marketKeywords)
+
+	// Count keyword matches per domain using a stable priority order so ties are deterministic.
+	domainScores := []struct {
+		domain string
+		score  int
+	}{
+		{"customer", customerScore},
+		{"supplier", supplierScore},
+		{"work", workScore},
+		{"financial", financialScore},
+		{"operations", operationsScore},
+		{"risk", riskScore},
+		{"market", marketScore},
 	}
 
-	// Find highest scoring domain
+	// Find highest scoring domain with deterministic tie-breaking by list order above.
 	maxScore := 0
-	for domain, score := range scores {
-		if score > maxScore {
-			maxScore = score
-			intent.Domain = domain
+	for _, candidate := range domainScores {
+		if candidate.score > maxScore {
+			maxScore = candidate.score
+			intent.Domain = candidate.domain
 		}
 	}
 
@@ -188,11 +201,18 @@ func classifyIntent(query string) Intent {
 		intent.Confidence = 0.3
 	}
 
-	// Extract entity name for customer/supplier queries
-	if intent.Domain == "customer" || intent.Domain == "supplier" {
-		intent.EntityName = extractEntityName(query)
-		if intent.EntityName != "" {
-			intent.ReferenceKind = intent.Domain
+	// Extract entity names even for mixed-domain asks so downstream grounding can still resolve them.
+	intent.EntityName = extractEntityName(query)
+	if intent.EntityName != "" {
+		switch {
+		case supplierScore > customerScore && supplierScore > 0:
+			intent.ReferenceKind = "supplier"
+		case customerScore > 0:
+			intent.ReferenceKind = "customer"
+		case intent.Domain == "supplier":
+			intent.ReferenceKind = "supplier"
+		case intent.Domain == "customer":
+			intent.ReferenceKind = "customer"
 		}
 	}
 
@@ -200,6 +220,8 @@ func classifyIntent(query string) Intent {
 	if intent.PersonName != "" {
 		if looksLikeAccountManagerReference(queryLower) {
 			intent.ReferenceKind = "account_manager"
+		} else if intent.Domain == "work" {
+			intent.ReferenceKind = "employee"
 		} else if intent.ReferenceKind == "" {
 			intent.ReferenceKind = "contact_person"
 		}
@@ -220,8 +242,8 @@ func classifyIntent(query string) Intent {
 
 	// Multi-domain or long queries are complex
 	domainCount := 0
-	for _, score := range scores {
-		if score > 0 {
+	for _, candidate := range domainScores {
+		if candidate.score > 0 {
 			domainCount++
 		}
 	}
@@ -318,6 +340,10 @@ func isEntityStopWord(w string) bool {
 		"get": true, "find": true, "tell": true, "list": true, "latest": true,
 		"recent": true, "current": true, "pending": true, "overdue": true,
 		"paid": true, "unpaid": true, "active": true, "closed": true,
+		"payment": true, "payments": true, "history": true, "invoice": true, "invoices": true,
+		"order": true, "orders": true, "task": true, "tasks": true, "notification": true,
+		"notifications": true, "quotation": true, "quote": true, "calibration": true,
+		"service": true, "visit": true, "package": true,
 	}
 	return stops[w]
 }
@@ -326,19 +352,41 @@ func extractPersonReference(query string) string {
 	triggerPatterns := []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(?:contact|attention|attn|spoc|person)\s+(?:for|at|of)?\s*([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,3})`),
 		regexp.MustCompile(`(?i)(?:account manager|salesperson|sales person|owner|handled by|handling)\s+(?:for|is|:)?\s*([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,3})`),
+		regexp.MustCompile(`(?i)(?:tasks?\s+assigned\s+to|assigned\s+to|workload\s+for|notifications?\s+for|tasks?\s+for|employee|staff member)\s+([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,2})`),
+		regexp.MustCompile(`(?i)(?:notifications?\s+does|tasks?\s+does)\s+([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,2})\s+have`),
 	}
 	for _, pattern := range triggerPatterns {
 		if m := pattern.FindStringSubmatch(query); len(m) > 1 {
-			return strings.TrimSpace(m[1])
+			return cleanExtractedPersonReference(m[1])
 		}
 	}
 
 	fullNamePattern := regexp.MustCompile(`\b([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+)+)\b`)
 	if m := fullNamePattern.FindStringSubmatch(query); len(m) > 1 {
-		return strings.TrimSpace(m[1])
+		return cleanExtractedPersonReference(m[1])
 	}
 
 	return ""
+}
+
+func cleanExtractedPersonReference(raw string) string {
+	candidate := strings.TrimSpace(raw)
+	if candidate == "" {
+		return ""
+	}
+
+	trailingNoise := []string{
+		" today", " right now", " now", " currently", " this week", " this month", " this quarter",
+	}
+	lower := strings.ToLower(candidate)
+	for _, suffix := range trailingNoise {
+		if strings.HasSuffix(lower, suffix) {
+			candidate = strings.TrimSpace(candidate[:len(candidate)-len(suffix)])
+			lower = strings.ToLower(candidate)
+		}
+	}
+
+	return strings.TrimSpace(candidate)
 }
 
 func looksLikeAccountManagerReference(queryLower string) bool {
@@ -393,6 +441,33 @@ func (a *App) ChatWithButler(message string) (ButlerResponse, error) {
 		}
 	}
 
+	if groundedReply, handled := a.tryGroundedTaskCreationFastPath(intent, message); handled {
+		return ButlerResponse{
+			Message:    groundedReply,
+			Actions:    []ButlerAction{},
+			Confidence: 0.99,
+			Context:    map[string]interface{}{"fast_path": "grounded_task_create"},
+			Metadata:   buildButlerMetadata(intent, map[string]interface{}{"fast_path": "grounded_task_create"}, hasFinanceAccess, "grounded_sql", "", "", "", nil),
+		}, nil
+	}
+	if groundedReply, handled := a.tryGroundedWorkFastPath(intent, message); handled {
+		return ButlerResponse{
+			Message:    groundedReply,
+			Actions:    []ButlerAction{},
+			Confidence: 0.98,
+			Context:    map[string]interface{}{"fast_path": "grounded_work"},
+			Metadata:   buildButlerMetadata(intent, map[string]interface{}{"fast_path": "grounded_work"}, hasFinanceAccess, "grounded_sql", "", "", "", nil),
+		}, nil
+	}
+	if groundedReply, handled := a.tryGroundedSupplierFastPath(intent, message); handled {
+		return ButlerResponse{
+			Message:    groundedReply,
+			Actions:    []ButlerAction{},
+			Confidence: 0.98,
+			Context:    map[string]interface{}{"fast_path": "grounded_supplier"},
+			Metadata:   buildButlerMetadata(intent, map[string]interface{}{"fast_path": "grounded_supplier"}, hasFinanceAccess, "grounded_sql", "", "", "", nil),
+		}, nil
+	}
 	if groundedReply, handled := a.tryGroundedCustomerFastPath(intent, message); handled {
 		return ButlerResponse{
 			Message:    groundedReply,
@@ -609,6 +684,7 @@ func (a *App) buildIntentContext(intent Intent) map[string]interface{} {
 	a.injectGroundedReferenceContext(context, intent, hasFinanceAccess)
 	context["butler_memory"] = a.getButlerMemoryContext(intent)
 	context["proactive_briefing"] = a.getProactiveBriefingContext(hasFinanceAccess)
+	context["work_data"] = a.getWorkContext(intent)
 
 	// Domain-specific context injection
 	switch intent.Domain {
@@ -797,6 +873,8 @@ func (a *App) buildFullContext(intent Intent) map[string]interface{} {
 	context["service_due_installations"] = a.getServiceDueInstallationsContext()
 	context["closeable_opportunities"] = a.getCloseableOpportunitiesContext()
 	context["quotation_precheck"] = a.getQuotationPrecheckContext(intent)
+	context["work_data"] = a.getWorkContext(intent)
+	context["database_access"] = a.getDatabaseAccessContext(intent, hasFinanceAccess)
 
 	// Action items — prioritized list of things needing attention today
 	context["action_items"] = a.getActionItemsContext()
@@ -805,6 +883,587 @@ func (a *App) buildFullContext(intent Intent) map[string]interface{} {
 	context["competition_analysis"] = a.getCompetitionContext()
 
 	return context
+}
+
+func buildContextSearchTerms(intent Intent) []string {
+	stopWords := map[string]bool{
+		"a": true, "about": true, "all": true, "an": true, "and": true, "any": true,
+		"are": true, "assigned": true, "at": true, "be": true, "by": true, "can": true,
+		"current": true, "currently": true, "customer": true, "data": true, "did": true,
+		"do": true, "does": true, "for": true, "from": true, "get": true, "give": true,
+		"has": true, "have": true, "how": true, "i": true, "in": true, "into": true,
+		"is": true, "it": true, "its": true, "line": true, "me": true, "more": true,
+		"my": true, "need": true, "notes": true, "of": true, "on": true, "or": true,
+		"our": true, "please": true, "show": true, "statements": true, "tasks": true,
+		"tell": true, "that": true, "the": true, "their": true, "them": true, "there": true,
+		"these": true, "this": true, "to": true, "us": true, "view": true, "what": true,
+		"when": true, "where": true, "which": true, "who": true, "with": true, "you": true,
+	}
+
+	raw := strings.NewReplacer("?", " ", ",", " ", ".", " ", ":", " ", ";", " ", "(", " ", ")", " ", "/", " ", "\\", " ", "\n", " ").Replace(strings.ToLower(intent.RawQuery))
+	candidates := make([]string, 0, 16)
+	candidates = append(candidates, strings.ToLower(strings.TrimSpace(intent.EntityName)))
+	candidates = append(candidates, strings.ToLower(strings.TrimSpace(intent.PersonName)))
+	for _, token := range strings.Fields(raw) {
+		token = strings.TrimSpace(token)
+		if len(token) < 3 || stopWords[token] {
+			continue
+		}
+		candidates = append(candidates, token)
+	}
+
+	seen := make(map[string]bool)
+	terms := make([]string, 0, 10)
+	for _, candidate := range candidates {
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		terms = append(terms, candidate)
+		if len(terms) >= 10 {
+			break
+		}
+	}
+	return terms
+}
+
+func selectContextEntries(entries []map[string]interface{}, terms []string, limit int) []map[string]interface{} {
+	if len(entries) == 0 {
+		return []map[string]interface{}{}
+	}
+
+	selected := entries
+	if len(terms) > 0 {
+		matched := make([]map[string]interface{}, 0, len(entries))
+		for _, entry := range entries {
+			raw, _ := json.Marshal(entry)
+			haystack := strings.ToLower(string(raw))
+			for _, term := range terms {
+				if term != "" && strings.Contains(haystack, term) {
+					matched = append(matched, entry)
+					break
+				}
+			}
+		}
+		if len(matched) > 0 {
+			selected = matched
+		}
+	}
+
+	if limit > 0 && len(selected) > limit {
+		selected = selected[:limit]
+	}
+	return selected
+}
+
+func (a *App) getWorkContext(intent Intent) map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil {
+		return result
+	}
+
+	terms := buildContextSearchTerms(intent)
+
+	var employees []Employee
+	_ = a.db.Where("is_active = ?", true).Order("full_name ASC").Limit(25).Find(&employees).Error
+	employeeEntries := make([]map[string]interface{}, 0, len(employees))
+	employeeNames := make(map[string]string, len(employees))
+	for _, employee := range employees {
+		employeeNames[employee.ID] = employee.FullName
+		employeeEntries = append(employeeEntries, map[string]interface{}{
+			"employee_id": employee.ID,
+			"name":        employee.FullName,
+			"department":  employee.Department,
+			"job_title":   employee.JobTitle,
+			"status":      employee.EmploymentStatus,
+			"notes":       employee.Notes,
+		})
+	}
+	result["employees"] = selectContextEntries(employeeEntries, terms, 8)
+
+	var tasks []TaskItem
+	_ = a.db.Order("updated_at DESC").Limit(30).Find(&tasks).Error
+	taskEntries := make([]map[string]interface{}, 0, len(tasks))
+	taskIDs := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		taskIDs = append(taskIDs, task.ID)
+		taskEntries = append(taskEntries, map[string]interface{}{
+			"task_id":        task.ID,
+			"title":          task.Title,
+			"description":    task.Description,
+			"status":         task.Status,
+			"priority":       task.Priority,
+			"task_type":      task.TaskType,
+			"blocked_reason": task.BlockedReason,
+			"due_date":       formatOptionalDate(task.DueDate),
+			"creator_name":   employeeNames[task.CreatorEmployeeID],
+			"assignee_name":  employeeNames[firstNonEmptyStringPointer(task.AssigneeEmployeeID)],
+		})
+	}
+	selectedTasks := selectContextEntries(taskEntries, terms, 10)
+	result["tasks"] = selectedTasks
+
+	taskIDTitle := make(map[string]string, len(tasks))
+	for _, task := range tasks {
+		taskIDTitle[task.ID] = task.Title
+	}
+
+	var comments []TaskComment
+	if len(taskIDs) > 0 {
+		_ = a.db.Where("task_id IN ?", taskIDs).Order("created_at DESC").Limit(25).Find(&comments).Error
+	}
+	commentEntries := make([]map[string]interface{}, 0, len(comments))
+	for _, comment := range comments {
+		commentEntries = append(commentEntries, map[string]interface{}{
+			"task_id":    comment.TaskID,
+			"task_title": taskIDTitle[comment.TaskID],
+			"employee":   employeeNames[comment.EmployeeID],
+			"body":       comment.Body,
+			"created_at": comment.CreatedAt.Format("2006-01-02"),
+		})
+	}
+	result["task_comments"] = selectContextEntries(commentEntries, terms, 8)
+
+	var notifications []Notification
+	_ = a.db.Where("source_type = ?", "task").Order("created_at DESC").Limit(20).Find(&notifications).Error
+	notificationEntries := make([]map[string]interface{}, 0, len(notifications))
+	for _, notification := range notifications {
+		notificationEntries = append(notificationEntries, map[string]interface{}{
+			"notification_id": notification.ID,
+			"title":           notification.Title,
+			"message":         notification.Message,
+			"status":          notification.Status,
+			"employee_id":     notification.EmployeeID,
+			"source_id":       notification.SourceID,
+			"created_at":      notification.CreatedAt.Format("2006-01-02"),
+		})
+	}
+	result["task_notifications"] = selectContextEntries(notificationEntries, terms, 8)
+	result["search_terms"] = terms
+
+	return result
+}
+
+func (a *App) getDatabaseAccessContext(intent Intent, hasFinanceAccess bool) map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil {
+		return result
+	}
+
+	terms := buildContextSearchTerms(intent)
+	result["search_terms"] = terms
+	result["notes_ledger"] = a.getCrossModuleNotesContext(terms, hasFinanceAccess)
+	result["commercial_records"] = a.getCommercialRecordContext(terms)
+	if hasFinanceAccess {
+		result["financial_records"] = a.getFinancialRecordContext(terms)
+	}
+	return result
+}
+
+func (a *App) getCrossModuleNotesContext(terms []string, hasFinanceAccess bool) map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil {
+		return result
+	}
+
+	var entityNotes []EntityNote
+	_ = a.db.Order("created_at DESC").Limit(30).Find(&entityNotes).Error
+	entityEntries := make([]map[string]interface{}, 0, len(entityNotes))
+	for _, note := range entityNotes {
+		entityEntries = append(entityEntries, map[string]interface{}{
+			"module":      "entity_notes",
+			"entity_type": note.EntityType,
+			"entity_id":   note.EntityID,
+			"note_type":   note.NoteType,
+			"content":     note.Content,
+			"created_at":  note.CreatedAt.Format("2006-01-02"),
+		})
+	}
+	result["entity_notes"] = selectContextEntries(entityEntries, terms, 10)
+
+	var offerNotes []OfferNote
+	_ = a.db.Order("note_date DESC").Limit(20).Find(&offerNotes).Error
+	offerNoteEntries := make([]map[string]interface{}, 0, len(offerNotes))
+	for _, note := range offerNotes {
+		var offer Offer
+		_ = a.db.Select("offer_number, customer_name, stage").Where("id = ?", note.OfferID).First(&offer).Error
+		offerNoteEntries = append(offerNoteEntries, map[string]interface{}{
+			"module":       "offer_notes",
+			"offer_id":     note.OfferID,
+			"offer_number": offer.OfferNumber,
+			"customer":     offer.CustomerName,
+			"stage":        offer.Stage,
+			"content":      note.Content,
+			"note_date":    note.NoteDate.Format("2006-01-02"),
+		})
+	}
+	result["offer_notes"] = selectContextEntries(offerNoteEntries, terms, 8)
+
+	var statements []BankStatement
+	_ = a.db.Where("TRIM(COALESCE(notes,'')) != ''").Order("statement_date DESC").Limit(20).Find(&statements).Error
+	statementEntries := make([]map[string]interface{}, 0, len(statements))
+	for _, statement := range statements {
+		statementEntries = append(statementEntries, map[string]interface{}{
+			"module":           "bank_statements",
+			"statement_id":     statement.ID,
+			"statement_number": statement.StatementNumber,
+			"statement_date":   statement.StatementDate.Format("2006-01-02"),
+			"division":         statement.Division,
+			"status":           statement.Status,
+			"notes":            statement.Notes,
+		})
+	}
+	result["bank_statement_notes"] = selectContextEntries(statementEntries, terms, 8)
+
+	if hasFinanceAccess {
+		var recons []BookBankReconciliation
+		_ = a.db.Where("TRIM(COALESCE(notes,'')) != ''").Order("reconciliation_date DESC").Limit(15).Find(&recons).Error
+		reconEntries := make([]map[string]interface{}, 0, len(recons))
+		for _, recon := range recons {
+			reconEntries = append(reconEntries, map[string]interface{}{
+				"module":              "book_bank_reconciliations",
+				"reconciliation_id":   recon.ID,
+				"reconciliation_date": recon.ReconciliationDate.Format("2006-01-02"),
+				"difference":          recon.Difference,
+				"notes":               recon.Notes,
+			})
+		}
+		result["book_bank_notes"] = selectContextEntries(reconEntries, terms, 6)
+
+		var expenses []ExpenseEntry
+		_ = a.db.Where("TRIM(COALESCE(notes,'')) != ''").Order("expense_date DESC").Limit(20).Find(&expenses).Error
+		expenseEntries := make([]map[string]interface{}, 0, len(expenses))
+		for _, expense := range expenses {
+			expenseEntries = append(expenseEntries, map[string]interface{}{
+				"module":       "expense_entries",
+				"entry_number": expense.EntryNumber,
+				"division":     expense.Division,
+				"expense_date": expense.ExpenseDate.Format("2006-01-02"),
+				"description":  expense.Description,
+				"total_amount": expense.TotalAmount,
+				"notes":        expense.Notes,
+			})
+		}
+		result["expense_notes"] = selectContextEntries(expenseEntries, terms, 8)
+
+		var runs []PayrollRun
+		_ = a.db.Where("TRIM(COALESCE(notes,'')) != ''").Order("created_at DESC").Limit(10).Find(&runs).Error
+		payrollEntries := make([]map[string]interface{}, 0, len(runs))
+		for _, run := range runs {
+			payrollEntries = append(payrollEntries, map[string]interface{}{
+				"module":       "payroll_runs",
+				"run_number":   run.RunNumber,
+				"division":     run.Division,
+				"status":       run.Status,
+				"net_total":    run.NetTotal,
+				"notes":        run.Notes,
+				"generated_at": formatOptionalDate(run.GeneratedAt),
+			})
+		}
+		result["payroll_notes"] = selectContextEntries(payrollEntries, terms, 5)
+	}
+
+	return result
+}
+
+func (a *App) getCommercialRecordContext(terms []string) map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil {
+		return result
+	}
+
+	var offers []Offer
+	_ = a.db.Order("quotation_date DESC").Limit(15).Find(&offers).Error
+	offerEntries := make([]map[string]interface{}, 0, len(offers))
+	for _, offer := range offers {
+		entry := map[string]interface{}{
+			"offer_id":      offer.ID,
+			"offer_number":  offer.OfferNumber,
+			"customer":      offer.CustomerName,
+			"stage":         offer.Stage,
+			"date":          offer.QuotationDate.Format("2006-01-02"),
+			"validity_date": offer.ValidityDate.Format("2006-01-02"),
+			"value_bhd":     offer.TotalValueBHD,
+			"division":      offer.Division,
+			"quote_type":    offer.QuoteType,
+		}
+		var items []OfferItem
+		_ = a.db.Where("offer_id = ?", offer.ID).Order("line_number ASC").Find(&items).Error
+		lineItems := make([]map[string]interface{}, 0, len(items))
+		for _, item := range items {
+			lineItems = append(lineItems, map[string]interface{}{
+				"line_number":     item.LineNumber,
+				"description":     item.Description,
+				"equipment":       item.Equipment,
+				"model":           item.Model,
+				"quantity":        item.Quantity,
+				"unit_price_bhd":  item.UnitPrice,
+				"total_price_bhd": item.TotalPrice,
+				"margin_pct":      item.MarginPercent,
+			})
+		}
+		entry["line_items"] = lineItems
+		offerEntries = append(offerEntries, entry)
+	}
+	result["offers"] = selectContextEntries(offerEntries, terms, 8)
+
+	var orders []Order
+	_ = a.db.Order("order_date DESC").Limit(15).Find(&orders).Error
+	orderEntries := make([]map[string]interface{}, 0, len(orders))
+	for _, order := range orders {
+		entry := map[string]interface{}{
+			"order_id":      order.ID,
+			"order_number":  order.OrderNumber,
+			"customer":      order.CustomerName,
+			"status":        order.Status,
+			"date":          order.OrderDate.Format("2006-01-02"),
+			"value_bhd":     order.GrandTotalBHD,
+			"division":      order.Division,
+			"offer_number":  order.OfferNumber,
+			"customer_po":   order.CustomerPONumber,
+			"payment_terms": order.PaymentTerms,
+		}
+		var items []OrderItem
+		_ = a.db.Where("order_id = ?", order.ID).Order("line_number ASC").Find(&items).Error
+		lineItems := make([]map[string]interface{}, 0, len(items))
+		for _, item := range items {
+			lineItems = append(lineItems, map[string]interface{}{
+				"line_number":     item.LineNumber,
+				"description":     item.Description,
+				"equipment":       item.Equipment,
+				"model":           item.Model,
+				"quantity":        item.Quantity,
+				"unit_price_bhd":  item.UnitPrice,
+				"total_price_bhd": item.TotalPrice,
+				"margin_pct":      item.MarginPercent,
+			})
+		}
+		entry["line_items"] = lineItems
+		orderEntries = append(orderEntries, entry)
+	}
+	result["orders"] = selectContextEntries(orderEntries, terms, 8)
+
+	var invoices []Invoice
+	_ = a.db.Order("invoice_date DESC").Limit(15).Find(&invoices).Error
+	invoiceEntries := make([]map[string]interface{}, 0, len(invoices))
+	for _, invoice := range invoices {
+		entry := map[string]interface{}{
+			"invoice_id":      invoice.ID,
+			"invoice_number":  invoice.InvoiceNumber,
+			"customer":        invoice.CustomerName,
+			"status":          invoice.Status,
+			"invoice_date":    invoice.InvoiceDate.Format("2006-01-02"),
+			"due_date":        invoice.DueDate.Format("2006-01-02"),
+			"grand_total_bhd": invoice.GrandTotalBHD,
+			"outstanding_bhd": invoice.OutstandingBHD,
+			"division":        invoice.Division,
+			"offer_number":    invoice.OfferNumber,
+		}
+		var items []DBInvoiceItem
+		_ = a.db.Where("invoice_id = ?", invoice.ID).Order("line_number ASC").Find(&items).Error
+		lineItems := make([]map[string]interface{}, 0, len(items))
+		for _, item := range items {
+			lineItems = append(lineItems, map[string]interface{}{
+				"line_number":     item.LineNumber,
+				"description":     item.Description,
+				"equipment":       item.Equipment,
+				"model":           item.Model,
+				"quantity":        item.Quantity,
+				"unit_price_bhd":  item.Rate,
+				"total_price_bhd": item.TotalBHD,
+				"margin_pct":      item.MarginPercent,
+			})
+		}
+		entry["line_items"] = lineItems
+		invoiceEntries = append(invoiceEntries, entry)
+	}
+	result["customer_invoices"] = selectContextEntries(invoiceEntries, terms, 8)
+
+	var supplierInvoices []SupplierInvoice
+	_ = a.db.Order("invoice_date DESC").Limit(15).Find(&supplierInvoices).Error
+	supplierInvoiceEntries := make([]map[string]interface{}, 0, len(supplierInvoices))
+	for _, invoice := range supplierInvoices {
+		entry := map[string]interface{}{
+			"supplier_invoice_id": invoice.ID,
+			"invoice_number":      invoice.InvoiceNumber,
+			"supplier":            invoice.SupplierName,
+			"status":              invoice.Status,
+			"invoice_date":        invoice.InvoiceDate.Format("2006-01-02"),
+			"due_date":            invoice.DueDate.Format("2006-01-02"),
+			"total_bhd":           invoice.TotalBHD,
+			"payment_status":      invoice.PaymentStatus,
+			"division":            invoice.Division,
+			"po_number":           invoice.PONumber,
+		}
+		var items []SupplierInvoiceItem
+		_ = a.db.Where("supplier_invoice_id = ?", invoice.ID).Order("line_number ASC").Find(&items).Error
+		lineItems := make([]map[string]interface{}, 0, len(items))
+		for _, item := range items {
+			lineItems = append(lineItems, map[string]interface{}{
+				"line_number": item.LineNumber,
+				"description": item.Description,
+				"quantity":    item.Quantity,
+				"unit_price":  item.UnitPrice,
+				"total_price": item.TotalPrice,
+				"currency":    item.Currency,
+			})
+		}
+		entry["line_items"] = lineItems
+		supplierInvoiceEntries = append(supplierInvoiceEntries, entry)
+	}
+	result["supplier_invoices"] = selectContextEntries(supplierInvoiceEntries, terms, 8)
+
+	var opportunities []Opportunity
+	_ = a.db.Order("offer_date DESC").Limit(15).Find(&opportunities).Error
+	opportunityEntries := make([]map[string]interface{}, 0, len(opportunities))
+	for _, opportunity := range opportunities {
+		opportunityEntries = append(opportunityEntries, map[string]interface{}{
+			"opportunity_id": opportunity.ID,
+			"folder_number":  opportunity.FolderNumber,
+			"title":          firstNonEmpty(opportunity.Title, opportunity.FolderName),
+			"customer":       opportunity.CustomerName,
+			"stage":          opportunity.Stage,
+			"salesperson":    opportunity.Salesperson,
+			"revenue_bhd":    opportunity.RevenueBHD,
+			"comment":        opportunity.Comment,
+			"owner_notes":    opportunity.OwnerNotes,
+			"division":       opportunity.Division,
+		})
+	}
+	result["opportunities"] = selectContextEntries(opportunityEntries, terms, 8)
+
+	var followUps []OfferFollowUp
+	_ = a.db.Order("follow_up_date DESC").Limit(20).Find(&followUps).Error
+	followUpEntries := make([]map[string]interface{}, 0, len(followUps))
+	for _, followUp := range followUps {
+		var offer Offer
+		_ = a.db.Select("offer_number, customer_name").Where("id = ?", followUp.OfferID).First(&offer).Error
+		followUpEntries = append(followUpEntries, map[string]interface{}{
+			"offer_id":       followUp.OfferID,
+			"offer_number":   offer.OfferNumber,
+			"customer":       offer.CustomerName,
+			"follow_up_date": followUp.FollowUpDate.Format("2006-01-02"),
+			"status":         followUp.Status,
+			"notes":          followUp.Notes,
+		})
+	}
+	result["offer_follow_ups"] = selectContextEntries(followUpEntries, terms, 8)
+
+	return result
+}
+
+func (a *App) getFinancialRecordContext(terms []string) map[string]interface{} {
+	result := make(map[string]interface{})
+	if a.db == nil {
+		return result
+	}
+
+	var payments []Payment
+	_ = a.db.Order("payment_date DESC").Limit(20).Find(&payments).Error
+	paymentEntries := make([]map[string]interface{}, 0, len(payments))
+	for _, payment := range payments {
+		var invoice Invoice
+		_ = a.db.Select("customer_name").Where("id = ?", payment.InvoiceID).First(&invoice).Error
+		paymentEntries = append(paymentEntries, map[string]interface{}{
+			"payment_id":      payment.ID,
+			"invoice_number":  payment.InvoiceNumber,
+			"customer":        invoice.CustomerName,
+			"amount_bhd":      payment.AmountBHD,
+			"payment_date":    payment.PaymentDate.Format("2006-01-02"),
+			"payment_method":  payment.PaymentMethod,
+			"reference":       payment.Reference,
+			"days_to_payment": payment.DaysToPayment,
+			"division":        payment.Division,
+		})
+	}
+	result["customer_payments"] = selectContextEntries(paymentEntries, terms, 10)
+
+	var supplierPayments []SupplierPayment
+	_ = a.db.Order("payment_date DESC").Limit(20).Find(&supplierPayments).Error
+	supplierPaymentEntries := make([]map[string]interface{}, 0, len(supplierPayments))
+	for _, payment := range supplierPayments {
+		supplierPaymentEntries = append(supplierPaymentEntries, map[string]interface{}{
+			"supplier_payment_id": payment.ID,
+			"supplier":            payment.SupplierName,
+			"invoice_number":      payment.InvoiceNumber,
+			"amount_bhd":          payment.AmountBHD,
+			"payment_date":        payment.PaymentDate.Format("2006-01-02"),
+			"payment_method":      payment.PaymentMethod,
+			"reference":           payment.Reference,
+			"currency":            payment.Currency,
+			"division":            payment.Division,
+			"notes":               payment.Notes,
+		})
+	}
+	result["supplier_payments"] = selectContextEntries(supplierPaymentEntries, terms, 10)
+
+	var statements []BankStatement
+	_ = a.db.Order("statement_date DESC").Limit(10).Find(&statements).Error
+	statementEntries := make([]map[string]interface{}, 0, len(statements))
+	for _, statement := range statements {
+		entry := map[string]interface{}{
+			"statement_id":     statement.ID,
+			"statement_number": statement.StatementNumber,
+			"statement_date":   statement.StatementDate.Format("2006-01-02"),
+			"status":           statement.Status,
+			"division":         statement.Division,
+			"opening_balance":  statement.OpeningBalance,
+			"closing_balance":  statement.ClosingBalance,
+			"total_debits":     statement.TotalDebits,
+			"total_credits":    statement.TotalCredits,
+			"notes":            statement.Notes,
+		}
+		var lines []BankStatementLine
+		_ = a.db.Where("bank_statement_id = ?", statement.ID).Order("transaction_date DESC, line_number DESC").Limit(5).Find(&lines).Error
+		lineEntries := make([]map[string]interface{}, 0, len(lines))
+		for _, line := range lines {
+			lineEntries = append(lineEntries, map[string]interface{}{
+				"line_number":        line.LineNumber,
+				"transaction_date":   line.TransactionDate.Format("2006-01-02"),
+				"description":        line.Description,
+				"reference":          line.Reference,
+				"debit":              line.Debit,
+				"credit":             line.Credit,
+				"is_matched":         line.IsMatched,
+				"transaction_type":   line.TransactionType,
+				"extracted_customer": line.ExtractedCustomer,
+				"extracted_supplier": line.ExtractedSupplier,
+				"notes":              line.Notes,
+			})
+		}
+		entry["lines"] = lineEntries
+		statementEntries = append(statementEntries, entry)
+	}
+	result["bank_statements"] = selectContextEntries(statementEntries, terms, 6)
+
+	var expenses []ExpenseEntry
+	_ = a.db.Order("expense_date DESC").Limit(15).Find(&expenses).Error
+	expenseEntries := make([]map[string]interface{}, 0, len(expenses))
+	for _, expense := range expenses {
+		expenseEntries = append(expenseEntries, map[string]interface{}{
+			"expense_id":     expense.ID,
+			"entry_number":   expense.EntryNumber,
+			"division":       expense.Division,
+			"expense_date":   expense.ExpenseDate.Format("2006-01-02"),
+			"description":    expense.Description,
+			"status":         expense.Status,
+			"payment_status": expense.PaymentStatus,
+			"total_amount":   expense.TotalAmount,
+			"payment_method": expense.PaymentMethod,
+			"payment_ref":    expense.PaymentReference,
+			"notes":          expense.Notes,
+		})
+	}
+	result["expenses"] = selectContextEntries(expenseEntries, terms, 8)
+
+	return result
+}
+
+func firstNonEmptyStringPointer(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
 }
 
 func (a *App) getServiceDueInstallationsContext() map[string]interface{} {
@@ -1076,6 +1735,15 @@ func (a *App) getEntityNotesForMemory(entityType, entityID string) []map[string]
 		Order("created_at DESC").
 		Limit(5).
 		Find(&notes)
+	if entityType == "customer" && len(notes) == 0 {
+		var customer CustomerMaster
+		if err := a.db.Where("customer_id = ?", entityID).First(&customer).Error; err == nil && strings.TrimSpace(customer.ID) != "" {
+			a.db.Where("entity_type = ? AND entity_id = ?", entityType, customer.ID).
+				Order("created_at DESC").
+				Limit(5).
+				Find(&notes)
+		}
+	}
 
 	memories := make([]map[string]interface{}, 0, len(notes))
 	for _, note := range notes {
@@ -1266,6 +1934,10 @@ func (a *App) injectGroundedReferenceContext(context map[string]interface{}, int
 		}
 	case "user":
 		context["account_manager_context"] = a.getAccountManagerContext(resolution)
+	case "supplier":
+		context["supplier_data"] = a.getSupplierContext(resolution.DisplayName)
+	case "employee":
+		context["employee_context"] = a.getEmployeeContext(resolution)
 	}
 
 	context["action_items"] = a.getActionItemsContext()
@@ -1291,12 +1963,32 @@ func (a *App) resolveBestEntityReference(intent Intent) *ButlerResolvedEntity {
 		}
 	}
 
+	if intent.ReferenceKind == "employee" || intent.Domain == "work" {
+		if employee := a.resolveEmployeeReference(reference); employee != nil {
+			return employee
+		}
+	}
+
+	if intent.ReferenceKind == "supplier" || intent.Domain == "supplier" {
+		if supplier := a.resolveSupplierReference(reference); supplier != nil {
+			return supplier
+		}
+	}
+
 	if customer := a.resolveCustomerReference(reference); customer != nil {
 		return customer
 	}
 
+	if supplier := a.resolveSupplierReference(reference); supplier != nil {
+		return supplier
+	}
+
 	if contact := a.resolveCustomerContactReference(reference); contact != nil {
 		return contact
+	}
+
+	if employee := a.resolveEmployeeReference(reference); employee != nil {
+		return employee
 	}
 
 	if user := a.resolveUserReference(reference); user != nil {
@@ -1456,6 +2148,100 @@ func (a *App) resolveUserReference(reference string) *ButlerResolvedEntity {
 	return nil
 }
 
+func (a *App) resolveSupplierReference(reference string) *ButlerResolvedEntity {
+	if reference == "" {
+		return nil
+	}
+
+	var supplier SupplierMaster
+	exactErr := a.db.Where(
+		"supplier_name = ? OR supplier_code = ?",
+		reference, reference,
+	).First(&supplier).Error
+	if exactErr == nil {
+		return &ButlerResolvedEntity{
+			EntityType:  "supplier",
+			EntityID:    supplier.ID,
+			DisplayName: supplier.SupplierName,
+			Confidence:  0.97,
+			MatchReason: "exact supplier match",
+		}
+	}
+
+	escaped := escapeLikeWildcards(reference)
+	pattern := "%" + escaped + "%"
+	var matches []SupplierMaster
+	if err := a.db.Where(
+		"supplier_name LIKE ? ESCAPE '\\' OR supplier_code LIKE ? ESCAPE '\\'",
+		pattern, pattern,
+	).Order("supplier_name").Limit(3).Find(&matches).Error; err == nil && len(matches) > 0 {
+		supplier = matches[0]
+		resolution := &ButlerResolvedEntity{
+			EntityType:  "supplier",
+			EntityID:    supplier.ID,
+			DisplayName: supplier.SupplierName,
+			Confidence:  0.81,
+			MatchReason: "fuzzy supplier match",
+		}
+		if len(matches) > 1 {
+			resolution.Ambiguous = true
+			resolution.Confidence = 0.56
+			resolution.MatchReason = "multiple supplier matches"
+			resolution.Alternatives = supplierAlternatives(matches)
+		}
+		return resolution
+	}
+
+	return nil
+}
+
+func (a *App) resolveEmployeeReference(reference string) *ButlerResolvedEntity {
+	if reference == "" {
+		return nil
+	}
+
+	var employee Employee
+	exactErr := a.db.Where(
+		"full_name = ? OR preferred_name = ? OR employee_code = ? OR email = ?",
+		reference, reference, reference, reference,
+	).First(&employee).Error
+	if exactErr == nil {
+		return &ButlerResolvedEntity{
+			EntityType:  "employee",
+			EntityID:    employee.ID,
+			DisplayName: firstNonEmpty(employee.PreferredName, employee.FullName, employee.EmployeeCode),
+			Confidence:  0.97,
+			MatchReason: "exact employee match",
+		}
+	}
+
+	escaped := escapeLikeWildcards(reference)
+	pattern := "%" + escaped + "%"
+	var matches []Employee
+	if err := a.db.Where(
+		"full_name LIKE ? ESCAPE '\\' OR preferred_name LIKE ? ESCAPE '\\' OR employee_code LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\'",
+		pattern, pattern, pattern, pattern,
+	).Order("preferred_name, full_name").Limit(3).Find(&matches).Error; err == nil && len(matches) > 0 {
+		employee = matches[0]
+		resolution := &ButlerResolvedEntity{
+			EntityType:  "employee",
+			EntityID:    employee.ID,
+			DisplayName: firstNonEmpty(employee.PreferredName, employee.FullName, employee.EmployeeCode),
+			Confidence:  0.84,
+			MatchReason: "fuzzy employee match",
+		}
+		if len(matches) > 1 {
+			resolution.Ambiguous = true
+			resolution.Confidence = 0.58
+			resolution.MatchReason = "multiple employee matches"
+			resolution.Alternatives = employeeAlternatives(matches)
+		}
+		return resolution
+	}
+
+	return nil
+}
+
 func (a *App) getCustomerContactContext(resolution *ButlerResolvedEntity) map[string]interface{} {
 	result := make(map[string]interface{})
 	if resolution == nil || resolution.EntityType != "customer_contact" {
@@ -1563,6 +2349,67 @@ func (a *App) getAccountManagerContext(resolution *ButlerResolvedEntity) map[str
 	return result
 }
 
+func (a *App) getEmployeeContext(resolution *ButlerResolvedEntity) map[string]interface{} {
+	result := make(map[string]interface{})
+	if resolution == nil || resolution.EntityType != "employee" {
+		return result
+	}
+
+	var employee Employee
+	if err := a.db.First(&employee, "id = ?", resolution.EntityID).Error; err != nil {
+		return result
+	}
+
+	result["employee"] = map[string]interface{}{
+		"id":                employee.ID,
+		"employee_code":     employee.EmployeeCode,
+		"full_name":         employee.FullName,
+		"preferred_name":    employee.PreferredName,
+		"department":        employee.Department,
+		"job_title":         employee.JobTitle,
+		"employment_status": employee.EmploymentStatus,
+		"is_active":         employee.IsActive,
+		"notes":             employee.Notes,
+	}
+
+	var tasks []TaskItem
+	_ = a.db.Where("assignee_employee_id = ?", employee.ID).
+		Order("updated_at DESC").
+		Limit(10).
+		Find(&tasks).Error
+	taskSummary := make([]map[string]interface{}, 0, len(tasks))
+	for _, task := range tasks {
+		taskSummary = append(taskSummary, map[string]interface{}{
+			"title":       task.Title,
+			"status":      task.Status,
+			"priority":    task.Priority,
+			"task_type":   task.TaskType,
+			"due_date":    formatOptionalDate(task.DueDate),
+			"description": task.Description,
+		})
+	}
+	result["assigned_tasks"] = taskSummary
+
+	var notifications []Notification
+	_ = a.db.Where("employee_id = ?", employee.ID).
+		Order("created_at DESC").
+		Limit(10).
+		Find(&notifications).Error
+	notificationSummary := make([]map[string]interface{}, 0, len(notifications))
+	for _, notification := range notifications {
+		notificationSummary = append(notificationSummary, map[string]interface{}{
+			"title":       notification.Title,
+			"message":     notification.Message,
+			"status":      notification.Status,
+			"source_type": notification.SourceType,
+			"created_at":  notification.CreatedAt.Format("2006-01-02"),
+		})
+	}
+	result["notifications"] = notificationSummary
+
+	return result
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -1627,6 +2474,34 @@ func userAlternatives(matches []User) []map[string]interface{} {
 			"entity_type":  "user",
 			"id":           match.ID,
 			"display_name": firstNonEmpty(match.DisplayName, match.FullName, match.Username),
+			"department":   match.Department,
+			"job_title":    match.JobTitle,
+		})
+	}
+	return alternatives
+}
+
+func supplierAlternatives(matches []SupplierMaster) []map[string]interface{} {
+	alternatives := make([]map[string]interface{}, 0, len(matches))
+	for _, match := range matches {
+		alternatives = append(alternatives, map[string]interface{}{
+			"entity_type":   "supplier",
+			"id":            match.ID,
+			"display_name":  match.SupplierName,
+			"supplier_code": match.SupplierCode,
+			"country":       match.Country,
+		})
+	}
+	return alternatives
+}
+
+func employeeAlternatives(matches []Employee) []map[string]interface{} {
+	alternatives := make([]map[string]interface{}, 0, len(matches))
+	for _, match := range matches {
+		alternatives = append(alternatives, map[string]interface{}{
+			"entity_type":  "employee",
+			"id":           match.ID,
+			"display_name": firstNonEmpty(match.PreferredName, match.FullName, match.EmployeeCode),
 			"department":   match.Department,
 			"job_title":    match.JobTitle,
 		})
@@ -4993,6 +5868,8 @@ FULL DATA ACCESS — you have live data on:
 • DOCUMENT PRECHECKS: Quotation readiness context — resolved customer, primary contact, recent offers, missing required fields before drafting
 • STRUCTURED MEMORY: Recent entity notes, pending follow-ups, and tactical quick captures relevant to the active customer/workflow
 • PROACTIVE BRIEFING: Compact daily operating picture — action items, risks, service follow-ups, and cashflow cues
+• WORK MANAGEMENT: Employees, collaborative tasks, task comments, and task notifications
+• DATABASE ACCESS: Cross-module record retrieval covering notes, offers and line items, orders and line items, invoices, supplier invoices, payments, bank statements, expenses, and related operational records
 • INTELLIGENCE: Three-Regime dynamics (R1=Exploration/R2=Optimization/R3=Stabilization), payment behavior models
 
 COMPLETE BUSINESS DATA:
@@ -5028,7 +5905,7 @@ RESPONSE GUIDELINES:
 - Suggest next actions only when supported by context
 - For strategic recommendations, ground them in the actual data provided
 - Never invent contact people, internal owners, invoice numbers, project names, or payment events that are absent from context
-- Treat entity_resolution, contact_context, account_manager_context, service_due_installations, closeable_opportunities, and quotation_precheck as higher-trust sources when present
+- Treat entity_resolution, customer_data, supplier_data, employee_context, contact_context, account_manager_context, service_due_installations, closeable_opportunities, quotation_precheck, work_data, and database_access as higher-trust sources when present
 - Treat clarification_prompt and quotation_precheck.draft_payload as the preferred handoff rails when they are present
 - Treat butler_memory and proactive_briefing as trusted context for continuity and daily-priority answers
 - For "who handled"/ownership questions, only mention people present in context fields (e.g., user references, account_manager_context, team context tags); otherwise state no owner is currently recorded
@@ -5243,6 +6120,7 @@ func parseMistralResponse(aiText string, context map[string]interface{}, intent 
 	// Clean the message (remove action blocks from display text)
 	cleanMessage := actionBlockRegex.ReplaceAllString(aiText, "")
 	cleanMessage = strings.TrimSpace(cleanMessage)
+	displayMessage := normalizeAssistantMessageContent(cleanMessage, actions)
 
 	// Calculate confidence
 	confidence := 0.85
@@ -5264,7 +6142,7 @@ func parseMistralResponse(aiText string, context map[string]interface{}, intent 
 	}
 
 	return ButlerResponse{
-		Message:    cleanMessage,
+		Message:    displayMessage,
 		Actions:    actions,
 		Confidence: confidence,
 		Context:    context,
@@ -5296,6 +6174,8 @@ func collectContextCoverage(context map[string]interface{}) []string {
 
 	keys := []string{
 		"business_summary",
+		"business_period_summary",
+		"business_year_summary",
 		"entity_resolution",
 		"customer_data",
 		"customer_period_summary",
@@ -5325,7 +6205,10 @@ func collectContextCoverage(context map[string]interface{}) []string {
 		"competition_intelligence",
 		"customer_360",
 		"contact_context",
+		"employee_context",
 		"account_manager_context",
+		"work_data",
+		"database_access",
 		"proactive_briefing",
 		"action_items",
 		"customer_notes",

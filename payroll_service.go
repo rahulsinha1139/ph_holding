@@ -13,6 +13,7 @@ import (
 type EmployeeCompensationProfile struct {
 	Base
 	EmployeeID         string     `gorm:"uniqueIndex;size:36" json:"employee_id"`
+	Division           string     `gorm:"size:100;default:'PH Trading'" json:"division"`
 	PayFrequency       string     `gorm:"size:20;default:'monthly'" json:"pay_frequency"`
 	Currency           string     `gorm:"size:3;default:'BHD'" json:"currency"`
 	BaseSalary         float64    `gorm:"type:decimal(15,3)" json:"base_salary"`
@@ -36,6 +37,7 @@ func (EmployeeCompensationProfile) TableName() string { return "employee_compens
 type PayrollPeriod struct {
 	Base
 	Name        string     `gorm:"uniqueIndex;size:120" json:"name"`
+	Division    string     `gorm:"size:100;default:'PH Trading'" json:"division"`
 	PeriodStart time.Time  `gorm:"index" json:"period_start"`
 	PeriodEnd   time.Time  `gorm:"index" json:"period_end"`
 	PaymentDate *time.Time `gorm:"index" json:"payment_date"`
@@ -49,6 +51,7 @@ type PayrollRun struct {
 	Base
 	RunNumber            string     `gorm:"uniqueIndex;size:50" json:"run_number"`
 	PayrollPeriodID      string     `gorm:"index;size:36" json:"payroll_period_id"`
+	Division             string     `gorm:"size:100;default:'PH Trading'" json:"division"`
 	Status               string     `gorm:"size:20;default:'draft';index" json:"status"`
 	GeneratedAt          *time.Time `json:"generated_at"`
 	ApprovedAt           *time.Time `json:"approved_at"`
@@ -116,6 +119,7 @@ type PayrollPayout struct {
 	PayrollRunID        string     `gorm:"index;size:36" json:"payroll_run_id"`
 	PayrollRunItemID    string     `gorm:"index;size:36" json:"payroll_run_item_id"`
 	EmployeeID          string     `gorm:"index;size:36" json:"employee_id"`
+	Division            string     `gorm:"size:100;default:'PH Trading'" json:"division"`
 	ScheduledAt         *time.Time `gorm:"index" json:"scheduled_at"`
 	PaidAt              *time.Time `gorm:"index" json:"paid_at"`
 	Amount              float64    `gorm:"type:decimal(15,3)" json:"amount"`
@@ -158,6 +162,10 @@ func (a *App) EnsurePayrollFoundation() error {
 			return fmt.Errorf("failed to migrate %T: %w", model, err)
 		}
 	}
+	a.addColumnIfNotExists("employee_compensation_profiles", "division", "TEXT DEFAULT 'PH Trading'")
+	a.addColumnIfNotExists("payroll_periods", "division", "TEXT DEFAULT 'PH Trading'")
+	a.addColumnIfNotExists("payroll_runs", "division", "TEXT DEFAULT 'PH Trading'")
+	a.addColumnIfNotExists("payroll_payouts", "division", "TEXT DEFAULT 'PH Trading'")
 
 	return nil
 }
@@ -238,6 +246,7 @@ func (a *App) UpsertEmployeeCompensationProfile(profile EmployeeCompensationProf
 	if profile.PayFrequency == "" {
 		profile.PayFrequency = "monthly"
 	}
+	profile.Division = normalizeDivisionName(profile.Division)
 	profile.Currency = strings.ToUpper(strings.TrimSpace(profile.Currency))
 	if profile.Currency == "" {
 		profile.Currency = "BHD"
@@ -273,6 +282,7 @@ func (a *App) UpsertEmployeeCompensationProfile(profile EmployeeCompensationProf
 
 	updates := map[string]interface{}{
 		"pay_frequency":       profile.PayFrequency,
+		"division":            profile.Division,
 		"currency":            profile.Currency,
 		"base_salary":         profile.BaseSalary,
 		"housing_allowance":   profile.HousingAllowance,
@@ -292,6 +302,7 @@ func (a *App) UpsertEmployeeCompensationProfile(profile EmployeeCompensationProf
 	}
 
 	existing.PayFrequency = profile.PayFrequency
+	existing.Division = profile.Division
 	existing.Currency = profile.Currency
 	existing.BaseSalary = profile.BaseSalary
 	existing.HousingAllowance = profile.HousingAllowance
@@ -345,8 +356,9 @@ func (a *App) CreatePayrollPeriod(period PayrollPeriod) (PayrollPeriod, error) {
 	}
 
 	period.Name = strings.TrimSpace(period.Name)
+	period.Division = normalizeDivisionName(period.Division)
 	if period.Name == "" {
-		period.Name = fmt.Sprintf("%s Payroll", period.PeriodStart.Format("Jan 2006"))
+		period.Name = fmt.Sprintf("%s Payroll - %s", period.PeriodStart.Format("Jan 2006"), period.Division)
 	}
 	if period.PaymentDate == nil {
 		paymentDate := period.PeriodEnd
@@ -476,8 +488,8 @@ func (a *App) GeneratePayrollRun(payrollPeriodID string) (PayrollRun, error) {
 
 	var profiles []EmployeeCompensationProfile
 	if err := a.db.Where(
-		"is_active = ? AND (effective_from IS NULL OR effective_from <= ?) AND (effective_to IS NULL OR effective_to >= ?)",
-		true, period.PeriodEnd, period.PeriodStart,
+		"is_active = ? AND division = ? AND (effective_from IS NULL OR effective_from <= ?) AND (effective_to IS NULL OR effective_to >= ?)",
+		true, normalizeDivisionName(period.Division), period.PeriodEnd, period.PeriodStart,
 	).Find(&profiles).Error; err != nil {
 		return PayrollRun{}, fmt.Errorf("failed to load compensation profiles: %w", err)
 	}
@@ -550,6 +562,7 @@ func (a *App) GeneratePayrollRun(payrollPeriodID string) (PayrollRun, error) {
 			PayrollRunID:     run.ID,
 			PayrollRunItemID: item.ID,
 			EmployeeID:       item.EmployeeID,
+			Division:         normalizeDivisionName(period.Division),
 			ScheduledAt:      &paymentDate,
 			Amount:           net,
 			Currency:         profile.Currency,
@@ -579,6 +592,7 @@ func (a *App) GeneratePayrollRun(payrollPeriodID string) (PayrollRun, error) {
 			Base:              Base{CreatedBy: a.getCurrentUserID(), CreatedAt: now, UpdatedAt: now},
 			RunNumber:         generatePayrollRunNumber(period, now),
 			PayrollPeriodID:   period.ID,
+			Division:          normalizeDivisionName(period.Division),
 			Status:            "draft",
 			GeneratedAt:       &now,
 			TotalEmployees:    totalEmployees,
@@ -617,6 +631,7 @@ func (a *App) GeneratePayrollRun(payrollPeriodID string) (PayrollRun, error) {
 			return PayrollRun{}, fmt.Errorf("failed to clear payroll items: %w", err)
 		}
 		run.Status = "draft"
+		run.Division = normalizeDivisionName(period.Division)
 		run.GeneratedAt = &now
 		run.ApprovedAt = nil
 		run.ApprovedBy = ""
@@ -635,6 +650,7 @@ func (a *App) GeneratePayrollRun(payrollPeriodID string) (PayrollRun, error) {
 		run.Currency = "BHD"
 		if err := tx.Model(&run).Updates(map[string]interface{}{
 			"status":                  run.Status,
+			"division":                run.Division,
 			"generated_at":            run.GeneratedAt,
 			"approved_at":             nil,
 			"approved_by":             "",
@@ -750,21 +766,45 @@ func (a *App) PostPayrollRun(runID string) (PayrollRun, error) {
 	}
 
 	now := time.Now()
-	if err := a.db.Model(&PayrollRun{}).Where("id = ?", run.ID).Updates(map[string]interface{}{
+	tx := a.db.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	if err := tx.Model(&PayrollRun{}).Where("id = ?", run.ID).Updates(map[string]interface{}{
 		"status":           "posted",
 		"posted_at":        &now,
 		"posted_by":        a.getPayrollActorID(),
 		"journal_entry_id": journalID,
 		"updated_at":       now,
 	}).Error; err != nil {
+		tx.Rollback()
 		return PayrollRun{}, fmt.Errorf("failed to mark payroll run posted: %w", err)
 	}
-	_ = a.db.Model(&PayrollRunItem{}).Where("payroll_run_id = ?", run.ID).Updates(map[string]interface{}{
+	if err := tx.Model(&PayrollRunItem{}).Where("payroll_run_id = ?", run.ID).Updates(map[string]interface{}{
 		"status":     "posted",
 		"updated_at": now,
-	}).Error
+	}).Error; err != nil {
+		tx.Rollback()
+		return PayrollRun{}, fmt.Errorf("failed to update payroll run items: %w", err)
+	}
+
+	run.Status = "posted"
+	run.PostedAt = &now
+	run.PostedBy = a.getPayrollActorID()
+	run.JournalEntryID = &journalID
+	if err := a.syncPayrollRunExpenseEntry(tx, &run); err != nil {
+		tx.Rollback()
+		return PayrollRun{}, err
+	}
+	if err := tx.Commit().Error; err != nil {
+		return PayrollRun{}, fmt.Errorf("failed to commit payroll posting: %w", err)
+	}
 
 	a.emitPayrollEvent("payroll:updated", map[string]interface{}{"entity": "payroll_run", "action": "post", "id": run.ID})
+	a.emitExpenseEvent("expenses:updated", map[string]interface{}{"entity": "entry", "action": "payroll_sync", "id": run.ID})
 	return a.GetPayrollRun(run.ID)
 }
 
@@ -806,6 +846,11 @@ func (a *App) MarkPayrollRunPaid(runID, paidAtISO, paymentReference, bankAccount
 
 	var bankAccountRef *string
 	if trimmed := strings.TrimSpace(bankAccountID); trimmed != "" {
+		bankDivision := a.resolveBankAccountDivision(trimmed)
+		runDivision := normalizeDivisionName(run.Division)
+		if bankDivision != runDivision {
+			return PayrollRun{}, fmt.Errorf("payroll run belongs to %s but bank account belongs to %s", runDivision, bankDivision)
+		}
 		bankAccountRef = &trimmed
 	}
 
@@ -821,6 +866,7 @@ func (a *App) MarkPayrollRunPaid(runID, paidAtISO, paymentReference, bankAccount
 		"paid_at":           paidAt,
 		"payment_reference": strings.TrimSpace(paymentReference),
 		"bank_account_id":   bankAccountRef,
+		"division":          normalizeDivisionName(run.Division),
 		"updated_at":        time.Now(),
 	}).Error; err != nil {
 		tx.Rollback()
@@ -832,6 +878,7 @@ func (a *App) MarkPayrollRunPaid(runID, paidAtISO, paymentReference, bankAccount
 		"paid_at":                 paidAt,
 		"payment_reference":       strings.TrimSpace(paymentReference),
 		"bank_account_id":         bankAccountRef,
+		"division":                normalizeDivisionName(run.Division),
 		"payout_journal_entry_id": payoutJournalID,
 		"updated_at":              time.Now(),
 	}).Error; err != nil {
@@ -846,11 +893,26 @@ func (a *App) MarkPayrollRunPaid(runID, paidAtISO, paymentReference, bankAccount
 		return PayrollRun{}, fmt.Errorf("failed to update payroll run items: %w", err)
 	}
 
+	run.Status = "paid"
+	run.PaidAt = paidAt
+	run.PaymentReference = strings.TrimSpace(paymentReference)
+	run.BankAccountID = bankAccountRef
+	if payoutJournalID != "" {
+		run.PayoutJournalEntryID = &payoutJournalID
+	} else {
+		run.PayoutJournalEntryID = nil
+	}
+	if err := a.syncPayrollRunExpenseEntry(tx, &run); err != nil {
+		tx.Rollback()
+		return PayrollRun{}, err
+	}
+
 	if err := tx.Commit().Error; err != nil {
 		return PayrollRun{}, fmt.Errorf("failed to commit payroll payment: %w", err)
 	}
 
 	a.emitPayrollEvent("payroll:updated", map[string]interface{}{"entity": "payroll_run", "action": "paid", "id": run.ID})
+	a.emitExpenseEvent("expenses:updated", map[string]interface{}{"entity": "entry", "action": "payroll_sync", "id": run.ID})
 	return a.GetPayrollRun(run.ID)
 }
 
@@ -1029,6 +1091,186 @@ func (a *App) postPayrollPayoutJournal(run *PayrollRun, paymentReference string)
 	}
 
 	return a.persistPostedJournal(journal, lines)
+}
+
+func (a *App) syncPayrollRunExpenseEntry(tx *gorm.DB, run *PayrollRun) error {
+	if tx == nil {
+		tx = a.db
+	}
+	if tx == nil || run == nil || strings.TrimSpace(run.ID) == "" || run.NetTotal <= 0 {
+		return nil
+	}
+
+	category, err := a.ensurePayrollExpenseCategory(tx)
+	if err != nil {
+		return fmt.Errorf("failed to ensure payroll expense category: %w", err)
+	}
+
+	expenseDate, dueDate := a.resolvePayrollExpenseDates(tx, run)
+	status := "posted"
+	paymentStatus := "unpaid"
+	if strings.EqualFold(run.Status, "paid") {
+		status = "paid"
+		paymentStatus = "paid"
+	}
+
+	description := fmt.Sprintf("Salary payment for %s", strings.TrimSpace(run.RunNumber))
+	notes := fmt.Sprintf(
+		"Linked from payroll run %s. Gross %.3f BHD, deductions %.3f BHD, employer cost %.3f BHD. Expense ledger tracks the net salary payout for operational payment visibility.",
+		strings.TrimSpace(run.RunNumber),
+		run.GrossTotal,
+		run.DeductionsTotal,
+		run.EmployerCostTotal,
+	)
+
+	var existing ExpenseEntry
+	err = tx.Where("source_type = ? AND source_ref_id = ?", "payroll", run.ID).First(&existing).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return fmt.Errorf("failed to look up payroll expense entry: %w", err)
+	}
+
+	paymentReference := strings.TrimSpace(run.PaymentReference)
+	now := time.Now()
+	if err == gorm.ErrRecordNotFound {
+		entryNumber, genErr := a.generateExpenseEntryNumber()
+		if genErr != nil {
+			return genErr
+		}
+		sourceRefID := run.ID
+		entry := ExpenseEntry{
+			Base:             Base{ID: uuid.New().String(), CreatedBy: a.getCurrentUserID(), CreatedAt: now, UpdatedAt: now},
+			EntryNumber:      entryNumber,
+			ExpenseDate:      expenseDate,
+			DueDate:          &dueDate,
+			Description:      description,
+			CategoryID:       category.ID,
+			SourceType:       "payroll",
+			SourceRefID:      &sourceRefID,
+			CostCenter:       "Payroll",
+			Currency:         firstPopulatedString(run.Currency, "BHD"),
+			Division:         normalizeDivisionName(run.Division),
+			Amount:           maxFinanceAmount(run.NetTotal),
+			VATAmount:        0,
+			TotalAmount:      maxFinanceAmount(run.NetTotal),
+			Status:           status,
+			PaymentStatus:    paymentStatus,
+			PostedAt:         run.PostedAt,
+			PostedBy:         run.PostedBy,
+			PaidAt:           run.PaidAt,
+			PaymentMethod:    "Payroll Transfer",
+			PaymentReference: paymentReference,
+			BankAccountID:    run.BankAccountID,
+			JournalEntryID:   run.JournalEntryID,
+			Notes:            notes,
+		}
+		if paymentStatus != "paid" {
+			entry.PaymentMethod = ""
+		}
+		if err := tx.Create(&entry).Error; err != nil {
+			return fmt.Errorf("failed to create payroll expense entry: %w", err)
+		}
+		a.recordExpenseApproval(entry.ID, "payroll_sync", run.RunNumber)
+		return nil
+	}
+
+	updates := map[string]interface{}{
+		"expense_date":      expenseDate,
+		"due_date":          &dueDate,
+		"description":       description,
+		"category_id":       category.ID,
+		"cost_center":       "Payroll",
+		"currency":          firstPopulatedString(run.Currency, "BHD"),
+		"division":          normalizeDivisionName(run.Division),
+		"amount":            maxFinanceAmount(run.NetTotal),
+		"vat_amount":        0,
+		"total_amount":      maxFinanceAmount(run.NetTotal),
+		"status":            status,
+		"payment_status":    paymentStatus,
+		"posted_at":         run.PostedAt,
+		"posted_by":         run.PostedBy,
+		"paid_at":           run.PaidAt,
+		"payment_reference": paymentReference,
+		"bank_account_id":   run.BankAccountID,
+		"journal_entry_id":  run.JournalEntryID,
+		"notes":             notes,
+		"updated_at":        now,
+	}
+	if paymentStatus == "paid" {
+		updates["payment_method"] = "Payroll Transfer"
+	} else {
+		updates["payment_method"] = ""
+	}
+	if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+		return fmt.Errorf("failed to update payroll expense entry: %w", err)
+	}
+	return nil
+}
+
+func (a *App) ensurePayrollExpenseCategory(tx *gorm.DB) (ExpenseCategory, error) {
+	if tx == nil {
+		tx = a.db
+	}
+	var category ExpenseCategory
+	if err := tx.Where("UPPER(code) = ?", "PAYROLL").First(&category).Error; err == nil {
+		return category, nil
+	} else if err != gorm.ErrRecordNotFound {
+		return ExpenseCategory{}, err
+	}
+
+	account, err := a.ensureSupportingAccount("6000", accountNameForCode("6000"), "Expense")
+	if err != nil {
+		return ExpenseCategory{}, err
+	}
+	accountID := account.ID
+	category = ExpenseCategory{
+		Base:        Base{CreatedBy: a.getCurrentUserID()},
+		Name:        "Employee Salaries",
+		Code:        "PAYROLL",
+		Description: "Salaries, wages, and payroll overhead",
+		GLAccountID: &accountID,
+		IsActive:    true,
+		SortOrder:   30,
+	}
+	if err := tx.Create(&category).Error; err != nil {
+		return ExpenseCategory{}, err
+	}
+	return category, nil
+}
+
+func (a *App) resolvePayrollExpenseDates(tx *gorm.DB, run *PayrollRun) (time.Time, time.Time) {
+	if run == nil {
+		now := time.Now()
+		return now, now
+	}
+	if run.PaidAt != nil {
+		return *run.PaidAt, *run.PaidAt
+	}
+	if tx != nil {
+		var period PayrollPeriod
+		if err := tx.First(&period, "id = ?", run.PayrollPeriodID).Error; err == nil {
+			if period.PaymentDate != nil {
+				return *period.PaymentDate, *period.PaymentDate
+			}
+			return period.PeriodEnd, period.PeriodEnd
+		}
+	}
+	if run.PostedAt != nil {
+		return *run.PostedAt, *run.PostedAt
+	}
+	if run.GeneratedAt != nil {
+		return *run.GeneratedAt, *run.GeneratedAt
+	}
+	now := time.Now()
+	return now, now
+}
+
+func firstPopulatedString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (a *App) persistPostedJournal(journal JournalEntry, lines []JournalLine) (string, error) {

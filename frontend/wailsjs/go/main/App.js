@@ -626,6 +626,18 @@ export function DeleteDeliveryNote(arg1) {
   return window['go']['main']['App']['DeleteDeliveryNote'](arg1);
 }
 
+export function DeleteExpenseCategory(arg1) {
+  return window['go']['main']['App']['DeleteExpenseCategory'](arg1);
+}
+
+export function DeleteExpenseEntry(arg1) {
+  return window['go']['main']['App']['DeleteExpenseEntry'](arg1);
+}
+
+export function DeleteExpenseVendor(arg1) {
+  return window['go']['main']['App']['DeleteExpenseVendor'](arg1);
+}
+
 export function DeleteFXRate(arg1) {
   return window['go']['main']['App']['DeleteFXRate'](arg1);
 }
@@ -664,6 +676,10 @@ export function DeleteRFQ(arg1) {
 
 export function DeleteRFQWithCascade(arg1, arg2) {
   return window['go']['main']['App']['DeleteRFQWithCascade'](arg1, arg2);
+}
+
+export function DeleteRecurringExpense(arg1) {
+  return window['go']['main']['App']['DeleteRecurringExpense'](arg1);
 }
 
 export function DeleteRemoteReport(arg1) {

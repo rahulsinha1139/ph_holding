@@ -172,8 +172,15 @@
               class:highlighted={idx === highlightedIndex}
               class:disabled={option.disabled}
               role="option"
+              tabindex="-1"
               aria-selected={option.value === value}
               on:click|stopPropagation={() => selectOption(option)}
+              on:keydown|stopPropagation={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  selectOption(option);
+                }
+              }}
               on:mouseenter={() => highlightedIndex = idx}
             >
               {option.label}

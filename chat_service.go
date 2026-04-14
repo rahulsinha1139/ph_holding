@@ -555,6 +555,7 @@ func (a *App) prepareButlerConversation(conversationID, title, message string) (
 // persistButlerAssistantMessage stores the assistant response and updates conversation activity.
 func (a *App) persistButlerAssistantMessage(conversationID, content string, tokensUsed int, actions []ButlerAction, responseMetadata *ButlerResponseMetadata) {
 	normalizedActions := normalizeButlerActionList(actions)
+	normalizedContent := normalizeAssistantMessageContent(content, normalizedActions)
 	messageType, actionType, actionTarget, actionStatus, actionData, actionLabel := classifyActionMetadata(normalizedActions)
 	richActionPayload := hydrateActionMetadataPayload(normalizedActions)
 	actionSummary := buildActionMetadataSummary(richActionPayload)
@@ -632,7 +633,7 @@ func (a *App) persistButlerAssistantMessage(conversationID, content string, toke
 	assistantMsg := ChatMessage{
 		ConversationID: conversationID,
 		Role:           "assistant",
-		Content:        content,
+		Content:        normalizedContent,
 		TokensUsed:     tokensUsed,
 		MessageType:    messageType,
 		ActionType:     actionType,
@@ -648,6 +649,113 @@ func (a *App) persistButlerAssistantMessage(conversationID, content string, toke
 	}
 
 	a.db.Model(&Conversation{}).Where("id = ?", conversationID).Update("last_msg_at", time.Now())
+}
+
+func normalizeAssistantMessageContent(content string, actions []ButlerAction) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed != "" {
+		return trimmed
+	}
+
+	if summary := summarizeButlerActions(actions); summary != "" {
+		return summary
+	}
+
+	return "I processed your request, but I do not have a replay-safe text response for this turn."
+}
+
+func summarizeButlerActions(actions []ButlerAction) string {
+	normalized := normalizeButlerActionList(actions)
+	if len(normalized) == 0 {
+		return ""
+	}
+
+	labels := make([]string, 0, len(normalized))
+	seen := make(map[string]struct{})
+	for _, action := range normalized {
+		label := strings.TrimSpace(action.Label)
+		if label == "" {
+			label = inferActionLabel(action.Type, action.Target)
+		}
+		if label == "" {
+			continue
+		}
+		if _, exists := seen[label]; exists {
+			continue
+		}
+		seen[label] = struct{}{}
+		labels = append(labels, label)
+		if len(labels) == 3 {
+			break
+		}
+	}
+
+	if len(labels) == 0 {
+		return ""
+	}
+	if len(labels) == 1 {
+		return fmt.Sprintf("I prepared a suggested action: %s.", labels[0])
+	}
+
+	return fmt.Sprintf("I prepared %d suggested actions: %s.", len(normalized), strings.Join(labels, "; "))
+}
+
+func extractStoredButlerActions(msg ChatMessage) []ButlerAction {
+	if strings.TrimSpace(msg.ActionMetadata) != "" {
+		var persisted struct {
+			Actions []struct {
+				Type   string      `json:"type"`
+				Target string      `json:"target"`
+				Label  string      `json:"label"`
+				Data   interface{} `json:"data"`
+			} `json:"actions"`
+		}
+		if err := json.Unmarshal([]byte(msg.ActionMetadata), &persisted); err == nil && len(persisted.Actions) > 0 {
+			actions := make([]ButlerAction, 0, len(persisted.Actions))
+			for _, action := range persisted.Actions {
+				actions = append(actions, ButlerAction{
+					Type:   action.Type,
+					Target: action.Target,
+					Label:  action.Label,
+					Data:   action.Data,
+				})
+			}
+			return normalizeButlerActionList(actions)
+		}
+	}
+
+	if strings.TrimSpace(msg.ActionType) != "" || strings.TrimSpace(msg.ActionTarget) != "" || strings.TrimSpace(msg.ActionLabel) != "" {
+		return normalizeButlerActionList([]ButlerAction{{
+			Type:   msg.ActionType,
+			Target: msg.ActionTarget,
+			Label:  msg.ActionLabel,
+		}})
+	}
+
+	return nil
+}
+
+func replaySafeChatMessageContent(msg ChatMessage) string {
+	trimmed := strings.TrimSpace(msg.Content)
+	if trimmed != "" {
+		return trimmed
+	}
+	if msg.Role != "assistant" {
+		return ""
+	}
+	return normalizeAssistantMessageContent("", extractStoredButlerActions(msg))
+}
+
+func buildReplayMessage(msg ChatMessage) (map[string]interface{}, bool) {
+	content := replaySafeChatMessageContent(msg)
+	if content == "" {
+		return nil, false
+	}
+
+	return map[string]interface{}{
+		"role":    msg.Role,
+		"content": content,
+	}, true
 }
 
 func classifyActionMetadata(actions []ButlerAction) (string, string, string, string, string, string) {
@@ -1280,6 +1388,10 @@ func (a *App) GetConversationMessages(conversationID string) ([]ChatMessage, err
 		return nil, fmt.Errorf("failed to get messages: %w", err)
 	}
 
+	for i := range messages {
+		messages[i].Content = replaySafeChatMessageContent(messages[i])
+	}
+
 	log.Printf("📨 Retrieved %d messages for conversation %s", len(messages), conversationID)
 	return messages, nil
 }
@@ -1497,6 +1609,48 @@ func (a *App) ChatWithButlerPersistent(conversationID, message string) (ChatResp
 			Metadata:       metadata,
 		}, nil
 	}
+	if groundedReply, handled := a.tryGroundedTaskCreationFastPath(intent, message); handled {
+		metadata := buildButlerMetadata(intent, map[string]interface{}{
+			"fast_path": "grounded_task_create",
+		}, hasFinanceAccess, "grounded_sql", "", "", "", nil)
+		a.persistButlerAssistantMessage(conversationID, groundedReply, 0, []ButlerAction{}, &metadata)
+		return ChatResponse{
+			Response:       groundedReply,
+			ConversationID: conversationID,
+			Actions:        []ButlerAction{},
+			Confidence:     0.99,
+			TokensUsed:     0,
+			Metadata:       metadata,
+		}, nil
+	}
+	if groundedReply, handled := a.tryGroundedWorkFastPath(intent, message); handled {
+		metadata := buildButlerMetadata(intent, map[string]interface{}{
+			"fast_path": "grounded_work",
+		}, hasFinanceAccess, "grounded_sql", "", "", "", nil)
+		a.persistButlerAssistantMessage(conversationID, groundedReply, 0, []ButlerAction{}, &metadata)
+		return ChatResponse{
+			Response:       groundedReply,
+			ConversationID: conversationID,
+			Actions:        []ButlerAction{},
+			Confidence:     0.98,
+			TokensUsed:     0,
+			Metadata:       metadata,
+		}, nil
+	}
+	if groundedReply, handled := a.tryGroundedSupplierFastPath(intent, message); handled {
+		metadata := buildButlerMetadata(intent, map[string]interface{}{
+			"fast_path": "grounded_supplier",
+		}, hasFinanceAccess, "grounded_sql", "", "", "", nil)
+		a.persistButlerAssistantMessage(conversationID, groundedReply, 0, []ButlerAction{}, &metadata)
+		return ChatResponse{
+			Response:       groundedReply,
+			ConversationID: conversationID,
+			Actions:        []ButlerAction{},
+			Confidence:     0.98,
+			TokensUsed:     0,
+			Metadata:       metadata,
+		}, nil
+	}
 	if groundedReply, handled := a.tryGroundedCustomerFastPathWithHint(intent, message, customerHint); handled {
 		metadata := buildButlerMetadata(intent, map[string]interface{}{
 			"fast_path":     "grounded_customer",
@@ -1564,16 +1718,21 @@ func (a *App) ChatWithButlerPersistent(conversationID, message string) (ChatResp
 	if len(recentMessages) > historyLimit {
 		startIdx = len(recentMessages) - historyLimit
 	}
+	currentUserMessageInHistory := false
 	for _, msg := range recentMessages[startIdx:] {
-		mistralMessages = append(mistralMessages, map[string]interface{}{
-			"role":    msg.Role,
-			"content": msg.Content,
-		})
+		replayMsg, ok := buildReplayMessage(msg)
+		if !ok {
+			continue
+		}
+		mistralMessages = append(mistralMessages, replayMsg)
+		if msg.Role == "user" && strings.TrimSpace(msg.Content) == strings.TrimSpace(message) {
+			currentUserMessageInHistory = true
+		}
 	}
 
 	// Current user message is already at the end from recent history
 	// If not in history yet (edge case), add it
-	if len(recentMessages) == 0 || recentMessages[len(recentMessages)-1].Content != message {
+	if !currentUserMessageInHistory {
 		mistralMessages = append(mistralMessages, map[string]interface{}{
 			"role":    "user",
 			"content": message,
@@ -1820,8 +1979,11 @@ func buildMistralSystemPromptWithHistory(context map[string]interface{}, regime 
 				role = "Assistant"
 			}
 			// Sanitize history content before injecting into system prompt (P1: prompt injection prevention)
-			preview := sanitizeForPrompt(msg.Content)
+			preview := sanitizeForPrompt(replaySafeChatMessageContent(msg))
 			preview = contextCleanupPatterns.ReplaceAllString(preview, "")
+			if strings.TrimSpace(preview) == "" {
+				continue
+			}
 			if len(preview) > 100 {
 				preview = preview[:100] + "..."
 			}
@@ -1883,6 +2045,8 @@ FULL DATA ACCESS — you have live data on:
 • RISK: Overdue AR/AP, credit-blocked customers, expiring offers, system alerts
 • ACTION ITEMS: Prioritized list — overdue invoices, expiring offers, stuck deliveries, pending approvals
 • STRUCTURED MEMORY: Recent entity notes, pending follow-ups, and tactical quick captures
+• WORK MANAGEMENT: Employees, collaborative tasks, task comments, and task notifications
+• DATABASE ACCESS: Cross-module record retrieval covering notes, offers and line items, orders and line items, invoices, supplier invoices, payments, bank statements, expenses, and related operational records
 
 COMPLETE BUSINESS DATA:
 %s
@@ -1915,7 +2079,7 @@ RESPONSE GUIDELINES:
 - Suggest next actions only when supported by context
 - For strategic recommendations, ground them in actual data provided
 - Never invent contact people, invoice numbers, project names, or payment events absent from context
-- Treat entity_resolution, quotation_precheck, butler_memory, and proactive_briefing as higher-trust sources
+- Treat entity_resolution, customer_data, supplier_data, employee_context, quotation_precheck, butler_memory, proactive_briefing, work_data, and database_access as higher-trust sources
 - If entity_resolution indicates ambiguous=true, ask a short clarification question
 - Reference previous conversation topics when relevant to maintain continuity
 - Do not claim a PDF or document was generated unless context includes a real file path

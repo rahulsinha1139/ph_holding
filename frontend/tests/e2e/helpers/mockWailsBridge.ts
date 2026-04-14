@@ -2,6 +2,9 @@ import type { Page } from '@playwright/test';
 
 type MockWailsBridgeOptions = {
   butlerResponse?: string;
+  notificationReadDelayMs?: number;
+  collaborativeDataReadyAfterRefreshCount?: number;
+  taskDetailsReadyAfterRefreshCount?: number;
 };
 
 export async function installMockWailsBridge(page: Page, options: MockWailsBridgeOptions = {}) {
@@ -282,6 +285,94 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
           extracted_invoices: '',
         },
       ],
+      employeeProfiles: [
+        {
+          id: 'emp-admin',
+          employee_code: 'EMP-001',
+          full_name: 'Developer Admin',
+          department: 'Management',
+          job_title: 'Administrator',
+          is_active: true,
+        },
+        {
+          id: 'emp-peri',
+          employee_code: 'EMP-002',
+          full_name: 'Peri',
+          department: 'Operations',
+          job_title: 'Project Coordinator',
+          is_active: true,
+        },
+      ],
+      collaborativeProjects: [
+        {
+          id: 'proj-1',
+          name: 'Butler Rollout',
+          project_type: 'internal',
+          description: 'Regression project used for E2E task routing coverage.',
+          status: 'active',
+        },
+      ],
+      collaborativeTasks: [
+        {
+          id: 'task-1',
+          title: 'Review salary expense forecast',
+          description: 'Confirm this month\'s HR and payroll forecast.',
+          task_type: 'internal',
+          status: 'open',
+          priority: 'high',
+          project_id: 'proj-1',
+          creator_employee_id: 'emp-admin',
+          assignee_employee_id: 'emp-peri',
+          creator_name: 'Developer Admin',
+          assignee_name: 'Peri',
+          due_date: '2026-04-20T09:00:00.000Z',
+        },
+      ],
+      collaborativeTaskComments: [
+        {
+          id: 'task-comment-1',
+          task_id: 'task-1',
+          employee_id: 'emp-admin',
+          employee_name: 'Developer Admin',
+          body: 'Please sanity-check the payroll assumptions before sign-off.',
+          created_at: now(),
+        },
+      ],
+      collaborativeTaskActivity: [
+        {
+          id: 'task-activity-1',
+          task_id: 'task-1',
+          employee_id: 'emp-admin',
+          employee_name: 'Developer Admin',
+          activity_type: 'created',
+          detail: 'Task created for regression coverage.',
+          metadata_json: '{}',
+          created_at: now(),
+        },
+      ],
+      notificationFeed: [
+        {
+          id: 'notif-task-1',
+          notification_type: 'task',
+          title: 'Task assigned',
+          message: 'Review salary expense forecast has been assigned to you.',
+          status: 'unread',
+          source_type: 'task',
+          source_id: 'task-1',
+          action_route: 'work',
+          action_payload: JSON.stringify({
+            action: 'open_task',
+            task_id: 'task-1',
+            task_title: 'Review salary expense forecast',
+            project_name: 'Butler Rollout',
+            actor_name: 'Developer Admin',
+          }),
+          created_at: now(),
+          read_at: null,
+          employee_id: 'emp-peri',
+        },
+      ],
+      collaborativeWorkspaceRefreshCount: 0,
       purchaseOrders: [
         {
           id: 'po-1',
@@ -331,6 +422,10 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
     const writeWorkflowState = (value: any) => {
       window.localStorage.setItem(WORKFLOW_STATE_KEY, JSON.stringify(value));
     };
+    const collaborativeDataReady = (state: any) =>
+      Number(state.collaborativeWorkspaceRefreshCount || 0) >= Number(opts.collaborativeDataReadyAfterRefreshCount ?? 2);
+    const taskDetailsReady = (state: any) =>
+      Number(state.collaborativeWorkspaceRefreshCount || 0) >= Number(opts.taskDetailsReadyAfterRefreshCount ?? 3);
     const buildCustomerDashboard = (state: any) => {
       const customers = state.customers || [];
       const topCustomers = [...customers]
@@ -704,6 +799,124 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
             }
             case 'GetCurrentUserRole':
               return defaultValue('admin');
+            case 'GetCurrentEmployeeContext':
+              return defaultValue({
+                employee_id: 'emp-peri',
+                employee_name: 'Peri',
+                license_key: 'PH-MGR-PERI01',
+                license_role: 'manager',
+                device_id: 'device-e2e',
+                user_id: 'e2e-user',
+                resolved_by: 'user',
+                permissions: ['tasks:view', 'notifications:view', 'notifications:update'],
+              });
+            case 'ListEmployeeProfiles': {
+              const state = readWorkflowState();
+              return defaultValue(state.employeeProfiles || []);
+            }
+            case 'ListCollaborativeProjects': {
+              const state = readWorkflowState();
+              return defaultValue(collaborativeDataReady(state) ? (state.collaborativeProjects || []) : []);
+            }
+            case 'ListMyCollaborativeTasks': {
+              const state = readWorkflowState();
+              return defaultValue(collaborativeDataReady(state) ? (state.collaborativeTasks || []) : []);
+            }
+            case 'ListCollaborativeTeamTasks': {
+              const state = readWorkflowState();
+              return defaultValue(collaborativeDataReady(state) ? (state.collaborativeTasks || []) : []);
+            }
+            case 'ListCollaborativeProjectTasks': {
+              const state = readWorkflowState();
+              const projectID = String(args[0] || '');
+              const tasks = collaborativeDataReady(state)
+                ? (state.collaborativeTasks || []).filter((task: any) => String(task.project_id) === projectID)
+                : [];
+              return defaultValue(tasks);
+            }
+            case 'ListCollaborativeProjectMembers': {
+              const state = readWorkflowState();
+              if (!collaborativeDataReady(state)) {
+                return defaultValue([]);
+              }
+              return defaultValue([
+                {
+                  id: 'project-member-1',
+                  project_id: 'proj-1',
+                  employee_id: 'emp-peri',
+                  employee_name: 'Peri',
+                  project_name: 'Butler Rollout',
+                  role: 'Member',
+                  allocation_percent: 100,
+                  is_active: true,
+                  joined_at: now(),
+                },
+              ]);
+            }
+            case 'ListCollaborativeProjectActivity': {
+              const state = readWorkflowState();
+              if (!collaborativeDataReady(state)) {
+                return defaultValue([]);
+              }
+              return defaultValue((state.collaborativeTaskActivity || []).filter((item: any) => {
+                const task = (state.collaborativeTasks || []).find((candidate: any) => String(candidate.id) === String(item.task_id));
+                return String(task?.project_id || '') === String(args[0] || '');
+              }));
+            }
+            case 'GetCollaborativeTask': {
+              const state = readWorkflowState();
+              const taskID = String(args[0] || '');
+              const task = (state.collaborativeTasks || []).find((item: any) => String(item.id) === taskID);
+              if (!task || !taskDetailsReady(state)) {
+                return Promise.reject(new Error('task not found'));
+              }
+              return defaultValue(task);
+            }
+            case 'ListCollaborativeTaskComments': {
+              const state = readWorkflowState();
+              if (!taskDetailsReady(state)) {
+                return Promise.reject(new Error('task not found'));
+              }
+              return defaultValue((state.collaborativeTaskComments || []).filter((item: any) => String(item.task_id) === String(args[0] || '')));
+            }
+            case 'ListCollaborativeTaskActivity': {
+              const state = readWorkflowState();
+              if (!taskDetailsReady(state)) {
+                return Promise.reject(new Error('task not found'));
+              }
+              return defaultValue((state.collaborativeTaskActivity || []).filter((item: any) => String(item.task_id) === String(args[0] || '')));
+            }
+            case 'ListNotificationFeed': {
+              const state = readWorkflowState();
+              const limit = Number(args[0] || 50);
+              const unreadOnly = Boolean(args[1]);
+              const feed = (state.notificationFeed || []).filter((item: any) => !unreadOnly || item.status !== 'read');
+              return defaultValue(feed.slice(0, limit));
+            }
+            case 'GetUnreadNotificationsCount': {
+              const state = readWorkflowState();
+              return defaultValue((state.notificationFeed || []).filter((item: any) => item.status !== 'read').length);
+            }
+            case 'MarkNotificationAsRead': {
+              const state = readWorkflowState();
+              const notification = (state.notificationFeed || []).find((item: any) => String(item.id) === String(args[0] || ''));
+              return new Promise((resolve) => {
+                window.setTimeout(() => {
+                  if (notification) {
+                    notification.status = 'read';
+                    notification.read_at = now();
+                    writeWorkflowState(state);
+                  }
+                  resolve(undefined);
+                }, Number(opts.notificationReadDelayMs || 0));
+              });
+            }
+            case 'RefreshCollaborativeWorkspace': {
+              const state = readWorkflowState();
+              state.collaborativeWorkspaceRefreshCount = Number(state.collaborativeWorkspaceRefreshCount || 0) + 1;
+              writeWorkflowState(state);
+              return defaultVoid();
+            }
             case 'GetSettings':
               return defaultValue({ defaultVatRate: 10, defaultMargin: 20 });
             case 'GetCostingSheets':

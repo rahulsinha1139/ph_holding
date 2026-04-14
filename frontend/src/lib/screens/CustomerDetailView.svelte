@@ -292,37 +292,37 @@
                 <h3 class="section-title">EDIT CUSTOMER</h3>
                 <div class="edit-form">
                   <div class="form-row">
-                    <div class="form-group"><label>Business Name</label><input type="text" bind:value={editForm.business_name} /></div>
-                    <div class="form-group"><label>Customer Code</label><input type="text" bind:value={editForm.customer_code} /></div>
+                    <div class="form-group"><label for="customer-detail-business-name">Business Name</label><input id="customer-detail-business-name" type="text" bind:value={editForm.business_name} /></div>
+                    <div class="form-group"><label for="customer-detail-customer-code">Customer Code</label><input id="customer-detail-customer-code" type="text" bind:value={editForm.customer_code} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Customer Type</label><input type="text" bind:value={editForm.customer_type} /></div>
-                    <div class="form-group"><label>Industry</label><input type="text" bind:value={editForm.industry} /></div>
+                    <div class="form-group"><label for="customer-detail-customer-type">Customer Type</label><input id="customer-detail-customer-type" type="text" bind:value={editForm.customer_type} /></div>
+                    <div class="form-group"><label for="customer-detail-industry">Industry</label><input id="customer-detail-industry" type="text" bind:value={editForm.industry} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Address</label><input type="text" bind:value={editForm.address_line1} /></div>
-                    <div class="form-group"><label>City</label><input type="text" bind:value={editForm.city} /></div>
+                    <div class="form-group"><label for="customer-detail-address">Address</label><input id="customer-detail-address" type="text" bind:value={editForm.address_line1} /></div>
+                    <div class="form-group"><label for="customer-detail-city">City</label><input id="customer-detail-city" type="text" bind:value={editForm.city} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Country</label><input type="text" bind:value={editForm.country} /></div>
-                    <div class="form-group"><label>TRN</label><input type="text" bind:value={editForm.trn} /></div>
+                    <div class="form-group"><label for="customer-detail-country">Country</label><input id="customer-detail-country" type="text" bind:value={editForm.country} /></div>
+                    <div class="form-group"><label for="customer-detail-trn">TRN</label><input id="customer-detail-trn" type="text" bind:value={editForm.trn} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Phone</label><input type="text" bind:value={editForm.phone} placeholder="+973 17 XXXXXX" /></div>
-                    <div class="form-group"><label>Mobile Number</label><input type="text" bind:value={editForm.mobile_number} placeholder="+973 3XXX XXXX" /></div>
+                    <div class="form-group"><label for="customer-detail-phone">Phone</label><input id="customer-detail-phone" type="text" bind:value={editForm.phone} placeholder="+973 17 XXXXXX" /></div>
+                    <div class="form-group"><label for="customer-detail-mobile-number">Mobile Number</label><input id="customer-detail-mobile-number" type="text" bind:value={editForm.mobile_number} placeholder="+973 3XXX XXXX" /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Email</label><input type="email" bind:value={editForm.email} placeholder="email@company.com" /></div>
-                    <div class="form-group"><label>VAT Number</label><input type="text" bind:value={editForm.vat_number} /></div>
+                    <div class="form-group"><label for="customer-detail-email">Email</label><input id="customer-detail-email" type="email" bind:value={editForm.email} placeholder="email@company.com" /></div>
+                    <div class="form-group"><label for="customer-detail-vat-number">VAT Number</label><input id="customer-detail-vat-number" type="text" bind:value={editForm.vat_number} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label>Payment Grade</label>
-                      <select bind:value={editForm.payment_grade}>
+                    <div class="form-group"><label for="customer-detail-payment-grade">Payment Grade</label>
+                      <select id="customer-detail-payment-grade" bind:value={editForm.payment_grade}>
                         <option value="A">A</option><option value="B">B</option>
                         <option value="C">C</option><option value="D">D</option>
                       </select>
                     </div>
-                    <div class="form-group"><label>Payment Terms (Days)</label><input type="number" bind:value={editForm.payment_terms_days} /></div>
+                    <div class="form-group"><label for="customer-detail-payment-terms-days">Payment Terms (Days)</label><input id="customer-detail-payment-terms-days" type="number" bind:value={editForm.payment_terms_days} /></div>
                   </div>
                   <div class="form-actions">
                     <Button variant="secondary" on:click={cancelEdit} disabled={saveLoading}>Cancel</Button>
@@ -491,6 +491,8 @@
   {/if}
 
   {#if showDeleteConfirm}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div class="delete-overlay" on:click={() => showDeleteConfirm = false}>
       <div class="delete-modal" on:click|stopPropagation>
         <h3 style="margin: 0 0 12px 0; color: #e74c3c;">Delete Customer</h3>
@@ -509,12 +511,14 @@
 </div>
 
 {#if showNoteModal}
+  <!-- svelte-ignore a11y-click-events-have-key-events -->
+  <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div class="modal-backdrop" on:click={() => showNoteModal = false}>
     <div class="modal" on:click|stopPropagation>
       <h3>Add Note</h3>
       <div class="form-group">
-        <label>Type</label>
-        <select bind:value={newNoteType}>
+        <label for="customer-note-type">Type</label>
+        <select id="customer-note-type" bind:value={newNoteType}>
           <option value="general">General</option>
           <option value="delivery">Delivery</option>
           <option value="payment">Payment</option>
@@ -522,8 +526,8 @@
         </select>
       </div>
       <div class="form-group">
-        <label>Content</label>
-        <textarea bind:value={newNoteContent} rows="4" placeholder="Enter note..."></textarea>
+        <label for="customer-note-content">Content</label>
+        <textarea id="customer-note-content" bind:value={newNoteContent} rows="4" placeholder="Enter note..."></textarea>
       </div>
       <div class="modal-actions">
         <Button variant="ghost" on:click={() => showNoteModal = false}>Cancel</Button>
@@ -534,31 +538,33 @@
 {/if}
 
 {#if showContactModal}
+  <!-- svelte-ignore a11y-click-events-have-key-events -->
+  <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div class="modal-backdrop" on:click={() => showContactModal = false}>
     <div class="modal" on:click|stopPropagation>
       <h3>Add Contact</h3>
       <div class="form-group">
-        <label>Name *</label>
-        <input type="text" bind:value={contactForm.contact_name} placeholder="Contact person name" />
+        <label for="customer-contact-name">Name *</label>
+        <input id="customer-contact-name" type="text" bind:value={contactForm.contact_name} placeholder="Contact person name" />
       </div>
       <div class="form-group">
-        <label>Job Title</label>
-        <input type="text" bind:value={contactForm.job_title} placeholder="e.g. Procurement Manager" />
+        <label for="customer-contact-job-title">Job Title</label>
+        <input id="customer-contact-job-title" type="text" bind:value={contactForm.job_title} placeholder="e.g. Procurement Manager" />
       </div>
       <div class="form-group">
-        <label>Email</label>
-        <input type="email" bind:value={contactForm.email} placeholder="email@company.com" />
+        <label for="customer-contact-email">Email</label>
+        <input id="customer-contact-email" type="email" bind:value={contactForm.email} placeholder="email@company.com" />
       </div>
       <div class="form-group">
-        <label>Phone</label>
-        <input type="text" bind:value={contactForm.phone} placeholder="+973 1234 5678" />
+        <label for="customer-contact-phone">Phone</label>
+        <input id="customer-contact-phone" type="text" bind:value={contactForm.phone} placeholder="+973 1234 5678" />
       </div>
       <div class="form-group">
-        <label>Address</label>
-        <textarea bind:value={contactForm.address} rows="2" placeholder="Address"></textarea>
+        <label for="customer-contact-address">Address</label>
+        <textarea id="customer-contact-address" bind:value={contactForm.address} rows="2" placeholder="Address"></textarea>
       </div>
       <div class="form-group">
-        <label><input type="checkbox" bind:checked={contactForm.is_primary_contact} /> Primary Contact</label>
+        <label for="customer-contact-primary"><input id="customer-contact-primary" type="checkbox" bind:checked={contactForm.is_primary_contact} /> Primary Contact</label>
       </div>
       <div class="modal-actions">
         <Button variant="ghost" on:click={() => showContactModal = false}>Cancel</Button>

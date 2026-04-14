@@ -29,7 +29,7 @@ func TestManualRepairImportedOpportunityMetadata(t *testing.T) {
 
 	var malformedCount int64
 	if err := db.Model(&Opportunity{}).
-		Where("source = ? AND (year < 2024 OR year > 2026 OR opp_number = 0)", "2026_onedrive").
+		Where("(source = ? OR source LIKE ?) AND (year < 2024 OR year > 2026 OR opp_number = 0)", "onedrive_import", "%_onedrive").
 		Count(&malformedCount).Error; err != nil {
 		t.Fatalf("failed to verify repaired records: %v", err)
 	}

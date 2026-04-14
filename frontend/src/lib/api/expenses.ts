@@ -4,6 +4,10 @@ import {
   CreateExpenseEntry,
   CreateExpenseFromBankCandidate,
   CreateExpenseVendor,
+  DeleteExpenseCategory,
+  DeleteExpenseEntry,
+  DeleteExpenseVendor,
+  DeleteRecurringExpense,
   CreateRecurringExpense,
   GenerateRecurringExpenses,
   ListBankExpenseCandidates,
@@ -46,6 +50,7 @@ export interface ExpenseVendor {
 export interface ExpenseEntry {
   id: string;
   entry_number: string;
+  division?: string;
   expense_date: string;
   due_date?: string;
   description: string;
@@ -80,6 +85,7 @@ export interface ExpenseEntry {
 export interface RecurringExpense {
   id: string;
   name: string;
+  division?: string;
   description?: string;
   category_id: string;
   category_name?: string;
@@ -101,6 +107,7 @@ export interface RecurringExpense {
 export interface BankExpenseCandidate {
   id: string;
   bank_statement_line_id: string;
+  division?: string;
   expense_date: string;
   description: string;
   category: string;
@@ -128,6 +135,10 @@ export async function createExpenseCategory(category: Partial<ExpenseCategory>):
   return await CreateExpenseCategory(category as Record<string, any>) as ExpenseCategory;
 }
 
+export async function deleteExpenseCategory(categoryID: string): Promise<void> {
+  return await DeleteExpenseCategory(categoryID);
+}
+
 export async function listExpenseVendors(activeOnly = true): Promise<ExpenseVendor[]> {
   if (!isDesktop()) return [];
   return await ListExpenseVendors(activeOnly) as ExpenseVendor[];
@@ -137,6 +148,10 @@ export async function createExpenseVendor(vendor: Partial<ExpenseVendor>): Promi
   return await CreateExpenseVendor(vendor as Record<string, any>) as ExpenseVendor;
 }
 
+export async function deleteExpenseVendor(vendorID: string): Promise<void> {
+  return await DeleteExpenseVendor(vendorID);
+}
+
 export async function listExpenseEntries(status = "", includePaid = true): Promise<ExpenseEntry[]> {
   if (!isDesktop()) return [];
   return await ListExpenseEntries(status, includePaid) as ExpenseEntry[];
@@ -144,6 +159,10 @@ export async function listExpenseEntries(status = "", includePaid = true): Promi
 
 export async function createExpenseEntry(entry: Partial<ExpenseEntry>): Promise<ExpenseEntry> {
   return await CreateExpenseEntry(entry as Record<string, any>) as ExpenseEntry;
+}
+
+export async function deleteExpenseEntry(entryID: string): Promise<void> {
+  return await DeleteExpenseEntry(entryID);
 }
 
 export async function submitExpenseEntry(entryID: string): Promise<ExpenseEntry> {
@@ -179,6 +198,10 @@ export async function listRecurringExpenses(activeOnly = true): Promise<Recurrin
 
 export async function createRecurringExpense(recurring: Partial<RecurringExpense>): Promise<RecurringExpense> {
   return await CreateRecurringExpense(recurring as Record<string, any>) as RecurringExpense;
+}
+
+export async function deleteRecurringExpense(recurringID: string): Promise<void> {
+  return await DeleteRecurringExpense(recurringID);
 }
 
 export async function generateRecurringExpenses(cutoffISO = ""): Promise<ExpenseEntry[]> {

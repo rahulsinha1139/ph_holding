@@ -26,6 +26,7 @@
 
   export let embedded = false;
   export let mode: "compensation" | "runs" | "payouts" | "workspace" = "compensation";
+  export let company: "PH Trading" | "AHS Trading" = "PH Trading";
 
   let loading = true;
   let saving = false;
@@ -75,11 +76,42 @@
 
   type CompanyBankAccount = {
     id: string;
+    division?: string;
     bank_name: string;
     account_name: string;
     account_number: string;
     currency?: string;
   };
+
+  function matchesCompany(division?: string) {
+    return (division || "PH Trading") === company;
+  }
+
+  function buildPayrollSummary(
+    scopedProfiles: EmployeeCompensationProfile[],
+    scopedPeriods: PayrollPeriod[],
+    scopedRuns: PayrollRun[],
+  ): PayrollDashboardSummary {
+    const currentMonth = new Date().getMonth();
+    const currentYear = new Date().getFullYear();
+
+    return {
+      active_profiles: scopedProfiles.filter((profile) => profile.is_active !== false).length,
+      open_periods: scopedPeriods.filter((period) => (period.status || "open") === "open").length,
+      draft_runs: scopedRuns.filter((run) => run.status === "draft").length,
+      approved_unpaid_runs: scopedRuns.filter((run) => ["approved", "posted"].includes(run.status)).length,
+      month_to_date_net_payroll: scopedRuns
+        .filter((run) => {
+          if (run.status !== "paid" || !run.paid_at) return false;
+          const paidAt = new Date(run.paid_at);
+          return paidAt.getMonth() === currentMonth && paidAt.getFullYear() === currentYear;
+        })
+        .reduce((sum, run) => sum + (Number(run.net_total) || 0), 0),
+      upcoming_payroll_liability: scopedRuns
+        .filter((run) => ["approved", "posted"].includes(run.status))
+        .reduce((sum, run) => sum + (Number(run.net_total) || 0) + (Number(run.deductions_total) || 0) + (Number(run.employer_cost_total) || 0), 0),
+    };
+  }
 
   function toISODate(value: string) {
     return value ? `${value}T00:00:00Z` : undefined;
@@ -110,12 +142,12 @@
       ]);
 
       employees = employeeRows;
-      profiles = profileRows;
-      periods = periodRows;
-      runs = runRows;
-      payouts = payoutRows;
-      summary = summaryRow;
-      bankAccounts = (bankAccountRows || []) as CompanyBankAccount[];
+      profiles = (profileRows || []).filter((profile) => matchesCompany(profile.division));
+      periods = (periodRows || []).filter((period) => matchesCompany(period.division));
+      runs = (runRows || []).filter((run) => matchesCompany(run.division));
+      payouts = (payoutRows || []).filter((payout) => matchesCompany(payout.division));
+      summary = buildPayrollSummary(profiles, periods, runs);
+      bankAccounts = ((bankAccountRows || []) as CompanyBankAccount[]).filter((account) => matchesCompany(account.division));
 
       if (!selectedPeriodID && periods.length > 0) {
         selectedPeriodID = periods[0].id;
@@ -126,9 +158,14 @@
       if (selectedRunID) {
         try {
           selectedRun = await getPayrollRun(selectedRunID);
-          paymentReference = selectedRun.payment_reference || "";
-          payrollPaidAt = selectedRun.paid_at?.slice(0, 10) || payrollPaidAt;
-          payrollBankAccountID = selectedRun.bank_account_id || payrollBankAccountID;
+          if (!matchesCompany(selectedRun.division)) {
+            selectedRun = null;
+            selectedRunID = "";
+          } else {
+            paymentReference = selectedRun.payment_reference || "";
+            payrollPaidAt = selectedRun.paid_at?.slice(0, 10) || payrollPaidAt;
+            payrollBankAccountID = selectedRun.bank_account_id || payrollBankAccountID;
+          }
         } catch {
           selectedRun = null;
         }
@@ -188,6 +225,7 @@
       await upsertEmployeeCompensationProfile({
         id: editingProfileID || undefined,
         employee_id: selectedEmployeeID,
+        division: company,
         pay_frequency: payFrequency,
         base_salary: Number(baseSalary || 0),
         housing_allowance: Number(housingAllowance || 0),
@@ -221,6 +259,7 @@
     try {
       const created = await createPayrollPeriod({
         name: periodName.trim() || undefined,
+        division: company,
         period_start: toISODate(periodStart),
         period_end: toISODate(periodEnd),
         payment_date: toISODate(paymentDate),
@@ -248,6 +287,9 @@
       const run = await generatePayrollRun(selectedPeriodID);
       selectedRunID = run.id;
       selectedRun = await getPayrollRun(run.id);
+      if (!matchesCompany(selectedRun.division)) {
+        throw new Error(`Generated payroll run belongs to ${selectedRun.division || "PH Trading"}, not ${company}`);
+      }
       await load();
       toast.success("Payroll run generated");
     } catch (err) {
@@ -261,6 +303,11 @@
     selectedRunID = runID;
     try {
       selectedRun = await getPayrollRun(runID);
+      if (!matchesCompany(selectedRun.division)) {
+        selectedRun = null;
+        selectedRunID = "";
+        return;
+      }
       paymentReference = selectedRun.payment_reference || "";
       payrollPaidAt = selectedRun.paid_at?.slice(0, 10) || new Date().toISOString().slice(0, 10);
       payrollBankAccountID = selectedRun.bank_account_id || bankAccounts[0]?.id || "";
@@ -326,6 +373,15 @@
   onDestroy(() => {
     EventsOff("payroll:updated");
   });
+
+  let lastLoadedCompany = "";
+  $: if (company && company !== lastLoadedCompany) {
+    lastLoadedCompany = company;
+    selectedRun = null;
+    selectedRunID = "";
+    selectedPeriodID = "";
+    load();
+  }
 
   $: selectedPeriod = periods.find((period) => period.id === selectedPeriodID) || null;
   $: displayedRuns = selectedPeriodID
@@ -477,6 +533,9 @@
                   <td>
                     <strong>{profile.employee_name || "Unknown employee"}</strong>
                     <small>{profile.job_title || profile.pay_frequency || "monthly"}</small>
+                    {#if profile.notes}
+                      <div class="inline-note">{profile.notes}</div>
+                    {/if}
                   </td>
                   <td>{currency(totalCompensation(profile))}</td>
                   <td>{currency((profile.standard_deduction || 0) + (profile.tax_deduction || 0))}</td>
@@ -536,6 +595,9 @@
                 <button class:selected={selectedPeriodID === period.id} class="list-item" on:click={() => selectedPeriodID = period.id}>
                   <strong>{period.name}</strong>
                   <span>{period.period_start?.slice(0, 10)} to {period.period_end?.slice(0, 10)}</span>
+                  {#if period.notes}
+                    <small class="list-note">{period.notes}</small>
+                  {/if}
                 </button>
               {/each}
             </div>
@@ -577,6 +639,16 @@
               <div><span>Net</span><strong>{currency(selectedRun.net_total)}</strong></div>
               <div><span>Employer Cost</span><strong>{currency(selectedRun.employer_cost_total)}</strong></div>
             </div>
+
+            {#if selectedRun.notes}
+              <div class="note-card">
+                <div class="note-card-head">
+                  <span>Run Notes</span>
+                  <span>Payroll Context</span>
+                </div>
+                <p>{selectedRun.notes}</p>
+              </div>
+            {/if}
 
             <div class="form-grid payment-grid">
               <label>
@@ -713,6 +785,7 @@
   .summary-card span,
   .panel-header p,
   .list-item span,
+  .list-note,
   td small,
   .stats-row span {
     color: #6d6a63;
@@ -907,6 +980,11 @@
     gap: 4px;
   }
 
+  .list-note {
+    white-space: pre-wrap;
+    line-height: 1.5;
+  }
+
   .selected {
     outline: 2px solid #1f5eff;
     outline-offset: -2px;
@@ -924,6 +1002,46 @@
   .stats-row > div {
     display: grid;
     gap: 4px;
+  }
+
+  .inline-note,
+  .note-card p {
+    color: #5f584d;
+    font-size: 12px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+
+  .inline-note {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: #f8f5ef;
+  }
+
+  .note-card {
+    display: grid;
+    gap: 8px;
+    padding: 14px;
+    border-radius: 16px;
+    background: #f8f5ef;
+    border: 1px solid #ece7db;
+  }
+
+  .note-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: #6d6a63;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .note-card p {
+    margin: 0;
   }
 
   .table-wrap {

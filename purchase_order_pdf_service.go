@@ -33,7 +33,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -83,6 +82,8 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	}
 
 	// 3. Create PDF with letterhead
+	division := a.resolvePurchaseOrderDivision(po)
+	profile := companyDocumentProfile(division)
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.SetAutoPageBreak(true, 35) // Bottom margin: 35mm to avoid letterhead footer
 	pdf.SetTopMargin(50)           // Start content below letterhead header
@@ -90,19 +91,8 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	pdf.SetRightMargin(18)
 
 	// Set header function so letterhead appears on ALL pages
-	imgPath := a.letterheadImagePath()
 	pdf.SetHeaderFuncMode(func() {
-		fileInfo, err := os.Stat(imgPath)
-		if err == nil && fileInfo.Size() <= 10*1024*1024 { // 10MB max
-			opt := gofpdf.ImageOptions{ImageType: "PNG", ReadDpi: true}
-			pdf.ImageOptions(imgPath, 0, 0, 210, 297, false, opt, 0, "")
-		} else if err == nil && fileInfo.Size() > 10*1024*1024 {
-			log.Printf("⚠️ Letterhead file too large (%d bytes), using fallback", fileInfo.Size())
-			addLetterheadFallback(pdf)
-		} else {
-			// Fallback: simple text header if image not found
-			addLetterheadFallback(pdf)
-		}
+		a.applyLetterheadForDivision(pdf, profile.Division)
 	}, true) // true = allow content to overlap the header area
 
 	// ========================================================================
@@ -156,7 +146,7 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 		pdf.Ln(5)
 	}
 
-	// RIGHT BLOCK: DELIVER TO (PH Trading warehouse)
+	// RIGHT BLOCK: DELIVER TO
 	rightX := 110.0
 	pdf.SetXY(rightX, y)
 	pdf.SetFont("Helvetica", "B", 10)
@@ -166,19 +156,22 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 
 	pdf.SetXY(rightX, pdf.GetY())
 	pdf.SetFont("Helvetica", "B", 11)
-	pdf.Cell(0, 5, "PH TRADING W.L.L")
+	pdf.Cell(0, 5, sanitizeForPDF(profile.LegalName))
 	pdf.Ln(6)
 
-	pdf.SetXY(rightX, pdf.GetY())
 	pdf.SetFont("Helvetica", "", 9)
 	pdf.SetTextColor(60, 60, 60)
-	pdf.MultiCell(82, 5, "Building 325, Road 1704, Block 117\nSitra Industrial Area\nManama, Kingdom of Bahrain", "", "", false)
+	for _, line := range profile.AddressLines {
+		pdf.SetXY(rightX, pdf.GetY())
+		pdf.Cell(82, 5, sanitizeForPDF(line))
+		pdf.Ln(5)
+	}
 
 	pdf.SetXY(rightX, pdf.GetY()+2)
 	pdf.SetFont("Helvetica", "B", 9)
 	pdf.Cell(20, 5, "TRN:")
 	pdf.SetFont("Helvetica", "", 9)
-	pdf.Cell(0, 5, "200193538")
+	pdf.Cell(0, 5, sanitizeForPDF(profile.VATNumber))
 	pdf.Ln(8)
 
 	// ========================================================================
@@ -419,7 +412,7 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 		"Packaging: All items to be properly packaged for international shipping",
 		"Documentation: Invoice, packing list, and certificates to accompany shipment",
 		"Late Delivery: Supplier to notify buyer immediately of any delays",
-		"Partial Shipments: Subject to prior approval from PH Trading",
+		fmt.Sprintf("Partial Shipments: Subject to prior approval from %s", profile.Division),
 		"Dispute Resolution: Any disputes to be resolved per Bahrain Commercial Law",
 	}
 
@@ -518,25 +511,33 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	pdf.Cell(0, 5, "Al Salam Bank-Bahrain B.S.C.")
 	pdf.Ln(5)
 	pdf.SetFont("Helvetica", "", 8)
-	pdf.Cell(40, 4, "Account Name:")
-	pdf.Cell(0, 4, "PH TRADING WLL")
-	pdf.Ln(4)
-	pdf.Cell(40, 4, "Account Number:")
-	pdf.Cell(0, 4, "5050016804")
-	pdf.Ln(4)
-	pdf.Cell(40, 4, "IBAN:")
-	pdf.Cell(0, 4, "BH79ASBB00005050016804")
-	pdf.Ln(4)
-	pdf.Cell(40, 4, "SWIFT:")
-	pdf.Cell(0, 4, "ASBBBHBM")
-	pdf.Ln(10)
+	if len(profile.BankDetails) > 0 {
+		for _, bankLine := range profile.BankDetails {
+			pdf.MultiCell(0, 4, sanitizeForPDF(bankLine), "", "L", false)
+			pdf.Ln(1)
+		}
+		pdf.Ln(6)
+	} else {
+		pdf.Cell(40, 4, "Account Name:")
+		pdf.Cell(0, 4, "PH TRADING WLL")
+		pdf.Ln(4)
+		pdf.Cell(40, 4, "Account Number:")
+		pdf.Cell(0, 4, "5050016804")
+		pdf.Ln(4)
+		pdf.Cell(40, 4, "IBAN:")
+		pdf.Cell(0, 4, "BH79ASBB00005050016804")
+		pdf.Ln(4)
+		pdf.Cell(40, 4, "SWIFT:")
+		pdf.Cell(0, 4, "ASBBBHBM")
+		pdf.Ln(10)
+	}
 
 	// ========================================================================
 	// SIGNATURE SECTION
 	// ========================================================================
 	pdf.SetFont("Helvetica", "B", 10)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(0, 6, "For PH Trading W.L.L")
+	pdf.Cell(0, 6, fmt.Sprintf("For %s", sanitizeForPDF(profile.LegalName)))
 	pdf.Ln(6)
 
 	pdf.SetFont("Helvetica", "", 9)
@@ -564,7 +565,7 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 		pdf.SetY(270) // Just above the letterhead footer area
 		pdf.SetFont("Helvetica", "I", 7)
 		pdf.SetTextColor(160, 160, 160)
-		pdf.CellFormat(0, 5, fmt.Sprintf("Purchase Order %s  |  Page %d of %d  |  PH Trading W.L.L.", po.PONumber, i, totalPages), "", 0, "C", false, 0, "")
+		pdf.CellFormat(0, 5, fmt.Sprintf("Purchase Order %s  |  Page %d of %d  |  %s", po.PONumber, i, totalPages, sanitizeForPDF(profile.LegalName)), "", 0, "C", false, 0, "")
 	}
 
 	// ========================================================================

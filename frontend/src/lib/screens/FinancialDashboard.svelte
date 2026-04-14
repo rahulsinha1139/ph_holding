@@ -496,7 +496,7 @@
                     {:else if selectedYear === 2023}
                         <strong>Note:</strong> FY2023 included the EWA smart meter mega-contract (93% of revenue). This was a one-time project, not recurring business.
                     {:else if selectedYear === 2026}
-                        <strong>Note:</strong> FY2026 estimates based on active offer pipeline and bank statement data. Revenue projections use 40% pipeline conversion rate.
+                        <strong>Note:</strong> FY2026 uses live finance-ledger data where available. Revenue and receivables remain invoice-based, while cash position can reflect imported bank statements.
                     {:else}
                         <strong>Note:</strong> Comparing {data.period} to {data.prior_year}. All figures in BHD.
                     {/if}

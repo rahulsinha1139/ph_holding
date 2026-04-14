@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { createEventDispatcher, onMount } from "svelte";
   import { fade } from "svelte/transition";
   import { toast } from "$lib/stores/toasts";
+  import { permissions } from "$lib/stores/authContext";
   import WabiSpinner from "$lib/components/ui/WabiSpinner.svelte";
   import {
     UpdateSettings,
@@ -37,6 +38,7 @@
 
   // Props
   export let embedded = false;
+  const dispatch = createEventDispatcher();
 
   // State
   let loading = true;
@@ -110,8 +112,17 @@
   let savingRate = false;
 
   $: isAdmin = userRole === 'admin';
+  function hasPermission(permission: string): boolean {
+    if (!$permissions || $permissions.length === 0) return false;
+    if ($permissions.includes('*')) return true;
+    if ($permissions.includes(permission)) return true;
+    const [resource] = permission.split(':');
+    return $permissions.includes(`${resource}:*`);
+  }
+  $: canOpenDeployment = hasPermission('settings:update');
   $: sections = [
     { id: "general", label: "General" },
+    ...(canOpenDeployment ? [{ id: "deployment", label: "Deployment" }] : []),
     { id: "folders", label: "Directories" },
     { id: "ai", label: "AI & Intelligence" },
     { id: "business", label: "Business Rules" },
@@ -120,6 +131,10 @@
     ...(isAdmin ? [{ id: "reports", label: "Financial Reports" }] : []),
     ...(isAdmin ? [{ id: "sync", label: "Supabase Sync" }] : []),
   ];
+
+  function openDeploymentWorkspace() {
+    dispatch("navigate", { screen: "deployment" });
+  }
 
   async function importTallyAll() {
     if (importYear < 2000 || importYear > 2030) {
@@ -542,9 +557,21 @@
       {:else if activeSection === "general"}
         <div class="section" in:fade>
           <h3>General Identity</h3>
+          {#if canOpenDeployment}
+            <div class="deployment-card">
+              <div class="deployment-card-copy">
+                <h4>Deployment Workspace</h4>
+                <p>Open rollout and production-support controls directly from Settings.</p>
+              </div>
+              <button class="btn-primary" on:click={openDeploymentWorkspace}>
+                Open Deployment Workspace
+              </button>
+            </div>
+          {/if}
           <div class="form-group">
-            <label>Company Name</label>
+            <label for="settings-company-name">Company Name</label>
             <input
+              id="settings-company-name"
               type="text"
               bind:value={settings.companyName}
               class="input-clean"
@@ -552,8 +579,8 @@
           </div>
           <div class="row">
             <div class="form-group half">
-              <label>Base Currency</label>
-              <select bind:value={settings.currency} class="input-clean">
+              <label for="settings-base-currency">Base Currency</label>
+              <select id="settings-base-currency" bind:value={settings.currency} class="input-clean">
                 <option value="BHD">BHD (Bahraini Dinar)</option>
                 <option value="USD">USD (US Dollar)</option>
                 <option value="EUR">EUR (Euro)</option>
@@ -600,9 +627,10 @@
           {#each Object.keys(settings.folders) as key}
             {#if key !== "extra_paths"}
               <div class="form-group">
-                <label>{key.replace("_path", "").toUpperCase()}</label>
+                <label for={`settings-folder-${key}`}>{key.replace("_path", "").toUpperCase()}</label>
                 <div class="input-group">
                   <input
+                    id={`settings-folder-${key}`}
                     type="text"
                     bind:value={settings.folders[key]}
                     class="input-clean"
@@ -621,11 +649,12 @@
           <h3>Artificial Intelligence</h3>
 
           <div class="form-group">
-            <label>AIML API Key <span style="font-size:0.8em; color: var(--accent);">(Butler primary — Grok 4)</span></label>
+            <label for="settings-aiml-key">AIML API Key <span style="font-size:0.8em; color: var(--accent);">(Butler primary — Grok 4)</span></label>
             <p style="font-size:0.8em; color: var(--text-muted); margin: 2px 0 6px;">Powers Butler AI chat with Grok's large context window. Get key at api.aimlapi.com</p>
             <div class="input-group">
               {#if showKeyInput}
                 <input
+                  id="settings-aiml-key"
                   type="text"
                   bind:value={settings.apiKeys.aimlapi_key}
                   class="input-clean"
@@ -633,6 +662,7 @@
                 />
               {:else}
                 <input
+                  id="settings-aiml-key"
                   type="password"
                   bind:value={settings.apiKeys.aimlapi_key}
                   class="input-clean"
@@ -647,9 +677,9 @@
           </div>
 
           <div class="form-group">
-            <label>Grok Model</label>
+            <label for="settings-grok-model">Grok Model</label>
             <p style="font-size:0.8em; color: var(--text-muted); margin: 2px 0 6px;">Select the backend model for Butler chat. It will fallback automatically if the model is unavailable.</p>
-            <select class="input-clean" bind:value={settings.apiKeys.aiml_model}>
+            <select id="settings-grok-model" class="input-clean" bind:value={settings.apiKeys.aiml_model}>
               <option value="grok-4.1">grok-4.1</option>
               <option value="grok-4">grok-4</option>
               <option value="grok-2-vision-1212">grok-2-vision-1212</option>
@@ -659,11 +689,12 @@
           </div>
 
           <div class="form-group" style="margin-top: 16px;">
-            <label>Mistral API Key <span style="font-size:0.8em; color: var(--text-muted);">(OCR/document analysis + fallback chat)</span></label>
+            <label for="settings-mistral-key">Mistral API Key <span style="font-size:0.8em; color: var(--text-muted);">(OCR/document analysis + fallback chat)</span></label>
             <p style="font-size:0.8em; color: var(--text-muted); margin: 2px 0 6px;">Used for "Analyze with Butler" document OCR. Falls back to this if AIML key not set.</p>
             <div class="input-group">
               {#if showMistralKey}
                 <input
+                  id="settings-mistral-key"
                   type="text"
                   bind:value={settings.apiKeys.mistral_key}
                   class="input-clean"
@@ -671,6 +702,7 @@
                 />
               {:else}
                 <input
+                  id="settings-mistral-key"
                   type="password"
                   bind:value={settings.apiKeys.mistral_key}
                   class="input-clean"
@@ -718,16 +750,18 @@
           <h3>Financial Rules</h3>
           <div class="row">
             <div class="form-group half">
-              <label>Default Margin (%)</label>
+              <label for="settings-default-margin">Default Margin (%)</label>
               <input
+                id="settings-default-margin"
                 type="number"
                 bind:value={settings.business.default_margin}
                 class="input-clean"
               />
             </div>
             <div class="form-group half">
-              <label>VAT Rate (%)</label>
+              <label for="settings-vat-rate">VAT Rate (%)</label>
               <input
+                id="settings-vat-rate"
                 type="number"
                 bind:value={settings.business.vat_rate}
                 class="input-clean"
@@ -796,8 +830,9 @@
             <div class="edit-rate-form" style="margin-top: 1.5rem; padding: 1rem; background: var(--surface-elevated); border-radius: 8px;">
               <h4>Update {editingCurrency} Rate</h4>
               <div class="form-group">
-                <label>New Rate (1 {editingCurrency} = ? BHD)</label>
+                <label for="settings-new-rate">New Rate (1 {editingCurrency} = ? BHD)</label>
                 <input
+                  id="settings-new-rate"
                   type="number"
                   step="0.0001"
                   min="0.0001"
@@ -807,8 +842,9 @@
                 />
               </div>
               <div class="form-group">
-                <label>Notes (optional)</label>
+                <label for="settings-rate-notes">Notes (optional)</label>
                 <input
+                  id="settings-rate-notes"
                   type="text"
                   bind:value={rateNotes}
                   class="input-clean"
@@ -843,8 +879,8 @@
           <p class="hint">Import historical data from Tally Excel exports. Files are loaded from Data_for_database/Tally_data directory.</p>
 
           <div class="form-group">
-            <label>Import Year</label>
-            <input type="number" bind:value={importYear} class="input-clean" min="2000" max="2030" />
+            <label for="settings-import-year">Import Year</label>
+            <input id="settings-import-year" type="number" bind:value={importYear} class="input-clean" min="2000" max="2030" />
           </div>
 
           <div class="import-actions">
@@ -896,15 +932,15 @@
           <p class="hint">Generate Profit & Loss and Balance Sheet reports from imported Tally data.</p>
 
           <div class="form-group">
-            <label>Report Year</label>
+            <label for="settings-report-year">Report Year</label>
             {#if availableYears.length > 0}
-              <select bind:value={reportYear} class="input-clean">
+              <select id="settings-report-year" bind:value={reportYear} class="input-clean">
                 {#each availableYears as yr}
                   <option value={yr}>{yr}</option>
                 {/each}
               </select>
             {:else}
-              <input type="number" bind:value={reportYear} class="input-clean" min="2000" max="2030" />
+              <input id="settings-report-year" type="number" bind:value={reportYear} class="input-clean" min="2000" max="2030" />
               <p class="hint-small">No imported data found. Import Tally data first.</p>
             {/if}
           </div>
@@ -1044,37 +1080,37 @@
           <p class="hint">Configure remote database sync via Supabase for multi-device access.</p>
 
           <div class="form-group">
-            <label>Supabase URL</label>
-            <input type="text" bind:value={supabaseForm.url} class="input-clean" placeholder="https://xxxx.supabase.co" />
+            <label for="settings-supabase-url">Supabase URL</label>
+            <input id="settings-supabase-url" type="text" bind:value={supabaseForm.url} class="input-clean" placeholder="https://xxxx.supabase.co" />
           </div>
           <div class="form-group">
-            <label>Anon Key</label>
-            <input type="password" bind:value={supabaseForm.anonKey} class="input-clean" placeholder="eyJ..." />
+            <label for="settings-supabase-anon-key">Anon Key</label>
+            <input id="settings-supabase-anon-key" type="password" bind:value={supabaseForm.anonKey} class="input-clean" placeholder="eyJ..." />
           </div>
           <div class="form-group">
-            <label>Service Key</label>
-            <input type="password" bind:value={supabaseForm.serviceKey} class="input-clean" placeholder="eyJ..." />
+            <label for="settings-supabase-service-key">Service Key</label>
+            <input id="settings-supabase-service-key" type="password" bind:value={supabaseForm.serviceKey} class="input-clean" placeholder="eyJ..." />
           </div>
 
           <h3>Database Connection</h3>
           <div class="row">
             <div class="form-group half">
-              <label>DB Host</label>
-              <input type="text" bind:value={supabaseForm.dbHost} class="input-clean" placeholder="db.xxxx.supabase.co" />
+              <label for="settings-db-host">DB Host</label>
+              <input id="settings-db-host" type="text" bind:value={supabaseForm.dbHost} class="input-clean" placeholder="db.xxxx.supabase.co" />
             </div>
             <div class="form-group half">
-              <label>DB Port</label>
-              <input type="text" bind:value={supabaseForm.dbPort} class="input-clean" />
+              <label for="settings-db-port">DB Port</label>
+              <input id="settings-db-port" type="text" bind:value={supabaseForm.dbPort} class="input-clean" />
             </div>
           </div>
           <div class="row">
             <div class="form-group half">
-              <label>DB Name</label>
-              <input type="text" bind:value={supabaseForm.dbName} class="input-clean" placeholder="postgres" />
+              <label for="settings-db-name">DB Name</label>
+              <input id="settings-db-name" type="text" bind:value={supabaseForm.dbName} class="input-clean" placeholder="postgres" />
             </div>
             <div class="form-group half">
-              <label>DB Password</label>
-              <input type="password" bind:value={supabaseForm.dbPassword} class="input-clean" placeholder="Database password" />
+              <label for="settings-db-password">DB Password</label>
+              <input id="settings-db-password" type="password" bind:value={supabaseForm.dbPassword} class="input-clean" placeholder="Database password" />
             </div>
           </div>
 
@@ -1264,6 +1300,34 @@
             </div>
           {/if}
         </div>
+      {:else if activeSection === "deployment"}
+        <div class="section" in:fade>
+          <h3>Deployment Workspace</h3>
+          <p class="hint">Keep rollout checks and production support controls under Settings, where admin tools belong.</p>
+
+          <div class="deployment-card">
+            <div class="deployment-card-copy">
+              <h4>Admin Rollout Control</h4>
+              <p>Open the deployment workspace to review rollout readiness, repair sync queues, inspect pilot issues, and export support bundles.</p>
+            </div>
+            <button class="btn-primary" on:click={openDeploymentWorkspace}>
+              Open Deployment Workspace
+            </button>
+          </div>
+
+          <div class="result-stats">
+            <span>Sync Online: {syncHealth?.is_online ? 'Yes' : 'No'}</span>
+            <span>Pending Ops: {rolloutStatus?.pending_collaborative_ops ?? 0}</span>
+            <span>Failed Ops: {rolloutStatus?.failed_collaborative_ops ?? 0}</span>
+            <span>Dead Letters: {rolloutStatus?.dead_letter_collaborative_ops ?? 0}</span>
+            <span>Pilot Issues: {pilotSummary?.employees_with_issues ?? 0}</span>
+            <span>Backups: {syncHealth?.backup_count ?? 0}</span>
+          </div>
+
+          <div class="info-box deployment-note">
+            <p><strong>Why it moved:</strong> deployment is an internal admin workspace, not an everyday navigation area. Putting it under Settings keeps the sidebar focused on business operations while preserving direct admin access.</p>
+          </div>
+        </div>
       {/if}
     </main>
   </div>
@@ -1314,6 +1378,11 @@
     display: flex;
     flex-direction: column;
     justify-content: space-between;
+    min-height: 0;
+  }
+  .sidebar nav {
+    overflow-y: auto;
+    padding-right: 4px;
   }
   .nav-item {
     display: block;
@@ -1555,6 +1624,37 @@
     gap: 16px;
     font-size: 13px;
     color: var(--steel, #86868B);
+  }
+  .deployment-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px 20px;
+    margin: 16px 0;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(248, 248, 250, 0.95), rgba(255, 255, 255, 0.98));
+  }
+  .deployment-card-copy h4 {
+    margin: 0 0 6px;
+    font-size: 15px;
+    color: var(--onyx, #1D1D1F);
+  }
+  .deployment-card-copy p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--steel, #86868B);
+  }
+  .deployment-note {
+    margin-top: 16px;
+  }
+  .info-box {
+    padding: 16px;
+    background: var(--surface-elevated, #FAFAFA);
+    border-radius: 12px;
+    border-left: 3px solid var(--onyx, #1D1D1F);
   }
   .rollout-actions {
     display: flex;
@@ -1798,6 +1898,10 @@
     .pilot-readiness-row,
     .rollout-ops-row {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .deployment-card {
+      flex-direction: column;
+      align-items: flex-start;
     }
   }
 </style>

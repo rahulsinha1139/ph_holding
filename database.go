@@ -268,6 +268,7 @@ type Offer struct {
 	DiscountPercent   float64 `json:"discount_percent"`
 	QuoteType         string  `gorm:"size:50;default:'Quotation'" json:"quote_type"` // "Quotation" or "Budgetary Quote"
 	VatRate           float64 `gorm:"default:10" json:"vat_rate"`                    // VAT percentage (default 10%)
+	Division          string  `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	// Additional costing header fields
 	CocCoo          string `gorm:"size:50" json:"coc_coo"`                    // Certificate of Conformity/Country of Origin
@@ -340,6 +341,7 @@ type Opportunity struct {
 	CustomerName  string `gorm:"index;size:255" json:"customer_name"`
 	CustomerGrade string `gorm:"size:10" json:"customer_grade"` // Grade at time of opportunity (A/B/C)
 	Salesperson   string `gorm:"index;size:100" json:"salesperson"`
+	Division      string `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	// Pipeline Identification (from canonical seed)
 	Year           int    `gorm:"index" json:"year"`                     // Pipeline year (2024, 2025, 2026)
@@ -829,6 +831,7 @@ type CreditNote struct {
 	VATPercent       float64          `json:"vat_percent"`
 	GrandTotalBHD    float64          `gorm:"type:decimal(15,3)" json:"grand_total_bhd"`
 	Status           string           `gorm:"index;size:50;default:'Draft'" json:"status"` // Draft, Issued, Applied
+	Division         string           `gorm:"size:100;default:'PH Trading'" json:"division"`
 	AppliedAt        *time.Time       `json:"applied_at"`
 	CreditNoteHash   string           `gorm:"size:64" json:"credit_note_hash"`
 	Items            []CreditNoteItem `gorm:"foreignKey:CreditNoteID" json:"items"`
@@ -1003,6 +1006,7 @@ type Payment struct {
 	JournalEntryID string `gorm:"index;size:36" json:"journal_entry_id"` // Link to auto-generated GL entry
 	BankAccountID  string `gorm:"index;size:36" json:"bank_account_id"`  // Bank account for reconciliation
 	Reference      string `gorm:"size:100" json:"reference"`             // Payment reference (cheque no, transfer ref)
+	Division       string `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	// P1 Fix: Audit fields
 	UpdatedBy string `json:"updated_by"`
@@ -1425,6 +1429,8 @@ type PurchaseOrder struct {
 	// P1 Fix: Audit fields
 	UpdatedBy string `json:"updated_by"`
 
+	Division string `gorm:"size:100;default:'PH Trading'" json:"division"`
+
 	// Relationships
 	Items []PurchaseOrderItem `gorm:"foreignKey:PurchaseOrderID" json:"items,omitempty"`
 }
@@ -1560,6 +1566,7 @@ type SupplierInvoice struct {
 	// OCR Metadata
 	OCRDocumentID string  `json:"ocr_document_id"` // Link to OCR scan
 	OCRConfidence float64 `json:"ocr_confidence"`
+	Division      string  `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	// Discrepancy tracking
 	DiscrepancyReason string `gorm:"type:varchar(2000)" json:"discrepancy_reason"`
@@ -1650,6 +1657,7 @@ type SupplierPayment struct {
 
 	// P1 Fix: Audit field (DeletedAt already in Base for soft delete)
 	UpdatedBy string `json:"updated_by"`
+	Division  string `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	// Display fields (populated from linked invoice for UI display)
 	SupplierName  string `gorm:"column:supplier_name;size:255" json:"supplier_name"`
@@ -1821,6 +1829,8 @@ type BankStatement struct {
 	ImportedFrom  string  `gorm:"size:500" json:"imported_from"`
 	ImportMethod  string  `gorm:"size:20" json:"import_method"` // PDF_OCR, CSV, Manual
 	OCRConfidence float64 `json:"ocr_confidence"`
+	Notes         string  `gorm:"type:text" json:"notes"`
+	Division      string  `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	// Verification
 	BalanceVerified   bool    `gorm:"default:false" json:"balance_verified"`
@@ -1910,6 +1920,7 @@ func (BankCashBalance) TableName() string { return "bank_cash_balances" }
 type BankExpenseEntry struct {
 	Base
 	BankStatementLineID string    `gorm:"index;size:36" json:"bank_statement_line_id"`
+	Division            string    `gorm:"size:100;default:'PH Trading'" json:"division"`
 	ExpenseDate         time.Time `json:"expense_date"`
 	Description         string    `gorm:"size:500" json:"description"`
 	Category            string    `gorm:"size:50" json:"category"` // BANK_FEE, SWIFT_CHARGE, VAT, BG_FEE, OTHER

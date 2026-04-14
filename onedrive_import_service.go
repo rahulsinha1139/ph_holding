@@ -124,6 +124,18 @@ type parsedOneDriveCosting struct {
 	OptionName string
 }
 
+func oneDriveOpportunitySource(year int) string {
+	if year >= 2000 && year <= 2100 {
+		return fmt.Sprintf("%d_onedrive", year)
+	}
+	return "onedrive_import"
+}
+
+func isOneDriveOpportunitySource(source string) bool {
+	source = strings.ToLower(strings.TrimSpace(source))
+	return source == "onedrive_import" || strings.HasSuffix(source, "_onedrive")
+}
+
 // ============================================================================
 // STOP-TOKEN SET — tokens stripped from folder names before customer matching
 // ============================================================================
@@ -1641,7 +1653,7 @@ func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 	opportunity.OppNumber = folderMeta.OppNumber
 	opportunity.FolderName = deal.FolderName
 	opportunity.Title = folderMeta.Title
-	opportunity.Source = "2026_onedrive"
+	opportunity.Source = oneDriveOpportunitySource(opportunity.Year)
 	opportunity.ProductType = deal.InstrumentType
 	opportunity.OfferDate = quotationDate
 	opportunity.PaymentTerms = paymentTerms

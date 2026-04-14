@@ -41,6 +41,7 @@ func (ExpenseVendor) TableName() string { return "expense_vendors" }
 type ExpenseEntry struct {
 	Base
 	EntryNumber        string     `gorm:"uniqueIndex;size:50" json:"entry_number"`
+	Division           string     `gorm:"size:100;default:'PH Trading'" json:"division"`
 	ExpenseDate        time.Time  `gorm:"index" json:"expense_date"`
 	DueDate            *time.Time `gorm:"index" json:"due_date"`
 	Description        string     `gorm:"type:text" json:"description"`
@@ -100,6 +101,7 @@ func (ExpenseAllocation) TableName() string { return "expense_allocations" }
 type RecurringExpense struct {
 	Base
 	Name             string     `gorm:"index;size:255" json:"name"`
+	Division         string     `gorm:"size:100;default:'PH Trading'" json:"division"`
 	Description      string     `gorm:"type:text" json:"description"`
 	CategoryID       string     `gorm:"index;size:36" json:"category_id"`
 	VendorID         *string    `gorm:"index;size:36" json:"vendor_id"`
@@ -172,6 +174,9 @@ func (a *App) EnsureExpenseFoundation() error {
 		}
 	}
 	a.addColumnIfNotExists("expense_entries", "payment_method", "TEXT")
+	a.addColumnIfNotExists("expense_entries", "division", "TEXT DEFAULT 'PH Trading'")
+	a.addColumnIfNotExists("recurring_expenses", "division", "TEXT DEFAULT 'PH Trading'")
+	a.addColumnIfNotExists("bank_expense_entries", "division", "TEXT DEFAULT 'PH Trading'")
 	if err := a.SeedCompanyBankAccounts(); err != nil {
 		return fmt.Errorf("failed to seed company bank accounts: %w", err)
 	}
@@ -252,6 +257,61 @@ func (a *App) CreateExpenseCategory(category ExpenseCategory) (ExpenseCategory, 
 	return category, nil
 }
 
+func (a *App) DeleteExpenseCategory(categoryID string) error {
+	if err := a.requireExpenseUpdate(); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	categoryID = strings.TrimSpace(categoryID)
+	if categoryID == "" {
+		return fmt.Errorf("expense category id is required")
+	}
+
+	var category ExpenseCategory
+	if err := a.db.First(&category, "id = ?", categoryID).Error; err != nil {
+		return fmt.Errorf("expense category not found: %w", err)
+	}
+
+	var entryCount int64
+	if err := a.db.Model(&ExpenseEntry{}).Where("category_id = ?", categoryID).Count(&entryCount).Error; err != nil {
+		return fmt.Errorf("failed to check expense category usage: %w", err)
+	}
+
+	var recurringCount int64
+	if err := a.db.Model(&RecurringExpense{}).Where("category_id = ?", categoryID).Count(&recurringCount).Error; err != nil {
+		return fmt.Errorf("failed to check recurring expense usage: %w", err)
+	}
+
+	if entryCount > 0 || recurringCount > 0 {
+		usageParts := make([]string, 0, 2)
+		if entryCount > 0 {
+			label := "expense entries"
+			if entryCount == 1 {
+				label = "expense entry"
+			}
+			usageParts = append(usageParts, fmt.Sprintf("%d %s", entryCount, label))
+		}
+		if recurringCount > 0 {
+			label := "recurring schedules"
+			if recurringCount == 1 {
+				label = "recurring schedule"
+			}
+			usageParts = append(usageParts, fmt.Sprintf("%d %s", recurringCount, label))
+		}
+		return fmt.Errorf("cannot delete expense category %q because it is used by %s", category.Name, strings.Join(usageParts, " and "))
+	}
+
+	if err := a.db.Delete(&ExpenseCategory{}, "id = ?", categoryID).Error; err != nil {
+		return fmt.Errorf("failed to delete expense category: %w", err)
+	}
+
+	a.emitExpenseEvent("expenses:updated", map[string]interface{}{"entity": "category", "action": "delete", "id": categoryID})
+	return nil
+}
+
 func (a *App) ListExpenseVendors(activeOnly bool) ([]ExpenseVendor, error) {
 	if err := a.requireExpenseView(); err != nil {
 		return nil, err
@@ -291,6 +351,61 @@ func (a *App) CreateExpenseVendor(vendor ExpenseVendor) (ExpenseVendor, error) {
 	return vendor, nil
 }
 
+func (a *App) DeleteExpenseVendor(vendorID string) error {
+	if err := a.requireExpenseUpdate(); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	vendorID = strings.TrimSpace(vendorID)
+	if vendorID == "" {
+		return fmt.Errorf("expense vendor id is required")
+	}
+
+	var vendor ExpenseVendor
+	if err := a.db.First(&vendor, "id = ?", vendorID).Error; err != nil {
+		return fmt.Errorf("expense vendor not found: %w", err)
+	}
+
+	var entryCount int64
+	if err := a.db.Model(&ExpenseEntry{}).Where("vendor_id = ?", vendorID).Count(&entryCount).Error; err != nil {
+		return fmt.Errorf("failed to check expense vendor usage: %w", err)
+	}
+
+	var recurringCount int64
+	if err := a.db.Model(&RecurringExpense{}).Where("vendor_id = ?", vendorID).Count(&recurringCount).Error; err != nil {
+		return fmt.Errorf("failed to check recurring vendor usage: %w", err)
+	}
+
+	if entryCount > 0 || recurringCount > 0 {
+		usageParts := make([]string, 0, 2)
+		if entryCount > 0 {
+			label := "expense entries"
+			if entryCount == 1 {
+				label = "expense entry"
+			}
+			usageParts = append(usageParts, fmt.Sprintf("%d %s", entryCount, label))
+		}
+		if recurringCount > 0 {
+			label := "recurring schedules"
+			if recurringCount == 1 {
+				label = "recurring schedule"
+			}
+			usageParts = append(usageParts, fmt.Sprintf("%d %s", recurringCount, label))
+		}
+		return fmt.Errorf("cannot delete expense vendor %q because it is used by %s", vendor.Name, strings.Join(usageParts, " and "))
+	}
+
+	if err := a.db.Delete(&ExpenseVendor{}, "id = ?", vendorID).Error; err != nil {
+		return fmt.Errorf("failed to delete expense vendor: %w", err)
+	}
+
+	a.emitExpenseEvent("expenses:updated", map[string]interface{}{"entity": "vendor", "action": "delete", "id": vendorID})
+	return nil
+}
+
 func (a *App) CreateExpenseEntry(entry ExpenseEntry) (ExpenseEntry, error) {
 	if err := a.requireExpenseCreate(); err != nil {
 		return ExpenseEntry{}, err
@@ -310,6 +425,39 @@ func (a *App) CreateExpenseEntry(entry ExpenseEntry) (ExpenseEntry, error) {
 	a.recordExpenseApproval(prepared.ID, "created", "")
 	a.emitExpenseEvent("expenses:updated", map[string]interface{}{"entity": "entry", "action": "create", "id": prepared.ID})
 	return a.decorateExpenseEntry(prepared), nil
+}
+
+func (a *App) DeleteExpenseEntry(entryID string) error {
+	if err := a.requireExpenseUpdate(); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	entryID = strings.TrimSpace(entryID)
+	if entryID == "" {
+		return fmt.Errorf("expense entry id is required")
+	}
+
+	var entry ExpenseEntry
+	if err := a.db.First(&entry, "id = ?", entryID).Error; err != nil {
+		return fmt.Errorf("expense entry not found: %w", err)
+	}
+
+	if entry.Status == "posted" || entry.Status == "paid" || entry.PaymentStatus == "paid" {
+		return fmt.Errorf("posted or paid expenses cannot be deleted")
+	}
+	if entry.JournalEntryID != nil && strings.TrimSpace(*entry.JournalEntryID) != "" {
+		return fmt.Errorf("posted expenses with journal entries cannot be deleted")
+	}
+
+	if err := a.db.Delete(&entry).Error; err != nil {
+		return fmt.Errorf("failed to delete expense entry: %w", err)
+	}
+
+	a.emitExpenseEvent("expenses:updated", map[string]interface{}{"entity": "entry", "action": "delete", "id": entry.ID})
+	return nil
 }
 
 func (a *App) ListExpenseEntries(status string, includePaid bool) ([]ExpenseEntry, error) {
@@ -504,6 +652,11 @@ func (a *App) MarkExpenseEntryPaid(entryID, paidAtISO, paymentReference, bankAcc
 	if err := a.db.First(&bankAccount, "id = ? AND is_active = ?", bankAccountID, true).Error; err != nil {
 		return ExpenseEntry{}, fmt.Errorf("bank account not found: %w", err)
 	}
+	bankDivision := normalizeDivisionName(bankAccount.Division)
+	entryDivision := normalizeDivisionName(entry.Division)
+	if entryDivision != bankDivision {
+		return ExpenseEntry{}, fmt.Errorf("expense belongs to %s but bank account belongs to %s", entryDivision, bankDivision)
+	}
 
 	updates := map[string]interface{}{
 		"status":            "paid",
@@ -512,6 +665,7 @@ func (a *App) MarkExpenseEntryPaid(entryID, paidAtISO, paymentReference, bankAcc
 		"payment_method":    paymentMethod,
 		"payment_reference": paymentReference,
 		"bank_account_id":   bankAccountID,
+		"division":          bankDivision,
 		"updated_at":        time.Now(),
 	}
 	if err := a.db.Model(&entry).Updates(updates).Error; err != nil {
@@ -524,6 +678,7 @@ func (a *App) MarkExpenseEntryPaid(entryID, paidAtISO, paymentReference, bankAcc
 	entry.PaymentMethod = paymentMethod
 	entry.PaymentReference = paymentReference
 	entry.BankAccountID = &bankAccountID
+	entry.Division = bankDivision
 	a.recordExpenseApproval(entry.ID, "paid", paymentReference)
 	a.emitExpenseEvent("expenses:updated", map[string]interface{}{"entity": "entry", "action": "paid", "id": entry.ID})
 	return a.decorateExpenseEntry(entry), nil
@@ -574,6 +729,7 @@ func (a *App) CreateRecurringExpense(item RecurringExpense) (RecurringExpense, e
 	if item.NextRunDate.IsZero() {
 		item.NextRunDate = time.Now()
 	}
+	item.Division = normalizeDivisionName(item.Division)
 	item.IsActive = true
 	item.CreatedBy = a.getCurrentUserID()
 
@@ -582,6 +738,32 @@ func (a *App) CreateRecurringExpense(item RecurringExpense) (RecurringExpense, e
 	}
 	a.emitExpenseEvent("expenses:updated", map[string]interface{}{"entity": "recurring", "action": "create", "id": item.ID})
 	return a.decorateRecurringExpense(item), nil
+}
+
+func (a *App) DeleteRecurringExpense(recurringID string) error {
+	if err := a.requireExpenseUpdate(); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	recurringID = strings.TrimSpace(recurringID)
+	if recurringID == "" {
+		return fmt.Errorf("recurring expense id is required")
+	}
+
+	var item RecurringExpense
+	if err := a.db.First(&item, "id = ?", recurringID).Error; err != nil {
+		return fmt.Errorf("recurring expense not found: %w", err)
+	}
+
+	if err := a.db.Delete(&item).Error; err != nil {
+		return fmt.Errorf("failed to delete recurring expense: %w", err)
+	}
+
+	a.emitExpenseEvent("expenses:updated", map[string]interface{}{"entity": "recurring", "action": "delete", "id": recurringID})
+	return nil
 }
 
 func (a *App) GenerateRecurringExpenses(cutoffISO string) ([]ExpenseEntry, error) {
@@ -691,6 +873,7 @@ func (a *App) CreateExpenseFromBankCandidate(bankExpenseID, categoryID string) (
 		Currency:           bankExpense.Currency,
 		Amount:             bankExpense.Amount,
 		VATAmount:          bankExpense.VATAmount,
+		Division:           normalizeDivisionName(bankExpense.Division),
 		Notes:              fmt.Sprintf("Imported from bank expense candidate (%s)", bankExpense.Category),
 	})
 	if err != nil {
@@ -727,6 +910,13 @@ func (a *App) prepareExpenseEntry(entry ExpenseEntry, preserveIdentity bool) (Ex
 	if entry.DueDate == nil {
 		entry.DueDate = &entry.ExpenseDate
 	}
+	if entry.OrderID != nil && strings.TrimSpace(*entry.OrderID) != "" && strings.TrimSpace(entry.Division) == "" {
+		entry.Division = a.resolveOrderDivision(*entry.OrderID)
+	}
+	if entry.BankAccountID != nil && strings.TrimSpace(*entry.BankAccountID) != "" && strings.TrimSpace(entry.Division) == "" {
+		entry.Division = a.resolveBankAccountDivision(*entry.BankAccountID)
+	}
+	entry.Division = normalizeDivisionName(entry.Division)
 	if entry.Status == "" {
 		entry.Status = "draft"
 	}
@@ -821,6 +1011,7 @@ func (a *App) createExpenseEntryFromRecurring(item RecurringExpense, runAt time.
 		ProjectID:     item.ProjectID,
 		CostCenter:    item.CostCenter,
 		Currency:      item.Currency,
+		Division:      normalizeDivisionName(item.Division),
 		Amount:        item.DefaultAmount,
 		VATAmount:     item.DefaultVATAmount,
 		Status:        "draft",

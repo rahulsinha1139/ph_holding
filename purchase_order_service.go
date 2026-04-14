@@ -98,6 +98,11 @@ func (a *App) normalizePurchaseOrder(po *PurchaseOrder) error {
 	if po.Currency == "BHD" {
 		po.ExchangeRate = 1
 	}
+	if strings.TrimSpace(po.Division) == "" {
+		po.Division = a.resolveOrderDivision(po.OrderID)
+	} else {
+		po.Division = normalizeDivisionName(po.Division)
+	}
 
 	if len(po.Items) == 0 {
 		return newError("ITEMS_REQUIRED", "At least one purchase order line item is required", "")
@@ -411,6 +416,7 @@ func (a *App) UpdatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
 		"total_foreign":     po.TotalForeign,
 		"total_bhd":         po.TotalBHD,
 		"payment_terms":     po.PaymentTerms,
+		"division":          po.Division,
 		"updated_at":        time.Now(),
 	}
 
@@ -777,6 +783,7 @@ func (a *App) CreatePOFromOrder(orderID string, supplierID string, itemIDs []str
 		ExchangeRate:     1.0,                // 1:1 for BHD
 		PaymentTerms:     "Net 30",           // Default, override from supplier if available
 		Status:           "Draft",
+		Division:         normalizeDivisionName(order.Division),
 		Items:            []PurchaseOrderItem{},
 	}
 

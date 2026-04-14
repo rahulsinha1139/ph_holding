@@ -1948,7 +1948,7 @@ func (a *App) UpdateCollaborativeTaskDueDate(taskID, dueDateISO string) error {
 }
 
 func (a *App) AddCollaborativeTaskComment(taskID, body string) (TaskComment, error) {
-	if err := a.requirePermission("tasks:update"); err != nil {
+	if err := a.requirePermission("tasks:view"); err != nil {
 		return TaskComment{}, err
 	}
 	if a.db == nil {

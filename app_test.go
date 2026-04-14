@@ -27,9 +27,9 @@ func setupTestApp(t *testing.T) *App {
 	// Use shared cache with unique name per test (prevents cross-test contamination and db.Begin() issues)
 	dbName := strings.ReplaceAll(t.Name(), "/", "_")
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger:                                   logger.Default.LogMode(logger.Silent),
 		DisableForeignKeyConstraintWhenMigrating: true,
-		SkipDefaultTransaction: true,
+		SkipDefaultTransaction:                   true,
 	})
 	require.NoError(t, err, "Failed to create in-memory database")
 
@@ -71,11 +71,11 @@ func setupTestApp(t *testing.T) *App {
 
 	// Create app with test database
 	app := &App{
-		db:               db,
-		cache:            NewCache(),
-		startupImporting: false,
+		db:                     db,
+		cache:                  NewCache(),
+		startupImporting:       false,
 		startupImportStartTime: time.Now(),
-		currentUserID:    "test-user",
+		currentUserID:          "test-user",
 		currentUser: &User{
 			Base:     Base{ID: "test-user"},
 			Username: "test-admin",
@@ -88,7 +88,26 @@ func setupTestApp(t *testing.T) *App {
 		},
 	}
 
+	alignTestAppWithCurrentWorkflow(t, app)
+
 	return app
+}
+
+func alignTestAppWithCurrentWorkflow(t *testing.T, app *App) {
+	t.Helper()
+
+	require.NoError(t, app.db.AutoMigrate(
+		&Role{},
+		&User{},
+		&Setting{},
+		&LicenseKey{},
+		&ChartOfAccount{},
+		&CompanyBankAccount{},
+		&Offer{},
+		&OfferItem{},
+		&Opportunity{},
+	))
+	require.NoError(t, app.ensureCriticalDeploymentFoundations())
 }
 
 // seedTestCustomer creates a test customer and returns its ID
@@ -329,7 +348,7 @@ func TestListOrders(t *testing.T) {
 		customerID := seedTestCustomer(t, app.db, "Test Customer")
 
 		// Create orders with different dates
-		pastDate := time.Now().AddDate(0, 0, -10) // 10 days ago
+		pastDate := time.Now().AddDate(0, 0, -10)  // 10 days ago
 		futureDate := time.Now().AddDate(0, 0, 10) // 10 days from now
 
 		order1 := Order{
@@ -1014,6 +1033,27 @@ func TestGetDashboardStats(t *testing.T) {
 		require.Equal(t, 2500.0, stats.OutstandingAR, "Outstanding AR should be 2500 BHD")
 	})
 
+	t.Run("should fallback to uninvoiced active orders when invoice ar is zero", func(t *testing.T) {
+		app := setupTestApp(t)
+		customerID := seedTestCustomer(t, app.db, "Test Customer")
+
+		order := Order{
+			Base:          Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+			OrderNumber:   "ORD-AR-001",
+			CustomerID:    customerID,
+			CustomerName:  "Test Customer",
+			OrderDate:     time.Now(),
+			Status:        "Processing",
+			GrandTotalBHD: 1750.0,
+		}
+		require.NoError(t, app.db.Create(&order).Error)
+
+		stats, err := app.GetDashboardStats()
+		require.NoError(t, err)
+		require.Equal(t, 1750.0, stats.OutstandingAR, "Outstanding AR should fallback to uninvoiced active order value")
+		require.Equal(t, 1, stats.PendingInvoices, "Pending invoices should reflect orders awaiting invoicing when no invoice AR exists")
+	})
+
 	t.Run("should count orders by status", func(t *testing.T) {
 		app := setupTestApp(t)
 		customerID := seedTestCustomer(t, app.db, "Test Customer")
@@ -1098,4 +1138,82 @@ func TestGetDashboardStats(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 1, stats2.ActiveCustomers, "Stats should reflect new customer")
 	})
+}
+
+func TestRouteToBankStatementHonorsExplicitBankAccountSelection(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&BankStatement{}, &BankStatementLine{}))
+
+	kuwaitAccount := CompanyBankAccount{
+		ID:            "bank-kfh-test",
+		BankName:      "Kuwait Finance House",
+		AccountName:   "PH Trading WLL",
+		AccountNumber: "2000000410700002",
+		Currency:      "BHD",
+		IsActive:      true,
+		DisplayOrder:  10,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	otherAccount := CompanyBankAccount{
+		ID:            "bank-other-test",
+		BankName:      "National Bank of Bahrain BSC",
+		AccountName:   "PH Trading WLL",
+		AccountNumber: "99570076",
+		Currency:      "BHD",
+		IsActive:      true,
+		DisplayOrder:  11,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	require.NoError(t, app.db.Create(&kuwaitAccount).Error)
+	require.NoError(t, app.db.Create(&otherAccount).Error)
+
+	statementID, err := app.routeToBankStatement(map[string]interface{}{
+		"bank_account_id": kuwaitAccount.ID,
+		"bank_name":       "KFH",
+		"account_number":  "2000000410700002",
+		"period_start":    "2026-01-01",
+		"period_end":      "2026-01-31",
+		"opening_balance": 25709.210,
+		"closing_balance": 56753.716,
+		"currency":        "BHD",
+		"line_items":      []interface{}{},
+	}, "kfh-test.pdf", 0.98)
+	require.NoError(t, err)
+	require.NotEmpty(t, statementID)
+
+	var stmt BankStatement
+	require.NoError(t, app.db.First(&stmt, "id = ?", statementID).Error)
+	require.Equal(t, kuwaitAccount.ID, stmt.BankAccountID)
+}
+
+func TestRouteToBankStatementDoesNotFallbackToFirstActiveAccount(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&BankStatement{}, &BankStatementLine{}))
+
+	require.NoError(t, app.db.Create(&CompanyBankAccount{
+		ID:            "bank-only-test",
+		BankName:      "National Bank of Bahrain BSC",
+		AccountName:   "PH Trading WLL",
+		AccountNumber: "99570076",
+		Currency:      "BHD",
+		IsActive:      true,
+		DisplayOrder:  12,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}).Error)
+
+	_, err := app.routeToBankStatement(map[string]interface{}{
+		"bank_name":       "Kuwait Finance House",
+		"account_number":  "2000000410700002",
+		"period_start":    "2026-01-01",
+		"period_end":      "2026-01-31",
+		"opening_balance": 25709.210,
+		"closing_balance": 56753.716,
+		"currency":        "BHD",
+		"line_items":      []interface{}{},
+	}, "kfh-unmatched.pdf", 0.98)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "could not match this statement to an active bank account")
 }

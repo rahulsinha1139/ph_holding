@@ -215,6 +215,52 @@ func TestCollaborativeTaskFlow_CreatesNotificationsAndSupportsReadLifecycle(t *t
 	require.NotNil(t, updated.ReadAt)
 }
 
+func TestAddCollaborativeTaskComment_AllowsViewOnlyCollaborator(t *testing.T) {
+	app := setupHybridFeatureTestApp(t)
+	seedCurrentAdminContext(t, app, "Rahul")
+
+	commenter := createEmployeeForTest(t, app, "Viewer User", "Viewer", "Operations", "Coordinator")
+	seedLicenseRecord(t, app, "PH-STF-VIEWR1", "staff", "Viewer User", false, "")
+	_, err := app.CreateEmployeeAccessLink(EmployeeAccessLink{
+		EmployeeID:   commenter.ID,
+		LicenseKey:   "PH-STF-VIEWR1",
+		UserID:       "viewer-user",
+		AccessStatus: "active",
+	})
+	require.NoError(t, err)
+
+	task, err := app.CreateCollaborativeTask(TaskItem{
+		Title:              "Check January bank imports",
+		Description:        "Review the imported OCR lines for January.",
+		TaskType:           "internal",
+		Priority:           "medium",
+		AssigneeEmployeeID: &commenter.ID,
+	})
+	require.NoError(t, err)
+
+	app.currentUserID = "viewer-user"
+	app.currentUser = &User{
+		Base:     Base{ID: "viewer-user"},
+		Username: "viewer",
+		RoleName: "staff",
+		Role: Role{
+			Name:        "staff",
+			DisplayName: "Staff",
+			Permissions: `["notifications:view","notifications:update","tasks:view"]`,
+		},
+	}
+
+	comment, err := app.AddCollaborativeTaskComment(task.ID, "I have reviewed this and added my notes.")
+	require.NoError(t, err)
+	require.Equal(t, commenter.ID, comment.EmployeeID)
+	require.Equal(t, "Viewer User", comment.EmployeeName)
+
+	var persisted TaskComment
+	require.NoError(t, app.db.First(&persisted, "id = ?", comment.ID).Error)
+	require.Equal(t, task.ID, persisted.TaskID)
+	require.Equal(t, "I have reviewed this and added my notes.", persisted.Body)
+}
+
 func TestReassignEmployeeLicenseAccess_DeactivatesPreviousLinkAndSyncsDisplayName(t *testing.T) {
 	app := setupHybridFeatureTestApp(t)
 	seedCurrentAdminContext(t, app, "Rahul")
@@ -453,6 +499,15 @@ func TestPayrollLifecycleAndCashFlowProjection_TracksPayrollLiabilityAndPayout(t
 	require.Equal(t, "posted", run.Status)
 	require.NotNil(t, run.JournalEntryID)
 
+	postedPayrollExpenses, err := app.ListExpenseEntries("posted", true)
+	require.NoError(t, err)
+	require.Len(t, postedPayrollExpenses, 1)
+	require.Equal(t, "payroll", postedPayrollExpenses[0].SourceType)
+	require.NotNil(t, postedPayrollExpenses[0].SourceRefID)
+	require.Equal(t, run.ID, *postedPayrollExpenses[0].SourceRefID)
+	require.Equal(t, "unpaid", postedPayrollExpenses[0].PaymentStatus)
+	require.InDelta(t, run.NetTotal, postedPayrollExpenses[0].TotalAmount, 0.001)
+
 	run, err = app.MarkPayrollRunPaid(run.ID, paymentDate.Format(time.RFC3339), "PAYRUN-001", "")
 	require.NoError(t, err)
 	require.Equal(t, "paid", run.Status)
@@ -460,6 +515,15 @@ func TestPayrollLifecycleAndCashFlowProjection_TracksPayrollLiabilityAndPayout(t
 	require.NotNil(t, run.PayoutJournalEntryID)
 	require.Len(t, run.Payouts, 1)
 	require.Equal(t, "paid", run.Payouts[0].Status)
+
+	paidPayrollExpenses, err := app.ListExpenseEntries("", true)
+	require.NoError(t, err)
+	require.Len(t, paidPayrollExpenses, 1)
+	require.Equal(t, "payroll", paidPayrollExpenses[0].SourceType)
+	require.Equal(t, "paid", paidPayrollExpenses[0].Status)
+	require.Equal(t, "paid", paidPayrollExpenses[0].PaymentStatus)
+	require.Equal(t, "PAYRUN-001", paidPayrollExpenses[0].PaymentReference)
+	require.NotNil(t, paidPayrollExpenses[0].PaidAt)
 
 	projectionAfterPayout, err := app.GetCashFlowProjection(10)
 	require.NoError(t, err)
@@ -485,10 +549,10 @@ func TestPilotReadinessAndExports_CaptureDeploymentState(t *testing.T) {
 	require.NoError(t, app.db.Create(&user).Error)
 
 	device := Device{
-		Base:        Base{ID: uuid.New().String(), CreatedBy: "test"},
-		DeviceName:  "Abhie Mac",
-		MachineID:   deviceHash,
-		Status:      "approved",
+		Base:          Base{ID: uuid.New().String(), CreatedBy: "test"},
+		DeviceName:    "Abhie Mac",
+		MachineID:     deviceHash,
+		Status:        "approved",
 		IsAdminDevice: true,
 	}
 	now := time.Now()

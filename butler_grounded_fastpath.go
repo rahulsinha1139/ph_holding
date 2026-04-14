@@ -12,6 +12,157 @@ func (a *App) tryGroundedCustomerFastPath(intent Intent, message string) (string
 	return a.tryGroundedCustomerFastPathWithHint(intent, message, "")
 }
 
+func (a *App) tryGroundedTaskCreationFastPath(intent Intent, message string) (string, bool) {
+	if a == nil || a.db == nil {
+		return "", false
+	}
+
+	assigneeRef, taskDetails, matched := parseGroundedTaskCreationRequest(intent, message)
+	if !matched {
+		return "", false
+	}
+	if strings.TrimSpace(assigneeRef) == "" || strings.TrimSpace(taskDetails) == "" {
+		return "I can create that task, but I need both the assignee and the task details.", true
+	}
+
+	assignee := a.resolveEmployeeReference(assigneeRef)
+	if assignee == nil || strings.TrimSpace(assignee.EntityID) == "" {
+		return fmt.Sprintf("I understood that as a task creation request, but I could not resolve %s to an active employee.", assigneeRef), true
+	}
+
+	title := strings.TrimSpace(taskDetails)
+	if title == "" {
+		return "I understood the assignee, but the task title/details were blank after parsing the request.", true
+	}
+
+	taskType := "general"
+	if strings.Contains(strings.ToLower(taskDetails), "follow up") || strings.Contains(strings.ToLower(taskDetails), "follow-up") {
+		taskType = "follow_up"
+	}
+
+	var customerID *string
+	if customerRef := inferCustomerReferenceFromQuery(Intent{}, strings.ToLower(taskDetails)); strings.TrimSpace(customerRef) != "" {
+		if customerIDs, _ := a.resolveCustomerScope(customerRef); len(customerIDs) > 0 {
+			customerID = &customerIDs[0]
+		}
+	}
+
+	assigneeID := assignee.EntityID
+	createdTask, err := a.CreateCollaborativeTask(TaskItem{
+		Title:              title,
+		Description:        taskDetails,
+		TaskType:           taskType,
+		Priority:           "medium",
+		AssigneeEmployeeID: &assigneeID,
+		CustomerID:         customerID,
+	})
+	if err != nil {
+		return fmt.Sprintf("I understood that as a task request for %s, but I could not create it: %v", assignee.DisplayName, err), true
+	}
+
+	var notificationCount int64
+	_ = a.db.Model(&Notification{}).
+		Where("employee_id = ? AND source_type = ? AND source_id = ? AND notification_type = ?", assigneeID, "task", createdTask.ID, "task").
+		Count(&notificationCount).Error
+
+	response := fmt.Sprintf("Created the task %q for %s.", createdTask.Title, assignee.DisplayName)
+	if notificationCount > 0 {
+		response += " The assignment notification was queued as well."
+	} else {
+		response += " The task is created, but I could not confirm the assignment notification row yet."
+	}
+	if createdTask.CustomerID != nil && strings.TrimSpace(*createdTask.CustomerID) != "" {
+		response += fmt.Sprintf(" I also linked it to customer %s.", *createdTask.CustomerID)
+	}
+
+	return response, true
+}
+
+func (a *App) tryGroundedWorkFastPath(intent Intent, message string) (string, bool) {
+	if a == nil || a.db == nil {
+		return "", false
+	}
+
+	q := strings.ToLower(strings.TrimSpace(message))
+	if q == "" {
+		return "", false
+	}
+
+	workSignals := []string{
+		"task", "tasks", "workload", "notification", "notifications", "assigned",
+		"assignee", "my work", "team board", "blocked", "open task", "open tasks",
+	}
+	matchedSignal := false
+	for _, signal := range workSignals {
+		if strings.Contains(q, signal) {
+			matchedSignal = true
+			break
+		}
+	}
+	if !matchedSignal {
+		return "", false
+	}
+
+	employeeRef := inferEmployeeReferenceFromQuery(intent, message)
+	if employeeRef == "" {
+		return "", false
+	}
+
+	resolution := a.resolveEmployeeReference(employeeRef)
+	if resolution == nil || strings.TrimSpace(resolution.EntityID) == "" {
+		return "", false
+	}
+
+	return a.buildEmployeeTaskOverviewResponse(resolution.EntityID, resolution.DisplayName, q), true
+}
+
+func (a *App) tryGroundedSupplierFastPath(intent Intent, message string) (string, bool) {
+	if a == nil || a.db == nil {
+		return "", false
+	}
+
+	q := strings.ToLower(strings.TrimSpace(message))
+	if q == "" {
+		return "", false
+	}
+
+	supplierSignals := []string{
+		"supplier", "suppliers", "buy from", "bought from", "purchase", "purchases",
+		"payment history", "supplier payment", "supplier payments", "issue", "issues",
+	}
+	matchedSignal := false
+	for _, signal := range supplierSignals {
+		if strings.Contains(q, signal) {
+			matchedSignal = true
+			break
+		}
+	}
+	if !matchedSignal {
+		return "", false
+	}
+
+	supplierRef := inferSupplierReferenceFromQuery(intent, message)
+	if supplierRef == "" {
+		return "", false
+	}
+
+	resolution := a.resolveSupplierReference(supplierRef)
+	if resolution == nil || strings.TrimSpace(resolution.EntityID) == "" {
+		return "", false
+	}
+
+	switch {
+	case strings.Contains(q, "payment history") || strings.Contains(q, "supplier payment"):
+		return a.buildSupplierPaymentHistoryResponse(resolution.EntityID, resolution.DisplayName), true
+	case strings.Contains(q, "issue"):
+		return a.buildSupplierIssueOverviewResponse(resolution.EntityID, resolution.DisplayName), true
+	case strings.Contains(q, "buy from") || strings.Contains(q, "bought from") || strings.Contains(q, "purchase"):
+		return a.buildSupplierPurchaseOverviewResponse(resolution.EntityID, resolution.DisplayName), true
+	default:
+		return "", false
+	}
+}
+
 func (a *App) tryGroundedCustomerFastPathWithHint(intent Intent, message, customerHint string) (string, bool) {
 	if a == nil || a.db == nil {
 		return "", false
@@ -30,16 +181,16 @@ func (a *App) tryGroundedCustomerFastPathWithHint(intent Intent, message, custom
 		return fmt.Sprintf("Understood. I will treat those records as a single customer group (%s) for this chat and proceed with grouped data/actions.", displayName), true
 	}
 
+	if strings.Contains(q, "revenue projection") || strings.Contains(q, "revenue projections") || strings.Contains(q, "projected revenue") {
+		return a.buildRevenueProjectionResponse(), true
+	}
+
 	customerRef := inferCustomerReferenceFromQuery(intent, q)
 	if customerRef == "" && strings.TrimSpace(customerHint) != "" {
 		customerRef = strings.TrimSpace(customerHint)
 	}
 	if customerRef == "" {
 		return "", false
-	}
-
-	if strings.Contains(q, "revenue projection") || strings.Contains(q, "revenue projections") || strings.Contains(q, "projected revenue") {
-		return a.buildRevenueProjectionResponse(), true
 	}
 
 	customerIDs, displayName := a.resolveCustomerScope(customerRef)
@@ -52,6 +203,10 @@ func (a *App) tryGroundedCustomerFastPathWithHint(intent Intent, message, custom
 
 	if strings.Contains(q, "invoice") && (strings.Contains(q, "this quarter") || strings.Contains(q, "current quarter")) {
 		return a.buildCustomerQuarterInvoiceAndHandlerResponse(customerIDs, displayName, q), true
+	}
+
+	if strings.Contains(q, "note") || strings.Contains(q, "notes") {
+		return a.buildCustomerNotesResponse(customerIDs, displayName), true
 	}
 
 	if strings.Contains(q, "line item") || strings.Contains(q, "line items") || strings.Contains(q, "what we have sold") || strings.Contains(q, "what have we sold") || strings.Contains(q, "sold to them") || strings.Contains(q, "sold to") || strings.Contains(q, "equipment sold") || strings.Contains(q, "what sold") || strings.Contains(q, "products sold") {
@@ -71,6 +226,118 @@ func (a *App) tryGroundedCustomerFastPathWithHint(intent Intent, message, custom
 	}
 
 	return "", false
+}
+
+func inferEmployeeReferenceFromQuery(intent Intent, message string) string {
+	if strings.TrimSpace(intent.PersonName) != "" {
+		return strings.TrimSpace(intent.PersonName)
+	}
+
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(?:tasks?\s+assigned\s+to|assigned\s+to|workload\s+for|notifications?\s+for|tasks?\s+for)\s+([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,2})`),
+		regexp.MustCompile(`(?i)(?:notifications?\s+does|tasks?\s+does)\s+([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,2})\s+have`),
+		regexp.MustCompile(`(?i)\b([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,2})'s\s+(?:tasks?|notifications?)\b`),
+	}
+	for _, pattern := range patterns {
+		if m := pattern.FindStringSubmatch(message); len(m) > 1 {
+			return strings.TrimSpace(m[1])
+		}
+	}
+
+	return ""
+}
+
+func parseGroundedTaskCreationRequest(intent Intent, message string) (string, string, bool) {
+	original := strings.TrimSpace(message)
+	if original == "" {
+		return "", "", false
+	}
+
+	lower := strings.ToLower(original)
+	createSignals := []string{
+		"create a task",
+		"create task",
+		"add a task",
+		"add task",
+		"make a task",
+		"make task",
+		"assign a task",
+		"assign task",
+	}
+	matchedSignal := false
+	for _, signal := range createSignals {
+		if strings.Contains(lower, signal) {
+			matchedSignal = true
+			break
+		}
+	}
+	if !matchedSignal {
+		return "", "", false
+	}
+
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(?:can you|could you|please|buddy)?\s*(?:create|add|make)\s+(?:a\s+)?task\s+for\s+([A-Za-z][A-Za-z.\-\s]{0,40}?)\s+(?:to\s+)?(.+)`),
+		regexp.MustCompile(`(?i)(?:can you|could you|please|buddy)?\s*assign\s+(?:a\s+)?task\s+to\s+([A-Za-z][A-Za-z.\-\s]{0,40}?)\s+(?:to\s+)?(.+)`),
+	}
+	for _, pattern := range patterns {
+		if matches := pattern.FindStringSubmatch(original); len(matches) == 3 {
+			return strings.TrimSpace(matches[1]), sanitizeTaskCreationDetails(matches[2]), true
+		}
+	}
+
+	employeeRef := inferEmployeeReferenceFromQuery(intent, original)
+	if employeeRef == "" {
+		employeeRef = strings.TrimSpace(intent.PersonName)
+	}
+	if employeeRef == "" {
+		return "", "", true
+	}
+
+	employeePattern := regexp.MustCompile(`(?i)(?:for|to)\s+` + regexp.QuoteMeta(employeeRef) + `\s+(.*)$`)
+	if matches := employeePattern.FindStringSubmatch(original); len(matches) == 2 {
+		return employeeRef, sanitizeTaskCreationDetails(matches[1]), true
+	}
+
+	return employeeRef, "", true
+}
+
+func sanitizeTaskCreationDetails(details string) string {
+	cleaned := strings.TrimSpace(details)
+	if cleaned == "" {
+		return ""
+	}
+
+	trailingMarkers := []string{
+		"make sure",
+		"ensure",
+		"notify",
+		"notification",
+		"notifications",
+	}
+	lower := strings.ToLower(cleaned)
+	for _, marker := range trailingMarkers {
+		if idx := strings.Index(lower, marker); idx >= 0 {
+			cleaned = strings.TrimSpace(cleaned[:idx])
+			lower = strings.ToLower(cleaned)
+		}
+	}
+
+	for _, sep := range []string{".", "!", "?"} {
+		if idx := strings.Index(cleaned, sep); idx >= 0 {
+			cleaned = strings.TrimSpace(cleaned[:idx])
+		}
+	}
+
+	cleaned = strings.TrimSpace(strings.Trim(cleaned, " ,;:-"))
+	if cleaned == "" {
+		return ""
+	}
+
+	runes := []rune(cleaned)
+	if len(runes) > 0 && runes[0] >= 'a' && runes[0] <= 'z' {
+		runes[0] = runes[0] - 32
+	}
+	return string(runes)
 }
 
 func inferCustomerReferenceFromQuery(intent Intent, q string) string {
@@ -101,6 +368,48 @@ func inferCustomerReferenceFromQuery(intent Intent, q string) string {
 	}
 
 	return ""
+}
+
+func inferSupplierReferenceFromQuery(intent Intent, message string) string {
+	if candidate := strings.TrimSpace(intent.EntityName); candidate != "" {
+		lowerCandidate := strings.ToLower(candidate)
+		if !strings.Contains(lowerCandidate, "issue") &&
+			!strings.Contains(lowerCandidate, "payment") &&
+			!strings.Contains(lowerCandidate, "history") &&
+			!strings.Contains(lowerCandidate, "purchase") {
+			return candidate
+		}
+	}
+
+	q := strings.TrimSpace(message)
+	if q == "" {
+		return ""
+	}
+
+	re := regexp.MustCompile(`(?i)\b(?:about|from|for)\s+([^?]+)`)
+	m := re.FindStringSubmatch(q)
+	if len(m) != 2 {
+		return ""
+	}
+
+	candidate := strings.TrimSpace(m[1])
+	trimSuffixes := []string{
+		"payment history",
+		"payments",
+		"payment",
+		"issues",
+		"issue",
+		"purchase history",
+		"purchases",
+	}
+	for _, suffix := range trimSuffixes {
+		candidate = strings.TrimSpace(strings.TrimSuffix(strings.ToLower(candidate), suffix))
+	}
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return ""
+	}
+	return candidate
 }
 
 func (a *App) resolveCustomerScope(reference string) ([]string, string) {
@@ -172,6 +481,165 @@ func (a *App) resolveCustomerScope(reference string) ([]string, string) {
 		return nil, ""
 	}
 	return []string{resolution.EntityID}, firstNonEmpty(strings.TrimSpace(resolution.DisplayName), reference)
+}
+
+func (a *App) buildEmployeeTaskOverviewResponse(employeeID, employeeName, q string) string {
+	type taskRow struct {
+		Title       string
+		Status      string
+		Priority    string
+		TaskType    string
+		Description string
+		DueDate     *time.Time
+	}
+
+	var tasks []taskRow
+	a.db.Table("task_items").
+		Select("title, status, priority, task_type, description, due_date").
+		Where("assignee_employee_id = ?", employeeID).
+		Order("updated_at DESC, created_at DESC").
+		Limit(20).
+		Scan(&tasks)
+
+	openCount := 0
+	completedCount := 0
+	blockedCount := 0
+	overdueCount := 0
+	now := time.Now()
+	lines := make([]string, 0, minInt(5, len(tasks)))
+	for _, task := range tasks {
+		status := strings.ToLower(strings.TrimSpace(task.Status))
+		switch status {
+		case "done", "completed", "closed":
+			completedCount++
+		default:
+			openCount++
+		}
+		if status == "blocked" {
+			blockedCount++
+		}
+		if task.DueDate != nil && task.DueDate.Before(now) && status != "done" && status != "completed" && status != "closed" {
+			overdueCount++
+		}
+		if len(lines) < 5 {
+			line := fmt.Sprintf("- %s | %s | %s", strings.TrimSpace(task.Title), strings.TrimSpace(task.Status), strings.TrimSpace(task.Priority))
+			if task.DueDate != nil {
+				line += " | due " + task.DueDate.Format("2006-01-02")
+			}
+			lines = append(lines, line)
+		}
+	}
+
+	type notificationRow struct {
+		Title      string
+		Status     string
+		SourceType string
+		CreatedAt  time.Time
+	}
+	var notifications []notificationRow
+	a.db.Table("notifications").
+		Select("title, status, source_type, created_at").
+		Where("employee_id = ?", employeeID).
+		Order("created_at DESC").
+		Limit(20).
+		Scan(&notifications)
+
+	unreadNotifications := 0
+	notificationLines := make([]string, 0, 3)
+	for _, notification := range notifications {
+		if strings.EqualFold(strings.TrimSpace(notification.Status), "unread") {
+			unreadNotifications++
+		}
+		if len(notificationLines) < 3 {
+			notificationLines = append(notificationLines, fmt.Sprintf("- %s | %s | %s", strings.TrimSpace(notification.Title), strings.TrimSpace(notification.Status), notification.CreatedAt.Format("2006-01-02")))
+		}
+	}
+
+	if len(tasks) == 0 && len(notifications) == 0 {
+		return fmt.Sprintf("I checked the collaborative work records for %s and I cannot confirm any assigned tasks or notifications from current data.", employeeName)
+	}
+
+	builder := strings.Builder{}
+	builder.WriteString(fmt.Sprintf("%s currently has %d active task(s)", employeeName, openCount))
+	if completedCount > 0 {
+		builder.WriteString(fmt.Sprintf(", %d completed task(s)", completedCount))
+	}
+	builder.WriteString(fmt.Sprintf(", %d blocked task(s), and %d overdue task(s).", blockedCount, overdueCount))
+	builder.WriteString(fmt.Sprintf(" I also found %d unread notification(s).", unreadNotifications))
+
+	if len(lines) > 0 {
+		builder.WriteString("\n\nRecent assigned tasks:\n")
+		builder.WriteString(strings.Join(lines, "\n"))
+	}
+
+	if strings.Contains(q, "notification") && len(notificationLines) > 0 {
+		builder.WriteString("\n\nRecent notifications:\n")
+		builder.WriteString(strings.Join(notificationLines, "\n"))
+	}
+
+	return builder.String()
+}
+
+func (a *App) resolveCustomerRecordIDs(customerIDs []string) []string {
+	if len(customerIDs) == 0 {
+		return nil
+	}
+
+	type row struct {
+		ID string
+	}
+	var rows []row
+	a.db.Table("customers").
+		Select("id").
+		Where("customer_id IN ?", customerIDs).
+		Find(&rows)
+
+	recordIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row.ID) != "" {
+			recordIDs = append(recordIDs, strings.TrimSpace(row.ID))
+		}
+	}
+	return uniqueStrings(recordIDs)
+}
+
+func (a *App) buildCustomerNotesResponse(customerIDs []string, customerName string) string {
+	recordIDs := a.resolveCustomerRecordIDs(customerIDs)
+	if len(recordIDs) == 0 {
+		return fmt.Sprintf("I checked customer notes for %s and could not resolve a note record scope.", customerName)
+	}
+
+	type noteRow struct {
+		NoteType  string
+		Content   string
+		CreatedAt time.Time
+	}
+	var notes []noteRow
+	a.db.Table("entity_notes").
+		Select("note_type, content, created_at").
+		Where("entity_type = ? AND entity_id IN ?", "customer", recordIDs).
+		Order("created_at DESC").
+		Limit(10).
+		Scan(&notes)
+
+	if len(notes) == 0 {
+		return fmt.Sprintf("I checked notes for %s and found no recorded customer notes.", customerName)
+	}
+
+	lines := make([]string, 0, minInt(6, len(notes)))
+	for i, note := range notes {
+		if i >= 6 {
+			break
+		}
+		lines = append(lines, fmt.Sprintf("- %s | %s | %s",
+			note.CreatedAt.Format("2006-01-02"),
+			firstNonEmpty(strings.TrimSpace(note.NoteType), "general"),
+			strings.TrimSpace(note.Content),
+		))
+	}
+
+	return fmt.Sprintf("I found %d customer note(s) for %s.\n\nRecent notes:\n%s",
+		len(notes), customerName, strings.Join(lines, "\n"))
 }
 
 func (a *App) buildCustomerQuarterInvoiceAndHandlerResponse(customerIDs []string, customerName, q string) string {
@@ -357,14 +825,14 @@ func (a *App) buildCustomerYearOffersResponse(customerIDs []string, customerName
 	end := time.Date(year, time.December, 31, 23, 59, 59, 0, time.Local)
 
 	type offerRow struct {
-		OfferNumber    string
-		QuotationDate  time.Time
-		Stage          string
-		TotalValueBHD  float64
-		QuoteType      string
-		IssuedBy       string
-		Attention      string
-		CreatedBy      string
+		OfferNumber   string
+		QuotationDate time.Time
+		Stage         string
+		TotalValueBHD float64
+		QuoteType     string
+		IssuedBy      string
+		Attention     string
+		CreatedBy     string
 	}
 
 	var offers []offerRow
@@ -567,6 +1035,174 @@ func (a *App) buildRevenueProjectionResponse() string {
 		runRateProjection,
 		blendedProjection,
 	)
+}
+
+func (a *App) buildSupplierPaymentHistoryResponse(supplierID, supplierName string) string {
+	type paymentRow struct {
+		PaymentDate   time.Time
+		AmountBHD     float64
+		PaymentMethod string
+		Reference     string
+		InvoiceNumber string
+	}
+	var payments []paymentRow
+	a.db.Table("supplier_payments").
+		Select("payment_date, amount_bhd, payment_method, reference, invoice_number").
+		Where("supplier_id = ?", supplierID).
+		Order("payment_date DESC").
+		Limit(12).
+		Scan(&payments)
+
+	type invoiceSummary struct {
+		Count         int64
+		TotalBHD      float64
+		PendingCount  int64
+		PendingAmount float64
+	}
+	var summary invoiceSummary
+	a.db.Table("supplier_invoices").
+		Select("COUNT(*) as count, COALESCE(SUM(total_bhd), 0) as total_bhd, SUM(CASE WHEN payment_status <> 'Paid' THEN 1 ELSE 0 END) as pending_count, COALESCE(SUM(CASE WHEN payment_status <> 'Paid' THEN total_bhd ELSE 0 END), 0) as pending_amount").
+		Where("supplier_id = ?", supplierID).
+		Scan(&summary)
+
+	if len(payments) == 0 && summary.Count == 0 {
+		return fmt.Sprintf("I checked supplier payment history for %s and found no recorded supplier invoices or payments.", supplierName)
+	}
+
+	lines := make([]string, 0, minInt(6, len(payments)))
+	totalPaid := 0.0
+	for i, payment := range payments {
+		totalPaid += payment.AmountBHD
+		if i >= 6 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- %s | %s | %.3f BHD | %s | %s",
+			payment.PaymentDate.Format("2006-01-02"),
+			firstNonEmpty(strings.TrimSpace(payment.InvoiceNumber), "no invoice ref"),
+			payment.AmountBHD,
+			firstNonEmpty(strings.TrimSpace(payment.PaymentMethod), "payment method n/a"),
+			firstNonEmpty(strings.TrimSpace(payment.Reference), "no reference"),
+		))
+	}
+
+	paymentText := "No supplier payment rows found."
+	if len(lines) > 0 {
+		paymentText = strings.Join(lines, "\n")
+	}
+
+	return fmt.Sprintf("Here is the supplier payment history for %s.\n\nRecorded supplier invoices: %d totaling %.3f BHD\nPending supplier invoices: %d totaling %.3f BHD\nRecent supplier payments totaled %.3f BHD in the sampled history.\n\nRecent payments:\n%s",
+		supplierName, summary.Count, summary.TotalBHD, summary.PendingCount, summary.PendingAmount, totalPaid, paymentText)
+}
+
+func (a *App) buildSupplierPurchaseOverviewResponse(supplierID, supplierName string) string {
+	type invoiceRow struct {
+		InvoiceNumber string
+		InvoiceDate   time.Time
+		TotalBHD      float64
+		Status        string
+	}
+	var invoices []invoiceRow
+	a.db.Table("supplier_invoices").
+		Select("invoice_number, invoice_date, total_bhd, status").
+		Where("supplier_id = ?", supplierID).
+		Order("invoice_date DESC").
+		Limit(12).
+		Scan(&invoices)
+
+	type lineRow struct {
+		Description string
+		Qty         float64
+		TotalBHD    float64
+	}
+	var lines []lineRow
+	a.db.Table("supplier_invoice_items").
+		Select("supplier_invoice_items.description, supplier_invoice_items.quantity as qty, COALESCE(supplier_invoice_items.total_bhd, supplier_invoice_items.total_price, 0) as total_bhd").
+		Joins("JOIN supplier_invoices ON supplier_invoices.id = supplier_invoice_items.supplier_invoice_id").
+		Where("supplier_invoices.supplier_id = ?", supplierID).
+		Order("supplier_invoices.invoice_date DESC").
+		Limit(20).
+		Scan(&lines)
+
+	if len(invoices) == 0 && len(lines) == 0 {
+		return fmt.Sprintf("I checked purchasing history for %s and found no recorded supplier invoices or line items.", supplierName)
+	}
+
+	total := 0.0
+	invoiceLines := make([]string, 0, minInt(5, len(invoices)))
+	for i, invoice := range invoices {
+		total += invoice.TotalBHD
+		if i >= 5 {
+			continue
+		}
+		invoiceLines = append(invoiceLines, fmt.Sprintf("- %s | %s | %.3f BHD | %s",
+			strings.TrimSpace(invoice.InvoiceNumber),
+			invoice.InvoiceDate.Format("2006-01-02"),
+			invoice.TotalBHD,
+			strings.TrimSpace(invoice.Status),
+		))
+	}
+
+	itemLines := make([]string, 0, minInt(6, len(lines)))
+	for i, line := range lines {
+		if i >= 6 {
+			break
+		}
+		itemLines = append(itemLines, fmt.Sprintf("- %s | qty %.3f | %.3f BHD",
+			firstNonEmpty(strings.TrimSpace(line.Description), "line item"),
+			line.Qty,
+			line.TotalBHD,
+		))
+	}
+
+	itemsText := "No supplier line items captured."
+	if len(itemLines) > 0 {
+		itemsText = strings.Join(itemLines, "\n")
+	}
+
+	return fmt.Sprintf("Here is what we have bought from %s.\n\nRecorded supplier invoices: %d totaling %.3f BHD\n\nRecent supplier invoices:\n%s\n\nRecent purchased line items:\n%s",
+		supplierName, len(invoices), total, strings.Join(invoiceLines, "\n"), itemsText)
+}
+
+func (a *App) buildSupplierIssueOverviewResponse(supplierID, supplierName string) string {
+	type issueRow struct {
+		OrderRef    string
+		Description string
+		Status      string
+		CostBHD     float64
+		CreatedAt   time.Time
+	}
+	var issues []issueRow
+	a.db.Table("supplier_issues").
+		Select("order_ref, description, status, cost_bhd, created_at").
+		Where("supplier_id = ?", supplierID).
+		Order("created_at DESC").
+		Limit(10).
+		Scan(&issues)
+
+	if len(issues) == 0 {
+		return fmt.Sprintf("I checked supplier issues for %s and found no active issue records.", supplierName)
+	}
+
+	openCount := 0
+	lines := make([]string, 0, minInt(6, len(issues)))
+	for i, issue := range issues {
+		if !strings.EqualFold(strings.TrimSpace(issue.Status), "resolved") && !strings.EqualFold(strings.TrimSpace(issue.Status), "closed") {
+			openCount++
+		}
+		if i >= 6 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- %s | %s | %.3f BHD | %s | %s",
+			firstNonEmpty(strings.TrimSpace(issue.OrderRef), "no order ref"),
+			firstNonEmpty(strings.TrimSpace(issue.Status), "unknown"),
+			issue.CostBHD,
+			issue.CreatedAt.Format("2006-01-02"),
+			strings.TrimSpace(issue.Description),
+		))
+	}
+
+	return fmt.Sprintf("I found %d supplier issue record(s) for %s, with %d still open.\n\nRecent issues:\n%s",
+		len(issues), supplierName, openCount, strings.Join(lines, "\n"))
 }
 
 func (a *App) tryGroundedOfferDraftFastPath(message, customerHint, productHint string) (string, []ButlerAction, bool) {

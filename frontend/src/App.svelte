@@ -285,6 +285,7 @@
             const typeToScreen = {
                 "invoice": "finance",
                 "supplier_invoice": "finance",
+                "bank_statement": "finance",
                 "rfq": "opportunities",
                 "quotation": "opportunities",
                 "costing": "costing",
@@ -294,12 +295,12 @@
             };
             const targetScreen = typeToScreen[type];
             if (targetScreen) {
-                if (targetScreen === "costing" || targetScreen === "offers" || targetScreen === "orders") {
-                    currentScreen = "opportunities";
-                    currentParams = { tab: targetScreen };
+                if (targetScreen === "finance" && type === "invoice") {
+                    navigate({ screen: "finance", tab: "invoices", company: mergedData.division || "PH Trading" });
+                } else if (targetScreen === "finance" && type === "bank_statement") {
+                    navigate({ screen: "finance", tab: "bank_recon", company: mergedData.division || "PH Trading" });
                 } else {
-                    currentScreen = targetScreen;
-                    currentParams = {};
+                    navigate(targetScreen);
                 }
                 toast.info(`Navigate to ${typeName} to continue editing`);
             }
@@ -377,7 +378,6 @@
         { id: "work", label: "Work" },
         { id: "people", label: "People" },
         { id: "notifications", label: "Notifications" },
-        { id: "deployment", label: "Deployment" },
         { id: "relationships", label: "Relationships" },
         { id: "intelligence", label: "Intelligence" },
     ];
@@ -492,15 +492,7 @@
         // Subscribe to screen navigation events (from OrdersScreen, etc.)
         window.addEventListener("navigateToScreen", (e) => {
             // @ts-ignore - CustomEvent detail property
-            const { screen } = e.detail;
-            if (!screen) return;
-            if (screen === "costing" || screen === "offers" || screen === "orders") {
-                currentScreen = "opportunities";
-                currentParams = { tab: screen };
-                return;
-            }
-            currentScreen = screen;
-            currentParams = {};
+            navigate(e.detail);
         });
 
         // Subscribe to Butler file watcher events for real-time notifications
@@ -540,10 +532,10 @@
         opportunities: "offers:view",
         operations: "po:view",
         finance: "finance:view",
-        work: "tasks:view",
+        work: null,
         people: "hr:view",
         notifications: null,
-        deployment: "settings:view",
+        deployment: "settings:update",
         relationships: "customers:view",
         intelligence: "intelligence:chat",
         settings: "settings:view",
@@ -573,28 +565,53 @@
         return false;
     }
 
-    function navigate(screenID) {
+    function normalizeNavigationTarget(target) {
+        if (!target) return { screen: "", params: {} };
+        if (typeof target === "string") return { screen: target, params: {} };
+
+        const { screen = "", ...rest } = target;
+        const params = {};
+        for (const [key, value] of Object.entries(rest)) {
+            if (value !== undefined && value !== null && value !== "") {
+                params[key] = value;
+            }
+        }
+        return { screen, params };
+    }
+
+    function navigate(target) {
+        const { screen, params } = normalizeNavigationTarget(target);
+        if (!screen) return;
+
         console.log(
             "Navigation clicked:",
-            screenID,
+            screen,
+            "params:",
+            params,
             "changing from",
             currentScreen,
         );
 
         // P0-4 FIX: Check permission before navigating
-        if (!hasScreenPermission(screenID)) {
-            toast.danger(`Access denied: You don't have permission to view ${screenID}`);
-            console.warn(`Navigation blocked: no permission for ${screenID}`);
+        if (!hasScreenPermission(screen)) {
+            toast.danger(`Access denied: You don't have permission to view ${screen}`);
+            console.warn(`Navigation blocked: no permission for ${screen}`);
             return;
         }
 
-        currentScreen = screenID;
-        console.log("Screen now:", currentScreen);
+        if (screen === "costing" || screen === "offers" || screen === "orders") {
+            currentScreen = "opportunities";
+            currentParams = { tab: screen, ...params };
+        } else {
+            currentScreen = screen;
+            currentParams = params;
+        }
+        console.log("Screen now:", currentScreen, "params:", currentParams);
         if (isMobile) showNav = false;
     }
 
     function handleFloatingNav(event) {
-        navigate(event.detail.screen);
+        navigate(event.detail);
     }
 
     // Handle admin setup completion
@@ -826,7 +843,7 @@
             <!-- Sidebar Navigation -->
             <EnterpriseSidebar
                 {currentScreen}
-                on:navigate={(e) => navigate(e.detail.screen)}
+                on:navigate={(e) => navigate(e.detail)}
             />
 
             <!-- Main Content Area -->
@@ -840,7 +857,7 @@
                         <svelte:component
                             this={screenComponents[currentScreen]}
                             params={currentParams}
-                            on:navigate={(e) => navigate(e.detail.screen)}
+                            on:navigate={(e) => navigate(e.detail)}
                         />
                     {:else}
                         <!-- Placeholder for screens not yet implemented -->

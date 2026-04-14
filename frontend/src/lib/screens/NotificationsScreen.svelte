@@ -4,9 +4,20 @@
   import { toast } from "../stores/toasts";
   import { listNotifications, markNotificationAsRead, refreshCollaborativeWorkspace, type NotificationItem } from "$lib/api/collaboration";
 
+  const pendingTaskStorageKey = "asymmflow.pendingCollaborativeTaskId";
+
   let loading = true;
   let unreadOnly = false;
   let notifications: NotificationItem[] = [];
+
+  function applyLocalReadState(notificationID: string) {
+    const readAt = new Date().toISOString();
+    notifications = notifications.map((notification) =>
+      notification.id === notificationID
+        ? { ...notification, status: "read", read_at: readAt }
+        : notification
+    );
+  }
 
   async function load() {
     loading = true;
@@ -20,11 +31,16 @@
     }
   }
 
-  async function markRead(notificationID: string) {
+  async function markRead(notificationID: string, options: { reload?: boolean } = {}) {
+    const { reload = true } = options;
+    applyLocalReadState(notificationID);
     try {
       await markNotificationAsRead(notificationID);
-      await load();
+      if (reload) {
+        await load();
+      }
     } catch (err) {
+      await load().catch(() => undefined);
       toast.danger(`Failed to update notification: ${String(err)}`);
     }
   }
@@ -75,10 +91,11 @@
     const taskID = String(payload.task_id || notification.source_id || "").trim();
 
     if (notification.status !== "read") {
-      await markRead(notification.id);
+      void markRead(notification.id, { reload: false });
     }
 
     if (taskID) {
+      sessionStorage.setItem(pendingTaskStorageKey, taskID);
       window.dispatchEvent(new CustomEvent("navigateToScreen", {
         detail: { screen: "work" },
       }));

@@ -46,9 +46,10 @@ type AssetInfo struct {
 
 // Known asset names
 const (
-	AssetLetterhead = "letterhead"
-	AssetLogo       = "company_logo"
-	AssetStamp      = "company_stamp"
+	AssetLetterhead    = "letterhead"
+	AssetLetterheadAHS = "letterhead_ahs"
+	AssetLogo          = "company_logo"
+	AssetStamp         = "company_stamp"
 )
 
 // EnsureAssetsTable creates the assets table if it doesn't exist
@@ -61,6 +62,10 @@ func (a *App) UploadAsset(name, description, filePath string) error {
 	if err := a.requirePermission("settings:update"); err != nil {
 		return err
 	}
+	return a.upsertAssetFromFile(name, description, filePath)
+}
+
+func (a *App) upsertAssetFromFile(name, description, filePath string) error {
 	// Read file
 	data, err := ioutil.ReadFile(filePath)
 	if err != nil {
@@ -215,14 +220,16 @@ func (a *App) InitializeDefaultAssets() {
 	// Ensure table exists
 	a.EnsureAssetsTable()
 
-	// Check if letterhead already exists
-	if a.HasAsset(AssetLetterhead) {
-		log.Println("Letterhead asset already in database")
+	a.ensureDefaultLetterheadAsset(AssetLetterhead, "PH Trading Quotation Template.png", "PH Trading letterhead template for PDF generation")
+	a.ensureDefaultLetterheadAsset(AssetLetterheadAHS, "AHS Trading Letterhead.jpg", "AHS Trading letterhead template for PDF generation")
+}
+
+func (a *App) ensureDefaultLetterheadAsset(assetName, letterheadFile, description string) {
+	if a.HasAsset(assetName) {
+		log.Printf("%s asset already in database", assetName)
 		return
 	}
 
-	// Try to find and upload the letterhead
-	letterheadFile := "PH Trading Quotation Template.png"
 	candidatePaths := []string{}
 
 	// Check various locations - GetApplicationPaths may return nil if no license is activated
@@ -233,8 +240,12 @@ func (a *App) InitializeDefaultAssets() {
 
 	if exePath, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exePath)
-		candidatePaths = append(candidatePaths, filepath.Join(exeDir, "..", "..", "CRITICAL_PH_CONTEXT_SSOT", letterheadFile))
-		candidatePaths = append(candidatePaths, filepath.Join(exeDir, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile))
+		candidatePaths = append(candidatePaths,
+			filepath.Join(exeDir, "..", "..", "CRITICAL_PH_CONTEXT_SSOT", letterheadFile),
+			filepath.Join(exeDir, "..", "Resources", "data", letterheadFile),
+			filepath.Join(exeDir, "data", letterheadFile),
+			filepath.Join(exeDir, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile),
+		)
 	}
 
 	if cwd, err := os.Getwd(); err == nil {
@@ -244,16 +255,16 @@ func (a *App) InitializeDefaultAssets() {
 	// Find and upload
 	for _, path := range candidatePaths {
 		if _, err := os.Stat(path); err == nil {
-			if err := a.UploadAsset(AssetLetterhead, "PH Trading letterhead template for PDF generation", path); err != nil {
+			if err := a.upsertAssetFromFile(assetName, description, path); err != nil {
 				log.Printf("Warning: Failed to upload letterhead: %v", err)
 			} else {
-				log.Printf("Letterhead uploaded to database from: %s", path)
+				log.Printf("%s uploaded to database from: %s", assetName, path)
 			}
 			return
 		}
 	}
 
-	log.Println("Warning: Letterhead file not found in any location")
+	log.Printf("Warning: %s file not found in any location", letterheadFile)
 }
 
 // GetLetterheadPath returns the path to the letterhead image

@@ -632,10 +632,10 @@
       toast.success(`Invoice ${invoice.invoice_number} created`);
       showDetailModal = false;
       window.dispatchEvent(new CustomEvent('navigateToScreen', {
-        detail: { screen: 'finance' }
+        detail: { screen: 'finance', tab: 'invoices', company: order.division || 'PH Trading' }
       }));
       window.dispatchEvent(new CustomEvent('finance:navigate', {
-        detail: { tab: 'invoices' }
+        detail: { tab: 'invoices', company: order.division || 'PH Trading' }
       }));
       await loadOrders();
     } catch (err) {
@@ -658,10 +658,10 @@
       toast.success(`Proforma Invoice ${invoice.invoice_number} created`);
       showDetailModal = false;
       window.dispatchEvent(new CustomEvent('navigateToScreen', {
-        detail: { screen: 'finance' }
+        detail: { screen: 'finance', tab: 'invoices', company: order.division || 'PH Trading' }
       }));
       window.dispatchEvent(new CustomEvent('finance:navigate', {
-        detail: { tab: 'invoices' }
+        detail: { tab: 'invoices', company: order.division || 'PH Trading' }
       }));
       await loadOrders();
     } catch (err) {

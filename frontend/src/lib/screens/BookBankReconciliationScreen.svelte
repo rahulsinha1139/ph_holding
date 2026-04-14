@@ -255,6 +255,12 @@
       toast.success('Reconciliation created');
       showNewModal = false;
       await loadReconciliations();
+      if (recon?.id) {
+        const refreshed = reconciliations.find((item) => item.id === recon.id);
+        if (refreshed) {
+          await loadVariances(refreshed);
+        }
+      }
     } catch (err: any) {
       console.error('Failed to create reconciliation:', err);
       toast.danger(err?.message || 'Failed to create reconciliation');
@@ -294,6 +300,20 @@
       toast.success('Reconciliation updated');
       showEditModal = false;
       await loadReconciliations();
+      const refreshed = reconciliations.find((item) => item.id === selectedRecon.id);
+      if (refreshed) {
+        await loadVariances(refreshed);
+      } else {
+        selectedRecon = {
+          ...selectedRecon,
+          bank_charges_not_recorded: parseFloat(formBankCharges),
+          interest_not_recorded: parseFloat(formInterest),
+          nsf_cheques: parseFloat(formNSF),
+          bank_errors: parseFloat(formBankErrors),
+          book_errors: parseFloat(formBookErrors),
+          notes: formNotes,
+        };
+      }
     } catch (err: any) {
       console.error('Failed to update:', err);
       toast.danger(err?.message || 'Failed to update');
@@ -425,6 +445,16 @@
             <span class="label">Difference</span>
             <span class="value">{formatBHD(selectedRecon.difference)} BHD</span>
           </div>
+
+          {#if selectedRecon.notes}
+            <div class="notes-card">
+              <div class="notes-head">
+                <span>Reconciliation Notes</span>
+                <span>Context</span>
+              </div>
+              <p>{selectedRecon.notes}</p>
+            </div>
+          {/if}
 
           <!-- Variances -->
           {#if variances.length > 0}
@@ -676,6 +706,36 @@
 
   .difference-box.reconciled .value {
     color: #10B981;
+  }
+
+  .notes-card {
+    margin-bottom: var(--space-4);
+    padding: var(--space-3);
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(59, 130, 246, 0.16);
+    background: linear-gradient(135deg, rgba(239, 246, 255, 0.95), rgba(248, 250, 252, 0.9));
+    display: grid;
+    gap: var(--space-2);
+  }
+
+  .notes-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+
+  .notes-card p {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.65;
+    white-space: pre-wrap;
   }
 
   .variances {

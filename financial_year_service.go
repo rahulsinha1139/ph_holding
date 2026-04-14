@@ -39,17 +39,17 @@ type FinancialYearSummary struct {
 	NetProfit     float64 `json:"net_profit"`
 
 	// Balance Sheet - Assets
-	PlantEquipment    float64 `json:"plant_equipment"`
-	RightOfUse        float64 `json:"right_of_use"`
-	InvestmentProp    float64 `json:"investment_property"`
-	Inventories       float64 `json:"inventories"`
-	TradeReceivables  float64 `json:"trade_receivables"`
-	FixedDeposits     float64 `json:"fixed_deposits"`
-	RelatedPartyRecv  float64 `json:"related_party_receivable"`
-	CashEquivalents   float64 `json:"cash_equivalents"`
-	TotalAssets       float64 `json:"total_assets"`
-	CurrentAssets     float64 `json:"current_assets"`
-	NonCurrentAssets  float64 `json:"non_current_assets"`
+	PlantEquipment   float64 `json:"plant_equipment"`
+	RightOfUse       float64 `json:"right_of_use"`
+	InvestmentProp   float64 `json:"investment_property"`
+	Inventories      float64 `json:"inventories"`
+	TradeReceivables float64 `json:"trade_receivables"`
+	FixedDeposits    float64 `json:"fixed_deposits"`
+	RelatedPartyRecv float64 `json:"related_party_receivable"`
+	CashEquivalents  float64 `json:"cash_equivalents"`
+	TotalAssets      float64 `json:"total_assets"`
+	CurrentAssets    float64 `json:"current_assets"`
+	NonCurrentAssets float64 `json:"non_current_assets"`
 
 	// Balance Sheet - Liabilities & Equity
 	ShareCapital       float64 `json:"share_capital"`
@@ -89,17 +89,17 @@ func getVerifiedFS2024Data() map[int]FinancialYearSummary {
 			NetProfit:     672908.0,
 
 			// Balance Sheet - from FS2024 page 6
-			PlantEquipment:    44695.0,
-			RightOfUse:        50502.0,
-			InvestmentProp:    420000.0,
-			Inventories:       7781.0,
-			TradeReceivables:  117073.0,
-			FixedDeposits:     50000.0,
-			RelatedPartyRecv:  34726.0,
-			CashEquivalents:   569219.0,
-			TotalAssets:       1294000.0,
-			CurrentAssets:     778803.0,
-			NonCurrentAssets:  515197.0,
+			PlantEquipment:   44695.0,
+			RightOfUse:       50502.0,
+			InvestmentProp:   420000.0,
+			Inventories:      7781.0,
+			TradeReceivables: 117073.0,
+			FixedDeposits:    50000.0,
+			RelatedPartyRecv: 34726.0,
+			CashEquivalents:  569219.0,
+			TotalAssets:      1294000.0,
+			CurrentAssets:    778803.0,
+			NonCurrentAssets: 515197.0,
 
 			ShareCapital:       300000.0,
 			StatutoryReserve:   143690.0,
@@ -132,17 +132,17 @@ func getVerifiedFS2024Data() map[int]FinancialYearSummary {
 			NetProfit:     20715.0,
 
 			// Balance Sheet - from FS2024 page 6
-			PlantEquipment:    40405.0,
-			RightOfUse:        40402.0,
-			InvestmentProp:    420000.0,
-			Inventories:       5104.0,
-			TradeReceivables:  123393.0,
-			FixedDeposits:     50000.0,
-			RelatedPartyRecv:  34726.0,
-			CashEquivalents:   413295.0,
-			TotalAssets:       1127325.0,
-			CurrentAssets:     626518.0,
-			NonCurrentAssets:  500807.0,
+			PlantEquipment:   40405.0,
+			RightOfUse:       40402.0,
+			InvestmentProp:   420000.0,
+			Inventories:      5104.0,
+			TradeReceivables: 123393.0,
+			FixedDeposits:    50000.0,
+			RelatedPartyRecv: 34726.0,
+			CashEquivalents:  413295.0,
+			TotalAssets:      1127325.0,
+			CurrentAssets:    626518.0,
+			NonCurrentAssets: 500807.0,
 
 			ShareCapital:       300000.0,
 			StatutoryReserve:   145762.0,
@@ -222,7 +222,7 @@ func (a *App) calculateFinancialYearFromTally(year int) (*FinancialYearSummary, 
 		// Estimate operating expenses proportionally
 		summary.StaffCosts = fs2024.StaffCosts * revenueRatio * 0.9 // Assume some economies
 		summary.AdminExpenses = fs2024.AdminExpenses * revenueRatio
-		summary.Depreciation = fs2024.Depreciation // Fixed assets don't change much
+		summary.Depreciation = fs2024.Depreciation        // Fixed assets don't change much
 		summary.FinanceCosts = fs2024.FinanceCosts * 0.95 // Slight decrease assumed
 		summary.OtherIncome = fs2024.OtherIncome * revenueRatio
 
@@ -244,7 +244,7 @@ func (a *App) calculateFinancialYearFromTally(year int) (*FinancialYearSummary, 
 	// Invoice uses outstanding_bhd (pre-calculated outstanding amount)
 	var outstandingAR float64
 	err = a.db.Model(&Invoice{}).
-		Where("strftime('%Y', invoice_date) = ? AND status NOT IN ('Paid', 'Cancelled')", fmt.Sprintf("%d", year)).
+		Where("strftime('%Y', invoice_date) = ? AND status NOT IN ('Paid', 'Cancelled', 'Void', 'Proforma', 'Draft')", fmt.Sprintf("%d", year)).
 		Select("COALESCE(SUM(outstanding_bhd), 0)").
 		Scan(&outstandingAR).Error
 	if err == nil && outstandingAR > 0 {
@@ -329,26 +329,8 @@ func (a *App) calculateFinancialYearFromTally(year int) (*FinancialYearSummary, 
 	summary.CurrentLiabilities = summary.TradePayables + summary.LeaseCurrent
 	summary.TotalLiabilities = summary.CurrentLiabilities + summary.LeaseNonCurrent
 
-	// For current year with no invoices yet, show offer pipeline as context
 	if summary.Revenue == 0 {
-		var pipelineValue float64
-		var offerCount int64
-		a.db.Model(&Offer{}).
-			Where("strftime('%Y', quotation_date) = ? AND stage NOT IN ('Lost', 'Expired')", fmt.Sprintf("%d", year)).
-			Select("COALESCE(SUM(total_value_bhd), 0)").Scan(&pipelineValue)
-		a.db.Model(&Offer{}).
-			Where("strftime('%Y', quotation_date) = ? AND stage NOT IN ('Lost', 'Expired')", fmt.Sprintf("%d", year)).
-			Count(&offerCount)
-
-		if pipelineValue > 0 || offerCount > 0 {
-			summary.Source = fmt.Sprintf("Pipeline Data (%d offers, Unaudited)", offerCount)
-			// Use pipeline as estimated revenue (weighted by typical conversion rate)
-			summary.Revenue = pipelineValue * 0.4 // 40% conversion estimate
-			summary.CostOfSales = summary.Revenue * (1 - grossMarginPct2024)
-			summary.GrossProfit = summary.Revenue - summary.CostOfSales
-			log.Printf("📊 Year %d: Using offer pipeline (%.2f BHD, %d offers) for estimates",
-				year, pipelineValue, offerCount)
-		}
+		summary.Source = "Live Data (Unaudited - no posted invoices)"
 	}
 
 	log.Printf("✅ Calculated financial data for year %d: Revenue=%.2f, GrossProfit=%.2f",
@@ -504,7 +486,7 @@ func (a *App) calculateARAging(year int) ARAging {
 
 	// Get unpaid invoices for the year (SQLite strftime)
 	var invoices []Invoice
-	err := a.db.Where("strftime('%Y', invoice_date) = ? AND status NOT IN ('Paid', 'Cancelled')", fmt.Sprintf("%d", year)).
+	err := a.db.Where("strftime('%Y', invoice_date) = ? AND status NOT IN ('Paid', 'Cancelled', 'Void', 'Proforma', 'Draft')", fmt.Sprintf("%d", year)).
 		Find(&invoices).Error
 	if err != nil {
 		log.Printf("⚠️ Error fetching invoices for AR aging: %v", err)
@@ -630,24 +612,6 @@ func (a *App) GetAvailableFinancialYears() ([]int, error) {
 		}
 	}
 
-	// Add years from offers (for current year pipeline visibility)
-	var offerYears []string
-	err = a.db.Model(&Offer{}).
-		Select("DISTINCT strftime('%Y', quotation_date) as year").
-		Where("quotation_date IS NOT NULL AND deleted_at IS NULL").
-		Pluck("year", &offerYears).Error
-	if err == nil {
-		for _, yearStr := range offerYears {
-			if yearStr != "" {
-				var year int
-				fmt.Sscanf(yearStr, "%d", &year)
-				if year > 0 {
-					yearsMap[year] = true
-				}
-			}
-		}
-	}
-
 	// Add years from bank statements
 	var bankYears []string
 	err = a.db.Model(&BankStatement{}).
@@ -691,17 +655,72 @@ func (a *App) GetAvailableFinancialYears() ([]int, error) {
 
 // DivisionFinancialSummary represents financial summary for a specific division
 type DivisionFinancialSummary struct {
-	Division       string  `json:"division"`
-	Year           int     `json:"year"`
-	Revenue        float64 `json:"revenue"`
-	InvoiceCount   int     `json:"invoice_count"`
-	OrderCount     int     `json:"order_count"`
-	OutstandingAR  float64 `json:"outstanding_ar"`
-	PaidAmount     float64 `json:"paid_amount"`
-	OverdueAmount  float64 `json:"overdue_amount"`
-	OverdueCount   int     `json:"overdue_count"`
-	AvgInvoiceSize float64 `json:"avg_invoice_size"`
-	HasData        bool    `json:"has_data"`
+	Division         string  `json:"division"`
+	Year             int     `json:"year"`
+	Revenue          float64 `json:"revenue"`
+	InvoiceCount     int     `json:"invoice_count"`
+	OrderCount       int     `json:"order_count"`
+	OutstandingAR    float64 `json:"outstanding_ar"`
+	PaidAmount       float64 `json:"paid_amount"`
+	OverdueAmount    float64 `json:"overdue_amount"`
+	OverdueCount     int     `json:"overdue_count"`
+	AvgInvoiceSize   float64 `json:"avg_invoice_size"`
+	Source           string  `json:"source"`
+	IsAudited        bool    `json:"is_audited"`
+	CostOfSales      float64 `json:"cost_of_sales"`
+	GrossProfit      float64 `json:"gross_profit"`
+	StaffCosts       float64 `json:"staff_costs"`
+	AdminExpenses    float64 `json:"admin_expenses"`
+	NetProfit        float64 `json:"net_profit"`
+	CashEquivalents  float64 `json:"cash_equivalents"`
+	TradeReceivables float64 `json:"trade_receivables"`
+	TotalAssets      float64 `json:"total_assets"`
+	TotalLiabilities float64 `json:"total_liabilities"`
+	TotalEquity      float64 `json:"total_equity"`
+	HasData          bool    `json:"has_data"`
+}
+
+func getAHSAuditedDivisionData() map[int]DivisionFinancialSummary {
+	return map[int]DivisionFinancialSummary{
+		2023: {
+			Division:         "AHS Trading",
+			Year:             2023,
+			Source:           "Grant Thornton FS2023 (Audited)",
+			IsAudited:        true,
+			Revenue:          0,
+			CostOfSales:      0,
+			GrossProfit:      0,
+			StaffCosts:       0,
+			AdminExpenses:    1962,
+			NetProfit:        -1962,
+			CashEquivalents:  427,
+			TradeReceivables: 100,
+			OutstandingAR:    100,
+			TotalAssets:      44893,
+			TotalLiabilities: 4538,
+			TotalEquity:      40355,
+			HasData:          true,
+		},
+		2024: {
+			Division:         "AHS Trading",
+			Year:             2024,
+			Source:           "Grant Thornton FS2024 (Audited)",
+			IsAudited:        true,
+			Revenue:          63570,
+			CostOfSales:      60542,
+			GrossProfit:      3028,
+			StaffCosts:       3722,
+			AdminExpenses:    2693,
+			NetProfit:        -3387,
+			CashEquivalents:  2520,
+			TradeReceivables: 70027,
+			OutstandingAR:    70027,
+			TotalAssets:      72547,
+			TotalLiabilities: 35579,
+			TotalEquity:      36968,
+			HasData:          true,
+		},
+	}
 }
 
 // GetFinancialDashboardByDivision returns financial metrics filtered by division (PH Trading or AHS Trading)
@@ -725,6 +744,12 @@ func (a *App) GetFinancialDashboardByDivision(year int, division string) (Divisi
 	summary := DivisionFinancialSummary{
 		Division: division,
 		Year:     year,
+	}
+
+	if division == "AHS Trading" {
+		if audited, ok := getAHSAuditedDivisionData()[year]; ok {
+			return audited, nil
+		}
 	}
 
 	yearStr := fmt.Sprintf("%d", year)

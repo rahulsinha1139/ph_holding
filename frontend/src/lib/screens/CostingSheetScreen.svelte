@@ -171,33 +171,48 @@
     // ========================================
     // HEADER SECTION - Matches Excel "Costing Sheet" header
     // ========================================
-    let header = {
-        division: 'PH Trading',
-        date: new Date().toISOString().split('T')[0],
-        preparedBy: '',
-        customerId: '',
-        customerName: '',
-        contactPerson: '',
-        rfqReference: '',
-        folderNumber: '',
-        costingId: '',
-        subject: '',
-        quoteType: 'Quotation',
-        estDelivery: '5-7 weeks',
-        deliveryTerms: 'DAP Bahrain at your store or PH Trading',
-        paymentTerms: '30 days from Date of Delivery',
-        orderType: 'General',
-        countryOfOrigin: 'DE',
-        cocCoo: 'No',
-        testCertificate: 'Additional charges applicable as per OEM terms',
-        installation: 'No',
-        commissioning: 'No',
-        testing: 'No',
-        // VAT/Tax compliance fields (Bahrain NBR)
-        placeOfSupply: 'Kingdom of Bahrain',
-        taxCategory: 'Standard',
-        customerTRN: '',
+    const defaultDeliveryTermsForDivision = (division: string) =>
+        division === 'AHS Trading' ? 'DAP Bahrain at your store or AHS Trading' : 'DAP Bahrain at your store or PH Trading';
+
+    const normaliseDeliveryTermsForDivision = (deliveryTerms: string, division: string) => {
+        const trimmed = (deliveryTerms || '').trim();
+        if (!trimmed || trimmed === 'DAP Bahrain at your store or PH Trading' || trimmed === 'DAP Bahrain at your store or AHS Trading') {
+            return defaultDeliveryTermsForDivision(division);
+        }
+        return trimmed;
     };
+
+    function createDefaultHeader(division = 'PH Trading') {
+        return {
+            division,
+            date: new Date().toISOString().split('T')[0],
+            preparedBy: '',
+            customerId: '',
+            customerName: '',
+            contactPerson: '',
+            rfqReference: '',
+            folderNumber: '',
+            costingId: '',
+            subject: '',
+            quoteType: 'Quotation',
+            estDelivery: '5-7 weeks',
+            deliveryTerms: defaultDeliveryTermsForDivision(division),
+            paymentTerms: '30 days from Date of Delivery',
+            orderType: 'General',
+            countryOfOrigin: 'DE',
+            cocCoo: 'No',
+            testCertificate: 'Additional charges applicable as per OEM terms',
+            installation: 'No',
+            commissioning: 'No',
+            testing: 'No',
+            // VAT/Tax compliance fields (Bahrain NBR)
+            placeOfSupply: 'Kingdom of Bahrain',
+            taxCategory: 'Standard',
+            customerTRN: '',
+        };
+    }
+
+    let header = createDefaultHeader();
 
     const defaultQuotationBody = `We thank you for the opportunity and are pleased to submit our techno-commercial offer for your review.
 
@@ -206,7 +221,7 @@ Please find our pricing and scope below. We trust the proposal meets your requir
 
     // Division options (sister companies)
     const divisionOptions = ['PH Trading', 'AHS Trading'];
-
+    let lastAppliedDivision = header.division;
     // Staff list for "Prepared By" dropdown
     const staffList = [
         { name: 'Stanley Vaz', title: 'COO', phone: '+973 3662 3662', email: 'stanley.vaz@platinumholdings.com.bh' },
@@ -224,6 +239,7 @@ Please find our pricing and scope below. We trust the proposal meets your requir
     ];
     const deliveryTermsOptions = [
         'DAP Bahrain at your store or PH Trading',
+        'DAP Bahrain at your store or AHS Trading',
         'Ex-Works (EXW)',
         'Free Carrier (FCA)',
         'Delivered Duty Paid (DDP)',
@@ -619,10 +635,13 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             );
 
             if (!restoredRevision) {
+                const nextDivision = selectedOpportunity.division || header.division || 'PH Trading';
                 header.customerName = customerName;
                 header.customerId = matchedCustomer?.id || '';
                 header.contactPerson = matchedCustomer?.contact_person || matchedCustomer?.primary_contact || '';
                 header.rfqReference = opportunityReference;
+                header.division = nextDivision;
+                header.deliveryTerms = normaliseDeliveryTermsForDivision(header.deliveryTerms, nextDivision);
 
                 // Generate folder number and costing ID
                 const year = String(parseYear(selectedOpportunity.year || selectedOpportunity.created_at)).slice(-2);
@@ -640,12 +659,14 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
 
                 if (seedItems.length > 0) {
                     lineItems = mapSeedItemsToCosting(seedItems);
+                    calculateAll();
                     toast.success(`Loaded ${lineItems.length} line items from opportunity`);
                 } else if (selectedOpportunity._source === 'pipeline') {
                     try {
                         const linkedItems = await GetOpportunityLineItems(String(selectedOpportunity.id));
                         if (Array.isArray(linkedItems) && linkedItems.length > 0) {
                             lineItems = mapSeedItemsToCosting(linkedItems);
+                            calculateAll();
                             toast.success(`Loaded ${lineItems.length} line items from linked opportunity data`);
                         } else {
                             lineItems = [createNewLineItem()];
@@ -776,32 +797,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         selectedOpportunity = null;
         showCostingForm = true;
         // Reset header
-        header = {
-            division: 'PH Trading',
-            date: new Date().toISOString().split('T')[0],
-            preparedBy: '',
-            customerId: '',
-            customerName: '',
-            contactPerson: '',
-            rfqReference: '',
-            folderNumber: '',
-            costingId: '',
-            subject: '',
-            quoteType: 'Quotation',
-            estDelivery: '5-7 weeks',
-            deliveryTerms: 'DAP Bahrain at your store or PH Trading',
-            paymentTerms: '30 days from Date of Delivery',
-            orderType: 'General',
-            countryOfOrigin: 'DE',
-            cocCoo: 'No',
-            testCertificate: 'Additional charges applicable as per OEM terms',
-            installation: 'No',
-            commissioning: 'No',
-            testing: 'No',
-            placeOfSupply: 'Kingdom of Bahrain',
-            taxCategory: 'Standard',
-            customerTRN: '',
-        };
+        header = createDefaultHeader();
         lineItems = [createNewLineItem()];
         quotationBody = defaultQuotationBody;
     }
@@ -892,7 +888,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             costingId: payload.costingId || header.costingId,
             subject: payload.subject || header.subject,
             estDelivery: payload.estDelivery || header.estDelivery,
-            deliveryTerms: payload.deliveryTerms || header.deliveryTerms,
+            deliveryTerms: normaliseDeliveryTermsForDivision(payload.deliveryTerms || header.deliveryTerms, payload.division || header.division),
             paymentTerms: payload.paymentTerms || header.paymentTerms,
             orderType: payload.orderType || header.orderType,
             countryOfOrigin: payload.countryOfOrigin || header.countryOfOrigin,
@@ -931,7 +927,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             costingId: header.costingId,
             subject: header.subject,
             estDelivery: header.estDelivery,
-            deliveryTerms: header.deliveryTerms,
+            deliveryTerms: normaliseDeliveryTermsForDivision(header.deliveryTerms, header.division),
             paymentTerms: header.paymentTerms,
             orderType: header.orderType,
             countryOfOrigin: header.countryOfOrigin,

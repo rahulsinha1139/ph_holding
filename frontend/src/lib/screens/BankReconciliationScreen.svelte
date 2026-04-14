@@ -59,10 +59,12 @@
 
   // Props
   export let embedded = false;
+  export let company: 'PH Trading' | 'AHS Trading' = 'PH Trading';
 
   // Types - aligned with Wails CompanyBankAccount (balance is calculated separately via CashPosition)
   interface BankAccount {
     id: string;
+    division?: string;
     bank_name: string;
     account_name?: string;
     account_number: string;
@@ -77,6 +79,7 @@
 
   interface BankStatement {
     id: string;
+    division?: string;
     bank_account_id: string;
     statement_number: string;
     period_start: any;
@@ -86,6 +89,7 @@
     total_debits: number;
     total_credits: number;
     status: string;
+    notes?: string;
   }
 
   interface BankStatementLine {
@@ -121,6 +125,7 @@
   let statementLines: any[] = [];
   let cashPosition: any = null;
   let loading = true;
+  let statementsLoading = false;
   let linesLoading = false;
 
   // Modal state
@@ -144,6 +149,7 @@
   // Bank account management state
   let editingAccount: BankAccount | null = null;
   let accountFormData = {
+    division: 'PH Trading',
     bank_name: '',
     account_name: '',
     account_number: '',
@@ -163,7 +169,8 @@
     closing_balance: 0,
     period_start: '',
     period_end: '',
-    status: 'Imported'
+    status: 'Imported',
+    notes: ''
   };
   let savingStatement = false;
 
@@ -178,6 +185,24 @@
   let savingLine = false;
   let editingLine: BankStatementLine | null = null;
 
+  function matchesCompany(division?: string) {
+    return (division || 'PH Trading') === company;
+  }
+
+  $: visibleBankAccounts = bankAccounts.filter((account) => matchesCompany(account.division));
+  $: visibleAllBankAccounts = allBankAccounts.filter((account) => matchesCompany(account.division));
+  $: visibleCashAccounts = (cashPosition?.accounts || []).filter((account: any) => matchesCompany(account.division));
+  $: totalVisibleCashPosition = visibleCashAccounts.reduce((sum: number, account: any) => sum + (Number(account.current_balance) || 0), 0);
+  $: if (company && visibleBankAccounts.length > 0 && !visibleBankAccounts.some((account: any) => account.id === selectedAccountId)) {
+    selectedAccountId = visibleBankAccounts[0].id;
+    loadStatements();
+  }
+  $: if (company && visibleBankAccounts.length === 0 && selectedAccountId) {
+    selectedAccountId = '';
+    selectedStatement = null;
+    statementLines = [];
+  }
+
   // KPI calculations
   $: totalUnmatched = statementLines.filter(l => !l.is_matched).length;
   $: totalMatched = statementLines.filter(l => l.is_matched).length;
@@ -190,8 +215,8 @@
       key: 'statement_number',
       label: 'Statement #',
       sortable: true,
-      width: '140px',
-      render: (row: BankStatement) => `<span style="font-family: var(--font-mono); font-size: 12px;">${escapeHtml(row.statement_number)}</span>`
+      width: '280px',
+      render: (row: BankStatement) => `<span style="display:block; font-family: var(--font-mono); font-size: 12px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere;">${escapeHtml(row.statement_number)}</span>`
     },
     {
       key: 'period_end',
@@ -320,6 +345,14 @@
     }
   }
 
+  function formatBankAccountOption(account: any): string {
+    const bank = account?.bank_name || 'Bank Account';
+    const accountName = account?.account_name ? ` ${account.account_name}` : '';
+    const accountNumber = account?.account_number ? ` - ${account.account_number}` : '';
+    const currency = account?.currency ? ` (${account.currency})` : '';
+    return `${bank}${accountName}${accountNumber}${currency}`;
+  }
+
   // escapeHtml now imported from centralized utility
 
   // Data loading - independent API calls to prevent one failure from blocking the other
@@ -331,8 +364,9 @@
     try {
       const accountsResult = await GetActiveBankAccounts();
       bankAccounts = accountsResult || [];
-      if (bankAccounts.length > 0 && !selectedAccountId) {
-        selectedAccountId = bankAccounts[0].id;
+      const scopedAccounts = (accountsResult || []).filter((account: any) => matchesCompany(account.division));
+      if (scopedAccounts.length > 0 && !selectedAccountId) {
+        selectedAccountId = scopedAccounts[0].id;
         await loadStatements();
       }
     } catch (err) {
@@ -343,7 +377,10 @@
 
     try {
       const positionResult = await GetCashPosition();
-      cashPosition = positionResult;
+      cashPosition = {
+        ...(positionResult || {}),
+        accounts: (positionResult?.accounts || []).filter((account: any) => matchesCompany(account.division)),
+      };
     } catch (err) {
       console.error('Failed to load cash position:', err);
       positionError = err;
@@ -355,12 +392,15 @@
 
   async function loadStatements() {
     if (!selectedAccountId) return;
+    statementsLoading = true;
     try {
       const result = await GetBankStatements(selectedAccountId);
       statements = result || [];
     } catch (err) {
       console.error('Failed to load statements:', err);
       toast.danger('Failed to load statements');
+    } finally {
+      statementsLoading = false;
     }
   }
 
@@ -427,15 +467,15 @@
 
       customerInvoiceCandidates = (allCustomerInvoices || []).filter((invoice: any) => {
         const status = String(invoice?.status || '').toLowerCase();
-        return Number(invoice?.outstanding_bhd || 0) > 0 && !['cancelled', 'void', 'draft'].includes(status);
+        return matchesCompany(invoice?.division) && Number(invoice?.outstanding_bhd || 0) > 0 && !['cancelled', 'void', 'draft'].includes(status);
       });
       supplierInvoiceCandidates = (allSupplierInvoices || []).filter((invoice: any) => {
         const status = String(invoice?.status || '').toLowerCase();
         const paymentStatus = String(invoice?.payment_status || '').toLowerCase();
-        return paymentStatus !== 'paid' && !['cancelled', 'void', 'rejected'].includes(status);
+        return matchesCompany(invoice?.division) && paymentStatus !== 'paid' && !['cancelled', 'void', 'rejected'].includes(status);
       });
-      supplierPaymentCandidates = supplierPayments || [];
-      payrollPayoutCandidates = await ListUnreconciledPayrollPayouts().catch(() => []);
+      supplierPaymentCandidates = (supplierPayments || []).filter((payment: any) => matchesCompany(payment?.division));
+      payrollPayoutCandidates = (await ListUnreconciledPayrollPayouts().catch(() => [])).filter((payout: any) => matchesCompany(payout?.division));
     } finally {
       matchLoading = false;
     }
@@ -539,7 +579,10 @@
         // Also refresh cash position
         try {
           const pos = await GetCashPosition();
-          cashPosition = pos;
+          cashPosition = {
+            ...(pos || {}),
+            accounts: (pos?.accounts || []).filter((account: any) => matchesCompany(account.division)),
+          };
         } catch (_) {}
       } else {
         // User cancelled file selection
@@ -579,6 +622,7 @@
   function resetAccountForm() {
     editingAccount = null;
     accountFormData = {
+      division: company,
       bank_name: '',
       account_name: '',
       account_number: '',
@@ -592,6 +636,7 @@
   function editAccount(account: BankAccount) {
     editingAccount = account;
     accountFormData = {
+      division: account.division || company,
       bank_name: account.bank_name,
       account_name: account.account_name || '',
       account_number: account.account_number,
@@ -695,7 +740,8 @@
       closing_balance: selectedStatement.closing_balance,
       period_start: formatDateForInput(selectedStatement.period_start),
       period_end: formatDateForInput(selectedStatement.period_end),
-      status: selectedStatement.status
+      status: selectedStatement.status,
+      notes: selectedStatement.notes || ''
     };
     showEditStatementModal = true;
   }
@@ -712,12 +758,17 @@
 
     savingStatement = true;
     try {
-      await UpdateBankStatement(selectedStatement.id, editStatementData);
+      const statementID = selectedStatement.id;
+      await UpdateBankStatement(statementID, editStatementData);
+      selectedStatement = {
+        ...selectedStatement,
+        ...editStatementData,
+      };
       toast.success('Statement updated successfully');
       showEditStatementModal = false;
       await loadStatements();
       // Reload the selected statement to show updated data
-      const updatedStatement = statements.find(s => s.id === selectedStatement.id);
+      const updatedStatement = statements.find(s => s.id === statementID);
       if (updatedStatement) {
         selectedStatement = updatedStatement;
       }
@@ -763,6 +814,21 @@
     showAddLineModal = true;
   }
 
+  function flipLineDebitCredit() {
+    const nextDebit = Number(lineFormData.credit) || 0;
+    const nextCredit = Number(lineFormData.debit) || 0;
+    lineFormData = {
+      ...lineFormData,
+      debit: nextDebit,
+      credit: nextCredit
+    };
+  }
+
+  function openOCRReviewModal(line: BankStatementLine) {
+    showMatchModal = false;
+    openEditLineModal(line);
+  }
+
   async function handleSaveLine() {
     if (savingLine) return;
 
@@ -786,10 +852,13 @@
 
     savingLine = true;
     try {
+      const editedMatchedLine = Boolean(editingLine?.is_matched);
       if (editingLine) {
         // Update existing line
         await UpdateBankStatementLine(editingLine.id, lineFormData);
-        toast.success('Transaction updated successfully');
+        toast.success(editedMatchedLine
+          ? 'Transaction updated and existing match cleared for re-review'
+          : 'Transaction updated successfully');
         showEditLineModal = false;
       } else {
         // Create new line
@@ -843,6 +912,12 @@
   onMount(() => {
     loadData();
   });
+
+  $: if (company) {
+    importAccountId = '';
+    resetAccountForm();
+    loadData();
+  }
 </script>
 
 <PageLayout title="Bank Reconciliation" subtitle="Import and reconcile bank statements" {embedded}>
@@ -857,7 +932,7 @@
         <Card variant="elevated">
           <div class="kpi">
             <span class="kpi-label">Total Cash Position</span>
-            <span class="kpi-value primary">{formatBHD(cashPosition?.total_bhd || 0)} BHD</span>
+            <span class="kpi-value primary">{formatBHD(totalVisibleCashPosition)} BHD</span>
           </div>
         </Card>
         <Card variant="elevated">
@@ -884,12 +959,18 @@
       <div class="toolbar">
         <div class="left">
           <FormGroup label="Bank Account" inline>
-            <select bind:value={selectedAccountId} on:change={handleAccountChange} class="account-select">
-              {#each bankAccounts as account}
-                <option value={account.id}>{account.bank_name} - {account.account_number}</option>
+            <select bind:value={selectedAccountId} on:change={handleAccountChange} class="account-select" disabled={statementsLoading}>
+              {#each visibleBankAccounts as account}
+                <option value={account.id}>{formatBankAccountOption(account)}</option>
               {/each}
             </select>
           </FormGroup>
+          {#if statementsLoading}
+            <div class="inline-loading">
+              <WabiSpinner size="sm" tempo="calm" />
+              <span>Refreshing statements...</span>
+            </div>
+          {/if}
         </div>
         <div class="right">
           <Button variant="secondary" on:click={openManageAccountsModal}>
@@ -920,13 +1001,19 @@
         <!-- Statements Panel -->
         <div class="panel statements-panel">
           <h3>Statements</h3>
-          <DataTable
-            data={statements}
-            columns={statementColumns}
-            onRowClick={loadStatementLines}
-            selectedId={selectedStatement?.id}
-            emptyMessage="No statements imported"
-          />
+          {#if statementsLoading}
+            <div class="loading-container small">
+              <WabiSpinner size="md" tempo="calm" />
+            </div>
+          {:else}
+            <DataTable
+              data={statements}
+              columns={statementColumns}
+              onRowClick={loadStatementLines}
+              selectedId={selectedStatement?.id}
+              emptyMessage="No statements imported"
+            />
+          {/if}
         </div>
 
         <!-- Lines Panel -->
@@ -945,6 +1032,15 @@
               </Button>
             {/if}
           </div>
+          {#if selectedStatement?.notes}
+            <div class="statement-notes-card">
+              <div class="statement-notes-head">
+                <span>Statement Notes</span>
+                <span>OCR / AI</span>
+              </div>
+              <p>{selectedStatement.notes}</p>
+            </div>
+          {/if}
           {#if linesLoading}
             <div class="loading-container small">
               <WabiSpinner size="md" />
@@ -968,13 +1064,13 @@
 </PageLayout>
 
 <!-- Import Modal -->
-<Modal bind:open={showImportModal} title="Import Bank Statement" size="md">
+<Modal bind:open={showImportModal} title="Import Bank Statement" size="xl">
   <div class="import-form">
     <FormGroup label="Bank Account">
       <select bind:value={importAccountId} class="form-select">
         <option value="">Select account...</option>
-        {#each bankAccounts as account}
-          <option value={account.id}>{account.bank_name} - {account.account_number}</option>
+        {#each visibleBankAccounts as account}
+          <option value={account.id}>{formatBankAccountOption(account)}</option>
         {/each}
       </select>
     </FormGroup>
@@ -1029,6 +1125,15 @@
         </Button>
       {:else}
         <div class="manual-match-form">
+          <div class="ocr-review-banner">
+            <div>
+              <strong>OCR review</strong>
+              <p>If the parser flipped the polarity, correct the line before matching.</p>
+            </div>
+            <Button variant="secondary" size="sm" on:click={() => matchingLine && openOCRReviewModal(matchingLine)}>
+              Fix Debit/Credit
+            </Button>
+          </div>
           <div class="form-row two-col">
             <FormGroup label="Match To">
               <select bind:value={matchingType} class="form-select">
@@ -1107,6 +1212,11 @@
         </select>
       </FormGroup>
     </div>
+    <div class="form-row">
+      <FormGroup label="Notes">
+        <textarea bind:value={editStatementData.notes} class="form-input form-textarea" rows="4" placeholder="OCR summary, import context, or reconciliation notes"></textarea>
+      </FormGroup>
+    </div>
   </div>
   <svelte:fragment slot="footer">
     <Button variant="secondary" on:click={() => showEditStatementModal = false}>Cancel</Button>
@@ -1141,6 +1251,16 @@
       <FormGroup label="Credit (BHD)">
         <input type="number" step="0.001" bind:value={lineFormData.credit} class="form-input" />
       </FormGroup>
+    </div>
+    <div class="line-fix-actions">
+      <Button variant="secondary" size="sm" on:click={flipLineDebitCredit}>
+        Flip Debit / Credit
+      </Button>
+      {#if editingLine?.is_matched}
+        <span class="line-fix-hint">Saving this correction will clear the current match so it can be reviewed again.</span>
+      {:else}
+        <span class="line-fix-hint">Use this when OCR has placed the amount on the wrong side.</span>
+      {/if}
     </div>
     <div class="form-note">
       <p>Note: Only one of Debit or Credit should be non-zero</p>
@@ -1203,10 +1323,10 @@
     <div class="accounts-section">
       <h4>Existing Accounts</h4>
       <div class="accounts-list">
-        {#if allBankAccounts.length === 0}
+        {#if visibleAllBankAccounts.length === 0}
           <p class="empty-message">No bank accounts found</p>
         {:else}
-          {#each allBankAccounts as account}
+          {#each visibleAllBankAccounts as account}
             <div class="account-item" class:inactive={!account.is_active}>
               <div class="account-info">
                 <div class="account-main">
@@ -1246,6 +1366,14 @@
     <div class="form-section">
       <h4>{editingAccount ? 'Edit Account' : 'Add New Account'}</h4>
       <div class="account-form">
+        <div class="form-row">
+          <FormGroup label="Company">
+            <select bind:value={accountFormData.division} class="form-select">
+              <option value="PH Trading">PH Trading</option>
+              <option value="AHS Trading">AHS Trading</option>
+            </select>
+          </FormGroup>
+        </div>
         <div class="form-row">
           <FormGroup label="Bank Name *">
             <Input bind:value={accountFormData.bank_name} placeholder="e.g., National Bank of Bahrain" />
@@ -1394,7 +1522,7 @@
 
   .split-view {
     display: grid;
-    grid-template-columns: 400px 1fr;
+    grid-template-columns: minmax(520px, 0.95fr) minmax(0, 1.45fr);
     gap: 12px;
     height: calc(100vh - 300px);
     min-height: 400px;
@@ -1438,6 +1566,15 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+  }
+
+  .inline-loading {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-left: 12px;
   }
 
   .import-note {
@@ -1493,6 +1630,33 @@
     gap: 14px;
     width: 100%;
     min-width: 0;
+  }
+
+  .ocr-review-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid rgba(217, 119, 6, 0.24);
+    border-radius: var(--radius-md);
+    background: linear-gradient(180deg, rgba(255, 251, 235, 0.98) 0%, rgba(255, 247, 237, 0.95) 100%);
+  }
+
+  .ocr-review-banner strong {
+    display: block;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #B45309;
+    margin-bottom: 4px;
+  }
+
+  .ocr-review-banner p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.5;
   }
 
   .candidate-list {
@@ -1716,11 +1880,58 @@
     gap: 12px;
   }
 
+  .statement-notes-card {
+    margin-bottom: 12px;
+    padding: 12px 14px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(247,247,244,0.98) 100%);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .statement-notes-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+
+  .statement-notes-card p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+  }
+
+  .form-textarea {
+    min-height: 96px;
+    resize: vertical;
+  }
+
   .form-note {
     padding: 8px 12px;
     background: var(--surface-elevated);
     border-left: 3px solid var(--brand-indigo);
     border-radius: var(--radius-sm);
+  }
+
+  .line-fix-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .line-fix-hint {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
   }
 
   .form-note p {

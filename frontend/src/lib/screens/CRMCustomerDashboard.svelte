@@ -12,8 +12,10 @@
   let dashboard: any = null;
   let searchQuery = '';
   let gradeFilter = 'All';
-  let selectedYear = 2025;
-  const availableYears = [0, 2023, 2024, 2025];
+  const currentYear = new Date().getFullYear();
+  const earliestDashboardYear = 2023;
+  let selectedYear = currentYear;
+  const availableYears = [0, ...Array.from({ length: Math.max(currentYear - earliestDashboardYear + 1, 1) }, (_, index) => currentYear - index)];
   let showCreateModal = false;
   let newCustomer = {
     business_name: '',
@@ -51,6 +53,13 @@
 
   function selectCustomer(customerId: string) {
     dispatch('select', { id: customerId });
+  }
+
+  function activateCustomer(customerId: string, event: KeyboardEvent) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      selectCustomer(customerId);
+    }
   }
 
   async function saveCustomer() {
@@ -110,8 +119,8 @@
     <!-- Year Selector -->
     <div class="year-selector-row">
       <div class="year-selector">
-        <label class="year-label">FINANCIAL YEAR</label>
-        <select bind:value={selectedYear} on:change={handleYearChange} class="year-select">
+        <label class="year-label" for="customer-dashboard-year">FINANCIAL YEAR</label>
+        <select id="customer-dashboard-year" bind:value={selectedYear} on:change={handleYearChange} class="year-select">
           {#each availableYears as yr}
             <option value={yr}>{yr === 0 ? 'All Years' : yr}</option>
           {/each}
@@ -161,7 +170,7 @@
         <h3 class="section-title">TOP 10 BY REVENUE</h3>
         <div class="top-list">
           {#each dashboard.top_customers || [] as customer, i}
-            <div class="top-item" on:click={() => selectCustomer(customer.id)}>
+            <div class="top-item" role="button" tabindex="0" on:click={() => selectCustomer(customer.id)} on:keydown={(event) => activateCustomer(customer.id, event)}>
               <span class="rank">{i + 1}</span>
               <span class="name">{customer.business_name}</span>
               <div class="bar-container">
@@ -253,7 +262,7 @@
 
       <div class="customer-grid">
         {#each filteredCustomers as customer}
-          <div class="customer-card" on:click={() => selectCustomer(customer.id)}>
+          <div class="customer-card" role="button" tabindex="0" on:click={() => selectCustomer(customer.id)} on:keydown={(event) => activateCustomer(customer.id, event)}>
             <div class="card-header">
               <span class="customer-name">{customer.business_name}</span>
               <span class="grade-badge grade-{customer.payment_grade?.toLowerCase()}">{customer.payment_grade}</span>
@@ -280,21 +289,23 @@
 </div>
 
 {#if showCreateModal}
+  <!-- svelte-ignore a11y-click-events-have-key-events -->
+  <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div class="modal-backdrop" on:click={() => showCreateModal = false}>
     <div class="modal" on:click|stopPropagation>
       <h3>Create New Customer</h3>
       <div class="form-grid">
         <div class="form-group">
-          <label>Business Name <span class="required">*</span></label>
-          <input type="text" bind:value={newCustomer.business_name} placeholder="Company name" />
+          <label for="crm-customer-business-name">Business Name <span class="required">*</span></label>
+          <input id="crm-customer-business-name" type="text" bind:value={newCustomer.business_name} placeholder="Company name" />
         </div>
         <div class="form-group">
-          <label>Customer Code</label>
-          <input type="text" bind:value={newCustomer.customer_code} placeholder="Auto-generated if empty" />
+          <label for="crm-customer-code">Customer Code</label>
+          <input id="crm-customer-code" type="text" bind:value={newCustomer.customer_code} placeholder="Auto-generated if empty" />
         </div>
         <div class="form-group">
-          <label>Customer Type</label>
-          <select bind:value={newCustomer.customer_type}>
+          <label for="crm-customer-type">Customer Type</label>
+          <select id="crm-customer-type" bind:value={newCustomer.customer_type}>
             <option value="Corporate">Corporate</option>
             <option value="Government">Government</option>
             <option value="SME">SME</option>
@@ -302,8 +313,8 @@
           </select>
         </div>
         <div class="form-group">
-          <label>Payment Grade</label>
-          <select bind:value={newCustomer.payment_grade}>
+          <label for="crm-customer-grade">Payment Grade</label>
+          <select id="crm-customer-grade" bind:value={newCustomer.payment_grade}>
             <option value="A">Grade A</option>
             <option value="B">Grade B</option>
             <option value="C">Grade C</option>
@@ -311,24 +322,24 @@
           </select>
         </div>
         <div class="form-group full-width">
-          <label>Address</label>
-          <input type="text" bind:value={newCustomer.address_line1} placeholder="Street address" />
+          <label for="crm-customer-address">Address</label>
+          <input id="crm-customer-address" type="text" bind:value={newCustomer.address_line1} placeholder="Street address" />
         </div>
         <div class="form-group">
-          <label>City</label>
-          <input type="text" bind:value={newCustomer.city} placeholder="City" />
+          <label for="crm-customer-city">City</label>
+          <input id="crm-customer-city" type="text" bind:value={newCustomer.city} placeholder="City" />
         </div>
         <div class="form-group">
-          <label>Country</label>
-          <input type="text" bind:value={newCustomer.country} placeholder="Country" />
+          <label for="crm-customer-country">Country</label>
+          <input id="crm-customer-country" type="text" bind:value={newCustomer.country} placeholder="Country" />
         </div>
         <div class="form-group">
-          <label>TRN</label>
-          <input type="text" bind:value={newCustomer.trn} placeholder="Tax registration number" />
+          <label for="crm-customer-trn">TRN</label>
+          <input id="crm-customer-trn" type="text" bind:value={newCustomer.trn} placeholder="Tax registration number" />
         </div>
         <div class="form-group">
-          <label>Industry</label>
-          <input type="text" bind:value={newCustomer.industry} placeholder="Industry sector" />
+          <label for="crm-customer-industry">Industry</label>
+          <input id="crm-customer-industry" type="text" bind:value={newCustomer.industry} placeholder="Industry sector" />
         </div>
       </div>
       <div class="modal-actions">

@@ -36,7 +36,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -111,35 +110,75 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	}
 
 	// 4. Create PDF with letterhead
+	profile := companyDocumentProfile(offer.Division)
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.SetAutoPageBreak(true, 35) // Bottom margin: 35mm to avoid letterhead footer
 	pdf.SetTopMargin(50)           // Start content below letterhead header
 	pdf.SetLeftMargin(18)
 	pdf.SetRightMargin(18)
 
-	// Set header function so letterhead appears on ALL pages
-	imgPath := a.letterheadImagePath()
-	pdf.SetHeaderFuncMode(func() {
-		fileInfo, err := os.Stat(imgPath)
-		if err == nil && fileInfo.Size() <= 10*1024*1024 { // 10MB max
-			opt := gofpdf.ImageOptions{ImageType: "PNG", ReadDpi: true}
-			pdf.ImageOptions(imgPath, 0, 0, 210, 297, false, opt, 0, "")
-		} else if err == nil && fileInfo.Size() > 10*1024*1024 {
-			log.Printf("⚠️ Letterhead file too large (%d bytes), using fallback", fileInfo.Size())
-			addLetterheadFallback(pdf)
-		} else {
-			// Fallback: simple text header if image not found
-			addLetterheadFallback(pdf)
+	addOfferPage := func() {
+		pdf.AddPage()
+		a.applyLetterheadForDivision(pdf, profile.Division)
+		pdf.SetY(52)
+	}
+
+	drawOfferInfoBlock := func(startY float64) float64 {
+		const (
+			leftX       = 18.0
+			rightX      = 112.0
+			labelWidth  = 24.0
+			leftValueW  = 66.0
+			rightValueW = 56.0
+			lineHeight  = 5.0
+			rowGap      = 1.0
+		)
+
+		drawColumn := func(x, y, valueWidth float64, label, value string) float64 {
+			lines := pdf.SplitText(sanitizeForPDF(strings.TrimSpace(value)), valueWidth)
+			if len(lines) == 0 {
+				lines = []string{"-"}
+			}
+			pdf.SetXY(x, y)
+			pdf.SetFont("Helvetica", "B", 9)
+			pdf.SetTextColor(29, 29, 31)
+			pdf.CellFormat(labelWidth, lineHeight, label, "", 0, "L", false, 0, "")
+			pdf.SetXY(x+labelWidth, y)
+			pdf.SetFont("Helvetica", "", 9)
+			pdf.SetTextColor(40, 40, 40)
+			pdf.MultiCell(valueWidth, lineHeight, strings.Join(lines, "\n"), "", "L", false)
+			return float64(len(lines)) * lineHeight
 		}
-	}, true) // true = allow content to overlap the header area
+
+		subject := strings.TrimSpace(offer.CustomerName)
+		if subject == "" {
+			subject = strings.TrimSpace(customer.BusinessName)
+		}
+
+		rows := [][4]string{
+			{"Company:", firstNonEmptyString(strings.TrimSpace(offer.AttentionCompany), strings.TrimSpace(customer.BusinessName), strings.TrimSpace(offer.CustomerName), "-"), "Division:", profile.Division},
+			{"Attention:", firstNonEmptyString(strings.TrimSpace(offer.AttentionPerson), strings.TrimSpace(customerContact.ContactName), "-"), "Delivery:", firstNonEmptyString(strings.TrimSpace(offer.DeliveryTerms), "DAP Bahrain")},
+			{"Subject:", firstNonEmptyString(subject, "-"), "Payment:", firstNonEmptyString(strings.TrimSpace(offer.PaymentTerms), "Net 30")},
+			{"RFQ Ref:", firstNonEmptyString(strings.TrimSpace(offer.CustomerReference), "-"), "Est. Delivery:", firstNonEmptyString(strings.TrimSpace(offer.DeliveryWeeks), "-")},
+		}
+
+		y := startY
+		for _, row := range rows {
+			leftHeight := drawColumn(leftX, y, leftValueW, row[0], row[1])
+			rightHeight := drawColumn(rightX, y, rightValueW, row[2], row[3])
+			rowHeight := leftHeight
+			if rightHeight > rowHeight {
+				rowHeight = rightHeight
+			}
+			y += rowHeight + rowGap
+		}
+		return y
+	}
 
 	// ========================================================================
 	// PAGE 1 - QUOTATION
 	// ========================================================================
-	pdf.AddPage()
-
-	// Position for content start (below letterhead logo area)
-	pdf.SetY(52)
+	addOfferPage()
 
 	// Centered document title
 	pdf.SetFont("Helvetica", "B", 20)
@@ -205,72 +244,8 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	}
 	pdf.Cell(0, 5, sanitizeForPDF(issuedBy))
 
-	pdf.SetY(y + 36)
-	pdf.Ln(4)
-
-	// Attention section
-	pdf.SetFont("Helvetica", "B", 10)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(0, 6, "Attention")
-	pdf.Ln(7)
-
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(60, 60, 60)
-
-	// Attention person (use from offer, or fallback to customer contact)
-	attentionPerson := offer.AttentionPerson
-	if attentionPerson == "" && customerContact.ContactName != "" {
-		attentionPerson = customerContact.ContactName
-	}
-	if attentionPerson != "" {
-		pdf.Cell(0, 5, sanitizeForPDF(attentionPerson))
-		pdf.Ln(5)
-	}
-
-	// Company name
-	attentionCompany := offer.AttentionCompany
-	if attentionCompany == "" {
-		attentionCompany = customer.BusinessName
-	}
-	if attentionCompany != "" {
-		pdf.SetFont("Helvetica", "B", 9)
-		pdf.Cell(0, 5, sanitizeForPDF(attentionCompany))
-		pdf.Ln(5)
-	}
-
-	// Phone
-	attentionPhone := offer.AttentionPhone
-	if attentionPhone == "" && customerContact.Phone != "" {
-		attentionPhone = customerContact.Phone
-	}
-	if attentionPhone != "" {
-		pdf.SetFont("Helvetica", "", 9)
-		pdf.Cell(0, 5, "Phone: "+sanitizeForPDF(attentionPhone))
-		pdf.Ln(5)
-	}
-
-	// Address
-	attentionAddress := offer.AttentionAddress
-	if attentionAddress == "" {
-		// Build from customer master
-		addressParts := []string{}
-		if customer.AddressLine1 != "" {
-			addressParts = append(addressParts, customer.AddressLine1)
-		}
-		if customer.City != "" {
-			addressParts = append(addressParts, customer.City)
-		}
-		if customer.Country != "" {
-			addressParts = append(addressParts, customer.Country)
-		}
-		attentionAddress = strings.Join(addressParts, ", ")
-	}
-	if attentionAddress != "" {
-		pdf.SetFont("Helvetica", "", 9)
-		pdf.MultiCell(0, 5, sanitizeForPDF(attentionAddress), "", "", false)
-	}
-
-	pdf.Ln(4)
+	pdf.SetY(drawOfferInfoBlock(y + 32))
+	pdf.Ln(3)
 
 	// Your Reference line - use MultiCell for long references to prevent overlap
 	if offer.CustomerReference != "" {
@@ -344,8 +319,7 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 		}
 
 		if pdf.GetY()+rowHeight > 255 {
-			pdf.AddPage()
-			pdf.SetY(52)
+			addOfferPage()
 			drawOfferTableHeader()
 		}
 
@@ -440,9 +414,7 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	// ========================================================================
 	// PAGE 2 - TERMS AND CONDITIONS
 	// ========================================================================
-	pdf.AddPage()
-
-	pdf.SetY(52)
+	addOfferPage()
 	pdf.SetFont("Helvetica", "B", 14)
 	pdf.SetTextColor(0, 120, 80) // Green header
 	pdf.Cell(0, 8, "Terms and Conditions")
@@ -508,11 +480,8 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 		pdf.Ln(5)
 	}
 
-	pdf.Cell(0, 5, "Email: sales@phtrading.com")
-	pdf.Ln(5)
-
 	pdf.SetFont("Helvetica", "B", 9)
-	pdf.Cell(0, 5, "PH TRADING WLL")
+	pdf.Cell(0, 5, profile.LegalName)
 	pdf.Ln(10)
 
 	// Thank you footer
@@ -533,8 +502,7 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	}
 
 	if hasDetailedSpecs {
-		pdf.AddPage()
-		pdf.SetY(52)
+		addOfferPage()
 
 		pdf.SetFont("Helvetica", "B", 14)
 		pdf.SetTextColor(29, 29, 31)
@@ -624,8 +592,7 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 			}
 
 			if pdf.GetY()+rowHeight > 255 {
-				pdf.AddPage()
-				pdf.SetY(52)
+				addOfferPage()
 				drawAnnexureHeader()
 			}
 
@@ -661,7 +628,7 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 		if offer.QuoteType != "" {
 			footerTitle = offer.QuoteType
 		}
-		pdf.CellFormat(0, 5, fmt.Sprintf("%s %s  |  Page %d of %d  |  PH Trading W.L.L.", footerTitle, offer.OfferNumber, i, totalPages), "", 0, "C", false, 0, "")
+		pdf.CellFormat(0, 5, fmt.Sprintf("%s %s  |  Page %d of %d  |  %s", footerTitle, offer.OfferNumber, i, totalPages, profile.LegalName), "", 0, "C", false, 0, "")
 	}
 
 	// ========================================================================
