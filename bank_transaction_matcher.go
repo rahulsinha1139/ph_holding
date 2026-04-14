@@ -8,13 +8,15 @@
 package main
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"regexp"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // =============================================================================
@@ -116,14 +118,15 @@ func (a *App) AutoMatchBankLines(statementID string) (*BankReconciliationMatchRe
 		var matchedID string
 		var confidence float64
 
+		autoCreateExpense := false
 		switch txType {
 		case TxTypeCustomerPayment, TxTypeChequeReceived:
 			matched, matchedID, confidence = a.matchToCustomerInvoice(line, invoiceNumbers, customerName)
 		case TxTypeSupplierPayment, TxTypeChequeIssued:
 			matched, matchedID, confidence = a.matchToSupplierPayment(line, poNumbers, supplierName)
 		case TxTypeBankFee, TxTypeSwiftCharge, TxTypeVATOnFee, TxTypeBGFee, TxTypeCorrespondentCharge:
-			// Auto-create expense entry for bank fees
-			a.createExpenseFromBankLine(line, txType)
+			// Auto-create expense entry for bank fees inside the match transaction.
+			autoCreateExpense = true
 			matched = true
 			confidence = 1.0
 		}
@@ -141,19 +144,41 @@ func (a *App) AutoMatchBankLines(statementID string) (*BankReconciliationMatchRe
 			matchedCount++
 			autoMatchedCount++
 
-			// Log the match
 			lineID := line.ID
-			a.LogReconciliationAction(statementID, &lineID, "MATCH",
-				map[string]interface{}{
-					"type":       "Auto",
-					"tx_type":    txType,
-					"matched_to": matchedID,
-					"confidence": confidence,
-				},
-				"System", true, confidence, "Auto-matched")
+			if err := a.db.Transaction(func(tx *gorm.DB) error {
+				if autoCreateExpense {
+					if err := a.createExpenseFromBankLineWithDB(tx, line, txType); err != nil {
+						return fmt.Errorf("failed to create bank expense for line %s: %w", line.ID, err)
+					}
+				}
+				if err := tx.Model(line).Updates(updates).Error; err != nil {
+					return fmt.Errorf("failed to update auto-matched line %s: %w", line.ID, err)
+				}
+				return a.logReconciliationActionWithDB(
+					tx,
+					statementID,
+					&lineID,
+					"MATCH",
+					map[string]interface{}{
+						"type":       "Auto",
+						"tx_type":    txType,
+						"matched_to": matchedID,
+						"confidence": confidence,
+					},
+					"System",
+					true,
+					confidence,
+					"Auto-matched",
+				)
+			}); err != nil {
+				return nil, err
+			}
+			continue
 		}
 
-		a.db.Model(line).Updates(updates)
+		if err := a.db.Model(line).Updates(updates).Error; err != nil {
+			return nil, fmt.Errorf("failed to update line %s: %w", line.ID, err)
+		}
 	}
 
 	// Count final matched/unmatched
@@ -171,7 +196,9 @@ func (a *App) AutoMatchBankLines(statementID string) (*BankReconciliationMatchRe
 	if finalMatchedCount == totalLines {
 		newStatus = bankStatementStatusInProgress // Still needs verification before reconciled
 	}
-	a.db.Model(&statement).Update("status", newStatus)
+	if err := a.db.Model(&statement).Update("status", newStatus).Error; err != nil {
+		return nil, fmt.Errorf("failed to update statement status: %w", err)
+	}
 
 	log.Printf("🔄 Auto-matched %d/%d lines (%.1f%%) for statement %s",
 		matchedCount, totalLines, matchedPercent, statementID)
@@ -423,6 +450,14 @@ func (a *App) matchToSupplierPayment(line *BankStatementLine, poNumbers []string
 
 // createExpenseFromBankLine creates an expense entry for bank fees
 func (a *App) createExpenseFromBankLine(line *BankStatementLine, txType string) error {
+	return a.createExpenseFromBankLineWithDB(a.db, line, txType)
+}
+
+func (a *App) createExpenseFromBankLineWithDB(db *gorm.DB, line *BankStatementLine, txType string) error {
+	if db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
 	expense := BankExpenseEntry{
 		BankStatementLineID: line.ID,
 		ExpenseDate:         line.TransactionDate,
@@ -432,12 +467,11 @@ func (a *App) createExpenseFromBankLine(line *BankStatementLine, txType string) 
 		Currency:            "BHD",
 	}
 
-	// Add VAT if this is a VAT entry
 	if txType == TxTypeVATOnFee {
 		expense.VATAmount = line.Debit
 	}
 
-	return a.db.Create(&expense).Error
+	return db.Create(&expense).Error
 }
 
 // =============================================================================
@@ -531,27 +565,45 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 		if err := a.db.First(&run, "id = ?", payout.PayrollRunID).Error; err == nil && run.PayoutJournalEntryID != nil {
 			updates["matched_journal_id"] = *run.PayoutJournalEntryID
 		}
-		lineIDRef := line.ID
-		if err := a.db.Model(&payout).Updates(map[string]interface{}{
-			"bank_statement_line_id": &lineIDRef,
-			"updated_at":             time.Now(),
-		}).Error; err != nil {
-			return fmt.Errorf("failed to link payroll payout to bank line: %w", err)
+	}
+
+	if err := a.db.Transaction(func(tx *gorm.DB) error {
+		if entityType == "PAYROLL_PAYOUT" {
+			var payout PayrollPayout
+			if err := tx.First(&payout, "id = ?", entityID).Error; err != nil {
+				return fmt.Errorf("payroll payout not found: %w", err)
+			}
+			lineIDRef := line.ID
+			if err := tx.Model(&payout).Updates(map[string]interface{}{
+				"bank_statement_line_id": &lineIDRef,
+				"updated_at":             time.Now(),
+			}).Error; err != nil {
+				return fmt.Errorf("failed to link payroll payout to bank line: %w", err)
+			}
 		}
-	}
 
-	if err := a.db.Model(line).Updates(updates).Error; err != nil {
-		return fmt.Errorf("failed to update line: %w", err)
-	}
+		if err := tx.Model(line).Updates(updates).Error; err != nil {
+			return fmt.Errorf("failed to update line: %w", err)
+		}
 
-	// Log the action
-	a.LogReconciliationAction(line.BankStatementID, &lineID, "MATCH",
-		map[string]interface{}{
-			"type":        "Manual",
-			"entity_type": entityType,
-			"entity_id":   entityID,
-		},
-		user, false, 1.0, "Manual match")
+		return a.logReconciliationActionWithDB(
+			tx,
+			line.BankStatementID,
+			&lineID,
+			"MATCH",
+			map[string]interface{}{
+				"type":        "Manual",
+				"entity_type": entityType,
+				"entity_id":   entityID,
+			},
+			user,
+			false,
+			1.0,
+			"Manual match",
+		)
+	}); err != nil {
+		return err
+	}
 
 	log.Printf("🔗 Manual match: Line %s → %s %s", lineID, entityType, entityID)
 	return nil
@@ -590,26 +642,43 @@ func (a *App) UnmatchLine(lineID, user, reason string) error {
 	}
 
 	var payout PayrollPayout
-	if err := a.db.Where("bank_statement_line_id = ?", lineID).First(&payout).Error; err == nil {
-		if updateErr := a.db.Model(&payout).Updates(map[string]interface{}{
-			"bank_statement_line_id": nil,
-			"updated_at":             time.Now(),
-		}).Error; updateErr != nil {
-			return fmt.Errorf("failed to unlink payroll payout from bank line: %w", updateErr)
+	if a.db.Migrator().HasTable(&PayrollPayout{}) {
+		if err := a.db.Where("bank_statement_line_id = ?", lineID).First(&payout).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to load linked payroll payout: %w", err)
 		}
 	}
 
-	if err := a.db.Model(line).Updates(updates).Error; err != nil {
-		return fmt.Errorf("failed to unmatch line: %w", err)
-	}
+	if err := a.db.Transaction(func(tx *gorm.DB) error {
+		if payout.ID != "" {
+			if updateErr := tx.Model(&payout).Updates(map[string]interface{}{
+				"bank_statement_line_id": nil,
+				"updated_at":             time.Now(),
+			}).Error; updateErr != nil {
+				return fmt.Errorf("failed to unlink payroll payout from bank line: %w", updateErr)
+			}
+		}
 
-	// Log the action
-	a.LogReconciliationAction(line.BankStatementID, &lineID, "UNMATCH",
-		map[string]interface{}{
-			"previous_match": previousMatch,
-			"reason":         reason,
-		},
-		user, false, 1.0, reason)
+		if err := tx.Model(line).Updates(updates).Error; err != nil {
+			return fmt.Errorf("failed to unmatch line: %w", err)
+		}
+
+		return a.logReconciliationActionWithDB(
+			tx,
+			line.BankStatementID,
+			&lineID,
+			"UNMATCH",
+			map[string]interface{}{
+				"previous_match": previousMatch,
+				"reason":         reason,
+			},
+			user,
+			false,
+			1.0,
+			reason,
+		)
+	}); err != nil {
+		return err
+	}
 
 	log.Printf("🔓 Unmatched: Line %s by %s: %s", lineID, user, reason)
 	return nil
@@ -660,47 +729,58 @@ func (a *App) CreateSplitAllocation(lineID string, allocations []AllocationInput
 	}
 
 	// Create allocation records
-	for _, alloc := range allocations {
-		allocation := BankLinePaymentAllocation{
-			BankStatementLineID: lineID,
-			AllocationType:      alloc.AllocationType,
-			AllocatedAmount:     alloc.AllocatedAmount,
-			Currency:            "BHD",
-			Status:              "Allocated",
-		}
-
-		switch alloc.AllocationType {
-		case "CUSTOMER_INVOICE":
-			allocation.CustomerInvoiceID = &alloc.EntityID
-		case "SUPPLIER_INVOICE":
-			allocation.SupplierInvoiceID = &alloc.EntityID
-		case "EXPENSE":
-			allocation.ExpenseEntryID = &alloc.EntityID
-		}
-
-		if err := a.db.Create(&allocation).Error; err != nil {
-			return fmt.Errorf("failed to create allocation: %w", err)
-		}
-	}
-
-	// Mark line as matched
 	allocationIDs := make([]string, len(allocations))
 	for i, alloc := range allocations {
 		allocationIDs[i] = alloc.EntityID
 	}
 
-	a.db.Model(line).Updates(map[string]interface{}{
-		"is_matched":          true,
-		"match_type":          "Split",
-		"match_confidence":    1.0,
-		"matched_invoice_ids": toJSONArray(allocationIDs),
-	})
+	if err := a.db.Transaction(func(tx *gorm.DB) error {
+		for _, alloc := range allocations {
+			allocation := BankLinePaymentAllocation{
+				BankStatementLineID: lineID,
+				AllocationType:      alloc.AllocationType,
+				AllocatedAmount:     alloc.AllocatedAmount,
+				Currency:            "BHD",
+				Status:              "Allocated",
+			}
 
-	// Log the action
-	allocJSON, _ := json.Marshal(allocations)
-	a.LogReconciliationAction(line.BankStatementID, &lineID, "SPLIT",
-		map[string]interface{}{"allocations": string(allocJSON)},
-		user, false, 1.0, "Split allocation")
+			switch alloc.AllocationType {
+			case "CUSTOMER_INVOICE":
+				allocation.CustomerInvoiceID = &alloc.EntityID
+			case "SUPPLIER_INVOICE":
+				allocation.SupplierInvoiceID = &alloc.EntityID
+			case "EXPENSE":
+				allocation.ExpenseEntryID = &alloc.EntityID
+			}
+
+			if err := tx.Create(&allocation).Error; err != nil {
+				return fmt.Errorf("failed to create allocation: %w", err)
+			}
+		}
+
+		if err := tx.Model(line).Updates(map[string]interface{}{
+			"is_matched":          true,
+			"match_type":          "Split",
+			"match_confidence":    1.0,
+			"matched_invoice_ids": toJSONArray(allocationIDs),
+		}).Error; err != nil {
+			return fmt.Errorf("failed to update split line: %w", err)
+		}
+
+		return a.logReconciliationActionWithDB(
+			tx,
+			line.BankStatementID,
+			&lineID,
+			"SPLIT",
+			map[string]interface{}{"allocations": allocations},
+			user,
+			false,
+			1.0,
+			"Split allocation",
+		)
+	}); err != nil {
+		return err
+	}
 
 	log.Printf("✂️ Split allocation created for line %s: %d allocations", lineID, len(allocations))
 	return nil

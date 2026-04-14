@@ -526,18 +526,29 @@ func (a *App) FinalizeReconciliation(statementID string, reconciledBy string) er
 	}
 
 	now := time.Now()
-	if err := a.db.Model(&statement).Updates(map[string]interface{}{
-		"status":        bankStatementStatusReconciled,
-		"reconciled_at": now,
-		"reconciled_by": reconciledBy,
-	}).Error; err != nil {
-		return fmt.Errorf("failed to finalize reconciliation: %w", err)
-	}
+	if err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&statement).Updates(map[string]interface{}{
+			"status":        bankStatementStatusReconciled,
+			"reconciled_at": now,
+			"reconciled_by": reconciledBy,
+		}).Error; err != nil {
+			return fmt.Errorf("failed to finalize reconciliation: %w", err)
+		}
 
-	// Log the action
-	a.LogReconciliationAction(statementID, nil, "RECONCILE",
-		map[string]interface{}{"status": bankStatementStatusReconciled, "unmatched": unmatchedCount},
-		reconciledBy, false, 1.0, "Statement finalized")
+		return a.logReconciliationActionWithDB(
+			tx,
+			statementID,
+			nil,
+			"RECONCILE",
+			map[string]interface{}{"status": bankStatementStatusReconciled, "unmatched": unmatchedCount},
+			reconciledBy,
+			false,
+			1.0,
+			"Statement finalized",
+		)
+	}); err != nil {
+		return err
+	}
 
 	log.Printf("✅ Bank statement %s reconciled by %s", statementID, reconciledBy)
 	return nil
@@ -561,18 +572,29 @@ func (a *App) ReopenReconciliation(statementID string, user, reason string) erro
 		return fmt.Errorf("statement is not reconciled")
 	}
 
-	if err := a.db.Model(&statement).Updates(map[string]interface{}{
-		"status":        bankStatementStatusInProgress,
-		"reconciled_at": nil,
-		"reconciled_by": "",
-	}).Error; err != nil {
-		return fmt.Errorf("failed to reopen reconciliation: %w", err)
-	}
+	if err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&statement).Updates(map[string]interface{}{
+			"status":        bankStatementStatusInProgress,
+			"reconciled_at": nil,
+			"reconciled_by": "",
+		}).Error; err != nil {
+			return fmt.Errorf("failed to reopen reconciliation: %w", err)
+		}
 
-	// Log the action
-	a.LogReconciliationAction(statementID, nil, "REOPEN",
-		map[string]interface{}{"previous_status": statement.Status, "reason": reason},
-		user, false, 1.0, reason)
+		return a.logReconciliationActionWithDB(
+			tx,
+			statementID,
+			nil,
+			"REOPEN",
+			map[string]interface{}{"previous_status": statement.Status, "reason": reason},
+			user,
+			false,
+			1.0,
+			reason,
+		)
+	}); err != nil {
+		return err
+	}
 
 	log.Printf("🔓 Bank statement %s reopened by %s: %s", statementID, user, reason)
 	return nil

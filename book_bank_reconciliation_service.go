@@ -519,7 +519,10 @@ func (a *App) AutoMatchDepositsToStatement(bankAccountID, statementID string) (i
 	}
 
 	// Get pending deposits
-	deposits, _, _ := a.GetDepositsInTransit(bankAccountID)
+	deposits, _, err := a.GetDepositsInTransit(bankAccountID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to load deposits in transit: %w", err)
+	}
 
 	// Get unmatched credit lines from statement (credits have Credit > 0)
 	var lines []BankStatementLine
@@ -532,10 +535,14 @@ func (a *App) AutoMatchDepositsToStatement(bankAccountID, statementID string) (i
 			// Match by credit amount (within 0.001 tolerance)
 			if line.Credit > deposit.Amount-0.001 && line.Credit < deposit.Amount+0.001 {
 				// Clear the deposit
-				a.ClearDepositInTransit(deposit.ID, line.ID, line.TransactionDate)
+				if err := a.ClearDepositInTransit(deposit.ID, line.ID, line.TransactionDate); err != nil {
+					return matchCount, fmt.Errorf("failed to clear deposit %s against statement line %s: %w", deposit.ID, line.ID, err)
+				}
 
 				// Mark line as matched
-				a.db.Model(&line).Update("is_matched", true)
+				if err := a.db.Model(&line).Update("is_matched", true).Error; err != nil {
+					return matchCount, fmt.Errorf("failed to mark statement line %s as matched: %w", line.ID, err)
+				}
 
 				matchCount++
 				break
@@ -560,7 +567,10 @@ func (a *App) AutoMatchChequesToStatement(bankAccountID, statementID string) (in
 	}
 
 	// Get outstanding cheques
-	cheques, _, _ := a.GetOutstandingCheques(bankAccountID)
+	cheques, _, err := a.GetOutstandingCheques(bankAccountID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to load outstanding cheques: %w", err)
+	}
 
 	// Get unmatched debit lines from statement (debits have Debit > 0)
 	var lines []BankStatementLine
@@ -573,10 +583,14 @@ func (a *App) AutoMatchChequesToStatement(bankAccountID, statementID string) (in
 			// Match by debit amount (within 0.001 tolerance)
 			if line.Debit > cheque.Amount-0.001 && line.Debit < cheque.Amount+0.001 {
 				// Clear the cheque
-				a.MarkChequeCleared(cheque.ChequeNumber, line.ID, line.TransactionDate)
+				if err := a.MarkChequeCleared(cheque.ChequeNumber, line.ID, line.TransactionDate); err != nil {
+					return matchCount, fmt.Errorf("failed to clear cheque %s against statement line %s: %w", cheque.ChequeNumber, line.ID, err)
+				}
 
 				// Mark line as matched
-				a.db.Model(&line).Update("is_matched", true)
+				if err := a.db.Model(&line).Update("is_matched", true).Error; err != nil {
+					return matchCount, fmt.Errorf("failed to mark statement line %s as matched: %w", line.ID, err)
+				}
 
 				matchCount++
 				break

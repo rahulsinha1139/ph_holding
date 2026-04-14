@@ -18,6 +18,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // =============================================================================
@@ -214,17 +216,33 @@ func (a *App) ForceReimportStatement(statementID string, user, reason string) er
 		return fmt.Errorf("database not initialized")
 	}
 
-	// Delete existing statement hash
-	a.db.Where("bank_statement_id = ?", statementID).Delete(&StatementHash{})
+	if err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("bank_statement_id = ?", statementID).Delete(&StatementHash{}).Error; err != nil {
+			return fmt.Errorf("failed to delete statement hash: %w", err)
+		}
 
-	// Delete statement and lines
-	a.db.Where("bank_statement_id = ?", statementID).Delete(&BankStatementLine{})
-	a.db.Delete(&BankStatement{}, "id = ?", statementID)
+		if err := tx.Where("bank_statement_id = ?", statementID).Delete(&BankStatementLine{}).Error; err != nil {
+			return fmt.Errorf("failed to delete statement lines: %w", err)
+		}
 
-	// Log the action
-	a.LogReconciliationAction(statementID, nil, "FORCE_REIMPORT",
-		map[string]interface{}{"reason": reason},
-		user, false, 1.0, reason)
+		if err := tx.Delete(&BankStatement{}, "id = ?", statementID).Error; err != nil {
+			return fmt.Errorf("failed to delete statement: %w", err)
+		}
+
+		return a.logReconciliationActionWithDB(
+			tx,
+			statementID,
+			nil,
+			"FORCE_REIMPORT",
+			map[string]interface{}{"reason": reason},
+			user,
+			false,
+			1.0,
+			reason,
+		)
+	}); err != nil {
+		return err
+	}
 
 	log.Printf("🔄 Statement %s force reimported by %s: %s", statementID, user, reason)
 	return nil
@@ -252,7 +270,10 @@ func (a *App) LogReconciliationAction(
 		return fmt.Errorf("database not initialized")
 	}
 
-	detailJSON, _ := json.Marshal(detail)
+	detailJSON, err := json.Marshal(detail)
+	if err != nil {
+		return fmt.Errorf("failed to encode reconciliation audit detail for %s: %w", action, err)
+	}
 
 	logEntry := BankReconciliationAuditLog{
 		BankStatementID:     statementID,
@@ -269,6 +290,45 @@ func (a *App) LogReconciliationAction(
 	if err := a.db.Create(&logEntry).Error; err != nil {
 		log.Printf("⚠️ Failed to log reconciliation action: %v", err)
 		return err
+	}
+
+	return nil
+}
+
+func (a *App) logReconciliationActionWithDB(
+	db *gorm.DB,
+	statementID string,
+	lineID *string,
+	action string,
+	detail interface{},
+	user string,
+	isAuto bool,
+	confidence float64,
+	reason string,
+) error {
+	if db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	detailJSON, err := json.Marshal(detail)
+	if err != nil {
+		return fmt.Errorf("failed to encode reconciliation audit detail for %s: %w", action, err)
+	}
+
+	logEntry := BankReconciliationAuditLog{
+		BankStatementID:     statementID,
+		BankStatementLineID: lineID,
+		Action:              action,
+		ActionDetail:        string(detailJSON),
+		PerformedBy:         user,
+		PerformedAt:         time.Now(),
+		IsAutomatic:         isAuto,
+		ConfidenceScore:     confidence,
+		Reason:              reason,
+	}
+
+	if err := db.Create(&logEntry).Error; err != nil {
+		return fmt.Errorf("failed to log reconciliation action %s for statement %s: %w", action, statementID, err)
 	}
 
 	return nil
@@ -326,10 +386,10 @@ func (a *App) ReverseAction(logID string, user, reason string) error {
 	return a.db.Model(&BankReconciliationAuditLog{}).
 		Where("id = ?", logID).
 		Updates(map[string]interface{}{
-			"is_reversed":      true,
-			"reversed_by":      user,
-			"reversed_at":      now,
-			"reversal_reason":  reason,
+			"is_reversed":     true,
+			"reversed_by":     user,
+			"reversed_at":     now,
+			"reversal_reason": reason,
 		}).Error
 }
 
