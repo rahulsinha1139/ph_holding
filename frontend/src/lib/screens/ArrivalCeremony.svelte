@@ -12,6 +12,7 @@
     let isConfiguring = false;
     let progress = 0;
     let currentTask = "";
+    let nameInput;
 
     const roles = [
         {
@@ -74,6 +75,10 @@
             dispatch("complete", { userName, selectedRole });
         }, 400);
     }
+
+    $: if (step === 1 && nameInput) {
+        nameInput.focus();
+    }
 </script>
 
 <div class="ceremony" in:fade={{ duration: 400 }}>
@@ -99,9 +104,9 @@
                     <input
                         type="text"
                         bind:value={userName}
+                        bind:this={nameInput}
                         placeholder="Enter your name"
                         on:keydown={(e) => e.key === "Enter" && nextStep()}
-                        autofocus
                     />
                     <button class="btn-circle" on:click={nextStep}>&gt;</button>
                 </div>

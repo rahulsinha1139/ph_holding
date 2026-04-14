@@ -305,16 +305,16 @@
     <div class="component-demo">
       <div style="max-width: 400px;">
         <div style="margin-bottom: 16px;">
-          <label class="label" style="display: block; margin-bottom: 6px;">Company Name</label>
-          <input type="text" class="input" placeholder="Enter company name">
+          <label class="label" for="showcase-company-name" style="display: block; margin-bottom: 6px;">Company Name</label>
+          <input id="showcase-company-name" type="text" class="input" placeholder="Enter company name">
         </div>
         <div style="margin-bottom: 16px;">
-          <label class="label" style="display: block; margin-bottom: 6px;">Email Address</label>
-          <input type="email" class="input" placeholder="user@example.com">
+          <label class="label" for="showcase-email-address" style="display: block; margin-bottom: 6px;">Email Address</label>
+          <input id="showcase-email-address" type="email" class="input" placeholder="user@example.com">
         </div>
         <div>
-          <label class="label" style="display: block; margin-bottom: 6px;">Description</label>
-          <input type="text" class="input" placeholder="Optional description">
+          <label class="label" for="showcase-description" style="display: block; margin-bottom: 6px;">Description</label>
+          <input id="showcase-description" type="text" class="input" placeholder="Optional description">
         </div>
       </div>
     </div>

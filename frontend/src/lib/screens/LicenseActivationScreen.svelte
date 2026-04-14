@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { createEventDispatcher } from "svelte";
+    import { createEventDispatcher, onMount } from "svelte";
     import { ActivateLicense, FirstRunSyncWithProgress, GetFirstRunSyncStatus } from "../../../wailsjs/go/main/App";
     import { toast } from "$lib/stores/toasts";
     import SyncProgress from "../components/ui/SyncProgress.svelte";
@@ -11,6 +11,7 @@
     let syncing = false;
     let showSyncProgress = false;
     let error = "";
+    let licenseInput: HTMLInputElement | null = null;
 
     // Valid role codes for license keys
     const VALID_ROLES = ['ADM', 'MGR', 'SLS', 'OPS', 'DEV'];
@@ -45,6 +46,10 @@
 
     // Reactive validation - updates whenever licenseKey changes
     $: keyValid = licenseKey.length === 13 && LICENSE_KEY_PATTERN.test(licenseKey);
+
+    onMount(() => {
+        licenseInput?.focus({ preventScroll: true });
+    });
 
     async function handleActivate() {
         if (loading || !keyValid) return;
@@ -102,6 +107,7 @@
             <label for="license-key">License Key</label>
             <input
                 id="license-key"
+                bind:this={licenseInput}
                 type="password"
                 value={licenseKey}
                 on:input={formatKey}
@@ -112,7 +118,6 @@
                 disabled={loading}
                 autocomplete="off"
                 spellcheck="false"
-                autofocus
             />
             <p class="hint">Contact your administrator for a license key</p>
         </div>
