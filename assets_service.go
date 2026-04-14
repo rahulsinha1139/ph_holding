@@ -196,7 +196,9 @@ func (a *App) DeleteAsset(name string) error {
 	cacheDir := a.getAssetCacheDir()
 	files, _ := filepath.Glob(filepath.Join(cacheDir, name+".*"))
 	for _, f := range files {
-		os.Remove(f)
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove cached asset file %s: %w", f, err)
+		}
 	}
 
 	return nil
@@ -213,7 +215,10 @@ func (a *App) HasAsset(name string) bool {
 // Called during app startup
 func (a *App) InitializeDefaultAssets() {
 	// Ensure table exists
-	a.EnsureAssetsTable()
+	if err := a.EnsureAssetsTable(); err != nil {
+		log.Printf("WARNING: failed to ensure assets table: %v", err)
+		return
+	}
 
 	// Check if letterhead already exists
 	if a.HasAsset(AssetLetterhead) {

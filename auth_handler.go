@@ -65,12 +65,12 @@ const (
 
 // Required Microsoft Graph scopes for PH Holdings
 var RequiredScopes = []string{
-	"User.Read",          // User profile
-	"Files.ReadWrite",    // OneDrive files (user's own, not .All)
-	"Mail.Send",          // Send emails only (removed Mail.ReadWrite)
-	"Calendars.Read",     // Read calendar (reduced from ReadWrite)
-	"Sites.Read.All",     // Read SharePoint sites (reduced from ReadWrite)
-	"offline_access",     // Refresh tokens
+	"User.Read",       // User profile
+	"Files.ReadWrite", // OneDrive files (user's own, not .All)
+	"Mail.Send",       // Send emails only (removed Mail.ReadWrite)
+	"Calendars.Read",  // Read calendar (reduced from ReadWrite)
+	"Sites.Read.All",  // Read SharePoint sites (reduced from ReadWrite)
+	"offline_access",  // Refresh tokens
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -464,7 +464,9 @@ func (am *AuthManager) startCallbackServer() error {
 // stopCallbackServer shuts down the callback server
 func (am *AuthManager) stopCallbackServer() {
 	if am.httpServer != nil {
-		am.httpServer.Close()
+		if err := am.httpServer.Close(); err != nil {
+			log.Printf("WARNING: failed to close callback server: %v", err)
+		}
 		am.httpServer = nil
 		log.Println("🛑 Callback server stopped")
 	}
