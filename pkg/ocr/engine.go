@@ -11,6 +11,7 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,8 +35,8 @@ const (
 	WILLIAMS_LEVERAGE  = 8.35           // Williams optimizer efficiency
 
 	// Thresholds
-	MIN_CONFIDENCE     = 0.70  // Minimum acceptable confidence
-	AIMLAPI_THRESHOLD  = 0.85  // Below this, escalate to AIMLAPI
+	MIN_CONFIDENCE      = 0.70  // Minimum acceptable confidence
+	AIMLAPI_THRESHOLD   = 0.85  // Below this, escalate to AIMLAPI
 	CONSENSUS_THRESHOLD = 0.667 // 2/3 voting requirement
 
 	// Default concurrency
@@ -50,8 +51,8 @@ const (
 // ACEEngine is the main OCR engine implementation
 type ACEEngine struct {
 	// Configuration
-	config     *EngineConfig
-	gpuConfig  *GPUConfig
+	config    *EngineConfig
+	gpuConfig *GPUConfig
 
 	// Components
 	preprocessor  Preprocessor
@@ -61,30 +62,30 @@ type ACEEngine struct {
 	babel         *BabelMapper
 
 	// AIMLAPI client
-	aimlAPIKey    string
-	aimlClient    *AIMLAPIClient
+	aimlAPIKey string
+	aimlClient *AIMLAPIClient
 
 	// Observability
-	metrics       MetricsCollector
-	logger        Logger
+	metrics MetricsCollector
+	logger  Logger
 
 	// State
-	mu            sync.RWMutex
-	initialized   bool
+	mu          sync.RWMutex
+	initialized bool
 }
 
 // EngineConfig contains engine configuration
 type EngineConfig struct {
 	// GPU settings
-	EnableGPU         bool
-	GPUBackend        GPUBackend
-	GPUDeviceID       int
-	GPUMaxMemoryMB    int
+	EnableGPU      bool
+	GPUBackend     GPUBackend
+	GPUDeviceID    int
+	GPUMaxMemoryMB int
 
 	// Processing settings
-	MaxWorkers        int
-	DefaultLanguage   Language
-	EnablePreprocessing bool
+	MaxWorkers            int
+	DefaultLanguage       Language
+	EnablePreprocessing   bool
 	EnableVedicValidation bool
 
 	// AIMLAPI settings
@@ -97,28 +98,28 @@ type EngineConfig struct {
 	TesseractDataPath string
 
 	// Pandoc settings
-	PandocPath        string
+	PandocPath string
 
 	// Checkpoint settings
 	CheckpointDir     string
 	EnableCheckpoints bool
 
 	// Logging
-	LogLevel          string
-	LogPath           string
+	LogLevel string
+	LogPath  string
 }
 
 // NewACEEngine creates a new ACE OCR engine
 func NewACEEngine(config *EngineConfig) (*ACEEngine, error) {
 	if config == nil {
 		config = &EngineConfig{
-			EnableGPU:           true,
-			GPUBackend:          GPULevelZero,
-			MaxWorkers:          runtime.NumCPU(),
-			DefaultLanguage:     LangEnglish,
-			EnablePreprocessing: true,
+			EnableGPU:             true,
+			GPUBackend:            GPULevelZero,
+			MaxWorkers:            runtime.NumCPU(),
+			DefaultLanguage:       LangEnglish,
+			EnablePreprocessing:   true,
 			EnableVedicValidation: true,
-			FallbackToAIMLAPI:   true,
+			FallbackToAIMLAPI:     true,
 		}
 	}
 
@@ -131,7 +132,7 @@ func NewACEEngine(config *EngineConfig) (*ACEEngine, error) {
 	}
 
 	engine := &ACEEngine{
-		config:    config,
+		config: config,
 		gpuConfig: &GPUConfig{
 			Backend:       config.GPUBackend,
 			DeviceID:      config.GPUDeviceID,
@@ -300,9 +301,9 @@ func (e *ACEEngine) ProcessBatch(ctx context.Context, req *BatchRequest) (*Batch
 			c := atomic.AddInt64(&completed, 1)
 			if req.ProgressChan != nil {
 				req.ProgressChan <- BatchProgress{
-					Completed:   int(c),
-					Total:       len(req.Requests),
-					Percentage:  float64(c) / float64(len(req.Requests)) * 100,
+					Completed:  int(c),
+					Total:      len(req.Requests),
+					Percentage: float64(c) / float64(len(req.Requests)) * 100,
 				}
 			}
 		}(i, procReq)
@@ -398,15 +399,19 @@ func (e *ACEEngine) ProcessZIP(ctx context.Context, req *ZIPRequest) (*ZIPRespon
 	var totalBytes int64
 	for _, f := range zipReader.File {
 		if !f.FileInfo().IsDir() && e.isProcessableFile(f.Name) && !processedSet[f.Name] {
+			sizeBytes, err := zipEntrySizeBytes(f)
+			if err != nil {
+				return nil, fmt.Errorf("failed to size ZIP entry %q: %w", f.Name, err)
+			}
 			processableFiles = append(processableFiles, f)
-			totalBytes += int64(f.UncompressedSize64)
+			totalBytes += sizeBytes
 		}
 	}
 
 	e.logger.Info("Found processable files", map[string]interface{}{
-		"total":     len(processableFiles),
-		"skipped":   len(checkpoint.ProcessedFiles),
-		"bytes":     totalBytes,
+		"total":   len(processableFiles),
+		"skipped": len(checkpoint.ProcessedFiles),
+		"bytes":   totalBytes,
 	})
 
 	// Process files
@@ -482,7 +487,11 @@ func (e *ACEEngine) ProcessZIP(ctx context.Context, req *ZIPRequest) (*ZIPRespon
 		}
 
 		results[f.Name] = response
-		bytesProcessed += int64(f.UncompressedSize64)
+		sizeBytes, err := zipEntrySizeBytes(f)
+		if err != nil {
+			return nil, fmt.Errorf("failed to size ZIP entry %q: %w", f.Name, err)
+		}
+		bytesProcessed += sizeBytes
 
 		// Update checkpoint
 		checkpoint.mu.Lock()
@@ -522,6 +531,13 @@ func (e *ACEEngine) ProcessZIP(ctx context.Context, req *ZIPRequest) (*ZIPRespon
 		Checkpoint:     checkpoint,
 		TotalTime:      time.Since(startTime),
 	}, nil
+}
+
+func zipEntrySizeBytes(file *zip.File) (int64, error) {
+	if file.UncompressedSize64 > math.MaxInt64 {
+		return 0, fmt.Errorf("zip entry %q exceeds supported size limit", file.Name)
+	}
+	return int64(file.UncompressedSize64), nil
 }
 
 // ========================================================================
