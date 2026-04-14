@@ -278,6 +278,11 @@
     }
   }
 
+  function closePaymentModal() {
+    showPaymentModal = false;
+    paymentEntry = null;
+  }
+
   function openPaymentModal(entry: ExpenseEntry) {
     paymentEntry = entry;
     expensePaymentForm = {
@@ -597,7 +602,8 @@
 </div>
 
 {#if showPaymentModal && paymentEntry}
-  <div class="modal-overlay" on:click|self={() => { showPaymentModal = false; paymentEntry = null; }}>
+  <div class="modal-shell">
+    <button class="modal-overlay" type="button" tabindex="-1" aria-label="Close expense payment modal" on:click={closePaymentModal}></button>
     <div class="modal">
       <div class="panel-head">
         <div>
@@ -633,7 +639,7 @@
         </label>
       </div>
       <div class="actions modal-actions">
-        <button class="secondary" on:click={() => { showPaymentModal = false; paymentEntry = null; }}>Cancel</button>
+        <button class="secondary" type="button" on:click={closePaymentModal}>Cancel</button>
         <button disabled={payingExpense} on:click={submitExpensePayment}>
           {payingExpense ? "Saving..." : "Mark Paid"}
         </button>
@@ -793,6 +799,16 @@
     position: fixed;
     inset: 0;
     background: rgba(15, 23, 42, 0.38);
+    border: 0;
+    padding: 0;
+    appearance: none;
+    cursor: pointer;
+    z-index: 0;
+  }
+
+  .modal-shell {
+    position: fixed;
+    inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -801,6 +817,8 @@
   }
 
   .modal {
+    position: relative;
+    z-index: 1;
     width: min(620px, 100%);
     display: grid;
     gap: 14px;

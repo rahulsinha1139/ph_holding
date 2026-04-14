@@ -1209,13 +1209,14 @@
     <div class="edit-form">
       <div class="form-row">
         <div class="form-field">
-          <label>Invoice Number</label>
-          <input type="text" value={editInvoice.invoice_number} class="input-field" disabled title="Invoice numbers are system-generated" />
+          <label for={`edit-invoice-number-${editInvoice.id}`}>Invoice Number</label>
+          <input id={`edit-invoice-number-${editInvoice.id}`} type="text" value={editInvoice.invoice_number} class="input-field" disabled title="Invoice numbers are system-generated" />
         </div>
         <div class="form-field">
-          <label>Status</label>
+          <label for={`edit-invoice-status-${editInvoice.id}`}>Status</label>
           {#if isSettlementLockedStatus(editInvoice.status)}
             <input
+              id={`edit-invoice-status-${editInvoice.id}`}
               type="text"
               value={editInvoice.status}
               class="input-field"
@@ -1223,7 +1224,7 @@
               title="Settlement status is derived from payments, credit notes, and due date"
             />
           {:else}
-            <select bind:value={editInvoice.status} class="input-field">
+            <select id={`edit-invoice-status-${editInvoice.id}`} bind:value={editInvoice.status} class="input-field">
               {#each workflowEditableStatuses as status}
                 <option value={status.value}>{status.label}</option>
               {/each}
@@ -1233,8 +1234,9 @@
       </div>
       <div class="form-row">
         <div class="form-field">
-          <label>Amount (BHD) <span class="required">*</span></label>
+          <label for={`edit-invoice-amount-${editInvoice.id}`}>Amount (BHD) <span class="required">*</span></label>
           <input
+            id={`edit-invoice-amount-${editInvoice.id}`}
             type="number"
             step="0.001"
             min="0.001"
@@ -1244,8 +1246,9 @@
           />
         </div>
         <div class="form-field">
-          <label>Open Balance (BHD)</label>
+          <label for={`edit-invoice-balance-${editInvoice.id}`}>Open Balance (BHD)</label>
           <input
+            id={`edit-invoice-balance-${editInvoice.id}`}
             type="text"
             value={formatBHD(editInvoice.outstanding_bhd)}
             class="input-field"
@@ -1258,8 +1261,8 @@
         <p class="workflow-hint">Settlement status and outstanding balance are ledger-driven here. Use Payments or Credit Notes to change them.</p>
       {/if}
       <div class="form-field">
-        <label>Customer PO Number</label>
-        <input type="text" bind:value={editInvoice.customer_po_number} class="input-field" />
+        <label for={`edit-invoice-po-${editInvoice.id}`}>Customer PO Number</label>
+        <input id={`edit-invoice-po-${editInvoice.id}`} type="text" bind:value={editInvoice.customer_po_number} class="input-field" />
       </div>
     </div>
 
