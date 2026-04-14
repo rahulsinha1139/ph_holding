@@ -3099,10 +3099,14 @@ func (a *App) GetSupplierFullProfile(supplierID string) (SupplierFullProfile, er
 
 	// Parse JSON arrays
 	if supplier.BrandsHandled != "" {
-		json.Unmarshal([]byte(supplier.BrandsHandled), &profile.BrandsHandled)
+		if err := json.Unmarshal([]byte(supplier.BrandsHandled), &profile.BrandsHandled); err != nil {
+			log.Printf("WARNING: failed to parse supplier brands for %s: %v", supplierID, err)
+		}
 	}
 	if supplier.ProductTypes != "" {
-		json.Unmarshal([]byte(supplier.ProductTypes), &profile.ProductTypes)
+		if err := json.Unmarshal([]byte(supplier.ProductTypes), &profile.ProductTypes); err != nil {
+			log.Printf("WARNING: failed to parse supplier product types for %s: %v", supplierID, err)
+		}
 	}
 
 	// 2. Get PO metrics
@@ -9385,7 +9389,9 @@ func (a *App) UpdateSettings(settings map[string]interface{}) error {
 		if model, ok := apiKeys["aiml_model"].(string); ok {
 			model = strings.TrimSpace(model)
 			if model != "" {
-				os.Setenv("AIML_MODEL", model)
+				if err := setRuntimeEnv("AIML_MODEL", model); err != nil {
+					return err
+				}
 				if a.settingsService != nil {
 					if err := a.settingsService.SetSetting("apiKeys.aiml_model", model, "apiKeys", false); err != nil {
 						log.Printf("⚠ Failed to persist AIML model preference: %v", err)
@@ -9786,42 +9792,54 @@ func (a *App) SetAPIKeys(apiKeys map[string]string) error {
 
 	// Update AIMLAPI key (also used as primary Butler/Grok backend)
 	if key, ok := apiKeys["aimlapi_key"]; ok && key != "" && key != "****" {
+		if err := setRuntimeEnv("AIML_API_KEY", key); err != nil {
+			return err
+		}
 		a.config.AI.APIKey = key
-		os.Setenv("AIML_API_KEY", key)
 		persistKey("apiKeys.aimlapi_key", key)
 		log.Println("AI configuration updated")
 	}
 	if model, ok := apiKeys["aiml_model"]; ok && strings.TrimSpace(model) != "" {
 		model = strings.TrimSpace(model)
-		os.Setenv("AIML_MODEL", model)
+		if err := setRuntimeEnv("AIML_MODEL", model); err != nil {
+			return err
+		}
 		persistPlainKey("apiKeys.aiml_model", model)
 		log.Println("AI model preference updated")
 	}
 
 	// Update Mistral key
 	if key, ok := apiKeys["mistral_key"]; ok && key != "" && key != "****" {
-		os.Setenv("MISTRAL_API_KEY", key)
+		if err := setRuntimeEnv("MISTRAL_API_KEY", key); err != nil {
+			return err
+		}
 		persistKey("apiKeys.mistral_key", key)
 		log.Println("AI configuration updated")
 	}
 
 	// Update OpenAI key
 	if key, ok := apiKeys["openai_key"]; ok && key != "" && key != "****" {
-		os.Setenv("OPENAI_API_KEY", key)
+		if err := setRuntimeEnv("OPENAI_API_KEY", key); err != nil {
+			return err
+		}
 		persistKey("apiKeys.openai_key", key)
 		log.Println("AI configuration updated")
 	}
 
 	// Update Anthropic key
 	if key, ok := apiKeys["anthropic_key"]; ok && key != "" && key != "****" {
-		os.Setenv("ANTHROPIC_API_KEY", key)
+		if err := setRuntimeEnv("ANTHROPIC_API_KEY", key); err != nil {
+			return err
+		}
 		persistKey("apiKeys.anthropic_key", key)
 		log.Println("AI configuration updated")
 	}
 
 	// Update Azure endpoint
 	if endpoint, ok := apiKeys["azure_endpoint"]; ok && endpoint != "" {
-		os.Setenv("AZURE_ENDPOINT", endpoint)
+		if err := setRuntimeEnv("AZURE_ENDPOINT", endpoint); err != nil {
+			return err
+		}
 		persistKey("apiKeys.azure_endpoint", endpoint)
 		log.Printf("✅ Azure endpoint updated (encrypted)")
 	}
@@ -12443,15 +12461,50 @@ func getStringField(data map[string]interface{}, key string) string {
 	return ""
 }
 
+func setRuntimeEnv(name, value string) error {
+	if err := os.Setenv(name, value); err != nil {
+		return fmt.Errorf("failed to apply runtime setting %s: %w", name, err)
+	}
+	return nil
+}
+
+func parseDecimalString(raw, context string) float64 {
+	cleaned := strings.TrimSpace(strings.ReplaceAll(raw, ",", ""))
+	if cleaned == "" {
+		return 0
+	}
+
+	value, err := strconv.ParseFloat(cleaned, 64)
+	if err != nil {
+		log.Printf("WARNING: failed to parse decimal for %s: %v", context, err)
+		return 0
+	}
+
+	return value
+}
+
+func parseIntString(raw, context string) int {
+	cleaned := strings.TrimSpace(strings.ReplaceAll(raw, ",", ""))
+	if cleaned == "" {
+		return 0
+	}
+
+	value, err := strconv.Atoi(cleaned)
+	if err != nil {
+		log.Printf("WARNING: failed to parse integer for %s: %v", context, err)
+		return 0
+	}
+
+	return value
+}
+
 func getFloatField(data map[string]interface{}, key string) float64 {
 	if v, ok := data[key]; ok {
 		switch val := v.(type) {
 		case float64:
 			return val
 		case string:
-			var f float64
-			fmt.Sscanf(strings.ReplaceAll(val, ",", ""), "%f", &f)
-			return f
+			return parseDecimalString(val, "field "+key)
 		case int:
 			return float64(val)
 		}
@@ -12469,9 +12522,7 @@ func getIntField(data map[string]interface{}, key string) int {
 		case int64:
 			return int(val)
 		case string:
-			var i int
-			fmt.Sscanf(val, "%d", &i)
-			return i
+			return parseIntString(val, "field "+key)
 		}
 	}
 	return 0
@@ -12492,9 +12543,7 @@ func parseFloatFromInterface(v interface{}) float64 {
 	case int64:
 		return float64(val)
 	case string:
-		var f float64
-		fmt.Sscanf(strings.ReplaceAll(val, ",", ""), "%f", &f)
-		return f
+		return parseDecimalString(val, "interface value")
 	default:
 		return 0
 	}
@@ -12737,9 +12786,7 @@ func parseAmountFromFields(fields map[string]string) float64 {
 	amountStr = strings.ReplaceAll(amountStr, ",", "")
 	amountStr = strings.TrimSpace(amountStr)
 
-	amount := 0.0
-	fmt.Sscanf(amountStr, "%f", &amount)
-	return amount
+	return parseDecimalString(amountStr, "ocr string amount")
 }
 
 // parseAmountFromFieldsInterface extracts amount from OCR fields (interface{} version)
@@ -12766,9 +12813,7 @@ func parseAmountFromFieldsInterface(fields map[string]interface{}) float64 {
 	amountStr = strings.ReplaceAll(amountStr, ",", "")
 	amountStr = strings.TrimSpace(amountStr)
 
-	amount := 0.0
-	fmt.Sscanf(amountStr, "%f", &amount)
-	return amount
+	return parseDecimalString(amountStr, "ocr interface amount")
 }
 
 // parseDate parses date from string
