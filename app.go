@@ -1422,6 +1422,10 @@ func (a *App) ensureCrossModuleSchemaExtensions() {
 		return
 	}
 
+	// Mature deployment databases skip runCustomMigrations() during startup,
+	// so keep the offer division repair in the always-run foundation path too.
+	a.migrateOfferDivisionSupport()
+
 	// Keep division-aware finance/schema extensions consistent across startup,
 	// deployment audits, and test harnesses so note fields and company routing
 	// remain backed by real SQLite columns.

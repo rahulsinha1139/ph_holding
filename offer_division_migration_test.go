@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"gorm.io/driver/sqlite"
@@ -8,7 +10,8 @@ import (
 )
 
 func TestMigrateOfferDivisionSupportAddsAndBackfillsDivision(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	dbName := strings.ReplaceAll(t.Name(), "/", "_")
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("failed to open sqlite db: %v", err)
 	}
@@ -80,5 +83,54 @@ func TestMigrateOfferDivisionSupportAddsAndBackfillsDivision(t *testing.T) {
 	}
 	if got["offer-default"] != "PH Trading" {
 		t.Fatalf("offer-default division = %q, want %q", got["offer-default"], "PH Trading")
+	}
+}
+
+func TestEnsureCrossModuleSchemaExtensionsRepairsOfferDivisionForStableSchemas(t *testing.T) {
+	dbName := strings.ReplaceAll(t.Name(), "/", "_")
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open sqlite db: %v", err)
+	}
+
+	statements := []string{
+		`CREATE TABLE offers (
+			id TEXT PRIMARY KEY,
+			offer_number TEXT,
+			customer_name TEXT,
+			created_at datetime,
+			updated_at datetime,
+			deleted_at datetime
+		)`,
+		`CREATE TABLE orders (
+			id TEXT PRIMARY KEY,
+			offer_id TEXT,
+			division TEXT,
+			created_at datetime,
+			updated_at datetime,
+			deleted_at datetime
+		)`,
+		`INSERT INTO offers (id, offer_number, customer_name) VALUES ('offer-ahs', '2-26', 'AHS Customer')`,
+		`INSERT INTO orders (id, offer_id, division) VALUES ('order-1', 'offer-ahs', 'AHS Trading')`,
+	}
+	for _, stmt := range statements {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatalf("failed to seed test db: %v", err)
+		}
+	}
+
+	app := &App{db: db}
+	app.ensureCrossModuleSchemaExtensions()
+
+	if !app.hasColumn("offers", "division") {
+		t.Fatalf("expected offers.division column to be created")
+	}
+
+	var division string
+	if err := db.Raw("SELECT division FROM offers WHERE id = ?", "offer-ahs").Scan(&division).Error; err != nil {
+		t.Fatalf("failed to query offer division: %v", err)
+	}
+	if division != "AHS Trading" {
+		t.Fatalf("offer-ahs division = %q, want %q", division, "AHS Trading")
 	}
 }

@@ -1,11 +1,11 @@
 ===============================================================================
                     ASYMMFLOW ERP - LICENSE KEYS
-                    Generated: 2026-04-08
+                    Generated: 2026-04-15
 ===============================================================================
 
 INSTRUCTIONS:
   1. Copy the deploy_package folder to your PC
-  2. Run AsymmFlow.exe (Windows) or AsymmFlow (Mac)
+  2. Run AsymmFlow.exe (Windows) or open AsymmFlow.app (Mac)
   3. Enter YOUR license key when prompted
   4. Each key works on ONE PC only - do not share keys
 
@@ -13,43 +13,47 @@ INSTRUCTIONS:
 ADMIN (Full Access - Dashboard, Finance, Operations, CRM, Intelligence)
 -------------------------------------------------------------------------------
 
-  Abhie            PH-ADM-4A0185
-  Daniel           PH-ADM-CD4680
-  Stanley          PH-ADM-E2E4C2
+  Admin Test       PH-ADM-8824EF
 
 -------------------------------------------------------------------------------
 MANAGER (Dashboard, Finance, Operations, CRM, Intelligence)
 -------------------------------------------------------------------------------
 
-  Sundar           PH-MGR-CE8180
+  Manager Test     PH-MGR-7C2B1C
 
 -------------------------------------------------------------------------------
 SALES (Dashboard, Opportunities, CRM, Intelligence)
 -------------------------------------------------------------------------------
 
-  Ebin             PH-SLS-62C4D4
-  Peri             PH-SLS-9A70F9
-  Sales Test       PH-SLS-B4AA10
-  Support          PH-SLS-3C37C1
+  Ramya            PH-SLS-618A8C
+  Sales Test       PH-SLS-B3F753
 
 -------------------------------------------------------------------------------
 OPERATIONS (Dashboard, Operations Hub, Intelligence)
 -------------------------------------------------------------------------------
 
-  Clinton          PH-OPS-206C69
+  Operations Test  PH-OPS-09B429
+
+-------------------------------------------------------------------------------
+STAFF (Dashboard, Work, Notifications, Intelligence)
+-------------------------------------------------------------------------------
+
+  Staff Test       PH-STF-0C5920
 
 ===============================================================================
                     ROLE ACCESS MATRIX
 ===============================================================================
 
-  Screen            Admin   Manager   Sales   Operations
-  -------           -----   -------   -----   ----------
-  Dashboard           Y       Y         Y        Y
-  Opportunities       Y       Y         Y        -
-  Operations          Y       Y         -        Y
-  Finance Hub         Y       Y         -        -
-  Relationships       Y       Y         Y        -
-  Intelligence        Y       Y         Y        Y
+  Screen            Admin   Manager   Sales   Operations   Staff
+  -------           -----   -------   -----   ----------   -----
+  Dashboard           Y       Y         Y        Y           Y
+  Opportunities       Y       Y         Y        -           -
+  Operations          Y       Y         -        Y           -
+  Finance Hub         Y       Y         -        -           -
+  Work                Y       Y         Y        Y           Y
+  Notifications       Y       Y         Y        Y           Y
+  Relationships       Y       Y         Y        -           -
+  Intelligence        Y       Y         Y        Y           Y
 
 ===============================================================================
   SUPPORT: Contact Abhie (SPOC) for key issues or new key requests
