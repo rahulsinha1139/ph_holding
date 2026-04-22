@@ -40,11 +40,19 @@
   import Input from '$lib/components/ui/Input.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
+  import { permissions } from '$lib/stores/authContext';
   import { devLog } from '$lib/utils/devLog';
   import { escapeHtml } from '$lib/utils/escapeHtml';
   import { debounce } from '$lib/utils/debounce';
 
   const dispatch = createEventDispatcher();
+
+  $: permissionList = Array.isArray($permissions) ? $permissions : [];
+  $: canCreateInvoice =
+    permissionList.includes('*') ||
+    permissionList.includes('invoices:create') ||
+    permissionList.includes('invoices:*') ||
+    permissionList.includes('finance:*');
 
   // Props
   export let embedded = false;
@@ -153,6 +161,7 @@
   let availableDeliveryNotes: DeliveryNote[] = [];
   let selectedDeliveryNoteId = '';
   let loadingDeliveryNotes = false;
+  let deliveryNotesLoadedForOrderId = '';
 
   // Phase 23: Credit Notes state
   type MainView = 'invoices' | 'credit-notes';
@@ -628,6 +637,7 @@
     selectedOrderId = '';
     selectedDeliveryNoteId = '';
     availableDeliveryNotes = [];
+    deliveryNotesLoadedForOrderId = '';
     showCreateModal = true;
   }
 
@@ -636,6 +646,7 @@
     if (!orderId) {
       availableDeliveryNotes = [];
       selectedDeliveryNoteId = '';
+      deliveryNotesLoadedForOrderId = '';
       return;
     }
 
@@ -644,23 +655,33 @@
       const dns = await GetAvailableDeliveryNotesForOrder(orderId);
       availableDeliveryNotes = dns || [];
       selectedDeliveryNoteId = '';
+      deliveryNotesLoadedForOrderId = orderId;
       devLog.info(`Loaded ${availableDeliveryNotes.length} available DNs for order ${orderId}`);
     } catch (err) {
       availableDeliveryNotes = [];
+      deliveryNotesLoadedForOrderId = orderId;
     } finally {
       loadingDeliveryNotes = false;
     }
   }
 
   // React to order selection changes
-  $: if (showCreateModal && selectedOrderId) {
+  $: if (showCreateModal && selectedOrderId && selectedOrderId !== deliveryNotesLoadedForOrderId && !loadingDeliveryNotes) {
     loadDeliveryNotesForOrder(selectedOrderId);
+  }
+
+  $: if (!showCreateModal && deliveryNotesLoadedForOrderId) {
+    deliveryNotesLoadedForOrderId = '';
   }
 
   // Create invoice from order (with optional DN linkage and field visibility)
   async function handleCreateInvoice() {
     if (!selectedOrderId) {
       toast.warning('Please select an order');
+      return;
+    }
+    if (!canCreateInvoice) {
+      toast.danger('Your role does not have permission to create invoices.');
       return;
     }
 
@@ -742,39 +763,23 @@
 
   onMount(() => {
     loadInvoices();
-    loadCreditNotes();
   });
 
   $: if (company) {
     loadInvoices();
-    loadCreditNotes();
   }
 </script>
 
 <PageLayout title="Invoices" subtitle="Customer billing and receivables management" {embedded}>
   <svelte:fragment slot="header-actions">
-    {#if mainView === 'invoices'}
-      <Button variant="secondary" on:click={loadInvoices}>Refresh</Button>
-      <Button variant="secondary" on:click={openBankReconciliation}>Open Bank Recon</Button>
+    <Button variant="secondary" on:click={loadInvoices}>Refresh</Button>
+    <Button variant="secondary" on:click={openBankReconciliation}>Open Bank Recon</Button>
+    {#if canCreateInvoice}
       <Button variant="primary" on:click={openCreateModal}>+ Create Invoice</Button>
-    {:else}
-      <Button variant="secondary" on:click={loadCreditNotes}>Refresh</Button>
-      <Button variant="secondary" on:click={openBankReconciliation}>Open Bank Recon</Button>
-      <Button variant="primary" on:click={() => openCNModal()}>+ Issue Credit Note</Button>
     {/if}
   </svelte:fragment>
 
   <div class="invoices-container">
-    <!-- Phase 23: Main View Tabs -->
-    <div class="main-view-tabs">
-      <button class="main-tab" class:main-tab-active={mainView === 'invoices'} on:click={() => mainView = 'invoices'}>
-        Invoices <span class="main-tab-count">{invoices.length}</span>
-      </button>
-      <button class="main-tab" class:main-tab-active={mainView === 'credit-notes'} on:click={() => mainView = 'credit-notes'}>
-        Credit Notes <span class="main-tab-count">{creditNotes.length}</span>
-      </button>
-    </div>
-
   {#if mainView === 'invoices'}
     <!-- KPI Stats -->
     <div class="kpi-grid">
@@ -2098,59 +2103,6 @@
     color: var(--text-secondary, #a0a0a0);
     padding: 1rem;
     font-size: 13px;
-  }
-
-  /* Phase 23: Main View Tabs */
-  .main-view-tabs {
-    display: flex;
-    gap: 0;
-    border-bottom: 2px solid var(--border, #e5e5e5);
-    margin-bottom: 4px;
-  }
-
-  .main-tab {
-    padding: 10px 20px;
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -2px;
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    cursor: pointer;
-    transition: all var(--transition-fast);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .main-tab:hover {
-    color: var(--text-primary);
-  }
-
-  .main-tab-active {
-    color: var(--brand-indigo);
-    border-bottom-color: var(--brand-indigo);
-    font-weight: 600;
-  }
-
-  .main-tab-count {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 22px;
-    height: 18px;
-    padding: 0 6px;
-    border-radius: 9px;
-    font-size: 11px;
-    font-weight: 600;
-    background: var(--surface-elevated, #f3f4f6);
-    color: var(--text-secondary);
-  }
-
-  .main-tab-active .main-tab-count {
-    background: var(--brand-indigo);
-    color: white;
   }
 
   /* Phase 23: Credit Notes Table */

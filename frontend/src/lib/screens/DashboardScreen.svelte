@@ -1,675 +1,1182 @@
 <script lang="ts">
-    import { onMount, onDestroy } from 'svelte';
-    import { fade } from 'svelte/transition';
-    import { toast } from '$lib/stores/toasts';
-    import { currentUser, permissions } from '../stores/authContext';
-    import { devLog } from '$lib/utils/devLog';
-    import {
-        GetDashboardStats,
-        ListFollowUps,
-        CompleteFollowUp,
-        PickFile,
-    } from '../../../wailsjs/go/main/App';
-    import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime';
-    import { main } from '../../../wailsjs/go/models';
-    import type { UITask } from '$lib/types';
-    import { createEventDispatcher } from 'svelte';
-    import Card from '../components/ui/Card.svelte';
-    import KPICard from '../components/ui/KPICard.svelte';
-    import WabiSpinner from '../components/ui/WabiSpinner.svelte';
-    import FocusCard from '../components/ui/FocusCard.svelte';
+    import { onDestroy, onMount } from "svelte";
+    import { fade } from "svelte/transition";
+    import { toast } from "$lib/stores/toasts";
+    import { currentUser, permissions } from "../stores/authContext";
+    import { devLog } from "$lib/utils/devLog";
+    import { GetDashboardStats, ListFollowUps } from "../../../wailsjs/go/main/App";
+    import { EventsOff, EventsOn } from "../../../wailsjs/runtime/runtime";
+    import { main } from "../../../wailsjs/go/models";
+    import ContextTaskModal from "../components/ContextTaskModal.svelte";
+    import { listMyTasks, listTeamTasks, type CollaborativeTask } from "$lib/api/collaboration";
+    import WabiSpinner from "../components/ui/WabiSpinner.svelte";
 
-    const dispatch = createEventDispatcher();
-
-    // State
     let loading = true;
+    let now = new Date();
+    let clockTimer: ReturnType<typeof setInterval> | undefined;
 
-    // OCR Quick Capture State
-    let ocrProcessing = false;
-    let isDraggingOver = false;
-    $: userName = $currentUser?.name || "Alex";
+    $: userName = formatUserName($currentUser);
+    $: greeting = getTimeGreeting(now);
+    $: activePermissions = Array.isArray($permissions) ? $permissions : [];
+    function hasPermission(permission: string): boolean {
+        const permissionList = Array.isArray(activePermissions) ? activePermissions : [];
+        if (permissionList.includes("*") || permissionList.includes(permission)) return true;
+        const [resource] = permission.split(":");
+        return permissionList.includes(`${resource}:*`);
+    }
+    $: canViewTasks = hasPermission("tasks:view");
+    $: canViewFinance = hasPermission("finance:view");
 
-    // KPI Stats - mapped from backend DashboardStats
     let stats = {
-        totalRevenue: 0,
-        revenueMeta: "Live business value",
-        revenueGrowth: 0,
-        activityYear: new Date().getFullYear(),
         activeRFQs: 0,
         activeOrders: 0,
+        winRate: 0,
+        totalRevenue: 0,
+        revenueMeta: "Confirmed business",
+        revenueGrowth: 0,
+        activityYear: new Date().getFullYear(),
+        pipelineValue: 0,
+        collectionRate: 0,
         outstandingAR: 0,
         arDaysOverdue: 0,
         pendingInvoices: 0,
-        activeCustomers: 0,
-        winRate: 0,
-        tasksTotal: 0,
-        tasksCompleted: 0,
+        cashBalance: 0,
+        cashPositionNote: "",
+        freshStartDate: "",
     };
 
-    let todaysTasks: main.FollowUpTask[] = [];
-    let focusCardTasks: UITask[] = [];
-    $: canViewTasks = $permissions.includes('*') || $permissions.includes('tasks:view');
+    let followUpTasks: main.FollowUpTask[] = [];
+    let dashboardTasks: CollaborativeTask[] = [];
+    let activeDashboardTasks: CollaborativeTask[] = [];
+    let followUpSummary = "* No follow-up issues";
+    let totalTaskSignals = 0;
+    let taskModalOpen = false;
 
-    // Action Items data
-    interface ActionItem {
-        icon: string;
-        title: string;
-        count: number;
-        screen: string;
-        urgent: boolean;
-    }
+    $: activeDashboardTasks = dashboardTasks
+        .filter((task) => !["completed", "archived", "cancelled", "canceled"].includes((task.status || "").toLowerCase()))
+        .slice(0, 5);
+    $: followUpSummary = buildFollowUpSummary(followUpTasks, activeDashboardTasks);
+    $: totalTaskSignals = followUpTasks.length + activeDashboardTasks.length;
 
-    let actionItems: ActionItem[] = [];
+    $: pressureLevel = canViewFinance
+        ? stats.cashBalance > 0
+            ? "Cash position is the primary decision surface today"
+            : stats.pipelineValue > stats.outstandingAR
+              ? "Pipeline quality is the primary decision surface today"
+              : "Commercial finance is the primary decision surface today"
+        : totalTaskSignals > 0
+          ? "Follow-ups and pipeline conversion are the primary decision surface today"
+          : "Pipeline conversion is the primary decision surface today";
+
+    $: kpis = canViewFinance
+        ? [
+              {
+                  label: `Revenue FY${stats.activityYear}`,
+                  value: formatCompactCurrency(stats.totalRevenue),
+                  meta: stats.revenueMeta,
+                  tone: stats.revenueGrowth >= 0 ? "positive" : "negative",
+                  delta:
+                      stats.revenueGrowth === 0
+                          ? "flat"
+                          : `${stats.revenueGrowth > 0 ? "+" : ""}${stats.revenueGrowth.toFixed(1)}% vs last month`,
+              },
+              {
+                  label: "Cash Balance",
+                  value: formatCompactCurrency(stats.cashBalance),
+                  meta: "Latest bank statements",
+                  tone: stats.cashPositionNote ? "warning" : "positive",
+                  delta: stats.cashPositionNote ? "check statements" : "current",
+              },
+              {
+                  label: "Accounts Receivable",
+                  value: formatCompactCurrency(stats.outstandingAR),
+                  meta:
+                      stats.pendingInvoices > 0
+                          ? `${stats.pendingInvoices} invoice/order exposure${stats.pendingInvoices === 1 ? "" : "s"} open`
+                          : "No open AR",
+                  tone: stats.pendingInvoices > 0 ? "negative" : "positive",
+                  delta:
+                      stats.arDaysOverdue > 0
+                          ? `${stats.arDaysOverdue} days average overdue`
+                          : "current",
+              },
+              {
+                  label: "Pipeline",
+                  value: formatCompactCurrency(stats.pipelineValue),
+                  meta: "Active commercial exposure",
+                  tone: "neutral",
+                  delta: "weighted by live opportunities",
+              },
+          ]
+        : [
+              {
+                  label: "Active RFQs",
+                  value: formatCount(stats.activeRFQs),
+                  meta: "Open sales opportunities",
+                  tone: stats.activeRFQs > 0 ? "neutral" : "positive",
+                  delta: "needs qualification",
+              },
+              {
+                  label: "Pipeline",
+                  value: formatCompactCurrency(stats.pipelineValue),
+                  meta: "Active quotation value",
+                  tone: "neutral",
+                  delta: "live opportunity data",
+              },
+              {
+                  label: "Active Orders",
+                  value: formatCount(stats.activeOrders),
+                  meta: "Confirmed handoffs",
+                  tone: stats.activeOrders > 0 ? "positive" : "neutral",
+                  delta: "operations visible",
+              },
+              {
+                  label: "Win Rate",
+                  value: `${Math.round(stats.winRate)}%`,
+                  meta: `FY${stats.activityYear} closed opportunities`,
+                  tone: stats.winRate >= 20 ? "positive" : "warning",
+                  delta: "won / closed",
+              },
+          ];
+
+    $: operatingFocus = canViewFinance
+        ? [
+              {
+                  title: "Cash balance",
+                  detail:
+                      stats.cashPositionNote
+                          ? stats.cashPositionNote
+                          : `Bank cash is ${formatCurrency(stats.cashBalance)}`,
+                  tone: stats.cashPositionNote ? "warning" : "clear",
+                  action: "Review",
+                  actionId: "review_cash",
+              },
+              {
+                  title: "Accounts receivable",
+                  detail:
+                      stats.outstandingAR > 0
+                          ? `Open receivables are ${formatCurrency(stats.outstandingAR)}`
+                          : "No open receivables",
+                  tone: stats.outstandingAR > 0 ? "warning" : "clear",
+                  action: "Open",
+                  actionId: "review_ar",
+              },
+              {
+                  title: "Next follow-up",
+                  detail:
+                      followUpTasks.length > 0
+                          ? summarizeText(followUpTasks[0].title || followUpTasks[0].description || "Follow-up pending", 96)
+                          : activeDashboardTasks.length > 0
+                          ? activeDashboardTasks[0].title || "Task pending"
+                          : "No follow-up task queued",
+                  tone: totalTaskSignals > 0 ? "info" : "clear",
+                  action: "Open",
+                  actionId: "open_followups",
+              },
+          ]
+        : [
+              {
+                  title: "Next follow-up",
+                  detail:
+                      followUpTasks.length > 0
+                          ? summarizeText(followUpTasks[0].title || followUpTasks[0].description || "Follow-up pending", 96)
+                          : activeDashboardTasks.length > 0
+                          ? activeDashboardTasks[0].title || "Task pending"
+                          : "No follow-up task queued",
+                  tone: totalTaskSignals > 0 ? "info" : "clear",
+                  action: "Open",
+                  actionId: "open_followups",
+              },
+              {
+                  title: "Opportunity pipeline",
+                  detail: `${stats.activeRFQs} active RFQs with ${formatCurrency(stats.pipelineValue)} in quoted/open value`,
+                  tone: stats.activeRFQs > 0 ? "info" : "clear",
+                  action: "Open",
+                  actionId: "review_pipeline",
+              },
+              {
+                  title: "Order handoff",
+                  detail: `${stats.activeOrders} active orders visible for sales coordination`,
+                  tone: stats.activeOrders > 0 ? "clear" : "soft",
+                  action: "Open",
+                  actionId: "review_orders",
+              },
+          ];
+
+    $: alerts = canViewFinance
+        ? [
+              {
+                  label: "Statements",
+                  text: stats.cashPositionNote || `Cash balance ${formatCurrency(stats.cashBalance)}`,
+                  tone: stats.cashPositionNote ? "warning" : "clear",
+              },
+              {
+                  label: "Receivables",
+                  text:
+                      stats.pendingInvoices > 0
+                          ? `${stats.pendingInvoices} invoice/order exposure${stats.pendingInvoices === 1 ? "" : "s"} open`
+                          : "No open invoices or uninvoiced orders",
+                  tone: stats.pendingInvoices > 0 ? "warning" : "clear",
+              },
+              {
+                  label: "Pipeline",
+                  text: `Commercial exposure at ${formatCurrency(stats.pipelineValue)}`,
+                  tone: "info",
+              },
+              {
+                  label: "Follow-ups",
+                  text: followUpSummary,
+                  tone: totalTaskSignals > 0 ? "info" : "soft",
+              },
+          ]
+        : [
+              {
+                  label: "Follow-ups",
+                  text: followUpSummary,
+                  tone: totalTaskSignals > 0 ? "info" : "soft",
+              },
+              {
+                  label: "RFQs",
+                  text: `${stats.activeRFQs} active opportunities need stage discipline`,
+                  tone: stats.activeRFQs > 0 ? "info" : "clear",
+              },
+              {
+                  label: "Orders",
+                  text: `${stats.activeOrders} confirmed orders in active handoff`,
+                  tone: stats.activeOrders > 0 ? "info" : "clear",
+              },
+          ];
+
+    $: cashFocus = canViewFinance
+        ? [
+              { label: "Cash balance", value: formatCurrency(stats.cashBalance), note: "bank" },
+              { label: "AR", value: formatCurrency(stats.outstandingAR), note: "open" },
+              { label: "Pipeline cover", value: formatCurrency(stats.pipelineValue), note: "active" },
+          ]
+        : [
+              { label: "Active RFQs", value: formatCount(stats.activeRFQs), note: "open" },
+              { label: "Pipeline", value: formatCurrency(stats.pipelineValue), note: "quoted" },
+              { label: "Active orders", value: formatCount(stats.activeOrders), note: "handoff" },
+          ];
 
     async function loadData() {
         loading = true;
         try {
             const dashStats = await GetDashboardStats();
             if (dashStats) {
-                stats.totalRevenue = dashStats.total_revenue || 0;
-                stats.revenueMeta = dashStats.revenue_meta || `Live business value FY${dashStats.activity_year || new Date().getFullYear()}`;
-                stats.revenueGrowth = dashStats.month_growth || 0;
-                stats.activityYear = dashStats.activity_year || new Date().getFullYear();
-                stats.activeRFQs = dashStats.active_rfqs || 0;
-                stats.activeOrders = dashStats.active_orders || 0;
-                stats.outstandingAR = dashStats.outstanding_ar || 0;
-                stats.arDaysOverdue = dashStats.ar_days_overdue || 0;
-                stats.pendingInvoices = dashStats.pending_invoices || 0;
-                stats.activeCustomers = dashStats.active_customers || 0;
-                stats.winRate = dashStats.win_rate || 0;
+                const rawStats = dashStats as any;
+                stats.activeRFQs = rawStats.active_rfqs || 0;
+                stats.activeOrders = rawStats.active_orders || 0;
+                stats.winRate = rawStats.win_rate || 0;
+                stats.totalRevenue = rawStats.total_revenue || 0;
+                stats.revenueMeta =
+                    rawStats.revenue_meta ||
+                    `Confirmed business FY${rawStats.activity_year || new Date().getFullYear()}`;
+                stats.revenueGrowth = rawStats.month_growth || 0;
+                stats.activityYear = rawStats.activity_year || new Date().getFullYear();
+                stats.pipelineValue = rawStats.pipeline_value_bhd || 0;
+                stats.collectionRate = rawStats.collection_rate || 0;
+                stats.outstandingAR = rawStats.outstanding_ar || 0;
+                stats.arDaysOverdue = rawStats.ar_days_overdue || 0;
+                stats.pendingInvoices = rawStats.pending_invoices || 0;
+                stats.cashBalance = rawStats.cash_balance_bhd || 0;
+                stats.cashPositionNote = rawStats.cash_position_note || "";
+                stats.freshStartDate = rawStats.fresh_start_date || "";
             }
 
-            if (canViewTasks) {
-                const tasks = await ListFollowUps(50);
-                if (tasks) {
-                    todaysTasks = tasks;
-                    mapTasksToFocusCard(tasks);
-                    stats.tasksTotal = todaysTasks.length;
-                    stats.tasksCompleted = todaysTasks.filter(t => t.status === 'completed').length;
-                }
-            } else {
-                todaysTasks = [];
-                focusCardTasks = [];
-                stats.tasksTotal = 0;
-                stats.tasksCompleted = 0;
-            }
-
-            actionItems = [
-                { icon: '', title: 'Overdue Invoices', count: stats.pendingInvoices, screen: 'finance', urgent: stats.arDaysOverdue > 30 || stats.pendingInvoices > 0 },
-                { icon: '', title: 'Open Opportunities', count: stats.activeRFQs, screen: 'opportunities', urgent: false },
-                { icon: '', title: 'Active Orders', count: stats.activeOrders, screen: 'operations', urgent: false },
-            ];
         } catch (err) {
             const errorMsg = err?.message || String(err);
             toast.danger(`Failed to load dashboard data: ${errorMsg}`);
         } finally {
             loading = false;
         }
+
+        void loadTaskSignals();
     }
 
-    function mapTasksToFocusCard(tasks: main.FollowUpTask[]): void {
-        focusCardTasks = tasks.map(t => ({
-            id: t.id,
-            title: t.title,
-            subtitle: t.description || 'No details provided',
-            time: '10:00 AM',
-            priority: (t.priority as UITask['priority']) || 'Medium',
-            urgent: t.priority === 'High' || t.priority === 'Urgent',
-            tag: 'General',
-            done: t.status === 'completed'
-        })).slice(0, 5);
-    }
+    async function loadTaskSignals() {
+        if (!canViewTasks) {
+            followUpTasks = [];
+            dashboardTasks = [];
+            return;
+        }
 
-    async function handleToggleTask(event) {
-        const { id } = event.detail;
-        const task = todaysTasks.find((t) => t.id === id);
-        if (!task) return;
-
-        const newStatus = task.status === 'completed' ? 'pending' : 'completed';
-        const wasDone = task.status === 'completed';
-
-        todaysTasks = todaysTasks.map(t => {
-            if (t.id === id) {
-                return main.FollowUpTask.createFrom({ ...t, status: newStatus });
-            }
-            return t;
-        });
-        mapTasksToFocusCard(todaysTasks);
-
-        if (newStatus === 'completed') stats.tasksCompleted++;
-        else stats.tasksCompleted--;
-
-        try {
-            await CompleteFollowUp(String(id));
-        } catch (e) {
-            toast.danger('Failed to update task');
-            todaysTasks = todaysTasks.map(t => {
-                if (t.id === id) {
-                    return main.FollowUpTask.createFrom({ ...t, status: wasDone ? 'completed' : 'pending' });
-                }
-                return t;
+        const [legacyRows, myTaskRows] = await Promise.all([
+            ListFollowUps(5).catch((err) => {
+                devLog.warn("Dashboard follow-ups failed", err);
+                return [];
+            }),
+            listMyTasks(false).catch((err) => {
+                devLog.warn("Dashboard personal tasks failed", err);
+                return [];
+            }),
+        ]);
+        followUpTasks = legacyRows || [];
+        dashboardTasks = myTaskRows || [];
+        if (dashboardTasks.length === 0 && Array.isArray(activePermissions) && activePermissions.includes("*")) {
+            dashboardTasks = await listTeamTasks(false).catch((err) => {
+                devLog.warn("Dashboard team tasks failed", err);
+                return [];
             });
-            mapTasksToFocusCard(todaysTasks);
-            if (wasDone) stats.tasksCompleted++; else stats.tasksCompleted--;
         }
     }
 
     function formatCurrency(val: number): string {
-        if (val >= 1000000) return 'BHD ' + (val / 1000000).toFixed(1) + 'M';
-        if (val >= 1000) return 'BHD ' + (val / 1000).toFixed(0) + 'k';
-        return 'BHD ' + val.toLocaleString();
+        return `${Number(val || 0).toLocaleString("en-US", {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 0,
+        })} BHD`;
+    }
+
+    function formatCompactCurrency(val: number): string {
+        const amount = Number(val || 0);
+        if (amount >= 1000000) return `${(amount / 1000000).toFixed(2)}M BHD`;
+        if (amount >= 1000) return `${(amount / 1000).toFixed(1)}K BHD`;
+        return `${amount.toLocaleString("en-US", { maximumFractionDigits: 0 })} BHD`;
+    }
+
+    function formatCount(val: number): string {
+        return Number(val || 0).toLocaleString("en-US", { maximumFractionDigits: 0 });
+    }
+
+    function formatDate(value: Date = new Date()): string {
+        return value.toLocaleDateString("en-GB", {
+            weekday: "long",
+            day: "numeric",
+            month: "long",
+            year: "numeric",
+        });
+    }
+
+    function getTimeGreeting(value: Date): string {
+        const hour = value.getHours();
+        if (hour < 12) return "Good morning";
+        if (hour < 16) return "Good afternoon";
+        return "Good evening";
+    }
+
+    function formatUserName(user: any): string {
+        const raw =
+            user?.preferred_name ||
+            user?.full_name ||
+            user?.display_name ||
+            user?.name ||
+            user?.username ||
+            "";
+        const cleaned = String(raw).replace(/[._-]+/g, " ").trim();
+        if (!cleaned) return "there";
+        const firstName = cleaned.split(/\s+/)[0];
+        return firstName.charAt(0).toUpperCase() + firstName.slice(1);
+    }
+
+    function summarizeText(value: string | undefined, maxLength = 78): string {
+        const compact = String(value || "").replace(/\s+/g, " ").trim();
+        if (!compact) return "No issue summary";
+        if (compact.length <= maxLength) return compact;
+        const clipped = compact.slice(0, maxLength - 3);
+        const lastSpace = clipped.lastIndexOf(" ");
+        return `${clipped.slice(0, lastSpace > 42 ? lastSpace : clipped.length)}...`;
+    }
+
+    function buildFollowUpSummary(
+        legacyFollowUps: main.FollowUpTask[],
+        activeTasks: CollaborativeTask[],
+    ): string {
+        if (legacyFollowUps.length > 0) {
+            const first = legacyFollowUps[0];
+            return `* ${summarizeText(first.title || first.description || first.notes || "Follow-up pending")}`;
+        }
+        if (activeTasks.length > 0) {
+            return `* ${summarizeText(activeTasks[0].title || activeTasks[0].description || "Task pending")}`;
+        }
+        return "* No follow-up issues";
+    }
+
+    function taskAge(task: any): string {
+        const rawDate = task.due_date || task.last_comment_at || task.created_at || task.updated_at || task.started_at;
+        if (!rawDate) return "recent";
+        const date = new Date(rawDate as any);
+        if (Number.isNaN(date.getTime())) return "recent";
+        const diffDays = Math.round((date.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+        if (diffDays === 0) return "today";
+        if (diffDays === 1) return "tomorrow";
+        if (diffDays > 1) return `${diffDays}d`;
+        if (diffDays === -1) return "yesterday";
+        return `${Math.abs(diffDays)}d ago`;
+    }
+
+    function taskInitial(task: any): string {
+        return (task.priority || task.status || "T").slice(0, 1).toUpperCase();
+    }
+
+    function taskMeta(task: CollaborativeTask): string {
+        const pieces = [
+            task.priority ? `${task.priority} priority` : "",
+            task.assignee_name ? `assigned to ${task.assignee_name}` : "",
+            task.status || "",
+        ].filter(Boolean);
+        return pieces.join(" / ") || "Task";
+    }
+
+    function navigateTo(target: Record<string, string>) {
+        window.dispatchEvent(new CustomEvent("navigateToScreen", { detail: target }));
+    }
+
+    function handleDashboardAction(actionId: string) {
+        switch (actionId) {
+            case "review_cash":
+                navigateTo({ screen: "finance", tab: "bank-recon", company: "PH Trading" });
+                return;
+            case "review_credit":
+            case "chase_overdue":
+            case "review_ar":
+                navigateTo({ screen: "finance", tab: "invoices", company: "PH Trading" });
+                return;
+            case "open_followups":
+                navigateTo({ screen: "work" });
+                return;
+            case "review_pipeline":
+                navigateTo({ screen: "opportunities" });
+                return;
+            case "review_orders":
+                navigateTo({ screen: "operations" });
+                return;
+            default:
+                toast.warning("Dashboard action is not available yet");
+        }
+    }
+
+    function openTaskModal() {
+        taskModalOpen = true;
+    }
+
+    async function handleTaskCreated() {
+        taskModalOpen = false;
+        await loadData();
     }
 
     onMount(() => {
+        now = new Date();
+        clockTimer = setInterval(() => {
+            now = new Date();
+        }, 60_000);
         loadData();
 
-        // Listen for data refresh events (e.g., when orders are delivered)
-        EventsOn('data:refresh', (data: any) => {
-            devLog.info('Dashboard received data:refresh event', data);
+        EventsOn("data:refresh", (data: any) => {
+            devLog.info("Dashboard received data:refresh event", data);
             loadData();
         });
     });
 
     onDestroy(() => {
-        EventsOff('data:refresh');
-    });
-
-    function navigateToScreen(screen: string) {
-        const screenMap: Record<string, string> = {
-            'invoices': 'finance',
-            'rfqs': 'sales',
-            'grns': 'operations',
-            'contracts': 'sales',
-            'products': 'operations'
-        };
-
-        const targetScreen = screenMap[screen] || screen;
-        dispatch('navigate', { screen: targetScreen });
-    }
-
-    async function handleBrowseFile() {
-        if (ocrProcessing) return;
-
-        try {
-            const filePath = await PickFile('Select Document for OCR');
-            if (filePath && filePath.trim() !== '') {
-                window.dispatchEvent(new CustomEvent('requestGlobalOCR', {
-                    detail: { filePath }
-                }));
-            }
-        } catch (err) {
-            toast.danger('File selection cancelled or failed');
+        if (clockTimer) {
+            clearInterval(clockTimer);
         }
-    }
-
-    let dragCounter = 0;
-
-    function handlePageDragEnter(e: DragEvent) {
-        e.preventDefault();
-        dragCounter++;
-        if (dragCounter === 1) isDraggingOver = true;
-    }
-
-    function handlePageDragOver(e: DragEvent) {
-        e.preventDefault();
-    }
-
-    function handlePageDragLeave(e: DragEvent) {
-        e.preventDefault();
-        dragCounter--;
-        if (dragCounter === 0) isDraggingOver = false;
-    }
-
-    function handlePageDrop(e: DragEvent) {
-        e.preventDefault();
-        dragCounter = 0;
-        isDraggingOver = false;
-    }
+        EventsOff("data:refresh");
+    });
 </script>
 
-<div
-    class="page-container"
-    class:drag-active={isDraggingOver}
-    on:dragenter={handlePageDragEnter}
-    on:dragover={handlePageDragOver}
-    on:dragleave={handlePageDragLeave}
-    on:drop={handlePageDrop}
-    role="region"
-    aria-label="Dashboard - drop files anywhere to analyze"
->
-    <!-- Full-page drop overlay -->
-    {#if isDraggingOver}
-        <div class="drop-overlay" transition:fade={{ duration: 150 }}>
-            <div class="drop-overlay-content">
-                <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                    <polyline points="17 8 12 3 7 8"></polyline>
-                    <line x1="12" y1="3" x2="12" y2="15"></line>
-                </svg>
-                <p>Release to analyze document</p>
-            </div>
-        </div>
-    {/if}
-
-    <header class="page-header">
+<div class="dashboard-page">
+    <header class="dashboard-header">
         <div>
-            <h1 class="page-title">Overview.</h1>
-            <p class="meta">
-                {new Date().toLocaleDateString("en-GB", {
-                    weekday: "long",
-                    day: "numeric",
-                    month: "long",
-                })}
-            </p>
+            <p class="brand-kicker">AsymmFlow</p>
+            <h1>{greeting}, {userName}</h1>
+            <p class="dashboard-subtitle">{pressureLevel}</p>
         </div>
+        <time datetime={now.toISOString()}>{formatDate(now)}</time>
     </header>
 
     {#if loading}
         <div class="loading-state"><WabiSpinner size="lg" tempo="calm" /></div>
     {:else}
-        <div class="dashboard-layout" in:fade>
-            <!-- Top KPIs Strip - 6 KPIs in responsive grid -->
-            <div class="kpi-grid">
-                <!-- Total Revenue with YTD trend -->
-                <KPICard
-                    label="Total Revenue (YTD)"
-                    value={formatCurrency(stats.totalRevenue)}
-                    meta={stats.revenueMeta}
-                    trend={stats.revenueGrowth > 0 ? 'up' : stats.revenueGrowth < 0 ? 'down' : 'neutral'}
-                    accent
-                />
+        <main class="dashboard-shell" in:fade>
+            <section class="kpi-strip" aria-label="Primary dashboard metrics">
+                {#each kpis as kpi}
+                    <article class="metric-card" data-tone={kpi.tone}>
+                        <div class="metric-label">{kpi.label}</div>
+                        <div class="metric-value">{kpi.value}</div>
+                        <div class="metric-meta">
+                            <span>{kpi.meta}</span>
+                            <strong>{kpi.delta}</strong>
+                        </div>
+                    </article>
+                {/each}
+            </section>
 
-                <!-- Open Opportunities -->
-                <KPICard
-                    label="Open Opportunities"
-                    value={String(stats.activeRFQs)}
-                    meta="Live Pipeline"
-                />
-
-                <!-- Active Orders -->
-                <KPICard
-                    label="Active Orders"
-                    value={String(stats.activeOrders)}
-                    meta="In Fulfillment"
-                />
-
-                <!-- Outstanding AR -->
-                <KPICard
-                    label="Outstanding AR"
-                    value={formatCurrency(stats.outstandingAR)}
-                    meta={stats.arDaysOverdue > 0 ? `Avg ${stats.arDaysOverdue} days overdue` : "All current"}
-                    trend={stats.arDaysOverdue > 30 ? 'down' : 'neutral'}
-                />
-
-                <!-- Pending Invoices -->
-                <KPICard
-                    label="Pending Invoices"
-                    value={String(stats.pendingInvoices)}
-                    meta="Awaiting Payment"
-                />
-
-                <!-- Active Customers -->
-                <KPICard
-                    label="Active Customers"
-                    value={String(stats.activeCustomers)}
-                    meta="In Database"
-                />
-
-                <!-- Win Rate -->
-                <KPICard
-                    label="Win Rate"
-                    value={stats.winRate.toFixed(1) + "%"}
-                    meta="Opportunities Won"
-                    trend={stats.winRate >= 50 ? 'up' : stats.winRate < 30 ? 'down' : 'neutral'}
-                />
-            </div>
-
-            <!-- OCR Document Intelligence - Minimal Horizontal Bar -->
-            <div class="ocr-dropbar" class:processing={ocrProcessing} class:dragging={isDraggingOver}>
-                <div class="dropbar-left">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                        <polyline points="14 2 14 8 20 8"></polyline>
-                    </svg>
-                    <span class="dropbar-text">
-                        {#if ocrProcessing}
-                            <strong>Processing document...</strong>
-                        {:else if isDraggingOver}
-                            <strong>Release to analyze document</strong>
-                        {:else}
-                            Drop files anywhere • PDF, Excel, Word, Images, Emails
-                        {/if}
-                    </span>
-                </div>
-                <button
-                    class="btn-browse-mini"
-                    on:click={handleBrowseFile}
-                    disabled={ocrProcessing}
-                >
-                    {#if ocrProcessing}
-                        <span class="spinner-small"></span>
-                    {:else}
-                        Browse
-                    {/if}
-                </button>
-            </div>
-
-            <!-- Main Dashboard Grid -->
-            <div class="main-grid">
-                
-                <!-- Column 1: Focus Card (Tasks) -->
-                <div class="grid-col">
-                    <!-- FocusCard handles its own card styling -->
-                    <FocusCard 
-                        tasks={focusCardTasks} 
-                        on:toggleTask={handleToggleTask} 
-                    />
-                </div>
-
-                <!-- Column 2: Actions -->
-                <div class="grid-col double">
-                    <!-- Action Items / Compliance -->
-                    <Card title="Action Items" variant="accent">
-                        <div class="action-list">
-                            {#each actionItems as item}
+            <section class="decision-grid">
+                <article class="panel operating-panel">
+                    <div class="panel-head">
+                        <span>Operating Focus</span>
+                        <strong>{totalTaskSignals} active follow-ups</strong>
+                    </div>
+                    <h2>{pressureLevel}</h2>
+                    <div class="focus-list">
+                        {#each operatingFocus as item}
+                            <div class="focus-row" data-tone={item.tone}>
+                                <div>
+                                    <strong>{item.title}</strong>
+                                    <span>{item.detail}</span>
+                                </div>
                                 <button
-                                    class="action-item"
-                                    on:click={() => navigateToScreen(item.screen)}
-                                    aria-label="{item.title}: {item.count} items"
+                                    class="focus-action"
+                                    type="button"
+                                    on:click={() => handleDashboardAction(item.actionId)}
+                                    aria-label={`${item.action} ${item.title}`}
                                 >
-                                    <div class="action-icon" class:urgent={item.urgent}>
-                                        {item.icon}
-                                    </div>
-                                    <div class="action-content">
-                                        <span class="action-title">{item.title}</span>
-                                        <span class="action-meta">{item.count} items</span>
-                                    </div>
-                                    <div class="action-arrow">></div>
+                                    {item.action}
                                 </button>
+                            </div>
+                        {/each}
+                    </div>
+                    <div class="micro-grid">
+                        {#if canViewFinance}
+                            <div>
+                                <span>Cash balance</span>
+                                <strong>{formatCurrency(stats.cashBalance)}</strong>
+                            </div>
+                            <div>
+                                <span>Pipeline pressure</span>
+                                <strong>{formatCurrency(stats.pipelineValue)}</strong>
+                            </div>
+                            <div>
+                                <span>Open AR</span>
+                                <strong>{formatCurrency(stats.outstandingAR)}</strong>
+                            </div>
+                        {:else}
+                            <div>
+                                <span>Open RFQs</span>
+                                <strong>{formatCount(stats.activeRFQs)}</strong>
+                            </div>
+                            <div>
+                                <span>Pipeline pressure</span>
+                                <strong>{formatCurrency(stats.pipelineValue)}</strong>
+                            </div>
+                            <div>
+                                <span>Win rate</span>
+                                <strong>{Math.round(stats.winRate)}%</strong>
+                            </div>
+                        {/if}
+                    </div>
+                </article>
+
+                <article class="panel alerts-panel">
+                    <div class="panel-head">
+                        <span>Alerts</span>
+                        <strong>{alerts.filter((alert) => alert.tone !== "clear").length} live</strong>
+                    </div>
+                    <div class="alert-list">
+                        {#each alerts as alert}
+                            <div class="alert-row" data-tone={alert.tone}>
+                                <strong>{alert.label}</strong>
+                                <span>{alert.text}</span>
+                            </div>
+                        {/each}
+                    </div>
+                </article>
+
+                {#if canViewFinance}
+                    <article class="panel receivables-panel">
+                        <div class="panel-head">
+                            <span>Collections</span>
+                            <strong>{stats.pendingInvoices} open</strong>
+                        </div>
+                        <div class="receivable-row primary">
+                            <div>
+                                <span>Outstanding balance</span>
+                                <strong>{formatCurrency(stats.outstandingAR)}</strong>
+                            </div>
+                            <small>{stats.arDaysOverdue > 0 ? `${stats.arDaysOverdue}d average overdue` : "current"}</small>
+                        </div>
+                        <div class="collection-bar">
+                            <span style={`width: ${Math.min(100, Math.max(0, stats.collectionRate))}%`}></span>
+                        </div>
+                        <div class="receivable-meta">
+                            <span>Collected</span>
+                            <strong>{Math.round(stats.collectionRate)}%</strong>
+                            <span>At risk</span>
+                            <strong>{formatCurrency(stats.outstandingAR)}</strong>
+                        </div>
+                    </article>
+                {:else}
+                    <article class="panel receivables-panel">
+                        <div class="panel-head">
+                            <span>Pipeline</span>
+                            <strong>{stats.activeRFQs} open</strong>
+                        </div>
+                        <div class="receivable-row primary">
+                            <div>
+                                <span>Active quotation value</span>
+                                <strong>{formatCurrency(stats.pipelineValue)}</strong>
+                            </div>
+                            <small>{Math.round(stats.winRate)}% win rate</small>
+                        </div>
+                        <div class="collection-bar">
+                            <span style={`width: ${Math.min(100, Math.max(0, stats.winRate))}%`}></span>
+                        </div>
+                        <div class="receivable-meta">
+                            <span>RFQs</span>
+                            <strong>{formatCount(stats.activeRFQs)}</strong>
+                            <span>Orders</span>
+                            <strong>{formatCount(stats.activeOrders)}</strong>
+                        </div>
+                    </article>
+                {/if}
+
+                <article class="panel activity-panel">
+                    <div class="panel-head">
+                        <span>Tasks</span>
+                        <button class="panel-action" type="button" on:click={openTaskModal}>New Task</button>
+                    </div>
+                    {#if activeDashboardTasks.length > 0}
+                        <div class="activity-list">
+                            {#each activeDashboardTasks as task}
+                                <div class="activity-row">
+                                    <span class="activity-token">{taskInitial(task)}</span>
+                                    <div>
+                                        <strong>{task.title}</strong>
+                                        <span>{summarizeText(task.description || taskMeta(task), 110)}</span>
+                                    </div>
+                                    <time>{taskAge(task)}</time>
+                                </div>
                             {/each}
                         </div>
-                    </Card>
-                </div>
-            </div>
+                    {:else}
+                        <button class="empty-state empty-action" type="button" on:click={openTaskModal}>No active tasks. Create one.</button>
+                    {/if}
+                </article>
+            </section>
 
-        </div>
+            <section class="cash-strip" aria-label="Dashboard attention">
+                {#each cashFocus as item}
+                    <article>
+                        <span>{item.label}</span>
+                        <strong>{item.value}</strong>
+                        <small>{item.note}</small>
+                    </article>
+                {/each}
+            </section>
+        </main>
     {/if}
 </div>
 
+<ContextTaskModal
+    open={taskModalOpen}
+    title="Create Task"
+    subtitle="Add a follow-up from the dashboard"
+    on:created={handleTaskCreated}
+    on:close={() => (taskModalOpen = false)}
+/>
+
 <style>
-    .page-container {
-        padding: var(--page-padding);
+    .dashboard-page {
         min-height: 100vh;
+        padding: 22px 28px 28px;
         background: var(--bg-base);
-        color: var(--text-primary);
-        display: flex;
-        flex-direction: column;
+        color: #17202a;
+        box-sizing: border-box;
     }
 
-    .page-header {
-        margin-bottom: var(--section-spacing);
-        height: var(--header-height);
+    .dashboard-header {
         display: flex;
-        align-items: center;
         justify-content: space-between;
+        gap: 24px;
+        align-items: flex-start;
+        margin-bottom: 18px;
+    }
+
+    .brand-kicker {
+        margin: 0 0 12px;
+        color: #2d66bd;
+        font-size: 12px;
+        font-weight: 700;
+    }
+
+    .dashboard-header h1 {
+        margin: 0;
+        color: #43546b;
+        font-size: 28px;
+        font-weight: 500;
+        line-height: 1.1;
+    }
+
+    .dashboard-subtitle {
+        margin: 6px 0 0;
+        color: #708299;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .dashboard-header time {
+        color: #7d8fa6;
+        font-size: 12px;
+        white-space: nowrap;
     }
 
     .loading-state {
-        flex: 1;
+        min-height: 60vh;
         display: flex;
-        justify-content: center;
         align-items: center;
+        justify-content: center;
     }
 
-    .dashboard-layout {
+    .dashboard-shell {
         display: flex;
         flex-direction: column;
-        gap: var(--section-spacing);
-        flex: 1;
+        gap: 14px;
     }
 
-    /* KPI GRID - Responsive 6-column layout */
-    .kpi-grid {
+    .kpi-strip {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: calc(var(--grid-gap) + 2px);
-        align-items: stretch;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
     }
 
-    .kpi-grid :global(.kpi-card) {
-        min-height: clamp(112px, 13vh, 132px);
+    .metric-card,
+    .panel,
+    .cash-strip article {
+        background: rgba(255, 255, 255, 0.78);
+        border: 1px solid rgba(205, 216, 226, 0.82);
+        border-radius: 8px;
+        box-shadow: 0 10px 28px rgba(39, 54, 73, 0.035);
     }
 
-    .kpi-grid :global(.card) {
-        padding: 14px 16px;
+    .metric-card {
+        min-height: 86px;
+        padding: 18px 20px 14px;
+        position: relative;
+        overflow: hidden;
     }
 
-    @media (max-width: 1600px) {
-        .kpi-grid {
-            grid-template-columns: repeat(4, 1fr);
-        }
+    .metric-card::before {
+        content: "";
+        position: absolute;
+        inset: 0 0 auto 0;
+        height: 3px;
+        background: #d6e0ea;
     }
 
-    @media (max-width: 900px) {
-        .kpi-grid {
-            grid-template-columns: repeat(2, 1fr);
-        }
+    .metric-card[data-tone="positive"]::before {
+        background: #35a66f;
     }
 
-    /* MAIN GRID */
-    .main-grid {
+    .metric-card[data-tone="negative"]::before {
+        background: #d94a59;
+    }
+
+    .metric-card[data-tone="warning"]::before {
+        background: #d99522;
+    }
+
+    .metric-label,
+    .panel-head span,
+    .cash-strip span {
+        color: #8190a2;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0;
+        text-transform: uppercase;
+    }
+
+    .metric-value {
+        margin-top: 10px;
+        color: #253244;
+        font-size: 24px;
+        line-height: 1;
+        font-weight: 700;
+    }
+
+    .metric-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 8px;
+        color: #7a899b;
+        font-size: 11px;
+        line-height: 1.3;
+    }
+
+    .metric-meta strong {
+        color: #2c8a5f;
+        font-weight: 700;
+        text-align: right;
+    }
+
+    .metric-card[data-tone="negative"] .metric-meta strong {
+        color: #ce3c4b;
+    }
+
+    .metric-card[data-tone="warning"] .metric-meta strong {
+        color: #b87511;
+    }
+
+    .decision-grid {
         display: grid;
-        grid-template-columns: 1fr 2fr;
-        gap: var(--grid-gap);
-        flex: 1;
-        min-height: 0;
-        align-items: stretch;
+        grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+        gap: 14px;
     }
 
-    .grid-col {
+    .panel {
+        padding: 20px;
+        min-height: 210px;
+        box-sizing: border-box;
+    }
+
+    .panel-head {
         display: flex;
-        flex-direction: column;
-        gap: var(--grid-gap);
-        min-height: 0;
-    }
-
-    .grid-col :global(.focus-card),
-    .grid-col :global(.card) {
-        min-height: 320px;
-    }
-
-    /* Responsive - Main Grid */
-    @media (max-width: 1200px) {
-        .main-grid {
-            grid-template-columns: 1fr;
-        }
-    }
-
-    /* Action Items */
-    .action-list {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-    }
-
-    .action-item {
-        display: flex;
+        justify-content: space-between;
         align-items: center;
         gap: 12px;
-        padding: 12px;
-        background: var(--surface, white);
-        border: none;
-        border-radius: var(--border-radius-sm, 6px);
+        margin-bottom: 12px;
+    }
+
+    .panel-head strong {
+        color: #8da0b4;
+        font-size: 11px;
+        font-weight: 700;
+    }
+
+    .panel-action {
+        padding: 6px 9px;
+        border: 1px solid #c9d6e4;
+        border-radius: 5px;
+        background: #ffffff;
+        color: #2b5f9e;
+        font-size: 11px;
+        font-weight: 800;
         cursor: pointer;
-        transition: background var(--transition-fast, 0.15s);
-        text-align: left;
-        width: 100%;
     }
 
-    .action-item:hover {
-        background: var(--brand-indigo-tint, rgba(99, 102, 241, 0.08));
+    .panel-action:hover {
+        border-color: #8fb1d5;
+        background: #f4f8fc;
     }
 
-    .action-icon {
-        width: 36px;
-        height: 36px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: var(--bg-base, #fafafa);
-        border-radius: var(--border-radius-sm, 6px);
+    .operating-panel h2 {
+        margin: 0 0 18px;
+        color: #293447;
         font-size: 18px;
+        line-height: 1.35;
+        font-weight: 700;
     }
 
-    .action-icon.urgent {
-        background: #FEF2F2;
-        color: #EF4444;
-    }
-
-    .action-content {
-        flex: 1;
+    .focus-list,
+    .alert-list,
+    .activity-list {
         display: flex;
         flex-direction: column;
-        gap: 2px;
+        gap: 10px;
     }
 
-    .action-title {
-        font-weight: 500;
-        color: var(--text-primary, #000);
-    }
-
-    .action-meta {
-        font-size: var(--meta-size, 11px);
-        color: var(--text-muted, #999);
-    }
-
-    .action-arrow {
-        margin-left: auto;
-        color: var(--text-muted, #999);
-        font-size: 18px;
-    }
-
-    .spinner-small {
-        width: 14px;
-        height: 14px;
-        border: 2px solid rgba(255, 255, 255, 0.3);
-        border-top-color: white;
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-    }
-
-    @keyframes spin {
-        to { transform: rotate(360deg); }
-    }
-
-    /* Page-level drop overlay */
-    .page-container {
-        position: relative;
-    }
-
-    .page-container.drag-active {
-        outline: 1px solid rgba(255, 255, 255, 0.22);
-        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-    }
-
-    .drop-overlay {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.6);
-        backdrop-filter: blur(4px);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 9999;
-        pointer-events: none;
-    }
-
-    .drop-overlay-content {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 16px;
-        color: white;
-        text-align: center;
-    }
-
-    .drop-overlay-content svg {
-        opacity: 0.9;
-    }
-
-    .drop-overlay-content p {
-        font-size: 20px;
-        font-weight: 600;
-        margin: 0;
-        letter-spacing: -0.02em;
-    }
-
-    /* Minimal OCR Dropbar */
-    .ocr-dropbar {
+    .focus-row,
+    .alert-row,
+    .activity-row,
+    .receivable-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 12px 16px;
-        background: var(--canvas, #FFFFFF);
-        border: 1px solid var(--border, #E5E5E5);
-        border-radius: 8px;
-        transition: all 200ms ease;
+        gap: 16px;
+        border-radius: 6px;
+        background: #f4f7fa;
     }
 
-    .ocr-dropbar.dragging {
-        border-color: var(--carbon, #000000);
-        background: rgba(0, 0, 0, 0.02);
-        transform: scale(1.005);
+    .focus-row {
+        padding: 12px 14px;
+        border-left: 3px solid #a8bbd1;
     }
 
-    .ocr-dropbar.processing {
-        border-color: var(--steel, #86868B);
+    .focus-row[data-tone="critical"] {
+        background: #fff0f1;
+        border-color: #dc3446;
     }
 
-    .dropbar-left {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        color: var(--steel, #86868B);
+    .focus-row[data-tone="warning"] {
+        background: #fff7e9;
+        border-color: #e69a22;
     }
 
-    .dropbar-left svg {
-        flex-shrink: 0;
+    .focus-row[data-tone="info"] {
+        background: #edf5ff;
+        border-color: #2f70c7;
     }
 
-    .dropbar-text {
+    .focus-row strong,
+    .activity-row strong,
+    .receivable-row strong {
+        display: block;
+        color: #2d394a;
         font-size: 13px;
-        color: var(--steel, #86868B);
+        font-weight: 800;
     }
 
-    .dropbar-text strong {
-        color: var(--onyx, #1D1D1F);
-        font-weight: 600;
+    .focus-row span,
+    .activity-row div span,
+    .receivable-row span,
+    .alert-row span {
+        display: block;
+        margin-top: 4px;
+        color: #6d7e91;
+        font-size: 11px;
+        line-height: 1.35;
     }
 
-    .btn-browse-mini {
+    .focus-action {
+        min-width: 58px;
+        padding: 7px 10px;
+        border: 0;
+        border-radius: 5px;
+        background: #2265b9;
+        color: white;
+        font-size: 11px;
+        font-weight: 800;
+        text-align: center;
+        cursor: pointer;
+        transition:
+            background 0.15s ease,
+            transform 0.15s ease,
+            box-shadow 0.15s ease;
+    }
+
+    .focus-action:hover {
+        background: #1a5298;
+        box-shadow: 0 6px 14px rgba(34, 101, 185, 0.16);
+        transform: translateY(-1px);
+    }
+
+    .focus-action:focus-visible {
+        outline: 2px solid #79a9df;
+        outline-offset: 2px;
+    }
+
+    .micro-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 16px;
+    }
+
+    .micro-grid div {
+        padding: 12px;
+        border-radius: 6px;
+        background: #eef4f9;
+    }
+
+    .micro-grid span {
+        display: block;
+        color: #8293a8;
+        font-size: 10px;
+        font-weight: 700;
+    }
+
+    .micro-grid strong {
+        display: block;
+        margin-top: 5px;
+        color: #2f4054;
+        font-size: 13px;
+    }
+
+    .alert-row {
+        align-items: flex-start;
+        justify-content: flex-start;
+        padding: 12px 14px;
+        border-left: 3px solid #b8c7d7;
+    }
+
+    .alert-row[data-tone="critical"] {
+        background: #fff0f2;
+        border-color: #dc3446;
+    }
+
+    .alert-row[data-tone="warning"] {
+        background: #fff7e8;
+        border-color: #e69a22;
+    }
+
+    .alert-row[data-tone="info"] {
+        background: #eef6ff;
+        border-color: #4f89d8;
+    }
+
+    .alert-row[data-tone="soft"] {
+        background: #f6f8fb;
+        border-color: #a9b8c8;
+    }
+
+    .alert-row strong {
+        min-width: 96px;
+        color: #334154;
+        font-size: 12px;
+    }
+
+    .receivables-panel,
+    .activity-panel {
+        min-height: 260px;
+    }
+
+    .receivable-row {
+        padding: 14px;
+    }
+
+    .receivable-row.primary {
+        background: #fff7f8;
+    }
+
+    .receivable-row small {
+        color: #ce3c4b;
+        font-size: 11px;
+        font-weight: 800;
+        white-space: nowrap;
+    }
+
+    .collection-bar {
+        height: 8px;
+        margin: 18px 0 14px;
+        border-radius: 999px;
+        background: #dce6ef;
+        overflow: hidden;
+    }
+
+    .collection-bar span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: #35a66f;
+    }
+
+    .receivable-meta {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr auto;
+        gap: 8px;
+        align-items: center;
+        color: #8190a2;
+        font-size: 11px;
+    }
+
+    .receivable-meta strong {
+        color: #2d394a;
+    }
+
+    .activity-row {
+        padding: 10px 0;
+        background: transparent;
+        border-bottom: 1px solid #e3ebf2;
+    }
+
+    .activity-row:last-child {
+        border-bottom: none;
+    }
+
+    .activity-token {
+        width: 22px;
+        height: 22px;
+        min-width: 22px;
         display: inline-flex;
         align-items: center;
-        gap: 6px;
-        padding: 6px 14px;
-        background: var(--ether, #F5F5F7);
-        border: 1px solid var(--border, #E5E5E5);
-        border-radius: 6px;
+        justify-content: center;
+        box-sizing: border-box;
+        border-radius: 5px;
+        background: #e8f1f8;
+        color: #47719c;
+        font-size: 10px;
+        font-weight: 800;
+        line-height: 1;
+        text-align: center;
+        flex: 0 0 22px;
+    }
+
+    .activity-row div {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .activity-row time {
+        color: #8da0b4;
+        font-size: 10px;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+
+    .empty-state {
+        min-height: 160px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #8da0b4;
         font-size: 12px;
-        font-weight: 500;
-        color: var(--onyx, #1D1D1F);
+    }
+
+    .empty-action {
+        width: 100%;
+        border: 1px dashed #cbd8e4;
+        border-radius: 6px;
+        background: #f8fbfd;
         cursor: pointer;
-        transition: all 150ms ease;
     }
 
-    .btn-browse-mini:hover:not(:disabled) {
-        background: var(--canvas, #FFFFFF);
-        border-color: var(--steel, #86868B);
+    .empty-action:hover {
+        color: #2b5f9e;
+        border-color: #9bb9d8;
+        background: #f3f8fd;
     }
 
-    .btn-browse-mini:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
+    .cash-strip {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr 1.2fr;
+        gap: 10px;
     }
 
+    .cash-strip article {
+        min-height: 74px;
+        padding: 14px 16px;
+    }
+
+    .cash-strip strong {
+        display: block;
+        margin-top: 8px;
+        color: #283548;
+        font-size: 18px;
+    }
+
+    .cash-strip small {
+        display: block;
+        margin-top: 2px;
+        color: #7c8da1;
+        font-size: 10px;
+        font-weight: 700;
+    }
+
+    @media (max-width: 1180px) {
+        .kpi-strip,
+        .decision-grid,
+        .cash-strip {
+            grid-template-columns: 1fr 1fr;
+        }
+    }
+
+    @media (max-width: 760px) {
+        .dashboard-page {
+            padding: 18px;
+        }
+
+        .dashboard-header {
+            flex-direction: column;
+        }
+
+        .kpi-strip,
+        .decision-grid,
+        .cash-strip,
+        .micro-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .metric-meta,
+        .focus-row,
+        .receivable-row {
+            align-items: flex-start;
+            flex-direction: column;
+        }
+
+        .receivable-meta {
+            grid-template-columns: 1fr auto;
+        }
+    }
 </style>

@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jung-kurt/gofpdf"
@@ -247,13 +248,19 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	// ========================================================================
 	// LINE ITEMS TABLE
 	// ========================================================================
-	tableColWidths := []float64{10, 88, 16, 30, 30}
-	tableLineHeight := 4.8
-	minRowHeight := 7.5
+	tableX := 18.0
+	tableColWidths := []float64{10, 86, 16, 34, 28}
+	tableWidth := 0.0
+	for _, width := range tableColWidths {
+		tableWidth += width
+	}
+	tableLineHeight := 4.4
+	minRowHeight := 7.8
 	tableHeaderHeight := 8.0
-	tableStartY := pdf.GetY()
+	tableContinuationY := 52.0
 
 	drawTableHeader := func() {
+		pdf.SetX(tableX)
 		pdf.SetFont("Helvetica", "B", 9)
 		pdf.SetTextColor(255, 255, 255)
 		pdf.SetFillColor(29, 29, 31)
@@ -265,6 +272,22 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 		pdf.Ln(tableHeaderHeight)
 		pdf.SetFont("Helvetica", "", 8.5)
 		pdf.SetTextColor(29, 29, 31)
+	}
+
+	wrappedLineCount := func(text string, width float64) int {
+		total := 0
+		for _, paragraph := range strings.Split(text, "\n") {
+			lines := pdf.SplitLines([]byte(paragraph), width)
+			if len(lines) == 0 {
+				total++
+				continue
+			}
+			total += len(lines)
+		}
+		if total == 0 {
+			return 1
+		}
+		return total
 	}
 
 	drawTableHeader()
@@ -295,11 +318,7 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 
 		subtotal += lineTotal
 
-		descriptionLines := pdf.SplitLines([]byte(description), tableColWidths[1]-3)
-		lineCount := len(descriptionLines)
-		if lineCount == 0 {
-			lineCount = 1
-		}
+		lineCount := wrappedLineCount(description, tableColWidths[1]-4)
 		rowHeight := float64(lineCount)*tableLineHeight + 1.8
 		if rowHeight < minRowHeight {
 			rowHeight = minRowHeight
@@ -307,22 +326,45 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 
 		if pdf.GetY()+rowHeight > 235 {
 			pdf.AddPage()
-			pdf.SetY(tableStartY)
+			pdf.SetY(tableContinuationY)
 			drawTableHeader()
 		}
 
-		rowX := pdf.GetX()
+		rowX := tableX
 		rowY := pdf.GetY()
-		pdf.CellFormat(tableColWidths[0], rowHeight, fmt.Sprintf("%d", lineNum), "1", 0, "C", false, 0, "")
+		pdf.SetDrawColor(175, 175, 175)
+		pdf.SetLineWidth(0.18)
+		if i%2 == 1 {
+			pdf.SetFillColor(248, 250, 252)
+			pdf.Rect(rowX, rowY, tableWidth, rowHeight, "FD")
+		} else {
+			pdf.Rect(rowX, rowY, tableWidth, rowHeight, "D")
+		}
+		gridX := rowX
+		for colIdx := 0; colIdx < len(tableColWidths)-1; colIdx++ {
+			gridX += tableColWidths[colIdx]
+			pdf.Line(gridX, rowY, gridX, rowY+rowHeight)
+		}
 
-		pdf.SetXY(rowX+tableColWidths[0], rowY)
-		pdf.MultiCell(tableColWidths[1], tableLineHeight, description, "1", "L", false)
+		pdf.SetFont("Helvetica", "", 8.7)
+		pdf.SetTextColor(29, 29, 31)
+		pdf.SetXY(rowX, rowY+(rowHeight-4.6)/2)
+		pdf.CellFormat(tableColWidths[0], 4.6, fmt.Sprintf("%d", lineNum), "", 0, "C", false, 0, "")
 
-		pdf.SetXY(rowX+tableColWidths[0]+tableColWidths[1], rowY)
-		pdf.CellFormat(tableColWidths[2], rowHeight, fmt.Sprintf("%.0f", item.Quantity), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(tableColWidths[3], rowHeight, fmt.Sprintf("%.3f %s", unitPrice, currencyLabel), "1", 0, "R", false, 0, "")
-		pdf.CellFormat(tableColWidths[4], rowHeight, fmt.Sprintf("%.3f", lineTotal), "1", 0, "R", false, 0, "")
-		pdf.Ln(rowHeight)
+		pdf.SetXY(rowX+tableColWidths[0]+2, rowY+1.3)
+		pdf.MultiCell(tableColWidths[1]-4, tableLineHeight, description, "", "L", false)
+
+		numericY := rowY + (rowHeight-4.6)/2
+		qtyX := rowX + tableColWidths[0] + tableColWidths[1]
+		unitX := qtyX + tableColWidths[2]
+		amountX := unitX + tableColWidths[3]
+		pdf.SetXY(qtyX, numericY)
+		pdf.CellFormat(tableColWidths[2], 4.6, fmt.Sprintf("%.0f", item.Quantity), "", 0, "C", false, 0, "")
+		pdf.SetXY(unitX+1, numericY)
+		pdf.CellFormat(tableColWidths[3]-2, 4.6, fmt.Sprintf("%.3f %s", unitPrice, currencyLabel), "", 0, "R", false, 0, "")
+		pdf.SetXY(amountX+1, numericY)
+		pdf.CellFormat(tableColWidths[4]-2, 4.6, fmt.Sprintf("%.3f", lineTotal), "", 0, "R", false, 0, "")
+		pdf.SetY(rowY + rowHeight)
 	}
 
 	pdf.Ln(3)
@@ -330,60 +372,73 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	// ========================================================================
 	// TOTALS SECTION (right-aligned)
 	// ========================================================================
-	totalsX := 142.0 // X position for totals labels
-
-	// Subtotal
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(80, 80, 80)
-	pdf.SetX(totalsX)
-	pdf.Cell(24, 6, "SUBTOTAL:")
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(27, 6, fmt.Sprintf("%.3f %s", subtotal, currencyLabel))
-	pdf.Ln(7)
-
-	// VAT (10%)
 	vatAmount := po.VATAmount
 	if showForeignCurrency {
 		vatAmount = subtotal * 0.10
 	}
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(80, 80, 80)
-	pdf.SetX(totalsX)
-	pdf.Cell(24, 6, "VAT 10%:")
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(27, 6, fmt.Sprintf("%.3f %s", vatAmount, currencyLabel))
-	pdf.Ln(7)
-
-	// Grand Total
 	grandTotal := subtotal + vatAmount
-	pdf.SetFont("Helvetica", "B", 11)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.SetX(totalsX)
-	pdf.Cell(24, 7, fmt.Sprintf("TOTAL (%s):", currencyLabel))
-	pdf.SetFont("Helvetica", "B", 11)
-	pdf.Cell(27, 7, fmt.Sprintf("%.3f", grandTotal))
-	pdf.Ln(8)
 
-	// If foreign currency, show BHD equivalent
+	totalsX := 110.0
+	labelWidth := 34.0
+	valueWidth := 48.0
+	totalRowHeight := 7.0
+	totalBlockHeight := totalRowHeight * 3
+	if showForeignCurrency && po.ExchangeRate > 0 {
+		totalBlockHeight += totalRowHeight + 5
+	}
+	if pdf.GetY()+totalBlockHeight > 238 {
+		pdf.AddPage()
+		pdf.SetY(tableContinuationY)
+	}
+
+	drawTotalRow := func(label, value string, bold bool, green bool) {
+		rowY := pdf.GetY()
+		pdf.SetDrawColor(190, 190, 190)
+		if bold {
+			pdf.SetFillColor(242, 248, 245)
+			pdf.Rect(totalsX, rowY, labelWidth+valueWidth, totalRowHeight, "FD")
+		} else {
+			pdf.SetFillColor(255, 255, 255)
+			pdf.Rect(totalsX, rowY, labelWidth+valueWidth, totalRowHeight, "D")
+		}
+		pdf.Line(totalsX+labelWidth, rowY, totalsX+labelWidth, rowY+totalRowHeight)
+
+		if bold {
+			pdf.SetFont("Helvetica", "B", 9)
+		} else {
+			pdf.SetFont("Helvetica", "", 8.5)
+		}
+		pdf.SetTextColor(80, 80, 80)
+		pdf.SetXY(totalsX+2, rowY+1.5)
+		pdf.CellFormat(labelWidth-4, 4.2, label, "", 0, "L", false, 0, "")
+
+		if bold {
+			pdf.SetFont("Helvetica", "B", 9)
+		} else {
+			pdf.SetFont("Helvetica", "", 8.5)
+		}
+		if green {
+			pdf.SetTextColor(0, 120, 80)
+		} else {
+			pdf.SetTextColor(29, 29, 31)
+		}
+		pdf.SetXY(totalsX+labelWidth+2, rowY+1.5)
+		pdf.CellFormat(valueWidth-4, 4.2, value, "", 0, "R", false, 0, "")
+		pdf.SetY(rowY + totalRowHeight)
+	}
+
+	drawTotalRow("SUBTOTAL", fmt.Sprintf("%.3f %s", subtotal, currencyLabel), false, false)
+	drawTotalRow("VAT 10%", fmt.Sprintf("%.3f %s", vatAmount, currencyLabel), false, false)
+	drawTotalRow(fmt.Sprintf("TOTAL (%s)", currencyLabel), fmt.Sprintf("%.3f %s", grandTotal, currencyLabel), true, false)
+
 	if showForeignCurrency && po.ExchangeRate > 0 {
 		totalBHD := po.TotalBHD
-		pdf.SetFont("Helvetica", "", 9)
-		pdf.SetTextColor(80, 80, 80)
-		pdf.SetX(totalsX)
-		pdf.Cell(24, 6, "TOTAL (BHD):")
-		pdf.SetFont("Helvetica", "B", 9)
-		pdf.SetTextColor(0, 120, 80) // Green for BHD
-		pdf.Cell(27, 6, fmt.Sprintf("%.3f BHD", totalBHD))
-		pdf.Ln(5)
-
-		// Exchange rate note
-		pdf.SetFont("Helvetica", "I", 8)
+		drawTotalRow("TOTAL (BHD)", fmt.Sprintf("%.3f BHD", totalBHD), true, true)
+		pdf.SetFont("Helvetica", "I", 7.5)
 		pdf.SetTextColor(120, 120, 120)
 		pdf.SetX(totalsX)
-		pdf.MultiCell(51, 4, fmt.Sprintf("Exchange Rate: 1 %s = %.4f BHD", currencyLabel, po.ExchangeRate), "", "R", false)
-		pdf.Ln(3)
+		pdf.CellFormat(labelWidth+valueWidth, 5, fmt.Sprintf("Exchange Rate: 1 %s = %.4f BHD", currencyLabel, po.ExchangeRate), "", 0, "R", false, 0, "")
+		pdf.Ln(6)
 	}
 
 	// ========================================================================

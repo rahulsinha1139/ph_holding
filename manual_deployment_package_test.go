@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ type deploymentEmployeeKey struct {
 type deploymentRoleKeySpec struct {
 	Role        string
 	DisplayName string
+	Key         string
 	Notes       string
 }
 
@@ -345,8 +347,8 @@ func TestPrepareDeploymentPackage(t *testing.T) {
 		}
 	}
 
-	if err := ensureDeploymentRoleTestKeys(db); err != nil {
-		t.Fatalf("failed to ensure deployment role test keys: %v", err)
+	if err := ensureDeploymentEmployeeKeys(db); err != nil {
+		t.Fatalf("failed to ensure deployment employee keys: %v", err)
 	}
 
 	var employeeKeys []deploymentEmployeeKey
@@ -485,11 +487,13 @@ func TestPrepareDeploymentPackage(t *testing.T) {
 
 	for _, target := range []string{
 		filepath.Join(packageDir, "LICENSE_KEYS.txt"),
-		filepath.Join("deploy_package", "LICENSE_KEYS.txt"),
 	} {
 		if err := os.WriteFile(target, []byte(licenseText), 0644); err != nil {
 			t.Fatalf("failed to write %s: %v", target, err)
 		}
+	}
+	if err := os.WriteFile(filepath.Join("deploy_package", "LICENSE_KEYS.txt"), []byte(buildLicenseKeysPlaceholderText(generatedAt)), 0644); err != nil {
+		t.Fatalf("failed to write top-level license placeholder: %v", err)
 	}
 
 	for _, target := range []string{
@@ -526,7 +530,10 @@ func buildDeploymentEnvText(src string) ([]byte, error) {
 	filtered := make([]string, 0, len(lines)+3)
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "PH_DB_PATH=") || strings.HasPrefix(trimmed, "DATABASE_PATH=") {
+		if strings.HasPrefix(trimmed, "PH_DB_PATH=") ||
+			strings.HasPrefix(trimmed, "DATABASE_PATH=") ||
+			strings.HasPrefix(trimmed, "ASYMMFLOW_FLUSH_LICENSE_ON_RESEED=") ||
+			strings.HasPrefix(trimmed, "ASYMMFLOW_LICENSE_FLUSH_STAMP=") {
 			continue
 		}
 		filtered = append(filtered, line)
@@ -535,9 +542,10 @@ func buildDeploymentEnvText(src string) ([]byte, error) {
 	if text != "" {
 		text += "\n"
 	}
-	// Force deployment builds to use the packaged database instead of any stale
-	// machine-level runtime DB that may already exist on the client device.
-	text += "DATABASE_PATH=data/ph_holdings.db\n"
+	text += "ASYMMFLOW_FLUSH_LICENSE_ON_RESEED=true\n"
+	if stamp := strings.TrimSpace(os.Getenv("DEPLOY_STAMP")); stamp != "" {
+		text += fmt.Sprintf("ASYMMFLOW_LICENSE_FLUSH_STAMP=%s\n", stamp)
+	}
 	return []byte(text), nil
 }
 
@@ -566,13 +574,20 @@ func buildLicenseKeysText(keys []deploymentEmployeeKey, generatedAt time.Time) s
 	}
 
 	for _, rt := range roleTitles {
+		roleKeys := make([]deploymentEmployeeKey, 0, len(keys))
+		for _, key := range keys {
+			if key.Role == rt.role {
+				roleKeys = append(roleKeys, key)
+			}
+		}
+		if len(roleKeys) == 0 {
+			continue
+		}
+
 		b.WriteString("-------------------------------------------------------------------------------\n")
 		b.WriteString(fmt.Sprintf("%s (%s)\n", rt.title, rt.desc))
 		b.WriteString("-------------------------------------------------------------------------------\n\n")
-		for _, key := range keys {
-			if key.Role != rt.role {
-				continue
-			}
+		for _, key := range roleKeys {
 			b.WriteString(fmt.Sprintf("  %-16s %s\n", key.DisplayName, key.Key))
 		}
 		b.WriteString("\n")
@@ -598,6 +613,25 @@ func buildLicenseKeysText(keys []deploymentEmployeeKey, generatedAt time.Time) s
 	return b.String()
 }
 
+func buildLicenseKeysPlaceholderText(generatedAt time.Time) string {
+	return fmt.Sprintf(`===============================================================================
+                    ASYMMFLOW ERP - LICENSE KEYS
+                    Generated: %s
+===============================================================================
+
+This tracked top-level file is intentionally a placeholder.
+
+The employee license keys are generated only inside the timestamped deployment
+package produced by TestPrepareDeploymentPackage:
+
+  deploy_package/AsymmFlow_Deploy_<stamp>/LICENSE_KEYS.txt
+
+Do not commit generated employee keys, packaged .env files, packaged databases,
+or historical deployment package snapshots back to source control.
+===============================================================================
+`, generatedAt.Format("2006-01-02"))
+}
+
 func buildInstallGuideText(generatedAt time.Time) string {
 	return fmt.Sprintf(`===============================================================================
                 ASYMMFLOW ERP - INSTALLATION GUIDE
@@ -618,7 +652,7 @@ QUICK START (3 Steps)
      - Mac: Open AsymmFlow.app
 
   3. ENTER your license key when prompted
-     - See LICENSE_KEYS.txt for the role test key you want to use
+     - See LICENSE_KEYS.txt for your personal employee key
      - Key activates on first use and binds to your PC
 
 That's it! The app will open to the Dashboard.
@@ -627,10 +661,10 @@ That's it! The app will open to the Dashboard.
 IMPORTANT DATABASE RULE
 -----------------------
 
-  - This deployment package is pinned to data/ph_holdings.db via the packaged .env.
-  - Keep .env, the app binary/bundle, and the data/ folder together.
-  - On upgrades, replace the whole AsymmFlow folder/package.
-  - Do NOT copy only a new .exe or .app onto an older folder.
+  - The packaged data/ph_holdings.db is a first-run seed database.
+  - On first launch, AsymmFlow copies it to the machine app-data folder and uses that persistent copy.
+  - Bank statements, OCR imports, invoices, expenses, and license activation live in app data and survive rebuilds.
+  - On upgrades, replace the app/package; do not delete the app-data folder unless you intend to reset local data.
 
 
 FOLDER STRUCTURE
@@ -643,7 +677,7 @@ FOLDER STRUCTURE
   ├── data/
   │   ├── ph_holdings.db     <- Database with all company data
   │   └── PH Trading Quotation Template.png
-  ├── LICENSE_KEYS.txt       <- One test key per client role
+  ├── LICENSE_KEYS.txt       <- Named PH employee license keys
   ├── DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md
   ├── DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf
   ├── MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md
@@ -677,8 +711,8 @@ TROUBLESHOOTING
   "Already activated"         Each key works on ONE PC only
   Database locked             Close other app instances
   Data not syncing            Check internet connection, wait 10 min
-  Empty dashboard             Make sure data/ph_holdings.db exists
-  Wrong or old database       Verify .env still says DATABASE_PATH=data/ph_holdings.db
+  Empty dashboard             Make sure data/ph_holdings.db exists for first launch
+  Wrong or old database       Confirm the app-data database is the intended live database
   Wrong or old database       Replace the whole package folder, not just the app binary
 
   For all issues: Contact Abhie (SPOC)
@@ -695,11 +729,64 @@ func resetDeploymentLicensePool(app *App, db *gorm.DB) error {
 	if err := db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&LicenseKey{}).Error; err != nil {
 		return err
 	}
-	return ensureDeploymentRoleTestKeys(db)
+	return ensureDeploymentEmployeeKeys(db)
 }
 
-func ensureDeploymentRoleTestKeys(db *gorm.DB) error {
-	for _, candidate := range deploymentRoleKeySpecs() {
+func ensureDeploymentEmployeeKeys(db *gorm.DB) error {
+	for _, candidate := range deploymentEmployeeKeySpecs() {
+		canonicalKey := strings.ToUpper(strings.TrimSpace(candidate.Key))
+		if canonicalKey != "" {
+			var byKey LicenseKey
+			if err := db.Where("key = ?", canonicalKey).First(&byKey).Error; err == nil {
+				if err := db.Model(&byKey).Updates(map[string]interface{}{
+					"role":         candidate.Role,
+					"display_name": candidate.DisplayName,
+					"activated":    false,
+					"activated_at": nil,
+					"device_hash":  "",
+					"notes":        candidate.Notes,
+					"created_by":   "deployment-package",
+				}).Error; err != nil {
+					return err
+				}
+				continue
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+
+			var byName LicenseKey
+			if err := db.Where("role = ? AND display_name = ?", candidate.Role, candidate.DisplayName).
+				Order("id ASC").
+				First(&byName).Error; err == nil {
+				if err := db.Model(&byName).Updates(map[string]interface{}{
+					"key":          canonicalKey,
+					"activated":    false,
+					"activated_at": nil,
+					"device_hash":  "",
+					"notes":        candidate.Notes,
+					"created_by":   "deployment-package",
+				}).Error; err != nil {
+					return err
+				}
+				continue
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+
+			record := LicenseKey{
+				Key:         canonicalKey,
+				Role:        candidate.Role,
+				DisplayName: candidate.DisplayName,
+				Activated:   false,
+				Notes:       candidate.Notes,
+				CreatedBy:   "deployment-package",
+			}
+			if err := db.Create(&record).Error; err != nil {
+				return err
+			}
+			continue
+		}
+
 		var existing LicenseKey
 		if err := db.Where("role = ? AND display_name = ?", candidate.Role, candidate.DisplayName).First(&existing).Error; err == nil {
 			if err := db.Model(&existing).Updates(map[string]interface{}{
@@ -738,13 +825,16 @@ func ensureDeploymentRoleTestKeys(db *gorm.DB) error {
 	return nil
 }
 
-func deploymentRoleKeySpecs() []deploymentRoleKeySpec {
-	return []deploymentRoleKeySpec{
-		{Role: "admin", DisplayName: "Admin Test", Notes: "Deployment validation admin key"},
-		{Role: "manager", DisplayName: "Manager Test", Notes: "Deployment validation manager key"},
-		{Role: "sales", DisplayName: "Ramya", Notes: "Deployment validation sales key for Ramya"},
-		{Role: "sales", DisplayName: "Sales Test", Notes: "Deployment validation sales key"},
-		{Role: "operations", DisplayName: "Operations Test", Notes: "Deployment validation operations key"},
-		{Role: "staff", DisplayName: "Staff Test", Notes: "Deployment validation staff key"},
+func deploymentEmployeeKeySpecs() []deploymentRoleKeySpec {
+	source := phTradingNamedLicenseSpecs()
+	specs := make([]deploymentRoleKeySpec, 0, len(source))
+	for _, item := range source {
+		specs = append(specs, deploymentRoleKeySpec{
+			Role:        item.Role,
+			DisplayName: item.DisplayName,
+			Key:         item.Key,
+			Notes:       item.Notes,
+		})
 	}
+	return specs
 }

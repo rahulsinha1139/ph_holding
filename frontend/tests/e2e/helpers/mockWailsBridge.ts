@@ -13,6 +13,8 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
     const MESSAGES_KEY = '__ph_e2e_butler_messages__';
     const ACTIVE_CONVERSATION_KEY = 'butler_active_conversation_id';
     const WORKFLOW_STATE_KEY = '__ph_e2e_workflow_state__';
+    (window as any).__wailsFileDropCallbacks = [];
+    (window as any).__wailsOCRCalls = [];
 
     const now = () => new Date().toISOString();
     const safeJson = (value: string | null, fallback: any) => {
@@ -952,6 +954,7 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
             case 'PickFile':
               return defaultValue('/tmp/ph-holdings-smoke/bank-statement.pdf');
             case 'ProcessDocumentWithOCR':
+              (window as any).__wailsOCRCalls.push({ filePath: args[0], docType: args[1] });
               return defaultValue(mockOCRResult);
             case 'AnalyzeDocumentWithButler':
               return defaultValue(mockButlerInsight);
@@ -1175,8 +1178,12 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
       get(_, prop) {
         switch (String(prop)) {
           case 'EventsOn':
-          case 'OnFileDrop':
             return () => () => {};
+          case 'OnFileDrop':
+            return (callback: Function, useDropTarget = true) => {
+              (window as any).__wailsFileDropCallbacks.push({ callback, useDropTarget });
+              return () => {};
+            };
           case 'EventsOff':
           case 'OnFileDropOff':
           case 'EventsOffAll':

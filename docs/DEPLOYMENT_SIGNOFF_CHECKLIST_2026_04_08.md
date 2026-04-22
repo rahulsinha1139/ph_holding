@@ -36,8 +36,8 @@ Evidence:
 
 ## 2. Database and Startup Integrity
 
-- [ ] Packaged `.env` contains `DATABASE_PATH=data/ph_holdings.db`.
-- [ ] The app binary/bundle is kept beside the packaged `.env` and `data/ph_holdings.db`.
+- [ ] Packaged `.env` does not force `DATABASE_PATH` or `PH_DB_PATH`.
+- [ ] The app binary/bundle is kept beside the packaged seed `data/ph_holdings.db` for first launch.
 - [ ] Runtime DB path resolves to `~/.local/share/AsymmFlow/ph_holdings.db`.
 - [ ] App startup uses the runtime DB instead of the packaged DB copy.
 - [ ] No unintended new DB file is created on first launch.

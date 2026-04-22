@@ -34,7 +34,7 @@ The repo is in a strong handoff position for a deployment candidate built on 202
   - local/CWD fallback only after those
 - Startup contains packaged-launch path resolution safeguards in [app.go](/Users/rahulsinha/Desktop/House_of_Projects/ph_holdings/app.go:338).
 - Deployment audit bootstraps critical collaboration, expense, payroll, and rollout tables in [deployment_audit.go](/Users/rahulsinha/Desktop/House_of_Projects/ph_holdings/deployment_audit.go:98).
-- Packaging sanitizes license activation state and writes a pinned packaged env with `DATABASE_PATH=data/ph_holdings.db` in [manual_deployment_package_test.go](/Users/rahulsinha/Desktop/House_of_Projects/ph_holdings/manual_deployment_package_test.go:339).
+- Packaging sanitizes license activation state and leaves the packaged DB as a first-run seed; live data is written to the persistent app-data DB in [manual_deployment_package_test.go](/Users/rahulsinha/Desktop/House_of_Projects/ph_holdings/manual_deployment_package_test.go:339).
 
 ### Confirmed by validation
 

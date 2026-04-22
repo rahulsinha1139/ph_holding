@@ -121,6 +121,8 @@ const (
 	ComplexQueryLengthThreshold = 200
 	MistralAPITimeout           = 120 * time.Second
 	AimlAPITimeout              = 120 * time.Second
+	butlerMaxContextChars       = 60000
+	butlerMaxReportContextChars = 80000
 )
 
 var fallbackAIMLModels = []string{
@@ -441,6 +443,42 @@ func (a *App) ChatWithButler(message string) (ButlerResponse, error) {
 		}
 	}
 
+	if routeReply, routeActions, handled := a.tryButlerIntentClarificationFastPath(intent, message, hasFinanceAccess); handled {
+		return ButlerResponse{
+			Message:    routeReply,
+			Actions:    routeActions,
+			Confidence: 0.99,
+			Context:    map[string]interface{}{"fast_path": "butler_intent_clarification"},
+			Metadata:   buildButlerMetadata(intent, map[string]interface{}{"fast_path": "butler_intent_clarification"}, hasFinanceAccess, "grounded_sql", "", "", "", nil),
+		}, nil
+	}
+	if groundedReply, groundedActions, handled := a.tryGroundedARProjectionFastPath(intent, message, hasFinanceAccess); handled {
+		return ButlerResponse{
+			Message:    groundedReply,
+			Actions:    groundedActions,
+			Confidence: 0.99,
+			Context:    map[string]interface{}{"fast_path": "grounded_ar_projection"},
+			Metadata:   buildButlerMetadata(intent, map[string]interface{}{"fast_path": "grounded_ar_projection"}, hasFinanceAccess, "grounded_sql", "", "", "", nil),
+		}, nil
+	}
+	if groundedReply, handled := a.tryGroundedCapabilitiesFastPath(intent, message, hasFinanceAccess); handled {
+		return ButlerResponse{
+			Message:    groundedReply,
+			Actions:    []ButlerAction{},
+			Confidence: 0.99,
+			Context:    map[string]interface{}{"fast_path": "grounded_capabilities"},
+			Metadata:   buildButlerMetadata(intent, map[string]interface{}{"fast_path": "grounded_capabilities"}, hasFinanceAccess, "grounded_sql", "", "", "", nil),
+		}, nil
+	}
+	if groundedReply, groundedActions, handled := a.tryGroundedManagerFinancialBriefFastPath(intent, message, hasFinanceAccess); handled {
+		return ButlerResponse{
+			Message:    groundedReply,
+			Actions:    groundedActions,
+			Confidence: 0.99,
+			Context:    map[string]interface{}{"fast_path": "grounded_manager_financial_brief"},
+			Metadata:   buildButlerMetadata(intent, map[string]interface{}{"fast_path": "grounded_manager_financial_brief"}, hasFinanceAccess, "grounded_sql", "", "", "", nil),
+		}, nil
+	}
 	if groundedReply, handled := a.tryGroundedTaskCreationFastPath(intent, message); handled {
 		return ButlerResponse{
 			Message:    groundedReply,
@@ -515,22 +553,12 @@ func (a *App) ChatWithButler(message string) (ButlerResponse, error) {
 
 	if aiErr != nil {
 		log.Printf("❌ AI backend error: %v", aiErr)
-		return ButlerResponse{
-			Message:    fmt.Sprintf("Intelligence pipeline error: %v. Please try again.", aiErr),
-			Actions:    []ButlerAction{},
-			Confidence: 0.0,
-			Context:    context,
-			Metadata: buildButlerMetadata(
-				intent,
-				context,
-				hasFinanceAccess,
-				usedBackend,
-				requestedModel,
-				usedModel,
-				fallbackReason,
-				aiErr,
-			),
-		}, nil
+		fallbackResponse := a.buildGroundedModelFallbackResponse(intent, message, context, hasFinanceAccess, aiErr)
+		fallbackResponse.Metadata.UsedBackend = firstNonEmpty(fallbackResponse.Metadata.UsedBackend, "grounded_sql_fallback")
+		fallbackResponse.Metadata.RequestedModel = requestedModel
+		fallbackResponse.Metadata.UsedModel = usedModel
+		fallbackResponse.Metadata.FallbackReason = firstNonEmpty(fallbackResponse.Metadata.FallbackReason, fallbackReason, aiErr.Error())
+		return fallbackResponse, nil
 	}
 
 	// 8. Parse response (extract actions, clean message)
@@ -559,6 +587,8 @@ func isReportRequest(message string) bool {
 		"generate a report", "create a report", "make a report", "pdf report",
 		"generate pdf", "create pdf", "detailed report", "intelligence report",
 		"write a report", "write report", "prepare report", "prepare a report",
+		"prepare a document", "create a document", "financial document", "manager document",
+		"manager brief", "management brief", "manager briefing", "management briefing",
 		"report on", "report for", "report about"}
 	for _, trigger := range reportTriggers {
 		if strings.Contains(lower, trigger) {
@@ -875,6 +905,7 @@ func (a *App) buildFullContext(intent Intent) map[string]interface{} {
 	context["quotation_precheck"] = a.getQuotationPrecheckContext(intent)
 	context["work_data"] = a.getWorkContext(intent)
 	context["database_access"] = a.getDatabaseAccessContext(intent, hasFinanceAccess)
+	context["database_catalog"] = a.getDatabaseInventoryContext(hasFinanceAccess)
 
 	// Action items — prioritized list of things needing attention today
 	context["action_items"] = a.getActionItemsContext()
@@ -1058,6 +1089,93 @@ func (a *App) getDatabaseAccessContext(intent Intent, hasFinanceAccess bool) map
 		result["financial_records"] = a.getFinancialRecordContext(terms)
 	}
 	return result
+}
+
+func (a *App) getDatabaseInventoryContext(hasFinanceAccess bool) map[string]interface{} {
+	result := map[string]interface{}{
+		"query_policy":        "All answers must use controlled ERP queries and RBAC. Finance, banking, payroll, payments, and invoice amounts require finance:view.",
+		"finance_data_access": hasFinanceAccess,
+	}
+	if a.db == nil {
+		return result
+	}
+
+	tables, err := a.db.Migrator().GetTables()
+	if err != nil {
+		result["error"] = err.Error()
+		return result
+	}
+	sort.Strings(tables)
+
+	financeTerms := []string{"invoice", "payment", "bank", "cash", "cheque", "expense", "payroll", "salary", "journal", "account", "vat", "credit_note", "supplier_invoice"}
+	tableEntries := make([]map[string]interface{}, 0, len(tables))
+	moduleCounts := make(map[string]int)
+	for _, table := range tables {
+		if strings.HasPrefix(table, "sqlite_") {
+			continue
+		}
+		module := classifyDatabaseTableModule(table)
+		moduleCounts[module]++
+		row := map[string]interface{}{
+			"table":  table,
+			"module": module,
+		}
+		if hasFinanceAccess || !databaseTableLooksFinancial(table, financeTerms) {
+			var count int64
+			if err := a.db.Table(table).Count(&count).Error; err == nil {
+				row["rows"] = count
+			} else {
+				row["count_error"] = err.Error()
+			}
+			row["access"] = "queryable"
+		} else {
+			row["access"] = "finance_view_required"
+		}
+		tableEntries = append(tableEntries, row)
+	}
+
+	result["total_tables"] = len(tableEntries)
+	result["modules"] = moduleCounts
+	result["tables"] = tableEntries
+	result["controlled_query_surfaces"] = []string{
+		"customers", "suppliers", "contacts", "orders", "order_items", "offers", "offer_items", "opportunities", "rfqs",
+		"costing_sheets", "purchase_orders", "goods_received_notes", "delivery_notes", "serial_numbers", "products",
+		"invoices", "payments", "supplier_invoices", "supplier_payments", "bank_statements", "expenses", "payroll",
+		"employees", "tasks", "comments", "notifications", "notes", "audit_logs",
+	}
+	return result
+}
+
+func databaseTableLooksFinancial(table string, financeTerms []string) bool {
+	lower := strings.ToLower(table)
+	for _, term := range financeTerms {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyDatabaseTableModule(table string) string {
+	lower := strings.ToLower(table)
+	switch {
+	case strings.Contains(lower, "customer") || strings.Contains(lower, "supplier") || strings.Contains(lower, "contact") || strings.Contains(lower, "entity_note"):
+		return "relationships"
+	case strings.Contains(lower, "offer") || strings.Contains(lower, "opportunit") || strings.Contains(lower, "rfq") || strings.Contains(lower, "costing"):
+		return "commercial"
+	case strings.Contains(lower, "order") || strings.Contains(lower, "delivery") || strings.Contains(lower, "grn") || strings.Contains(lower, "serial") || strings.Contains(lower, "purchase"):
+		return "operations"
+	case strings.Contains(lower, "invoice") || strings.Contains(lower, "payment") || strings.Contains(lower, "bank") || strings.Contains(lower, "expense") || strings.Contains(lower, "payroll") || strings.Contains(lower, "cheque") || strings.Contains(lower, "journal") || strings.Contains(lower, "vat"):
+		return "finance"
+	case strings.Contains(lower, "employee") || strings.Contains(lower, "task") || strings.Contains(lower, "project") || strings.Contains(lower, "notification"):
+		return "work"
+	case strings.Contains(lower, "conversation") || strings.Contains(lower, "chat") || strings.Contains(lower, "prediction") || strings.Contains(lower, "memory"):
+		return "intelligence"
+	case strings.Contains(lower, "license") || strings.Contains(lower, "role") || strings.Contains(lower, "user") || strings.Contains(lower, "device") || strings.Contains(lower, "sync") || strings.Contains(lower, "setting") || strings.Contains(lower, "audit"):
+		return "system"
+	default:
+		return "other"
+	}
 }
 
 func (a *App) getCrossModuleNotesContext(terms []string, hasFinanceAccess bool) map[string]interface{} {
@@ -5803,18 +5921,7 @@ func callAIMLWithMessages(apiKey string, messages []map[string]interface{}) (str
 
 // buildMistralSystemPrompt creates the PRD-style context-aware system prompt
 func buildMistralSystemPrompt(context map[string]interface{}, regime map[string]interface{}) string {
-	// Serialize context to JSON for injection
-	contextJSON, _ := json.MarshalIndent(context, "", "  ")
-
-	// Sanitize context data to prevent prompt injection from database-sourced values
-	contextStr := sanitizeForPrompt(string(contextJSON))
-	// Case-insensitive removal of action/system/instruction markers
-	contextStr = contextCleanupPatterns.ReplaceAllString(contextStr, "")
-	// Cap context size to prevent unbounded API payloads (Mistral max ~32K tokens ≈ 128K chars)
-	const maxContextChars = 200000
-	if len(contextStr) > maxContextChars {
-		contextStr = contextStr[:maxContextChars] + "\n... [context truncated at 200K chars]"
-	}
+	contextStr := marshalContextForPrompt(context, butlerMaxContextChars)
 
 	// Build regime guidance
 	regimeGuidance := buildRegimeGuidance(regime)
@@ -5853,15 +5960,14 @@ FULL DATA ACCESS — you have live data on:
 • OFFER EXPIRY: Active quotes approaching ValidityDate — this week / this month / next 60 days, total value at risk
 • COMPETITION: Win/loss trend, top lost-deal reasons, and supplier/product competitiveness signals from stored records
 • ORDERS & INVOICES: live orders and customer invoices, including status, line items, and margins
-• PROCUREMENT: 45 POs (multi-currency EUR/USD/BHD), 3-way matching (PO/GRN/Invoice), GRN quality
-• DELIVERY: 155 delivery notes — Prepared/Dispatched/Delivered, serial traceability
+• PROCUREMENT: live purchase orders (multi-currency EUR/USD/BHD), 3-way matching (PO/GRN/Invoice), GRN quality
+• DELIVERY: live delivery notes — Prepared/Dispatched/Delivered, serial traceability
 • SERVICE DUE INTELLIGENCE: Serial-tracked installations nearing calibration, warranty, or annual-service milestones
 • FINANCE: AR/AP, bank balances (multiple accounts), FX rates, monthly revenue trends, payment predictions
 • DSO ANALYSIS: Days Sales Outstanding per customer — who pays in 15 days vs 90 days, overall DSO trend
 • BANKING: Bank statements, reconciliation status, outstanding/stale/bounced cheques
 • PAYMENT CLOSURE READINESS: Opportunities with linked invoices fully paid and therefore eligible to review for closure
-• CREDIT NOTES: Draft/Issued/Applied pipeline, outstanding credits
-• PRODUCTS: 19 active products — catalog, pricing, margins, order frequency, serial tracking
+• PRODUCTS: live product catalog, pricing, margins, order frequency, serial tracking
 • FORECASTING: Weighted pipeline by stage, opportunities closing in 60 days, payment day predictions, win rates by product type, salesperson performance
 • RISK: Overdue AR/AP, credit-blocked customers, expiring offers, system alerts
 • ACTION ITEMS: Prioritized list — overdue invoices to chase, offers expiring this week, stuck delivery notes, POs awaiting supplier acknowledgment, supplier invoices pending approval
@@ -5900,6 +6006,8 @@ RESPONSE GUIDELINES:
 - Always cite specific numbers from the context data when available
 - For forward-looking questions, clearly distinguish between actual data and projections
 - Be as detailed or as brief as the question requires — match depth to complexity
+- Write in polished executive prose. Do not use emojis, markdown heading markers like ###, or asterisks for emphasis.
+- Use short section titles and simple dash bullets only when they improve readability.
 - If data is not in context, say so and offer what you do know
 - Do not dead-end with a refusal when related grounded data exists; pivot to the nearest useful answer, comparison, shortlist, or clarifying question
 - Suggest next actions only when supported by context
@@ -6420,6 +6528,16 @@ func sanitizeForPrompt(input string) string {
 	return sanitized
 }
 
+func marshalContextForPrompt(context map[string]interface{}, maxChars int) string {
+	contextJSON, _ := json.MarshalIndent(context, "", "  ")
+	contextStr := sanitizeForPrompt(string(contextJSON))
+	contextStr = contextCleanupPatterns.ReplaceAllString(contextStr, "")
+	if maxChars > 0 && len(contextStr) > maxChars {
+		return contextStr[:maxChars] + fmt.Sprintf("\n... [context truncated at %d chars]", maxChars)
+	}
+	return contextStr
+}
+
 // settingsBasedMistralKey is set by the App during startup to provide settings-based key lookup
 var settingsBasedMistralKey func() string
 
@@ -6522,6 +6640,8 @@ func (a *App) AnalyzeDocumentWithButler(text string, docType string, metadata ma
 		"bank_statement": true, "BankStatement": true,
 		"supplier_invoice": true, "SupplierInvoice": true,
 		"quotation": true, "Quotation": true,
+		"costing": true, "Costing": true,
+		"excel_data": true, "ExcelData": true,
 		"contract": true, "Contract": true,
 		"Other": true,
 	}
@@ -6578,7 +6698,7 @@ EXTRACTION RULES:
 1. Identify the document type (RFQ, Purchase Order, Invoice, Quote, BankStatement, DeliveryNote, SupplierInvoice, Inquiry, Other)
 2. Extract customer/sender company name
 3. Extract project name or reference number if mentioned
-4. Extract line items with quantities, descriptions, and part numbers
+4. Extract line items with quantities, descriptions, part/model numbers, product codes, unit prices, and currency when present
 5. Identify any deadlines or urgency indicators
 6. Note any special requirements or conditions
 7. For bank statements: Extract bank name, account number, statement period, opening/closing balance, and list transactions as line items
@@ -6592,7 +6712,7 @@ For RFQs, Invoices, POs, Quotes:
   "project": "Project name or reference",
   "deadline": "Date or urgency description",
   "line_items": [
-    {"description": "...", "quantity": 1, "unit": "pcs", "part_number": "..."}
+    {"description": "...", "quantity": 1, "unit": "pcs", "part_number": "...", "product_code": "...", "model": "...", "unit_price": 0.000, "currency": "BHD", "raw_text": "..."}
   ],
   "metadata": {},
   "confidence": 0.85,
@@ -6630,6 +6750,8 @@ IMPORTANT:
 - Use 0.0-1.0 for confidence based on how clear the information is
 - If information is not found, use empty string or empty array
 - Be conservative with quantities - only extract if clearly stated
+- Do not put currency codes such as BHD, USD, or EUR in the "unit" field. Use "currency" for currency and "unit" only for physical units such as pcs, sets, m, kg, lot, days, or hours.
+- For Endress+Hauser and instrumentation RFQs, preserve item/model codes exactly in part_number/product_code/model even when the description is long.
 - For bank statements: DEBIT = money LEAVING the account (outgoing payments, transfers out, charges). CREDIT = money ENTERING the account (incoming payments, transfers in, deposits). Incoming transfers from customers (Fawri, INWD, deposit, TRF-IN, receipts) should be CREDITS. Outgoing payments (DGC, ONUS, Fawri-out, TRF-OUT, withdrawals, fees, charges) should be DEBITS. Use the running balance to validate: if the balance increases after a transaction it is a credit; if it decreases it is a debit. Preserve the bank statement exactly as presented: bank fees (EFTS Charges, SWIFT FEES, Corr Bnk Chg), VAT on fees, and similar service charges must remain as separate transaction rows if the statement shows them separately. Do NOT merge VAT/fee lines into a parent transaction. Use date format YYYY-MM-DD (e.g. 2026-01-15).`
 
 	// Sanitize user-supplied data before injection into prompt

@@ -30,6 +30,10 @@
     async function checkSyncStatus() {
         try {
             const status = await GetDBSyncStatus() as Record<string, any>;
+            if (status.error) {
+                console.warn("Sync status unavailable:", status.error);
+                return;
+            }
             syncStatus = {
                 configured: status.configured ?? false,
                 online: status.online ?? false,
@@ -51,7 +55,7 @@
 
     // Manual sync trigger with progress UI
     async function triggerSync() {
-        if (syncLoading || !syncStatus.configured) return;
+        if (syncLoading || !syncStatus.configured || !canManualSync) return;
         syncLoading = true;
         showSyncProgress = true;
 
@@ -88,12 +92,18 @@
     });
 
     // Status indicator color
-    $: statusColor = syncStatus.online ? "var(--status-success, #22c55e)"
+    $: statusColor = syncStatus.online && syncStatus.sync_enabled ? "var(--status-success, #22c55e)"
+                   : syncStatus.configured && !syncStatus.sync_enabled ? "var(--status-warning, #f59e0b)"
                    : syncStatus.configured ? "var(--status-warning, #f59e0b)"
                    : "var(--text-muted, #c7c7c7)";
-    $: statusLabel = syncStatus.online ? "Cloud sync active"
+    $: statusLabel = syncStatus.configured && !syncStatus.sync_enabled ? "Cloud sync paused"
+                   : syncStatus.online ? "Cloud sync active"
                    : syncStatus.configured ? "Connecting..."
                    : "Offline mode";
+    $: canManualSync = hasPermission("settings:update");
+    $: syncTitle = canManualSync
+        ? (syncStatus.sync_enabled && syncStatus.online ? "Click to sync now" : statusLabel)
+        : (syncStatus.configured && syncStatus.sync_enabled ? "Background sync runs automatically" : statusLabel);
 
     // Props
     export let currentScreen = "dashboard";
@@ -120,17 +130,18 @@
     // Check if user has a specific permission
     function hasPermission(perm: string | null): boolean {
         if (!perm) return true; // No permission required
-        if (!$permissions || $permissions.length === 0) return false;
+        const permissionList = Array.isArray($permissions) ? $permissions : [];
+        if (permissionList.length === 0) return false;
 
         // Wildcard access (admin)
-        if ($permissions.includes('*')) return true;
+        if (permissionList.includes('*')) return true;
 
         // Direct match
-        if ($permissions.includes(perm)) return true;
+        if (permissionList.includes(perm)) return true;
 
         // Resource wildcard (e.g., "finance:*" matches "finance:view")
         const [resource] = perm.split(':');
-        if ($permissions.includes(`${resource}:*`)) return true;
+        if (permissionList.includes(`${resource}:*`)) return true;
 
         return false;
     }
@@ -179,7 +190,7 @@
     </nav>
     
     <!-- SYNC STATUS -->
-    <button class="sync-status" on:click={triggerSync} title={syncStatus.online ? "Click to sync now" : statusLabel} type="button">
+    <button class="sync-status" on:click={triggerSync} title={syncTitle} type="button" disabled={!canManualSync || syncLoading || !syncStatus.configured || !syncStatus.sync_enabled}>
         <div class="sync-indicator" style="background-color: {statusColor}"></div>
         <span class="sync-label">{statusLabel}</span>
         {#if syncLoading}
@@ -366,6 +377,14 @@
 
     .sync-status:hover {
         background-color: var(--bg-base);
+    }
+
+    .sync-status:disabled {
+        cursor: default;
+    }
+
+    .sync-status:disabled:hover {
+        background: transparent;
     }
 
     .sync-indicator {

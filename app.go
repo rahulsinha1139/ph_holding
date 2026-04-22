@@ -73,6 +73,7 @@ type App struct {
 	collaborationSyncStopOnce sync.Once                   // Ensures collaboration stop is closed exactly once
 	collaborationSyncMu       sync.Mutex                  // Prevent overlapping collaboration sync runs
 	collaborationSyncInitMu   sync.Mutex                  // Guards collaboration loop initialization/reset
+	shutdownOnce              sync.Once                   // Ensures app shutdown cleanup runs exactly once
 	startupImporting          bool                        // Bypass RBAC during startup data import
 	startupImportStartTime    time.Time                   // Timestamp when startup import began (for timeout enforcement)
 	currentUser               *User                       // Current logged-in user
@@ -616,6 +617,7 @@ func (a *App) startup(ctx context.Context) {
 				// RFQs → Costings → Offers
 				&RFQData{},
 				&CostingSheetData{},
+				&CostingLineItemData{},
 				&OfferData{},
 
 				// Runtime Integration - Inbox
@@ -704,6 +706,7 @@ func (a *App) startup(ctx context.Context) {
 				// Phase 33: Pipeline Opportunities
 				&Opportunity{},
 				&ARAgingBucket{},
+				&BankLinePaymentAllocation{},
 			}
 
 			// Migrate each model individually - skip on error for existing tables
@@ -738,6 +741,10 @@ func (a *App) startup(ctx context.Context) {
 		// Assign keys to named employees
 		if err := a.SeedEmployeeKeys(); err != nil {
 			AppLogger.Warn("Employee key assignment warning", map[string]interface{}{"error": err.Error()})
+		}
+
+		if err := a.ApplyDeploymentLicenseActivationFlush(); err != nil {
+			AppLogger.Warn("Deployment license activation flush warning", map[string]interface{}{"error": err.Error()})
 		}
 
 		if tableCount <= 50 {
@@ -1204,8 +1211,52 @@ func shouldSkipCriticalAutoMigrate(db *gorm.DB, model interface{}) bool {
 	}
 }
 
+// beforeClose owns the desktop close path. Wails on macOS cancels the native
+// window close and sends an internal quit message; bounding cleanup here keeps
+// the app from lingering if a background sync or WebKit quit callback stalls.
+func (a *App) beforeClose(ctx context.Context) bool {
+	go func() {
+		done := make(chan struct{})
+		go func() {
+			a.shutdown(ctx)
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			log.Println("AsymmFlow close cleanup finished; exiting process")
+		case <-time.After(1500 * time.Millisecond):
+			log.Println("WARNING: AsymmFlow close cleanup exceeded 1.5s; forcing process exit")
+		}
+		os.Exit(0)
+	}()
+	return true
+}
+
+func waitForShutdownStep(label string, timeout time.Duration, wait func()) bool {
+	done := make(chan struct{})
+	go func() {
+		wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		log.Printf("WARNING: Shutdown step timed out after %v: %s", timeout, label)
+		return false
+	}
+}
+
 // shutdown cleans up resources on app exit
 func (a *App) shutdown(ctx context.Context) {
+	a.shutdownOnce.Do(func() {
+		a.shutdownInternal(ctx)
+	})
+}
+
+func (a *App) shutdownInternal(ctx context.Context) {
 	log.Println("PH Holdings App shutting down...")
 
 	// Stop file watcher
@@ -1225,14 +1276,14 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 
 	// Stop all background sync goroutines (wait for each to finish before closing connections)
-	a.StopBackgroundDBSync() // StartBackgroundDBSync goroutine
-	a.StopCollaborativeSyncLoop()
+	waitForShutdownStep("background database sync", 500*time.Millisecond, a.StopBackgroundDBSync)
+	waitForShutdownStep("collaboration sync loop", 500*time.Millisecond, a.StopCollaborativeSyncLoop)
 	if a.dbSyncService != nil {
-		a.StopPeriodicSync() // sync_service_impl goroutine (now waits)
+		waitForShutdownStep("periodic sync service", 500*time.Millisecond, a.StopPeriodicSync)
 	}
 	if a.dbManager != nil {
-		a.dbManager.StopPeriodicSync() // DBManager goroutine (waits)
-		a.dbManager.Disconnect()       // Properly closes + nils remote
+		waitForShutdownStep("DBManager periodic sync", 500*time.Millisecond, a.dbManager.StopPeriodicSync)
+		waitForShutdownStep("DBManager disconnect", 500*time.Millisecond, a.dbManager.Disconnect)
 	}
 
 	// Close database connection BEFORE log file (so close errors can be logged)
@@ -1430,12 +1481,20 @@ func (a *App) ensureCrossModuleSchemaExtensions() {
 	// deployment audits, and test harnesses so note fields and company routing
 	// remain backed by real SQLite columns.
 	a.addColumnIfNotExists("purchase_orders", "division", "TEXT DEFAULT 'PH Trading'")
+	a.addColumnIfNotExists("purchase_order_items", "supplier_part_number", "TEXT")
 	a.addColumnIfNotExists("supplier_invoices", "division", "TEXT DEFAULT 'PH Trading'")
+	a.addColumnIfNotExists("supplier_invoices", "supplier_name", "TEXT")
+	a.addColumnIfNotExists("supplier_invoices", "po_number", "TEXT")
+	a.addColumnIfNotExists("supplier_invoices", "ocr_document_id", "TEXT")
+	a.addColumnIfNotExists("supplier_invoices", "ocr_confidence", "REAL DEFAULT 0")
 	a.addColumnIfNotExists("payments", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("supplier_payments", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("credit_notes", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("bank_statements", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("bank_statements", "notes", "TEXT")
+	if err := a.db.AutoMigrate(&BankLinePaymentAllocation{}); err != nil {
+		log.Printf("⚠️ BankLinePaymentAllocation migration: %v", err)
+	}
 	a.addColumnIfNotExists("expense_entries", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("recurring_expenses", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("bank_expense_entries", "division", "TEXT DEFAULT 'PH Trading'")
@@ -1933,9 +1992,9 @@ func (a *App) backfillDivisionAwareFinanceData() {
 	}
 }
 
-// migrateInvoiceCheckConstraint updates the invoice CHECK constraint in existing production databases
-// to include 'PartiallyPaid' status. SQLite doesn't support ALTER TABLE for CHECK constraints,
-// so we modify sqlite_master directly using PRAGMA writable_schema.
+// migrateInvoiceCheckConstraint updates the invoice CHECK constraint in existing production databases.
+// SQLite doesn't support ALTER TABLE for CHECK constraints, so we modify sqlite_master directly
+// using PRAGMA writable_schema and bump schema_version so the current connection reloads it.
 func (a *App) migrateInvoiceCheckConstraint() {
 	if a.db == nil {
 		return
@@ -1952,9 +2011,16 @@ func (a *App) migrateInvoiceCheckConstraint() {
 		return // Table doesn't exist yet - will be created with correct constraint
 	}
 
-	// Check if PartiallyPaid is already in the constraint
-	if strings.Contains(createSQL, "PartiallyPaid") {
-		return // Already correct
+	desiredStatuses := []string{"Draft", "Sent", "Paid", "PartiallyPaid", "Overdue", "Cancelled", "Void", "Proforma"}
+	hasAllStatuses := true
+	for _, status := range desiredStatuses {
+		if !strings.Contains(createSQL, "'"+status+"'") {
+			hasAllStatuses = false
+			break
+		}
+	}
+	if hasAllStatuses {
+		return
 	}
 
 	// Check if there's a CHECK constraint at all
@@ -1962,15 +2028,11 @@ func (a *App) migrateInvoiceCheckConstraint() {
 		return // No relevant CHECK constraint to update
 	}
 
-	log.Printf("🔧 Migrating invoice CHECK constraint to include PartiallyPaid...")
+	log.Printf("🔧 Migrating invoice CHECK constraint to include statuses: %s", strings.Join(desiredStatuses, ", "))
 
-	// Update the constraint in-place by adding 'PartiallyPaid' after 'Paid'
-	newSQL := strings.Replace(createSQL, "'Paid','Overdue'", "'Paid','PartiallyPaid','Overdue'", 1)
-	if newSQL == createSQL {
-		// Try alternate quoting
-		newSQL = strings.Replace(createSQL, "'Paid', 'Overdue'", "'Paid', 'PartiallyPaid', 'Overdue'", 1)
-	}
-
+	statusConstraintPattern := regexp.MustCompile(`(?i)CHECK\s*\(\s*status\s+IN\s*\([^)]+\)\s*\)`)
+	desiredConstraint := "CHECK (status IN ('Draft','Sent','Paid','PartiallyPaid','Overdue','Cancelled','Void','Proforma'))"
+	newSQL := statusConstraintPattern.ReplaceAllString(createSQL, desiredConstraint)
 	if newSQL == createSQL {
 		log.Printf("⚠️ Could not locate CHECK constraint pattern in invoices table - skipping")
 		return
@@ -1988,13 +2050,18 @@ func (a *App) migrateInvoiceCheckConstraint() {
 		return
 	}
 
+	var schemaVersion int
+	_ = a.db.Raw("PRAGMA schema_version").Scan(&schemaVersion).Error
+	if schemaVersion >= 0 {
+		_ = a.db.Exec(fmt.Sprintf("PRAGMA schema_version = %d", schemaVersion+1)).Error
+	}
 	a.db.Exec("PRAGMA writable_schema = OFF")
 
 	// Verify integrity
 	var integrityResult string
 	a.db.Raw("PRAGMA integrity_check").Scan(&integrityResult)
 	if integrityResult == "ok" {
-		log.Printf("✅ Invoice CHECK constraint updated to include PartiallyPaid (integrity: ok)")
+		log.Printf("✅ Invoice CHECK constraint updated for invoice/proforma statuses (integrity: ok)")
 	} else {
 		log.Printf("⚠️ Invoice CHECK constraint updated but integrity check: %s", integrityResult)
 	}
@@ -2261,22 +2328,70 @@ func (a *App) GetStatistics() (Statistics, error) {
 
 // DashboardStats represents dashboard/sales statistics for UI
 type DashboardStats struct {
-	ActiveRFQs      int     `json:"active_rfqs"`
-	ActiveOrders    int     `json:"active_orders"`
-	PendingReview   int     `json:"pending_review"`
-	UrgentCount     int     `json:"urgent_count"`
-	AvgVelocityDays float64 `json:"avg_velocity_days"`
-	WinRate         float64 `json:"win_rate"`
-	TotalRevenue    float64 `json:"total_revenue"`
-	MonthGrowth     float64 `json:"month_growth"`
-	SystemHealth    string  `json:"system_health"`
-	Runway          float64 `json:"runway_months"`
-	OutstandingAR   float64 `json:"outstanding_ar"`   // Accounts receivable (unpaid invoices)
-	ARDaysOverdue   int     `json:"ar_days_overdue"`  // Average days overdue
-	PendingInvoices int     `json:"pending_invoices"` // Count of unpaid invoices
-	ActiveCustomers int     `json:"active_customers"` // Total customers in database
-	RevenueMeta     string  `json:"revenue_meta"`
-	ActivityYear    int     `json:"activity_year"`
+	ActiveRFQs       int     `json:"active_rfqs"`
+	ActiveOrders     int     `json:"active_orders"`
+	PendingReview    int     `json:"pending_review"`
+	UrgentCount      int     `json:"urgent_count"`
+	AvgVelocityDays  float64 `json:"avg_velocity_days"`
+	WinRate          float64 `json:"win_rate"`
+	TotalRevenue     float64 `json:"total_revenue"`
+	MonthGrowth      float64 `json:"month_growth"`
+	SystemHealth     string  `json:"system_health"`
+	Runway           float64 `json:"runway_months"`
+	OutstandingAR    float64 `json:"outstanding_ar"`   // Accounts receivable (unpaid invoices)
+	ARDaysOverdue    int     `json:"ar_days_overdue"`  // Average days overdue
+	PendingInvoices  int     `json:"pending_invoices"` // Count of unpaid invoices
+	ActiveCustomers  int     `json:"active_customers"` // Total customers in database
+	RevenueMeta      string  `json:"revenue_meta"`
+	ActivityYear     int     `json:"activity_year"`
+	PipelineValueBHD float64 `json:"pipeline_value_bhd"` // Open opportunity value
+	CollectionRate   float64 `json:"collection_rate"`    // Collected value / collectible value
+	CashBalanceBHD   float64 `json:"cash_balance_bhd"`   // Latest bank statement closing balances
+	CashPositionNote string  `json:"cash_position_note"`
+	FreshStartDate   string  `json:"fresh_start_date"`
+}
+
+type orderReceivableExposureRow struct {
+	OrderValueBHD float64 `gorm:"column:order_value_bhd"`
+	InvoicedBHD   float64 `gorm:"column:invoiced_bhd"`
+}
+
+func (a *App) calculateUninvoicedOrderExposure(start, end time.Time) (float64, int, error) {
+	if a.db == nil {
+		return 0, 0, fmt.Errorf("database connection not available")
+	}
+
+	var rows []orderReceivableExposureRow
+	err := a.db.Model(&Order{}).
+		Select(`CASE
+				WHEN COALESCE(orders.grand_total_bhd, 0) > 0 THEN orders.grand_total_bhd
+				ELSE COALESCE(orders.total_value_bhd, 0)
+			END AS order_value_bhd,
+			COALESCE((
+				SELECT SUM(COALESCE(invoices.grand_total_bhd, 0))
+				FROM invoices
+				WHERE invoices.order_id = orders.id
+					AND invoices.deleted_at IS NULL
+					AND invoices.status NOT IN ('Draft', 'Cancelled', 'Void', 'Proforma')
+			), 0) AS invoiced_bhd`).
+		Where("orders.status NOT IN ?", []string{"Draft", "Cancelled", "Canceled", "Void"}).
+		Where("orders.order_date >= ? AND orders.order_date < ?", start, end).
+		Find(&rows).Error
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var exposure float64
+	var pendingOrders int
+	for _, row := range rows {
+		remainder := row.OrderValueBHD - row.InvoicedBHD
+		if remainder > 0.001 {
+			exposure += remainder
+			pendingOrders++
+		}
+	}
+
+	return roundTo3(exposure), pendingOrders, nil
 }
 
 // GetDashboardStats retrieves dashboard/sales statistics for UI
@@ -2360,31 +2475,73 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 
 	yearStart := time.Date(activityYear, 1, 1, 0, 0, 0, 0, time.UTC)
 	yearEnd := time.Date(activityYear+1, 1, 1, 0, 0, 0, 0, time.UTC)
+	operationalStart := operationalMetricStartForYear(activityYear)
+	if operationalStart.Before(yearStart) {
+		operationalStart = yearStart
+	}
+	if usesOperationalFreshStart(activityYear) {
+		stats.FreshStartDate = operationalStart.Format("2006-01-02")
+	}
 	log.Printf("Dashboard using business activity year: %d (invoice=%d order=%d opportunity=%d)", activityYear, latestInvoiceYear, latestOrderYear, latestOpportunityYear)
+
+	activePipeline = 0
+	pipelineValue := 0.0
+	for key, opp := range dedupedOpportunities {
+		if opp.Year != 0 && opp.Year != activityYear {
+			continue
+		}
+		if opp.Stage == "Won" || opp.Stage == "Lost" || opp.Stage == "Expired" {
+			continue
+		}
+		if closedKeys[key] {
+			continue
+		}
+		activePipeline++
+		pipelineValue += opp.RevenueBHD
+	}
+	stats.ActiveRFQs = activePipeline
+	stats.PipelineValueBHD = roundTo3(pipelineValue)
+
+	if err := a.db.Model(&Order{}).
+		Where("status NOT IN ?", []string{"Delivered", "Completed", "Closed", "Cancelled"}).
+		Where("order_date >= ? AND order_date < ?", operationalStart, yearEnd).
+		Count(&orderCount).Error; err != nil {
+		log.Printf("Warning: Failed to count YTD active Orders: %v", err)
+	}
+	stats.ActiveOrders = int(orderCount)
 
 	postedInvoiceStatuses := []string{"Sent", "Paid", "PartiallyPaid", "Overdue"}
 
 	var invoiceRevenue float64
-	if err := a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", postedInvoiceStatuses, yearStart, yearEnd).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&invoiceRevenue).Error; err != nil {
+	if err := a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", postedInvoiceStatuses, operationalStart, yearEnd).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&invoiceRevenue).Error; err != nil {
 		log.Printf("Warning: Failed to calculate revenue: %v", err)
 	}
 
 	var bookedOrderValue float64
-	if err := a.db.Model(&Order{}).Where("order_date >= ? AND order_date < ? AND status NOT IN ('Cancelled')", yearStart, yearEnd).
-		Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&bookedOrderValue).Error; err != nil {
+	if err := a.db.Model(&Order{}).Where("order_date >= ? AND order_date < ? AND status NOT IN ?", operationalStart, yearEnd, []string{"Cancelled", "Canceled", "Void"}).
+		Select("COALESCE(SUM(CASE WHEN grand_total_bhd > 0 THEN grand_total_bhd ELSE total_value_bhd END), 0)").Scan(&bookedOrderValue).Error; err != nil {
 		log.Printf("Warning: Failed to calculate booked order value: %v", err)
 	}
 
 	stats.TotalRevenue = invoiceRevenue
 	stats.RevenueMeta = fmt.Sprintf("Invoiced FY%d", activityYear)
-	if stats.TotalRevenue <= 0 && bookedOrderValue > 0 {
+	if usesOperationalFreshStart(activityYear) {
+		stats.RevenueMeta = fmt.Sprintf("Fresh start from %s", operationalStart.Format("2 Jan 2006"))
+	}
+	if bookedOrderValue > stats.TotalRevenue {
 		stats.TotalRevenue = bookedOrderValue
 		stats.RevenueMeta = fmt.Sprintf("Confirmed orders FY%d", activityYear)
+		if usesOperationalFreshStart(activityYear) {
+			stats.RevenueMeta = fmt.Sprintf("Fresh orders from %s", operationalStart.Format("2 Jan 2006"))
+		}
 	}
 
 	// 4. Win Rate
 	var totalClosed, wonCount int
 	for _, opp := range dedupedOpportunities {
+		if opp.Year != 0 && opp.Year != activityYear {
+			continue
+		}
 		if opp.Stage == "Won" || opp.Stage == "Lost" {
 			totalClosed++
 			if opp.Stage == "Won" {
@@ -2409,15 +2566,19 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 	// 6. Month Growth (Revenue this month vs last month)
 	now := time.Now()
 	currentMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	currentPeriodStart := currentMonthStart
+	if usesOperationalFreshStart(activityYear) && operationalFreshStartDate.After(currentPeriodStart) {
+		currentPeriodStart = operationalFreshStartDate
+	}
 	lastMonthStart := currentMonthStart.AddDate(0, -1, 0)
 
 	var currentMonthRev, lastMonthRev float64
-	a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ?", postedInvoiceStatuses, currentMonthStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&currentMonthRev)
+	a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ?", postedInvoiceStatuses, currentPeriodStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&currentMonthRev)
 	a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", postedInvoiceStatuses, lastMonthStart, currentMonthStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&lastMonthRev)
 
 	if currentMonthRev == 0 && lastMonthRev == 0 {
-		a.db.Model(&Order{}).Where("status NOT IN ('Cancelled') AND order_date >= ?", currentMonthStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&currentMonthRev)
-		a.db.Model(&Order{}).Where("status NOT IN ('Cancelled') AND order_date >= ? AND order_date < ?", lastMonthStart, currentMonthStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&lastMonthRev)
+		a.db.Model(&Order{}).Where("status NOT IN ? AND order_date >= ?", []string{"Cancelled", "Canceled", "Void"}, currentPeriodStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&currentMonthRev)
+		a.db.Model(&Order{}).Where("status NOT IN ? AND order_date >= ? AND order_date < ?", []string{"Cancelled", "Canceled", "Void"}, lastMonthStart, currentMonthStart).Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&lastMonthRev)
 	}
 
 	if lastMonthRev > 0 {
@@ -2430,57 +2591,22 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 	var outstandingAR float64
 	var pendingCount int64
 	openInvoiceStatuses := []string{"Sent", "PartiallyPaid", "Overdue"}
-	if err := a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", openInvoiceStatuses, yearStart, yearEnd).
+	if err := a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", openInvoiceStatuses, operationalStart, yearEnd).
 		Select("COALESCE(SUM(outstanding_bhd), 0)").Scan(&outstandingAR).Error; err != nil {
 		log.Printf("Warning: Failed to calculate outstanding AR: %v", err)
 	}
 	stats.OutstandingAR = outstandingAR
 
-	if err := a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", openInvoiceStatuses, yearStart, yearEnd).Count(&pendingCount).Error; err != nil {
+	if err := a.db.Model(&Invoice{}).Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", openInvoiceStatuses, operationalStart, yearEnd).Count(&pendingCount).Error; err != nil {
 		log.Printf("Warning: Failed to count pending invoices: %v", err)
 	}
 	stats.PendingInvoices = int(pendingCount)
 
 	if outstandingAR <= 0 {
-		type OrderReceivableRow struct {
-			GrandTotalBHD float64
-			InvoicedBHD   float64
-			InvoiceCount  int64
-		}
-
-		var openOrders []OrderReceivableRow
-		if err := a.db.Model(&Order{}).
-			Select(`orders.grand_total_bhd,
-				COALESCE((
-					SELECT COUNT(1)
-					FROM invoices
-					WHERE invoices.order_id = orders.id
-						AND invoices.deleted_at IS NULL
-				), 0) AS invoice_count,
-				COALESCE((
-					SELECT SUM(invoices.grand_total_bhd)
-					FROM invoices
-					WHERE invoices.order_id = orders.id
-						AND invoices.deleted_at IS NULL
-						AND invoices.status NOT IN ('Draft', 'Cancelled', 'Void', 'Proforma')
-				), 0) AS invoiced_bhd`).
-			Where("orders.status NOT IN ?", []string{"Delivered", "Completed", "Closed", "Cancelled"}).
-			Where("orders.order_date >= ? AND orders.order_date < ?", yearStart, yearEnd).
-			Find(&openOrders).Error; err != nil {
+		orderReceivableFallback, ordersPendingInvoice, err := a.calculateUninvoicedOrderExposure(operationalStart, yearEnd)
+		if err != nil {
 			log.Printf("Warning: Failed to derive receivable exposure from active orders: %v", err)
 		} else {
-			var orderReceivableFallback float64
-			var ordersPendingInvoice int
-			for _, row := range openOrders {
-				if row.InvoiceCount > 0 {
-					continue
-				}
-				remainder := row.GrandTotalBHD - row.InvoicedBHD
-				if remainder > 0.001 {
-					orderReceivableFallback += remainder
-					ordersPendingInvoice++
-				}
-			}
 			if orderReceivableFallback > 0 {
 				stats.OutstandingAR = orderReceivableFallback
 				if stats.PendingInvoices == 0 {
@@ -2489,6 +2615,10 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 			}
 		}
 	}
+	collectibleValue := invoiceRevenue + stats.OutstandingAR
+	if collectibleValue > 0 {
+		stats.CollectionRate = math.Round((invoiceRevenue/collectibleValue)*1000) / 10
+	}
 
 	// 8. AR Days Overdue (Average days overdue for unpaid invoices)
 	type OverdueResult struct {
@@ -2496,7 +2626,7 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 	}
 	var overdueResult OverdueResult
 	if err := a.db.Model(&Invoice{}).
-		Where("status IN ? AND due_date IS NOT NULL AND due_date < ?", openInvoiceStatuses, time.Now()).
+		Where("status IN ? AND invoice_date >= ? AND invoice_date < ? AND due_date IS NOT NULL AND due_date < ?", openInvoiceStatuses, operationalStart, yearEnd, time.Now()).
 		Select("COALESCE(AVG(JULIANDAY('now') - JULIANDAY(due_date)), 0) as avg_days_overdue").
 		Scan(&overdueResult).Error; err != nil {
 		log.Printf("Warning: Failed to calculate AR days overdue: %v", err)
@@ -2505,11 +2635,36 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 
 	// 9. Active Customers
 	var customerCount int64
-	if err := a.db.Model(&CustomerMaster{}).
-		Where("deleted_at IS NULL").
-		Where("COALESCE(status, 'Active') = ?", "Active").
-		Count(&customerCount).Error; err != nil {
-		log.Printf("Warning: Failed to count customers: %v", err)
+	if err := a.db.Raw(`
+		SELECT COUNT(DISTINCT customer_id)
+		FROM (
+			SELECT customer_id FROM orders
+			WHERE deleted_at IS NULL
+				AND customer_id <> ''
+				AND order_date >= ? AND order_date < ?
+				AND status NOT IN ('Cancelled', 'Void')
+			UNION
+			SELECT customer_id FROM invoices
+			WHERE deleted_at IS NULL
+				AND customer_id <> ''
+				AND invoice_date >= ? AND invoice_date < ?
+				AND status NOT IN ('Cancelled', 'Void', 'Proforma', 'Draft')
+			UNION
+			SELECT customer_id FROM opportunities
+			WHERE deleted_at IS NULL
+				AND customer_id <> ''
+				AND year = ?
+		)
+	`, operationalStart, yearEnd, operationalStart, yearEnd, activityYear).Scan(&customerCount).Error; err != nil {
+		log.Printf("Warning: Failed to count YTD active customers: %v", err)
+	}
+	if customerCount == 0 {
+		if err := a.db.Model(&CustomerMaster{}).
+			Where("deleted_at IS NULL").
+			Where("COALESCE(status, 'Active') = ?", "Active").
+			Count(&customerCount).Error; err != nil {
+			log.Printf("Warning: Failed to count customers: %v", err)
+		}
 	}
 	stats.ActiveCustomers = int(customerCount)
 
@@ -2518,6 +2673,15 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 	stats.UrgentCount = stats.PendingInvoices
 	stats.Runway = 12.5 // Calculated from Survival Garden usually
 
+	if cashSnapshot, err := a.computeCashPositionSnapshot(); err == nil {
+		stats.CashBalanceBHD = cashSnapshot.CashBalanceBHD
+		if len(cashSnapshot.Notices) > 0 {
+			stats.CashPositionNote = strings.Join(cashSnapshot.Notices, " ")
+		}
+	} else {
+		log.Printf("Warning: Failed to calculate dashboard cash position: %v", err)
+	}
+
 	// System health
 	if stats.WinRate > 30 {
 		stats.SystemHealth = "Robust"
@@ -2525,6 +2689,19 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 		stats.SystemHealth = "Healthy"
 	} else {
 		stats.SystemHealth = "Needs Attention"
+	}
+
+	if !a.currentSessionCanViewFinanceDashboard() {
+		stats.TotalRevenue = 0
+		stats.MonthGrowth = 0
+		stats.OutstandingAR = 0
+		stats.ARDaysOverdue = 0
+		stats.PendingInvoices = 0
+		stats.CollectionRate = 0
+		stats.CashBalanceBHD = 0
+		stats.CashPositionNote = ""
+		stats.RevenueMeta = "Sales view"
+		stats.UrgentCount = stats.ActiveRFQs
 	}
 
 	log.Printf("Dashboard stats: %d active RFQs, %d Active Orders, %.2f BHD Revenue, %.1f%% Win Rate, %d Customers, %.2f AR",
@@ -3039,21 +3216,17 @@ func (a *App) GetCustomer360View(customerID string) (Customer360Data, error) {
 		return Customer360Data{}, err
 	}
 
-	var customer CustomerMaster
-	// Query by primary key (ID) as frontend sends UUID
-	result := a.db.Where("id = ?", customerID).First(&customer)
-	if result.Error != nil {
-		// Fallback: try querying by customer_id just in case
-		result = a.db.Where("customer_id = ?", customerID).First(&customer)
-		if result.Error != nil {
-			log.Printf("Error fetching customer %s: %v", customerID, result.Error)
-			return Customer360Data{}, fmt.Errorf("customer not found: %s", customerID)
-		}
+	linkIndex := a.buildCustomerLinkIndex()
+	customer, ok := linkIndex.resolve(customerID, customerID)
+	if !ok {
+		log.Printf("Error fetching customer %s: not found in customer linkage index", customerID)
+		return Customer360Data{}, fmt.Errorf("customer not found: %s", customerID)
 	}
 
 	// Fetch recent predictions
 	var predictions []PredictionRecord
-	a.db.Where("customer_id = ?", customerID).
+	predictionIDs := uniqueNonEmptyStrings(customerID, customer.ID, customer.CustomerID, customer.CustomerCode)
+	a.db.Where("customer_id IN ?", predictionIDs).
 		Order("created_at desc").
 		Limit(10).
 		Find(&predictions)
@@ -3067,20 +3240,21 @@ func (a *App) GetCustomer360View(customerID string) (Customer360Data, error) {
 		r3 = predictions[0].R3
 	}
 
+	profile, profileErr := a.GetCustomerFullProfile(customer.ID)
+	if profileErr != nil {
+		log.Printf("⚠️ Customer360 profile linkage failed for %s: %v", customer.ID, profileErr)
+	}
+
 	// WAVE 2 AGENT 4: Fetch deep customer joins
-	receivablesAging := a.GetReceivablesAging(customer.ID)
-	paymentHistory := a.GetPaymentHistory(customer.ID, 6)
-	openOpportunities := a.GetCustomerOpportunities(customer.CustomerID)
-	recentOrders := a.GetCustomerRecentOrders(customer.ID, 5)
-
-	// Calculate Customer Lifetime Value (total invoices excluding cancelled)
-	var totalInvoiced float64
-	a.db.Model(&Invoice{}).
-		Where("customer_id = ? AND status NOT IN ('Cancelled', 'Void')", customer.ID).
-		Select("COALESCE(SUM(grand_total_bhd), 0)").
-		Scan(&totalInvoiced)
-
-	customerLTV := totalInvoiced
+	receivablesAging := profile.ARAgingBuckets
+	paymentHistory := profile.PaymentHistory
+	openOpportunities := a.GetCustomerOpportunities(customer.ID)
+	if len(openOpportunities) == 0 {
+		openOpportunities = profile.RecentRFQs
+	}
+	recentOrders := profile.RecentOrders
+	customerLTV := profile.TotalRevenue
+	totalOrdersValue := roundTo3(profile.AvgOrderValue * float64(profile.TotalOrders))
 
 	// Assemble 360 view
 	data := Customer360Data{
@@ -3100,10 +3274,10 @@ func (a *App) GetCustomer360View(customerID string) (Customer360Data, error) {
 		R1:                 r1,
 		R2:                 r2,
 		R3:                 r3,
-		TotalOrdersValue:   customer.TotalOrdersValue,
-		TotalOrdersCount:   customer.TotalOrdersCount,
-		AvgOrderValue:      customer.AvgOrderValue,
-		LastOrderDate:      customer.LastOrderDate,
+		TotalOrdersValue:   totalOrdersValue,
+		TotalOrdersCount:   profile.TotalOrders,
+		AvgOrderValue:      profile.AvgOrderValue,
+		LastOrderDate:      profile.LastOrderDate,
 		HasABBCompetition:  customer.HasABBCompetition,
 		IsEmergencyOnly:    customer.IsEmergencyOnly,
 		RecentPredictions:  predictions,
@@ -3167,33 +3341,16 @@ func (a *App) GetReceivablesAging(customerID string) ReceivablesAgingSummary {
 	if err := a.requirePermission("customers:view"); err != nil {
 		return ReceivablesAgingSummary{}
 	}
-	var invoices []Invoice
-	now := time.Now()
-
-	// Fetch all unpaid/partially paid invoices for this customer
-	a.db.Where("customer_id = ? AND status IN ('Sent', 'Overdue') AND outstanding_bhd > 0", customerID).
-		Find(&invoices)
-
-	aging := ReceivablesAgingSummary{}
-
-	for _, inv := range invoices {
-		daysOverdue := int(now.Sub(inv.DueDate).Hours() / 24)
-		outstanding := inv.OutstandingBHD
-
-		if daysOverdue <= 30 {
-			aging.Current += outstanding
-		} else if daysOverdue <= 60 {
-			aging.Days30_60 += outstanding
-		} else if daysOverdue <= 90 {
-			aging.Days60_90 += outstanding
-		} else if daysOverdue <= 120 {
-			aging.Days90_120 += outstanding
-		} else {
-			aging.Days120Plus += outstanding
-		}
-
-		aging.TotalOutstanding += outstanding
+	linkIndex := a.buildCustomerLinkIndex()
+	customer, ok := linkIndex.resolve(customerID, customerID)
+	if !ok {
+		log.Printf("Receivables aging: customer %s could not be resolved", customerID)
+		return ReceivablesAgingSummary{}
 	}
+	invoices := a.linkedInvoicesForCustomer(linkIndex, customer)
+	orders := a.linkedOrdersForCustomer(linkIndex, customer)
+	orderExposure := linkedOrderExposure(orders, invoices)
+	aging := linkedReceivablesAging(invoices, orderExposure)
 
 	log.Printf("Receivables aging for customer %s: Total %.2f BHD (Current: %.2f, 30-60: %.2f, 60-90: %.2f, 90-120: %.2f, 120+: %.2f)",
 		customerID, aging.TotalOutstanding, aging.Current, aging.Days30_60, aging.Days60_90, aging.Days90_120, aging.Days120Plus)
@@ -3206,23 +3363,13 @@ func (a *App) GetPaymentHistory(customerID string, limit int) []PaymentHistoryEn
 	if err := a.requirePermission("payments:view"); err != nil {
 		return []PaymentHistoryEntry{}
 	}
-	var payments []Payment
-
-	a.db.Where("customer_id = ?", customerID).
-		Order("payment_date DESC").
-		Limit(limit).
-		Find(&payments)
-
-	history := make([]PaymentHistoryEntry, 0, len(payments))
-	for _, p := range payments {
-		history = append(history, PaymentHistoryEntry{
-			PaymentDate:   p.PaymentDate,
-			AmountBHD:     p.AmountBHD,
-			InvoiceNumber: p.InvoiceNumber,
-			DaysToPayment: p.DaysToPayment,
-			PaymentMethod: p.PaymentMethod,
-		})
+	linkIndex := a.buildCustomerLinkIndex()
+	customer, ok := linkIndex.resolve(customerID, customerID)
+	if !ok {
+		log.Printf("Payment history: customer %s could not be resolved", customerID)
+		return []PaymentHistoryEntry{}
 	}
+	history := a.linkedPaymentHistoryForCustomer(linkIndex, customer, limit)
 
 	log.Printf("Retrieved %d payment history entries for customer %s", len(history), customerID)
 	return history
@@ -3233,29 +3380,33 @@ func (a *App) GetCustomerOpportunities(customerID string) []OpportunitySummary {
 	if err := a.requirePermission("offers:view"); err != nil {
 		return []OpportunitySummary{}
 	}
-	var rfqs []RFQData
-
-	// Match by client name (RFQData.Client should match CustomerMaster.BusinessName)
-	// First, get customer name
-	var customer CustomerMaster
-	if err := a.db.Where("customer_id = ?", customerID).First(&customer).Error; err != nil {
+	linkIndex := a.buildCustomerLinkIndex()
+	customer, ok := linkIndex.resolve(customerID, customerID)
+	if !ok {
 		log.Printf("Customer %s not found for opportunities lookup", customerID)
 		return []OpportunitySummary{}
 	}
 
-	a.db.Where("client = ? AND status IN ('pending', 'quoted')", customer.BusinessName).
-		Order("created_at DESC").
-		Find(&rfqs)
+	rfqs := a.linkedRFQsForCustomer(linkIndex, customer)
+	offers := a.linkedOffersForCustomer(linkIndex, customer)
+	pipeline := a.linkedOpportunitiesForCustomer(linkIndex, customer)
+	pipelineEvents := buildCustomerPipelineEvents(customer.ID, rfqs, offers, pipeline, true)
 
-	opportunities := make([]OpportunitySummary, 0, len(rfqs))
-	for _, rfq := range rfqs {
+	opportunities := make([]OpportunitySummary, 0, len(pipelineEvents))
+	for _, event := range pipelineEvents {
+		if closedLostStage(event.Status) || closedWonStage(event.Status) {
+			continue
+		}
 		opportunities = append(opportunities, OpportunitySummary{
-			ID:        rfq.ID,
-			Project:   rfq.Project,
-			Value:     rfq.Value,
-			Status:    rfq.Status,
-			CreatedAt: rfq.CreatedAt,
+			Project:   firstNonEmpty(event.Project, event.Ref),
+			Value:     event.Value,
+			Status:    event.Status,
+			CreatedAt: event.Date,
 		})
+	}
+	sortOpportunitySummariesByCreatedAt(opportunities)
+	if len(opportunities) > 10 {
+		opportunities = opportunities[:10]
 	}
 
 	log.Printf("Retrieved %d open opportunities for customer %s (%s)", len(opportunities), customerID, customer.BusinessName)
@@ -3267,21 +3418,27 @@ func (a *App) GetCustomerRecentOrders(customerID string, limit int) []OrderSumma
 	if err := a.requirePermission("orders:view"); err != nil {
 		return []OrderSummary{}
 	}
-	var orders []Order
-
-	a.db.Where("customer_id = ?", customerID).
-		Order("order_date DESC").
-		Limit(limit).
-		Find(&orders)
-
+	linkIndex := a.buildCustomerLinkIndex()
+	customer, ok := linkIndex.resolve(customerID, customerID)
+	if !ok {
+		log.Printf("Recent orders: customer %s could not be resolved", customerID)
+		return []OrderSummary{}
+	}
+	orders := a.linkedOrdersForCustomer(linkIndex, customer)
 	summary := make([]OrderSummary, 0, len(orders))
 	for _, o := range orders {
+		if !commercialOrderStatus(o.Status) {
+			continue
+		}
 		summary = append(summary, OrderSummary{
 			OrderNumber:   o.OrderNumber,
 			OrderDate:     o.OrderDate,
-			TotalValueBHD: o.GrandTotalBHD,
+			TotalValueBHD: customerCommercialOrderValue(o),
 			Status:        o.Status,
 		})
+		if limit > 0 && len(summary) >= limit {
+			break
+		}
 	}
 
 	log.Printf("Retrieved %d recent orders for customer %s", len(summary), customerID)
@@ -3361,10 +3518,12 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 		return profile, fmt.Errorf("database not initialized")
 	}
 
-	// 1. Get customer master
-	var customer CustomerMaster
-	if err := a.db.Where("id = ?", customerID).First(&customer).Error; err != nil {
-		return profile, fmt.Errorf("customer not found: %v", err)
+	// 1. Get customer master through the canonical linkage layer. Transactional rows
+	// use a mix of UUIDs, business customer codes, and names depending on import path.
+	linkIndex := a.buildCustomerLinkIndex()
+	customer, ok := linkIndex.resolve(customerID, customerID)
+	if !ok {
+		return profile, fmt.Errorf("customer not found: %s", customerID)
 	}
 
 	profile.ID = customer.ID
@@ -3382,79 +3541,123 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 	profile.Country = customer.Country
 	profile.PaymentGrade = customer.PaymentGrade
 	profile.PaymentTermsDays = customer.PaymentTermsDays
+	profile.CreditLimit = customer.CreditLimitBHD
 	profile.IsCreditBlocked = customer.IsCreditBlocked
 	profile.LastOrderDate = customer.LastOrderDate
 	profile.RelationYears = customer.RelationYears
 
-	// Calculate TotalRevenue from paid invoices (not from denormalized field which may be empty)
-	var totalRevenue float64
-	a.db.Model(&Invoice{}).Where("customer_id = ? AND status = ?", customerID, "Paid").
-		Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&totalRevenue)
-	profile.TotalRevenue = totalRevenue
+	invoices := a.linkedInvoicesForCustomer(linkIndex, customer)
+	orders := a.linkedOrdersForCustomer(linkIndex, customer)
+	offers := a.linkedOffersForCustomer(linkIndex, customer)
+	rfqs := a.linkedRFQsForCustomer(linkIndex, customer)
+	opportunities := a.linkedOpportunitiesForCustomer(linkIndex, customer)
 
-	// Calculate TotalOrders from orders table
-	var totalOrders int64
-	a.db.Model(&Order{}).Where("customer_id = ?", customerID).Count(&totalOrders)
-	profile.TotalOrders = int(totalOrders)
-
-	// Calculate AvgOrderValue
-	if totalOrders > 0 {
-		var totalOrderValue float64
-		a.db.Model(&Order{}).Where("customer_id = ?", customerID).
-			Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&totalOrderValue)
-		profile.AvgOrderValue = totalOrderValue / float64(totalOrders)
+	var postedInvoiceValue float64
+	for _, inv := range invoices {
+		if invoicePostedStatus(inv.Status) {
+			postedInvoiceValue += inv.GrandTotalBHD
+		}
 	}
 
-	// Calculate OutstandingBHD from unpaid invoices
-	var outstandingBHD float64
-	a.db.Model(&Invoice{}).Where("customer_id = ? AND status NOT IN (?, ?)", customerID, "Paid", "Cancelled").
-		Select("COALESCE(SUM(grand_total_bhd), 0)").Scan(&outstandingBHD)
-	profile.OutstandingBHD = outstandingBHD
+	var totalOrderValue float64
+	ordersByOfferID := make(map[string]bool)
+	for _, order := range orders {
+		if !commercialOrderStatus(order.Status) {
+			continue
+		}
+		orderValue := customerCommercialOrderValue(order)
+		totalOrderValue += orderValue
+		profile.TotalOrders++
+		if profile.LastOrderDate == nil || order.OrderDate.After(*profile.LastOrderDate) {
+			last := order.OrderDate
+			profile.LastOrderDate = &last
+		}
+		if strings.TrimSpace(order.OfferID) != "" {
+			ordersByOfferID[order.OfferID] = true
+		}
+	}
+	if profile.TotalOrders > 0 {
+		profile.AvgOrderValue = roundTo3(totalOrderValue / float64(profile.TotalOrders))
+	}
+
+	pipelineEvents := buildCustomerPipelineEvents(customer.ID, rfqs, offers, opportunities, true)
+	orderExposure := linkedOrderExposure(orders, invoices)
+	var activePipelineValue float64
+	for _, event := range pipelineEvents {
+		if event.Value <= 0 || closedLostStage(event.Status) {
+			continue
+		}
+		if strings.TrimSpace(event.OfferID) != "" && ordersByOfferID[event.OfferID] {
+			continue
+		}
+		activePipelineValue += event.Value
+	}
+	profile.TotalRevenue = roundTo3(postedInvoiceValue + orderExposure + activePipelineValue)
 
 	// 2. Get contacts
-	var contacts []CustomerContact
-	a.db.Where("customer_id = ?", customerID).Find(&contacts)
+	var allContacts []CustomerContact
+	a.db.Find(&allContacts)
+	contacts := make([]CustomerContact, 0, len(allContacts))
+	for _, contact := range allContacts {
+		if linkIndex.matches(customer, contact.CustomerID, "") {
+			contacts = append(contacts, contact)
+		}
+	}
 	profile.Contacts = contacts
 
 	// 3. Get AR aging
-	profile.ARAgingBuckets = a.GetReceivablesAging(customerID)
+	profile.ARAgingBuckets = linkedReceivablesAging(invoices, orderExposure)
+	profile.OutstandingBHD = profile.ARAgingBuckets.TotalOutstanding
 
 	// Calculate overdue
 	profile.OverdueBHD = profile.ARAgingBuckets.Days30_60 + profile.ARAgingBuckets.Days60_90 +
 		profile.ARAgingBuckets.Days90_120 + profile.ARAgingBuckets.Days120Plus
 
 	// 4. Get RFQ stats
-	var rfqs []RFQData
-	a.db.Where("client = ?", customer.BusinessName).Find(&rfqs)
-	profile.RFQsFloated = len(rfqs)
 	wonCount := 0
 	recentRFQs := make([]OpportunitySummary, 0)
-	for _, rfq := range rfqs {
-		if rfq.Status == "won" {
+	for _, event := range pipelineEvents {
+		profile.RFQsFloated++
+		if closedWonStage(event.Status) {
 			wonCount++
 		}
-		if len(recentRFQs) < 5 {
-			recentRFQs = append(recentRFQs, OpportunitySummary{
-				ID:        rfq.ID,
-				Project:   rfq.Project,
-				Value:     rfq.Value,
-				Status:    rfq.Status,
-				CreatedAt: rfq.CreatedAt,
-			})
-		}
+		recentRFQs = append(recentRFQs, OpportunitySummary{
+			Project:   firstNonEmpty(event.Project, event.Ref),
+			Value:     event.Value,
+			Status:    event.Status,
+			CreatedAt: event.Date,
+		})
 	}
 	profile.RFQsWon = wonCount
 	if profile.RFQsFloated > 0 {
 		profile.WinRate = float64(wonCount) / float64(profile.RFQsFloated) * 100
 	}
+	sortOpportunitySummariesByCreatedAt(recentRFQs)
+	if len(recentRFQs) > 5 {
+		recentRFQs = recentRFQs[:5]
+	}
 	profile.RecentRFQs = recentRFQs
 
 	// 5. Get recent orders
-	profile.RecentOrders = a.GetCustomerRecentOrders(customerID, 5)
+	recentOrders := make([]OrderSummary, 0, len(orders))
+	for _, order := range orders {
+		if !commercialOrderStatus(order.Status) {
+			continue
+		}
+		recentOrders = append(recentOrders, OrderSummary{
+			OrderNumber:   order.OrderNumber,
+			OrderDate:     order.OrderDate,
+			TotalValueBHD: customerCommercialOrderValue(order),
+			Status:        order.Status,
+		})
+	}
+	sortOrderSummariesByDate(recentOrders)
+	if len(recentOrders) > 5 {
+		recentOrders = recentOrders[:5]
+	}
+	profile.RecentOrders = recentOrders
 
 	// 6. Get recent invoices
-	var invoices []Invoice
-	a.db.Where("customer_id = ?", customerID).Order("invoice_date DESC").Limit(5).Find(&invoices)
 	recentInvoices := make([]InvoiceSummary, 0, len(invoices))
 	for _, inv := range invoices {
 		recentInvoices = append(recentInvoices, InvoiceSummary{
@@ -3465,10 +3668,16 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 			Status:        inv.Status,
 		})
 	}
+	sortInvoiceSummariesByDate(recentInvoices)
+	if len(recentInvoices) > 5 {
+		recentInvoices = recentInvoices[:5]
+	}
 	profile.RecentInvoices = recentInvoices
 
 	// 7. Get payment history
-	profile.PaymentHistory = a.GetPaymentHistory(customerID, 6)
+	if err := a.requirePermission("payments:view"); err == nil {
+		profile.PaymentHistory = a.linkedPaymentHistoryForCustomer(linkIndex, customer, 6)
+	}
 
 	// 8. Get notes
 	var notes []EntityNote
@@ -3815,7 +4024,7 @@ type RFQComment struct {
 
 func (RFQComment) TableName() string { return "rfq_comments" }
 
-// OpportunityComment stores management notes for canonical opportunities.
+// OpportunityComment stores the shared comment thread for canonical opportunities.
 type OpportunityComment struct {
 	ID            uint      `json:"id" gorm:"primaryKey"`
 	OpportunityID string    `json:"opportunity_id" gorm:"index;size:36"`
@@ -4187,13 +4396,18 @@ func serializeOpportunityProductDetailsFromOfferItems(items []OfferItem) string 
 		UnitPrice           float64 `json:"unit_price,omitempty"`
 		TotalPrice          float64 `json:"total_price,omitempty"`
 		PartNumber          string  `json:"part_number,omitempty"`
+		LongCode            string  `json:"long_code,omitempty"`
 		Unit                string  `json:"unit,omitempty"`
+		Currency            string  `json:"currency,omitempty"`
 		Specification       string  `json:"specification,omitempty"`
 		DetailedDescription string  `json:"detailed_description,omitempty"`
 	}
 
 	payload := make([]opportunityLineItem, 0, len(items))
 	for _, item := range items {
+		if isSyntheticCommercialSummary(item.Description, item.ProductCode, item.Model, item.Equipment) {
+			continue
+		}
 		description := strings.TrimSpace(item.Description)
 		if description == "" {
 			description = strings.TrimSpace(item.Equipment)
@@ -4208,10 +4422,14 @@ func serializeOpportunityProductDetailsFromOfferItems(items []OfferItem) string 
 			UnitPrice:           item.UnitPrice,
 			TotalPrice:          item.TotalPrice,
 			PartNumber:          partNumber,
-			Unit:                strings.TrimSpace(item.Currency),
+			LongCode:            strings.TrimSpace(item.LongCode),
+			Currency:            normalizeCurrencyCode(item.Currency),
 			Specification:       strings.TrimSpace(item.Specification),
 			DetailedDescription: strings.TrimSpace(item.DetailedDescription),
 		})
+	}
+	if len(payload) == 0 {
+		return ""
 	}
 
 	jsonBytes, err := json.Marshal(payload)
@@ -4267,8 +4485,19 @@ func parseOpportunityProductDetails(details string) []OfferItem {
 			totalPrice = quantity * unitPrice
 		}
 
+		if isSyntheticCommercialSummary(description, partNumber, partNumber, description) {
+			continue
+		}
+
 		if description == "" && partNumber == "" && totalPrice == 0 && unitPrice == 0 {
 			continue
+		}
+
+		unit := strings.TrimSpace(getStringFromMap(raw, "unit"))
+		currency := normalizeCurrencyCode(getStringFromMap(raw, "currency"))
+		if currency == "" && isCurrencyCode(unit) {
+			currency = normalizeCurrencyCode(unit)
+			unit = ""
 		}
 
 		items = append(items, OfferItem{
@@ -4278,16 +4507,154 @@ func parseOpportunityProductDetails(details string) []OfferItem {
 			Equipment:           description,
 			Model:               partNumber,
 			ProductCode:         partNumber,
+			LongCode:            strings.TrimSpace(getStringFromMap(raw, "long_code")),
 			Quantity:            quantity,
 			UnitPrice:           unitPrice,
 			TotalPrice:          totalPrice,
-			Currency:            strings.TrimSpace(getStringFromMap(raw, "unit")),
+			Currency:            currency,
 			Specification:       strings.TrimSpace(getStringFromMap(raw, "specification")),
 			DetailedDescription: strings.TrimSpace(getStringFromMap(raw, "detailed_description")),
 		})
 	}
 
 	return items
+}
+
+func normalizeOpportunityLineItemsJSON(rawItems interface{}) (string, int) {
+	if rawItems == nil {
+		return "", 0
+	}
+
+	var rows []map[string]interface{}
+	switch typed := rawItems.(type) {
+	case []interface{}:
+		for _, item := range typed {
+			if mapped, ok := item.(map[string]interface{}); ok {
+				rows = append(rows, mapped)
+			}
+		}
+	case []map[string]interface{}:
+		rows = typed
+	case map[string]interface{}:
+		rows = []map[string]interface{}{typed}
+	default:
+		return "", 0
+	}
+
+	type storedLineItem struct {
+		Description   string  `json:"description,omitempty"`
+		Quantity      float64 `json:"quantity,omitempty"`
+		Unit          string  `json:"unit,omitempty"`
+		PartNumber    string  `json:"part_number,omitempty"`
+		ProductCode   string  `json:"product_code,omitempty"`
+		Model         string  `json:"model,omitempty"`
+		LongCode      string  `json:"long_code,omitempty"`
+		UnitPrice     float64 `json:"unit_price,omitempty"`
+		TotalPrice    float64 `json:"total_price,omitempty"`
+		Currency      string  `json:"currency,omitempty"`
+		Specification string  `json:"specification,omitempty"`
+		RawText       string  `json:"raw_text,omitempty"`
+	}
+
+	payload := make([]storedLineItem, 0, len(rows))
+	for _, raw := range rows {
+		description := firstStringFromMap(raw, "description", "item_description", "item", "name", "equipment", "product", "product_name", "model", "part_number")
+		partNumber := firstStringFromMap(raw, "part_number", "part_no", "item_code", "product_code", "model", "long_code")
+		productCode := firstStringFromMap(raw, "product_code", "item_code", "part_number", "model")
+		model := firstStringFromMap(raw, "model", "part_number", "product_code")
+		longCode := firstStringFromMap(raw, "long_code", "eh_code", "ordering_code")
+
+		quantity := firstFloatFromMap(raw, "quantity", "qty")
+		unitPrice := firstFloatFromMap(raw, "unit_price_bhd", "unit_price", "price", "rate")
+		totalPrice := firstFloatFromMap(raw, "total_price", "total", "line_total", "amount")
+		if quantity <= 0 {
+			if totalPrice > 0 && unitPrice > 0 {
+				quantity = totalPrice / unitPrice
+			} else {
+				quantity = 1
+			}
+		}
+		if unitPrice <= 0 && totalPrice > 0 && quantity > 0 {
+			unitPrice = totalPrice / quantity
+		}
+		if totalPrice <= 0 && unitPrice > 0 && quantity > 0 {
+			totalPrice = unitPrice * quantity
+		}
+
+		unit := firstStringFromMap(raw, "unit", "uom", "unit_of_measure")
+		currency := normalizeCurrencyCode(firstStringFromMap(raw, "currency"))
+		if currency == "" && isCurrencyCode(unit) {
+			currency = normalizeCurrencyCode(unit)
+			unit = ""
+		}
+		if isCurrencyCode(unit) {
+			unit = ""
+		}
+
+		if description == "" && partNumber == "" && productCode == "" && model == "" && longCode == "" {
+			continue
+		}
+
+		payload = append(payload, storedLineItem{
+			Description:   description,
+			Quantity:      quantity,
+			Unit:          unit,
+			PartNumber:    partNumber,
+			ProductCode:   productCode,
+			Model:         model,
+			LongCode:      longCode,
+			UnitPrice:     roundTo3(unitPrice),
+			TotalPrice:    roundTo3(totalPrice),
+			Currency:      currency,
+			Specification: firstStringFromMap(raw, "specification", "notes"),
+			RawText:       firstStringFromMap(raw, "raw_text", "raw_row"),
+		})
+	}
+	if len(payload) == 0 {
+		return "", 0
+	}
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", 0
+	}
+	return string(jsonBytes), len(payload)
+}
+
+func firstStringFromMap(raw map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		value := strings.TrimSpace(getStringFromMap(raw, key))
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstFloatFromMap(raw map[string]interface{}, keys ...string) float64 {
+	for _, key := range keys {
+		value := getFloatFromMap(raw, key)
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func isCurrencyCode(value string) bool {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "BHD", "USD", "EUR", "GBP", "SAR", "AED", "CHF", "KWD", "OMR", "QAR":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeCurrencyCode(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if isCurrencyCode(value) {
+		return value
+	}
+	return ""
 }
 
 func getStringFromMap(raw map[string]interface{}, key string) string {
@@ -4318,12 +4685,23 @@ func getFloatFromMap(raw map[string]interface{}, key string) float64 {
 	case int64:
 		return float64(v)
 	case string:
-		parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		parsed, err := parseFlexibleBusinessNumber(v)
 		if err == nil {
 			return parsed
 		}
 	}
 	return 0
+}
+
+func parseFlexibleBusinessNumber(value string) (float64, error) {
+	cleaned := regexp.MustCompile(`(?i)\b(BHD|USD|EUR|GBP|SAR|AED|CHF|KWD|OMR|QAR)\b`).ReplaceAllString(value, "")
+	cleaned = strings.ReplaceAll(cleaned, ",", "")
+	cleaned = strings.TrimSpace(cleaned)
+	match := regexp.MustCompile(`[-+]?\d*\.?\d+`).FindString(cleaned)
+	if match == "" {
+		return 0, fmt.Errorf("no numeric value in %q", value)
+	}
+	return strconv.ParseFloat(match, 64)
 }
 
 func backfillOpportunityProductDetailsFromOffers(db *gorm.DB) error {
@@ -4429,7 +4807,15 @@ func repairImportedCommercialDocuments(db *gorm.DB) error {
 	for _, offer := range offers {
 		validItems := make([]OfferItem, 0, len(offer.Items))
 		invalidIDs := make([]string, 0)
-		subtotal := 0.0
+		rawSubtotal := 0.0
+		convertedSubtotal := 0.0
+		totalCost := 0.0
+		itemRateUpdates := map[string]float64{}
+		type priceUpdate struct {
+			UnitPrice  float64
+			TotalPrice float64
+		}
+		itemPriceUpdates := map[string]priceUpdate{}
 
 		for _, item := range offer.Items {
 			if isSyntheticCommercialSummary(item.Description, item.ProductCode, item.Model, item.Equipment) {
@@ -4437,40 +4823,120 @@ func repairImportedCommercialDocuments(db *gorm.DB) error {
 				continue
 			}
 			validItems = append(validItems, item)
-			lineTotal := item.TotalPrice
-			if lineTotal <= 0 && item.Quantity > 0 && item.UnitPrice > 0 {
-				lineTotal = item.Quantity * item.UnitPrice
+			lineTotal := commercialLineTotal(item.Quantity, item.UnitPrice, item.TotalPrice)
+			rawSubtotal += lineTotal
+			totalCost += item.TotalCost
+
+			rate := normalizeExchangeRateToBHD(item.Currency, item.ExchangeRate)
+			if strings.ToUpper(strings.TrimSpace(item.Currency)) != "" &&
+				strings.ToUpper(strings.TrimSpace(item.Currency)) != "BHD" &&
+				math.Abs(rate-item.ExchangeRate) > 0.0001 {
+				itemRateUpdates[item.ID] = rate
 			}
-			subtotal += lineTotal
+
+			if strings.ToUpper(strings.TrimSpace(item.Currency)) == "" || strings.ToUpper(strings.TrimSpace(item.Currency)) == "BHD" {
+				convertedSubtotal += lineTotal
+			} else {
+				convertedSubtotal += lineTotal * rate
+			}
 		}
 
-		if len(invalidIDs) == 0 {
+		convertForeignPrices := shouldConvertForeignCommercialSubtotal(rawSubtotal, convertedSubtotal, totalCost)
+		commercialSubtotal := rawSubtotal
+		if convertForeignPrices {
+			commercialSubtotal = convertedSubtotal
+			for _, item := range validItems {
+				currency := strings.ToUpper(strings.TrimSpace(item.Currency))
+				if currency == "" || currency == "BHD" {
+					continue
+				}
+				lineTotal := commercialLineTotal(item.Quantity, item.UnitPrice, item.TotalPrice)
+				if lineTotal <= 0 {
+					continue
+				}
+				rate := normalizeExchangeRateToBHD(item.Currency, item.ExchangeRate)
+				convertedLineTotal := roundTo3(lineTotal * rate)
+				convertedUnitPrice := convertedLineTotal
+				if item.Quantity > 0 {
+					convertedUnitPrice = roundTo3(convertedLineTotal / item.Quantity)
+				}
+				if math.Abs(convertedLineTotal-item.TotalPrice) > 0.01 || math.Abs(convertedUnitPrice-item.UnitPrice) > 0.01 {
+					itemPriceUpdates[item.ID] = priceUpdate{
+						UnitPrice:  convertedUnitPrice,
+						TotalPrice: convertedLineTotal,
+					}
+				}
+				itemRateUpdates[item.ID] = rate
+			}
+		}
+
+		updates := map[string]interface{}{}
+		if len(validItems) > 0 && commercialSubtotal > 0 {
+			discount := commercialSubtotal * (offer.DiscountPercent / 100.0)
+			netAmount := commercialSubtotal - discount
+			vatRate := offer.VatRate
+			if vatRate == 0 && netAmount > 0 {
+				vatRate = 10
+			}
+			totalValueBHD := roundTo3(netAmount + (netAmount * vatRate / 100.0))
+			if math.Abs(offer.TotalValueBHD-totalValueBHD) > 0.01 {
+				updates["total_value_bhd"] = totalValueBHD
+			}
+			if netAmount > 0 && totalCost > 0 {
+				margin := roundTo3(((netAmount - totalCost) / netAmount) * 100)
+				if math.Abs(offer.EstimatedMargin-margin) > 0.01 {
+					updates["estimated_margin"] = margin
+				}
+			}
+		}
+
+		if len(invalidIDs) == 0 && len(updates) == 0 && len(itemRateUpdates) == 0 && len(itemPriceUpdates) == 0 {
 			continue
 		}
 
-		discount := subtotal * (offer.DiscountPercent / 100.0)
-		netAmount := subtotal - discount
-		vatRate := offer.VatRate
-		if vatRate == 0 && netAmount > 0 {
-			vatRate = 10
-		}
-		totalValue := roundTo3(netAmount + (netAmount * vatRate / 100.0))
-
 		if err := db.Transaction(func(tx *gorm.DB) error {
-			if err := tx.Where("id IN ?", invalidIDs).Delete(&OfferItem{}).Error; err != nil {
-				return err
+			if len(invalidIDs) > 0 {
+				if err := tx.Where("id IN ?", invalidIDs).Delete(&OfferItem{}).Error; err != nil {
+					return err
+				}
 			}
 			for index, item := range validItems {
 				if err := tx.Model(&OfferItem{}).Where("id = ?", item.ID).Update("line_number", index+1).Error; err != nil {
 					return err
 				}
 			}
-			return tx.Model(&Offer{}).Where("id = ?", offer.ID).Update("total_value_bhd", totalValue).Error
+			for itemID, rate := range itemRateUpdates {
+				if err := tx.Model(&OfferItem{}).Where("id = ?", itemID).Update("exchange_rate", rate).Error; err != nil {
+					return err
+				}
+			}
+			for itemID, update := range itemPriceUpdates {
+				if err := tx.Model(&OfferItem{}).Where("id = ?", itemID).Updates(map[string]interface{}{
+					"unit_price":  update.UnitPrice,
+					"total_price": update.TotalPrice,
+				}).Error; err != nil {
+					return err
+				}
+			}
+			if len(updates) > 0 {
+				if err := tx.Model(&Offer{}).Where("id = ?", offer.ID).Updates(updates).Error; err != nil {
+					return err
+				}
+				if totalValue, ok := updates["total_value_bhd"]; ok {
+					if err := tx.Model(&Opportunity{}).Where("offer_id = ?", offer.ID).Update("revenue_bhd", totalValue).Error; err != nil {
+						return err
+					}
+				}
+			}
+			return nil
 		}); err != nil {
 			log.Printf("⚠️ Failed to repair offer %s: %v", offer.OfferNumber, err)
 			continue
 		}
 
+		if convertForeignPrices {
+			log.Printf("✅ Repriced foreign-currency offer %s from %.3f to %.3f BHD net", offer.OfferNumber, rawSubtotal, commercialSubtotal)
+		}
 		repairedOffers++
 	}
 
@@ -4562,6 +5028,88 @@ func repairImportedCommercialDocuments(db *gorm.DB) error {
 
 	if repairedOffers > 0 || repairedOrders > 0 {
 		log.Printf("✅ Repaired imported commercial data: %d offers, %d orders", repairedOffers, repairedOrders)
+	}
+
+	residualOfferRows, residualOrderRows, err := softDeleteResidualSyntheticCommercialRows(db)
+	if err != nil {
+		return err
+	}
+	if residualOfferRows > 0 || residualOrderRows > 0 {
+		log.Printf("✅ Removed residual synthetic commercial rows: %d offer_items, %d order_items", residualOfferRows, residualOrderRows)
+	}
+
+	if err := repairImportedOpportunityProductDetails(db); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func softDeleteResidualSyntheticCommercialRows(db *gorm.DB) (int64, int64, error) {
+	if db == nil {
+		return 0, 0, nil
+	}
+
+	const syntheticRowCondition = `
+		(
+			LOWER(TRIM(COALESCE(description, ''), ' -')) GLOB 'line item [0-9]*'
+			OR LOWER(TRIM(COALESCE(product_code, ''), ' -')) GLOB 'line item [0-9]*'
+			OR LOWER(TRIM(COALESCE(model, ''), ' -')) GLOB 'line item [0-9]*'
+			OR LOWER(TRIM(COALESCE(equipment, ''), ' -')) GLOB 'line item [0-9]*'
+			OR LOWER(TRIM(COALESCE(description, ''), ' -')) = 'total for order'
+			OR LOWER(TRIM(COALESCE(product_code, ''), ' -')) = 'total for order'
+			OR LOWER(TRIM(COALESCE(model, ''), ' -')) = 'total for order'
+			OR LOWER(TRIM(COALESCE(equipment, ''), ' -')) = 'total for order'
+		)
+	`
+	deletedAt := time.Now()
+
+	offerResult := db.Model(&OfferItem{}).
+		Where(syntheticRowCondition).
+		Update("deleted_at", deletedAt)
+	if offerResult.Error != nil {
+		return 0, 0, fmt.Errorf("failed to clean residual synthetic offer rows: %w", offerResult.Error)
+	}
+
+	orderResult := db.Model(&OrderItem{}).
+		Where(syntheticRowCondition).
+		Update("deleted_at", deletedAt)
+	if orderResult.Error != nil {
+		return 0, 0, fmt.Errorf("failed to clean residual synthetic order rows: %w", orderResult.Error)
+	}
+
+	return offerResult.RowsAffected, orderResult.RowsAffected, nil
+}
+
+func repairImportedOpportunityProductDetails(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+
+	var opportunities []Opportunity
+	if err := db.
+		Where("deleted_at IS NULL AND COALESCE(product_details, '') <> '' AND LOWER(product_details) LIKE ?", "%line item%").
+		Find(&opportunities).Error; err != nil {
+		return err
+	}
+
+	repaired := 0
+	for _, opportunity := range opportunities {
+		cleaned := serializeOpportunityProductDetailsFromOfferItems(parseOpportunityProductDetails(opportunity.ProductDetails))
+		if cleaned == strings.TrimSpace(opportunity.ProductDetails) {
+			continue
+		}
+		if err := db.Model(&Opportunity{}).
+			Where("id = ?", opportunity.ID).
+			Update("product_details", cleaned).Error; err != nil {
+			log.Printf("⚠️ Failed to clean opportunity product details for %s: %v", opportunity.FolderNumber, err)
+			continue
+		}
+		repaired++
+	}
+
+	if repaired > 0 {
+		log.Printf("✅ Cleaned placeholder line items from %d opportunity records", repaired)
 	}
 
 	return nil
@@ -5083,7 +5631,7 @@ func (a *App) AddRFQComment(rfqID uint, comment, createdBy string) (*RFQComment,
 
 func (a *App) AddOpportunityComment(opportunityID, comment string) (*OpportunityComment, error) {
 	if !a.currentSessionIsManagementOrAbove() {
-		return nil, fmt.Errorf("management comments are limited to manager/admin roles")
+		return nil, fmt.Errorf("opportunity comments are limited to authorized roles")
 	}
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
@@ -5116,8 +5664,39 @@ func (a *App) AddOpportunityComment(opportunityID, comment string) (*Opportunity
 		return nil, fmt.Errorf("failed to add opportunity comment: %v", err)
 	}
 
-	log.Printf("✅ Added management comment to opportunity %s by %s", opportunityID, entry.CreatedBy)
+	log.Printf("✅ Added comment to opportunity %s by %s", opportunityID, entry.CreatedBy)
 	return entry, nil
+}
+
+func (a *App) DeleteOpportunityComment(commentID string) error {
+	if !a.currentSessionIsAdministrator() {
+		return fmt.Errorf("only administrators can delete opportunity comments")
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	commentID = strings.TrimSpace(commentID)
+	if commentID == "" {
+		return fmt.Errorf("comment ID is required")
+	}
+
+	parsedID, err := strconv.ParseUint(commentID, 10, 64)
+	if err != nil || parsedID == 0 {
+		return fmt.Errorf("invalid comment ID")
+	}
+
+	var comment OpportunityComment
+	if err := a.db.First(&comment, "id = ?", uint(parsedID)).Error; err != nil {
+		return fmt.Errorf("opportunity comment not found: %v", err)
+	}
+
+	if err := a.db.Delete(&comment).Error; err != nil {
+		return fmt.Errorf("failed to delete opportunity comment: %v", err)
+	}
+
+	log.Printf("🗑️ Deleted comment %d for opportunity %s", comment.ID, comment.OpportunityID)
+	return nil
 }
 
 // GetRFQComments retrieves all comments for an RFQ in chronological order
@@ -5139,7 +5718,7 @@ func (a *App) GetRFQComments(rfqID uint) ([]RFQComment, error) {
 
 func (a *App) GetOpportunityComments(opportunityID string) ([]OpportunityComment, error) {
 	if !a.currentSessionIsManagementOrAbove() {
-		return nil, fmt.Errorf("management comments are limited to manager/admin roles")
+		return nil, fmt.Errorf("opportunity comments are limited to authorized roles")
 	}
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
@@ -6134,6 +6713,69 @@ type OfferUpdateData struct {
 	Items             []OfferUpdateItem `json:"items"`
 }
 
+const defaultEURToBHDRate = 0.45
+
+func defaultExchangeRateToBHD(currency string) float64 {
+	switch strings.ToUpper(strings.TrimSpace(currency)) {
+	case "", "BHD":
+		return 1
+	case "EUR":
+		return defaultEURToBHDRate
+	case "USD":
+		return 0.376
+	case "GBP":
+		return 0.52
+	case "CHF":
+		return 0.425
+	case "SAR":
+		return 0.100
+	case "AED":
+		return 0.102
+	default:
+		return 1
+	}
+}
+
+func normalizeExchangeRateToBHD(currency string, rate float64) float64 {
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if currency == "" || currency == "BHD" {
+		return 1
+	}
+
+	defaultRate := defaultExchangeRateToBHD(currency)
+	if currency == "EUR" {
+		if rate <= 0 || rate > 2 || math.Abs(rate-0.44) < 0.005 || math.Abs(rate-0.410) < 0.005 {
+			return defaultRate
+		}
+	}
+	if rate <= 0 || rate > 2 {
+		return defaultRate
+	}
+	return rate
+}
+
+func commercialLineTotal(quantity, unitPrice, totalPrice float64) float64 {
+	if totalPrice > 0 {
+		return totalPrice
+	}
+	if quantity > 0 && unitPrice > 0 {
+		return quantity * unitPrice
+	}
+	return 0
+}
+
+func shouldConvertForeignCommercialSubtotal(rawSubtotal, convertedSubtotal, totalCost float64) bool {
+	if rawSubtotal <= 0 || convertedSubtotal <= 0 || convertedSubtotal >= rawSubtotal {
+		return false
+	}
+	if totalCost <= 0 {
+		return rawSubtotal >= 1000
+	}
+	rawCostRatio := rawSubtotal / totalCost
+	convertedCostRatio := convertedSubtotal / totalCost
+	return rawCostRatio >= 2.0 && convertedCostRatio >= 0.60
+}
+
 func isSyntheticCommercialSummary(description, productCode, model, equipment string) bool {
 	candidates := []string{description, productCode, model, equipment}
 	for _, candidate := range candidates {
@@ -6141,7 +6783,11 @@ func isSyntheticCommercialSummary(description, productCode, model, equipment str
 		for strings.Contains(normalized, "  ") {
 			normalized = strings.ReplaceAll(normalized, "  ", " ")
 		}
+		normalized = strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(normalized, " -"), "-"))
 		if normalized == "total for order" || strings.HasPrefix(normalized, "total for order") {
+			return true
+		}
+		if regexp.MustCompile(`^line item\s+\d+$`).MatchString(normalized) {
 			return true
 		}
 	}
@@ -6246,16 +6892,17 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 		Stage:           "Quoted",
 		QuoteType:       data.QuoteType,
 		// Commercial terms from costing header
-		PaymentTerms:      data.PaymentTerms,
-		DeliveryTerms:     data.DeliveryTerms,
-		DeliveryWeeks:     data.EstDelivery,
-		CountryOfOrigin:   data.CountryOfOrigin,
-		IssuedBy:          data.PreparedBy,
-		CustomerReference: data.RfqReference,
-		AttentionPerson:   data.ContactPerson,
-		AttentionCompany:  data.CustomerName,
-		VatRate:           data.VatRate,
-		Division:          normalizeDivisionName(data.Division),
+		PaymentTerms:       data.PaymentTerms,
+		DeliveryTerms:      data.DeliveryTerms,
+		DeliveryWeeks:      data.EstDelivery,
+		CountryOfOrigin:    data.CountryOfOrigin,
+		IssuedBy:           data.PreparedBy,
+		CustomerReference:  data.RfqReference,
+		AttentionPerson:    data.ContactPerson,
+		AttentionCompany:   data.CustomerName,
+		TermsAndConditions: data.TermsAndConditions,
+		VatRate:            data.VatRate,
+		Division:           normalizeDivisionName(data.Division),
 		DiscountPercent: func() float64 {
 			if data.Subtotal > 0 {
 				return (data.Discount / data.Subtotal) * 100
@@ -6316,6 +6963,9 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 			UserPriceSet:    item.UserPriceSet,
 		}
 		offer.Items = append(offer.Items, offerItem)
+	}
+	if len(offer.Items) == 0 {
+		return nil, fmt.Errorf("cannot create offer: no valid line items after filtering")
 	}
 
 	// Save offer with items in transaction (re-check duplicate to prevent TOCTOU)
@@ -9980,7 +10630,7 @@ func (a *App) GetExchangeRate(currencyCode string, asOfDate time.Time) (float64,
 		// Return default rates if not configured
 		defaults := map[string]float64{
 			"USD": 0.376,
-			"EUR": 0.410,
+			"EUR": defaultEURToBHDRate,
 			"CHF": 0.425,
 			"SAR": 0.100,
 			"AED": 0.102,
@@ -10095,16 +10745,13 @@ func (a *App) SeedDefaultExchangeRates() error {
 
 	var count int64
 	a.db.Model(&CurrencyExchangeRate{}).Count(&count)
-	if count > 0 {
-		return nil // Already seeded
-	}
 
 	defaults := []struct {
 		code string
 		rate float64
 	}{
 		{"USD", 0.376},
-		{"EUR", 0.410},
+		{"EUR", defaultEURToBHDRate},
 		{"CHF", 0.425},
 		{"SAR", 0.100},
 		{"AED", 0.102},
@@ -10112,6 +10759,23 @@ func (a *App) SeedDefaultExchangeRates() error {
 
 	now := time.Now()
 	for _, d := range defaults {
+		if count > 0 {
+			var active CurrencyExchangeRate
+			err := a.db.Where("currency_code = ? AND effective_to IS NULL AND deleted_at IS NULL", d.code).First(&active).Error
+			if err == nil {
+				if d.code == "EUR" && math.Abs(active.Rate-defaultEURToBHDRate) > 0.0001 &&
+					(strings.EqualFold(strings.TrimSpace(active.SetBy), "system") || math.Abs(active.Rate-0.410) < 0.005 || math.Abs(active.Rate-0.44) < 0.005) {
+					if err := a.db.Model(&CurrencyExchangeRate{}).Where("id = ?", active.ID).Updates(map[string]interface{}{
+						"rate":  defaultEURToBHDRate,
+						"notes": "Default rate updated to 0.45 BHD per EUR",
+					}).Error; err != nil {
+						return err
+					}
+				}
+				continue
+			}
+		}
+
 		rate := CurrencyExchangeRate{
 			ID:            uuid.New().String(),
 			CurrencyCode:  d.code,
@@ -10804,6 +11468,7 @@ func detectGPUViaWMIC() (*GPUDetectionInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "wmic", "path", "win32_videocontroller", "get", "name,AdapterRAM,DriverVersion", "/format:list")
+	suppressCommandWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("wmic command failed: %w", err)
@@ -10862,6 +11527,7 @@ func detectGPUViaMacOS() (*GPUDetectionInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "system_profiler", "SPDisplaysDataType")
+	suppressCommandWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("system_profiler failed: %w", err)
@@ -10917,6 +11583,7 @@ func detectGPUViaCUDA() (*GPUDetectionInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader")
+	suppressCommandWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("nvidia-smi command failed (CUDA/NVIDIA drivers may not be installed): %w", err)
@@ -11022,11 +11689,15 @@ func (a *App) DetectSystemInfo() (SystemInfo, error) {
 		}
 	case "darwin":
 		// Get macOS version
-		if out, err := exec.Command("sw_vers", "-productVersion").Output(); err == nil {
+		cmd := exec.Command("sw_vers", "-productVersion")
+		suppressCommandWindow(cmd)
+		if out, err := cmd.Output(); err == nil {
 			info.OS = fmt.Sprintf("macOS %s", strings.TrimSpace(string(out)))
 		}
 		// Get CPU brand string
-		if out, err := exec.Command("sysctl", "-n", "machdep.cpu.brand_string").Output(); err == nil {
+		cmd = exec.Command("sysctl", "-n", "machdep.cpu.brand_string")
+		suppressCommandWindow(cmd)
+		if out, err := cmd.Output(); err == nil {
 			info.CPU = strings.TrimSpace(string(out))
 		} else {
 			// Apple Silicon doesn't have brand_string, use chip name
@@ -11052,6 +11723,7 @@ func (a *App) DetectSystemInfo() (SystemInfo, error) {
 	switch goruntime.GOOS {
 	case "windows":
 		cmd := exec.Command("wmic", "OS", "get", "TotalVisibleMemorySize", "/value")
+		suppressCommandWindow(cmd)
 		if output, err := cmd.Output(); err == nil {
 			for _, line := range strings.Split(string(output), "\n") {
 				if strings.HasPrefix(line, "TotalVisibleMemorySize=") {
@@ -11062,7 +11734,9 @@ func (a *App) DetectSystemInfo() (SystemInfo, error) {
 			}
 		}
 	case "darwin":
-		if out, err := exec.Command("sysctl", "-n", "hw.memsize").Output(); err == nil {
+		cmd := exec.Command("sysctl", "-n", "hw.memsize")
+		suppressCommandWindow(cmd)
+		if out, err := cmd.Output(); err == nil {
 			var memBytes int64
 			fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &memBytes)
 			info.RAM = fmt.Sprintf("%dGB", memBytes/(1024*1024*1024))
@@ -12357,7 +13031,7 @@ func (a *App) SaveDocumentToEntity(fileName, filePath, documentType, extractedTe
 		result["routed"] = true
 
 	case "supplier_invoice":
-		entityID, err := a.routeToSupplierInvoice(extractedData, fileName)
+		entityID, err := a.routeToSupplierInvoice(extractedData, fileName, fmt.Sprintf("%d", ocrDoc.ID), confidence)
 		if err != nil {
 			return nil, fmt.Errorf("failed to save supplier invoice: %w", err)
 		}
@@ -12471,10 +13145,9 @@ func (a *App) routeToOpportunity(data map[string]interface{}, fileName string) (
 
 	productDetails := ""
 	if lineItems, ok := data["line_items"]; ok && lineItems != nil {
-		if items, ok := lineItems.([]interface{}); ok && len(items) > 0 {
-			if jsonBytes, err := json.Marshal(items); err == nil {
-				productDetails = string(jsonBytes)
-			}
+		if normalized, count := normalizeOpportunityLineItemsJSON(lineItems); count > 0 {
+			productDetails = normalized
+			log.Printf("📦 Opportunity has %d normalized line items from OCR/Butler", count)
 		}
 	}
 
@@ -12562,11 +13235,9 @@ func (a *App) routeToRFQ(data map[string]interface{}, fileName string) (uint, er
 	// Extract and store line items as JSON in ProductDetails
 	var productDetails string
 	if lineItems, ok := data["line_items"]; ok && lineItems != nil {
-		if items, ok := lineItems.([]interface{}); ok && len(items) > 0 {
-			if jsonBytes, err := json.Marshal(items); err == nil {
-				productDetails = string(jsonBytes)
-				log.Printf("📦 RFQ has %d line items from OCR/Butler", len(items))
-			}
+		if normalized, count := normalizeOpportunityLineItemsJSON(lineItems); count > 0 {
+			productDetails = normalized
+			log.Printf("📦 RFQ has %d normalized line items from OCR/Butler", count)
 		}
 	}
 
@@ -12746,7 +13417,7 @@ func (a *App) routeToPurchaseOrder(data map[string]interface{}, fileName string)
 	return po.ID, nil
 }
 
-func (a *App) routeToSupplierInvoice(data map[string]interface{}, fileName string) (string, error) {
+func (a *App) routeToSupplierInvoice(data map[string]interface{}, fileName string, ocrDocID string, ocrConfidence float64) (string, error) {
 	division := normalizeDivisionName(getStringField(data, "division"))
 	invoiceNumber := getStringField(data, "invoice_number")
 	if invoiceNumber == "" {
@@ -12773,6 +13444,33 @@ func (a *App) routeToSupplierInvoice(data map[string]interface{}, fileName strin
 			supplierName = supplier.SupplierName
 		}
 	}
+	if supplierName == "" {
+		supplierName = "Unknown Supplier (OCR)"
+	}
+
+	poID := strings.TrimSpace(getStringField(data, "purchase_order_id"))
+	poNumber := strings.TrimSpace(getStringField(data, "po_number"))
+	if poID != "" {
+		var po PurchaseOrder
+		if err := a.db.First(&po, "id = ?", poID).Error; err == nil {
+			poNumber = po.PONumber
+			if supplierID == "" {
+				supplierID = po.SupplierID
+				supplierName = po.SupplierName
+			}
+		}
+	} else if poNumber != "" {
+		var po PurchaseOrder
+		if err := a.db.Where("po_number = ?", poNumber).First(&po).Error; err == nil {
+			poID = po.ID
+			poNumber = po.PONumber
+			if supplierID == "" {
+				supplierID = po.SupplierID
+				supplierName = po.SupplierName
+			}
+		}
+	}
+	orderID := strings.TrimSpace(getStringField(data, "order_id"))
 
 	invoiceDate := parseDate(getStringField(data, "invoice_date"))
 	if invoiceDate.IsZero() {
@@ -12783,29 +13481,106 @@ func (a *App) routeToSupplierInvoice(data map[string]interface{}, fileName strin
 		dueDate = invoiceDate.AddDate(0, 0, 30)
 	}
 
-	total := getFloatField(data, "total")
-	vat := getFloatField(data, "vat")
-	currency := getStringField(data, "currency")
+	getFirstFloat := func(keys ...string) float64 {
+		for _, key := range keys {
+			if value := getFloatField(data, key); value > 0 {
+				return value
+			}
+		}
+		return 0
+	}
+
+	total := getFirstFloat("total", "total_amount", "grand_total", "amount", "total_foreign")
+	vat := getFirstFloat("vat", "vat_amount", "vat_foreign")
+	subtotal := getFirstFloat("subtotal", "subtotal_amount", "net_amount", "subtotal_foreign")
+	currency := strings.ToUpper(strings.TrimSpace(getStringField(data, "currency")))
 	if currency == "" {
 		currency = "BHD"
+	}
+	exchangeRate := normalizeExchangeRateToBHD(currency, getFloatField(data, "exchange_rate"))
+
+	var invoiceItems []SupplierInvoiceItem
+	lineSubtotal := 0.0
+	if lineItems, ok := data["line_items"]; ok && lineItems != nil {
+		if items, ok := lineItems.([]interface{}); ok && len(items) > 0 {
+			invoiceItems = make([]SupplierInvoiceItem, 0, len(items))
+			for i, item := range items {
+				itemMap, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				quantity := getFloatField(itemMap, "quantity")
+				if quantity <= 0 {
+					quantity = 1
+				}
+				unitPrice := getFloatField(itemMap, "unit_price")
+				totalPrice := getFloatField(itemMap, "total_price")
+				if totalPrice <= 0 {
+					totalPrice = getFloatField(itemMap, "amount")
+				}
+				if totalPrice <= 0 && quantity > 0 && unitPrice > 0 {
+					totalPrice = quantity * unitPrice
+				}
+				if unitPrice <= 0 && quantity > 0 && totalPrice > 0 {
+					unitPrice = totalPrice / quantity
+				}
+
+				description := strings.TrimSpace(getStringField(itemMap, "description"))
+				if description == "" {
+					description = strings.TrimSpace(getStringField(itemMap, "part_number"))
+				}
+				if description == "" {
+					description = fmt.Sprintf("OCR line item %d", i+1)
+				}
+
+				invoiceItems = append(invoiceItems, SupplierInvoiceItem{
+					LineNumber:  i + 1,
+					Description: description,
+					Quantity:    quantity,
+					UnitPrice:   roundTo3(unitPrice),
+					TotalPrice:  roundTo3(totalPrice),
+					Currency:    currency,
+				})
+				lineSubtotal += totalPrice
+			}
+		}
+	}
+
+	if subtotal <= 0 && lineSubtotal > 0 {
+		subtotal = lineSubtotal
+	}
+	if subtotal <= 0 && total > 0 {
+		subtotal = total - vat
+	}
+	if subtotal < 0 {
+		subtotal = 0
+	}
+	if total <= 0 {
+		total = subtotal + vat
 	}
 
 	si := &SupplierInvoice{
 		SupplierID:      supplierID,
+		SupplierName:    supplierName,
+		PurchaseOrderID: poID,
+		PONumber:        poNumber,
+		OrderID:         orderID,
 		InvoiceNumber:   invoiceNumber,
 		InvoiceDate:     invoiceDate,
 		DueDate:         dueDate,
 		Currency:        currency,
-		ExchangeRate:    1.0,
-		SubtotalBHD:     total - vat,
-		SubtotalForeign: total - vat,
-		VATBHD:          vat,
-		VATForeign:      vat,
-		TotalBHD:        total,
-		TotalForeign:    total,
+		ExchangeRate:    exchangeRate,
+		SubtotalBHD:     roundTo3(subtotal * exchangeRate),
+		SubtotalForeign: roundTo3(subtotal),
+		VATBHD:          roundTo3(vat * exchangeRate),
+		VATForeign:      roundTo3(vat),
+		TotalBHD:        roundTo3(total * exchangeRate),
+		TotalForeign:    roundTo3(total),
 		Status:          "Pending",
 		MatchStatus:     "Pending",
 		PaymentStatus:   "Unpaid",
+		OCRDocumentID:   ocrDocID,
+		OCRConfidence:   clampConfidence(ocrConfidence),
 		Division:        division,
 	}
 
@@ -12813,34 +13588,18 @@ func (a *App) routeToSupplierInvoice(data map[string]interface{}, fileName strin
 		return "", err
 	}
 
-	// Save line items if present
-	if lineItems, ok := data["line_items"]; ok && lineItems != nil {
-		if items, ok := lineItems.([]interface{}); ok && len(items) > 0 {
-			for i, item := range items {
-				if itemMap, ok := item.(map[string]interface{}); ok {
-					siItem := SupplierInvoiceItem{
-						SupplierInvoiceID: si.ID,
-						LineNumber:        i + 1,
-						Description:       getStringField(itemMap, "description"),
-						Quantity:          getFloatField(itemMap, "quantity"),
-						UnitPrice:         getFloatField(itemMap, "unit_price"),
-						TotalPrice:        getFloatField(itemMap, "total_price"),
-						Currency:          currency,
-					}
-					// Calculate total if not provided
-					if siItem.TotalPrice == 0 && siItem.Quantity > 0 && siItem.UnitPrice > 0 {
-						siItem.TotalPrice = siItem.Quantity * siItem.UnitPrice
-					}
-					if err := a.db.Create(&siItem).Error; err != nil {
-						log.Printf("⚠️ Failed to save supplier invoice item %d: %v", i+1, err)
-					}
-				}
+	if len(invoiceItems) > 0 {
+		for i := range invoiceItems {
+			invoiceItems[i].SupplierInvoiceID = si.ID
+			if err := a.db.Create(&invoiceItems[i]).Error; err != nil {
+				log.Printf("⚠️ Failed to save supplier invoice item %d: %v", i+1, err)
 			}
-			log.Printf("📦 Saved %d line items for supplier invoice %s", len(items), si.ID)
 		}
+		log.Printf("📦 Saved %d line items for supplier invoice %s", len(invoiceItems), si.ID)
 	}
 
-	log.Printf("📄 SupplierInvoice created from OCR: ID=%s, Number=%s, Total=%.3f", si.ID, invoiceNumber, total)
+	log.Printf("📄 SupplierInvoice created from OCR: ID=%s, OCRDoc=%s, Number=%s, Supplier=%s, Total=%.3f %s / %.3f BHD",
+		si.ID, ocrDocID, invoiceNumber, supplierName, total, currency, si.TotalBHD)
 	return si.ID, nil
 }
 
@@ -13284,6 +14043,16 @@ func buildBankStatementSummaryNote(account CompanyBankAccount, periodStart, peri
 }
 
 // --- Field extraction helpers ---
+
+func clampConfidence(confidence float64) float64 {
+	if confidence < 0 {
+		return 0
+	}
+	if confidence > 1 {
+		return 1
+	}
+	return confidence
+}
 
 func getStringField(data map[string]interface{}, key string) string {
 	if v, ok := data[key]; ok {
@@ -14540,6 +15309,7 @@ func (a *App) SeedDefaultRoles() error {
 			DisplayName: "Manager",
 			Description: "All operations INCLUDING finance (no device/user management)",
 			Permissions: `[
+				"dashboard:view",
 				"customers:view", "customers:edit", "customers:delete",
 				"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update", "suppliers:delete",
 				"invoices:view", "invoices:create", "invoices:approve",
@@ -14575,7 +15345,7 @@ func (a *App) SeedDefaultRoles() error {
 				"orders:view", "orders:create", "orders:update",
 				"offers:view", "offers:create", "offers:edit",
 				"rfq:view", "rfq:create",
-				"invoices:view",
+				"invoices:view", "invoices:create",
 				"payments:view",
 				"projects:view", "projects:create", "projects:update",
 				"tasks:view", "tasks:create", "tasks:update", "tasks:delete",
@@ -14593,6 +15363,7 @@ func (a *App) SeedDefaultRoles() error {
 			DisplayName: "Operations",
 			Description: "Operations only, NO finance access",
 			Permissions: `[
+				"dashboard:view",
 				"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
 				"po:view", "po:create", "po:update", "po:send",
 				"projects:view", "projects:create", "projects:update",
@@ -14601,7 +15372,7 @@ func (a *App) SeedDefaultRoles() error {
 				"grn:view", "grn:create",
 				"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
 				"orders:view", "orders:update",
-				"invoices:view",
+				"invoices:view", "invoices:create",
 				"documents:view", "documents:create",
 				"intelligence:chat",
 				"reports:view",
@@ -14614,6 +15385,7 @@ func (a *App) SeedDefaultRoles() error {
 			DisplayName: "Staff",
 			Description: "Read-only access, NO finance access",
 			Permissions: `[
+				"dashboard:view",
 				"customers:view",
 				"suppliers:view",
 				"invoices:view",
@@ -15345,12 +16117,62 @@ func (a *App) GetCurrentUserRole() string {
 		}
 	}
 
+	if role := strings.TrimSpace(a.GetLicenseRole()); role != "" {
+		return role
+	}
+
 	// Final fallback: staff role (least privilege principle)
 	return "staff"
 }
 
 func (a *App) currentSessionHasPermission(permission string) bool {
 	return a.requirePermission(permission) == nil
+}
+
+func (a *App) currentSessionCanViewFinanceDashboard() bool {
+	if a.currentUser != nil {
+		roleName := strings.ToLower(strings.TrimSpace(a.currentUser.Role.Name))
+		if roleName == "" {
+			roleName = strings.ToLower(strings.TrimSpace(a.currentUser.RoleName))
+		}
+		if roleName == "" {
+			roleName = strings.ToLower(strings.TrimSpace(a.currentUser.Role.DisplayName))
+		}
+		switch roleName {
+		case "admin", "administrator", "developer", "manager", "finance":
+			return true
+		case "sales", "operations", "staff":
+			return false
+		}
+
+		rolePerms := strings.TrimSpace(a.currentUser.Role.Permissions)
+		if rolePerms == `["*"]` || strings.Contains(rolePerms, `"*"`) {
+			return true
+		}
+		var permissions []string
+		if err := json.Unmarshal([]byte(rolePerms), &permissions); err == nil {
+			for _, p := range permissions {
+				if permissionGranted(p, "finance:view") {
+					return true
+				}
+			}
+		}
+	}
+
+	roleName := strings.ToLower(strings.TrimSpace(a.GetCurrentUserRole()))
+	switch roleName {
+	case "admin", "administrator", "developer", "manager", "finance":
+		return true
+	case "sales", "operations", "staff":
+		return false
+	}
+
+	for _, p := range rolePermissions[roleName] {
+		if permissionGranted(p, "finance:view") {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckPermissionByRole checks if a given role has the specified permission
@@ -15568,10 +16390,18 @@ func (a *App) GetCurrentUserStub() (*User, error) {
 
 func (a *App) currentSessionIsManagementOrAbove() bool {
 	role := strings.ToLower(strings.TrimSpace(a.GetCurrentUserRole()))
-	if role == "admin" || role == "manager" || role == "management" || role == "developer" {
+	if role == "admin" || role == "administrator" || role == "manager" || role == "management" || role == "developer" {
 		return true
 	}
 	return a.currentSessionHasPermission("finance:view")
+}
+
+func (a *App) currentSessionIsAdministrator() bool {
+	role := strings.ToLower(strings.TrimSpace(a.GetCurrentUserRole()))
+	if role == "admin" || role == "administrator" || role == "developer" {
+		return true
+	}
+	return a.currentSessionHasPermission("settings:update")
 }
 
 func (a *App) getCurrentUserDisplayName() string {
@@ -16234,10 +17064,33 @@ func roundTo3(value float64) float64 {
 	return math.Round(value*1000) / 1000
 }
 
+func costingAnnexureSpecForPDF(item CostingExportLineItem) string {
+	spec := strings.TrimSpace(item.Specification)
+	if spec == "" {
+		return ""
+	}
+	normalizedSpec := normalizeAnnexureMatchKey(strings.Trim(spec, "()| "))
+	normalizedLongCode := normalizeAnnexureMatchKey(item.LongCode)
+	if normalizedLongCode != "" && normalizedSpec == normalizedLongCode {
+		return ""
+	}
+	if len(spec) < 120 && looksLikeLongOrderCode(strings.Trim(spec, "()| ")) {
+		return ""
+	}
+	return spec
+}
+
 // ExportCostingToPDF generates a PDF quotation on PH Trading letterhead
 func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	if err := a.requirePermission("offers:create"); err != nil {
 		return "", err
+	}
+	return a.exportCostingToPDF(data, "RFQ")
+}
+
+func (a *App) exportCostingToPDF(data CostingExportData, category string) (string, error) {
+	if strings.TrimSpace(category) == "" {
+		category = "RFQ"
 	}
 	division := normalizeDivisionName(data.Division)
 	// Get letterhead path (shared helper finds it in DB cache, project root, or exe dir)
@@ -16263,9 +17116,9 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	}
 	fileName = fmt.Sprintf("%s_%s.pdf", filePrefix, fileName)
 
-	// Save to structured folder: <exports>/<division>/Customers/<CustomerName>/Costing Sheets/
+	// Save to structured folder: <exports>/<division>/Customers/<CustomerName>/<category>/
 	docYear := time.Now().Year()
-	outputDir := a.getExportDir("customer", data.CustomerName, "RFQ", docYear)
+	outputDir := a.getExportDir("customer", data.CustomerName, category, docYear)
 	outputPath := filepath.Join(outputDir, fileName)
 
 	// Create PDF directly with gopdf for clean quotation layout
@@ -16597,80 +17450,8 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 	pdf.SetXY(leftMargin, currentY)
 	pdf.Cell(nil, "Prices are exclusive of VAT unless otherwise stated. Delivery subject to availability.")
 
-	// === ANNEXURE PAGE (Detailed Specifications) ===
-	hasDetailedSpecs := false
-	for _, item := range data.LineItems {
-		if item.DetailedDescription != "" || item.LongCode != "" {
-			hasDetailedSpecs = true
-			break
-		}
-	}
-	if hasDetailedSpecs {
-		pdf.AddPage()
-		drawCostingLetterhead()
-		annexY := 90.0
-		if hasBold {
-			pdf.SetFont("mainBold", "", 14)
-		} else {
-			pdf.SetFont("main", "", 14)
-		}
-		pdf.SetXY(leftMargin, annexY)
-		pdf.Cell(nil, "ANNEXURE - 1")
-		annexY += 20
-		pdf.SetFont("main", "", 9)
-		pdf.SetXY(leftMargin, annexY)
-		pdf.Cell(nil, "Detailed Long Codes and Specifications")
-		annexY += 16
-
-		for _, item := range data.LineItems {
-			if item.DetailedDescription == "" && item.LongCode == "" {
-				continue
-			}
-			if annexY > 740 {
-				pdf.AddPage()
-				drawCostingLetterhead()
-				annexY = 90.0
-			}
-
-			if hasBold {
-				pdf.SetFont("mainBold", "", 9)
-			}
-			pdf.SetXY(leftMargin, annexY)
-			pdf.Cell(nil, fmt.Sprintf("%d. %s", item.SlNo, item.Equipment))
-			annexY += 12
-
-			pdf.SetFont("main", "", 8)
-			if item.Model != "" {
-				pdf.SetXY(leftMargin+10, annexY)
-				pdf.Cell(nil, "Model: "+item.Model)
-				annexY += 10
-			}
-			if item.LongCode != "" {
-				codeLines := wrapText("Long Code: "+item.LongCode, 90)
-				for _, cl := range codeLines {
-					pdf.SetXY(leftMargin+10, annexY)
-					pdf.Cell(nil, cl)
-					annexY += 10
-				}
-			}
-			if item.DetailedDescription != "" {
-				descLines := wrapText(item.DetailedDescription, 90)
-				for _, dl := range descLines {
-					if annexY > 740 {
-						pdf.AddPage()
-						drawCostingLetterhead()
-						annexY = 90.0
-					}
-					pdf.SetXY(leftMargin+10, annexY)
-					pdf.Cell(nil, dl)
-					annexY += 10
-				}
-			}
-			annexY += 8
-		}
-	}
-
 	// === TERMS AND CONDITIONS PAGE ===
+	// T&C must immediately follow the commercial line items; annexure stays last.
 	if data.TermsAndConditions != "" {
 		pdf.AddPage()
 		// Add letterhead to T&C page
@@ -16754,6 +17535,107 @@ func (a *App) ExportCostingToPDF(data CostingExportData) (string, error) {
 		}
 	}
 
+	// === ANNEXURE PAGE (Detailed Specifications) ===
+	hasDetailedSpecs := false
+	for _, item := range data.LineItems {
+		if item.DetailedDescription != "" || item.LongCode != "" || costingAnnexureSpecForPDF(item) != "" {
+			hasDetailedSpecs = true
+			break
+		}
+	}
+	if hasDetailedSpecs {
+		pdf.AddPage()
+		drawCostingLetterhead()
+		annexY := 90.0
+		if hasBold {
+			pdf.SetFont("mainBold", "", 14)
+		} else {
+			pdf.SetFont("main", "", 14)
+		}
+		pdf.SetXY(leftMargin, annexY)
+		pdf.Cell(nil, "ANNEXURE - 1")
+		annexY += 20
+		pdf.SetFont("main", "", 9)
+		pdf.SetXY(leftMargin, annexY)
+		pdf.Cell(nil, "Detailed Order Codes, Specifications and Code Breakdown")
+		annexY += 16
+
+		for _, item := range data.LineItems {
+			displaySpecification := costingAnnexureSpecForPDF(item)
+			if item.DetailedDescription == "" && item.LongCode == "" && displaySpecification == "" {
+				continue
+			}
+			if annexY > 740 {
+				pdf.AddPage()
+				drawCostingLetterhead()
+				annexY = 90.0
+			}
+
+			if hasBold {
+				pdf.SetFont("mainBold", "", 9)
+			}
+			pdf.SetXY(leftMargin, annexY)
+			pdf.Cell(nil, fmt.Sprintf("%d. %s", item.SlNo, item.Equipment))
+			annexY += 12
+
+			pdf.SetFont("main", "", 8)
+			if item.Model != "" {
+				pdf.SetXY(leftMargin+10, annexY)
+				pdf.Cell(nil, "Model: "+item.Model)
+				annexY += 10
+			}
+			if item.LongCode != "" {
+				codeLines := wrapText("Long Code: "+item.LongCode, 90)
+				for _, cl := range codeLines {
+					pdf.SetXY(leftMargin+10, annexY)
+					pdf.Cell(nil, cl)
+					annexY += 10
+				}
+			}
+			if displaySpecification != "" {
+				if hasBold {
+					pdf.SetFont("mainBold", "", 8)
+					pdf.SetXY(leftMargin+10, annexY)
+					pdf.Cell(nil, "Specification:")
+					annexY += 10
+				}
+				pdf.SetFont("main", "", 8)
+				specLines := wrapText(displaySpecification, 90)
+				for _, sl := range specLines {
+					if annexY > 740 {
+						pdf.AddPage()
+						drawCostingLetterhead()
+						annexY = 90.0
+					}
+					pdf.SetXY(leftMargin+10, annexY)
+					pdf.Cell(nil, sl)
+					annexY += 10
+				}
+			}
+			if item.DetailedDescription != "" {
+				if hasBold {
+					pdf.SetFont("mainBold", "", 8)
+					pdf.SetXY(leftMargin+10, annexY)
+					pdf.Cell(nil, "Code Breakdown / Detailed Description:")
+					annexY += 10
+				}
+				pdf.SetFont("main", "", 8)
+				descLines := wrapText(item.DetailedDescription, 90)
+				for _, dl := range descLines {
+					if annexY > 740 {
+						pdf.AddPage()
+						drawCostingLetterhead()
+						annexY = 90.0
+					}
+					pdf.SetXY(leftMargin+10, annexY)
+					pdf.Cell(nil, dl)
+					annexY += 10
+				}
+			}
+			annexY += 8
+		}
+	}
+
 	// Save PDF
 	if err := pdf.WritePdf(outputPath); err != nil {
 		return "", fmt.Errorf("failed to write PDF: %v", err)
@@ -16795,7 +17677,11 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 
 	templatePath := findCostingTemplatePath(paths.ProjectRoot)
 	if templatePath == "" {
-		return "", fmt.Errorf("costing template not found: PH Trading Costing MasterFile.xlsx")
+		log.Printf("⚠️ Costing template not found; generating standalone workbook: %s", outputPath)
+		if err := writeStandaloneCostingWorkbook(data, outputPath); err != nil {
+			return "", err
+		}
+		return outputPath, nil
 	}
 
 	workbook, err := excelize.OpenFile(templatePath)
@@ -16962,6 +17848,131 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 	return outputPath, nil
 }
 
+func writeStandaloneCostingWorkbook(data CostingExportData, outputPath string) error {
+	workbook := excelize.NewFile()
+	defer workbook.Close()
+
+	sheet := "Costing"
+	index, err := workbook.NewSheet(sheet)
+	if err != nil {
+		return fmt.Errorf("failed to create costing workbook: %v", err)
+	}
+	workbook.SetActiveSheet(index)
+	_ = workbook.DeleteSheet("Sheet1")
+
+	titleStyle, _ := workbook.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Size: 16, Color: "1D1D1F"},
+		Alignment: &excelize.Alignment{Horizontal: "center"},
+	})
+	headerStyle, _ := workbook.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Color: "FFFFFF"},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"1D1D1F"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center", WrapText: true},
+		Border:    []excelize.Border{{Type: "left", Color: "D9D9D9", Style: 1}, {Type: "right", Color: "D9D9D9", Style: 1}, {Type: "top", Color: "D9D9D9", Style: 1}, {Type: "bottom", Color: "D9D9D9", Style: 1}},
+	})
+	cellStyle, _ := workbook.NewStyle(&excelize.Style{
+		Alignment: &excelize.Alignment{Vertical: "top", WrapText: true},
+		Border:    []excelize.Border{{Type: "left", Color: "E5E5E5", Style: 1}, {Type: "right", Color: "E5E5E5", Style: 1}, {Type: "top", Color: "E5E5E5", Style: 1}, {Type: "bottom", Color: "E5E5E5", Style: 1}},
+	})
+	moneyStyle, _ := workbook.NewStyle(&excelize.Style{
+		NumFmt:    40,
+		Alignment: &excelize.Alignment{Horizontal: "right", Vertical: "top"},
+		Border:    []excelize.Border{{Type: "left", Color: "E5E5E5", Style: 1}, {Type: "right", Color: "E5E5E5", Style: 1}, {Type: "top", Color: "E5E5E5", Style: 1}, {Type: "bottom", Color: "E5E5E5", Style: 1}},
+	})
+
+	_ = workbook.MergeCell(sheet, "A1", "J1")
+	_ = workbook.SetCellValue(sheet, "A1", firstNonEmptyString(data.QuoteType, "Quotation")+" Costing Sheet")
+	_ = workbook.SetCellStyle(sheet, "A1", "J1", titleStyle)
+
+	headerRows := [][]interface{}{
+		{"Division", data.Division, "Date", data.Date, "Prepared By", data.PreparedBy},
+		{"Customer", data.CustomerName, "Contact", data.ContactPerson, "RFQ Ref", data.RfqReference},
+		{"Delivery", data.DeliveryTerms, "Payment", data.PaymentTerms, "Est. Delivery", data.EstDelivery},
+		{"Country", data.CountryOfOrigin, "VAT Rate", data.VatRate, "Subject", data.Subject},
+	}
+	for i, row := range headerRows {
+		excelRow := i + 3
+		for j, value := range row {
+			cell, _ := excelize.CoordinatesToCellName(j+1, excelRow)
+			_ = workbook.SetCellValue(sheet, cell, value)
+		}
+	}
+
+	tableStart := 9
+	headers := []interface{}{"Sl No", "Equipment", "Model", "Specification", "Currency", "Qty", "FOB", "Freight", "Unit Price", "Total"}
+	for i, value := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, tableStart)
+		_ = workbook.SetCellValue(sheet, cell, value)
+	}
+	_ = workbook.SetCellStyle(sheet, "A9", "J9", headerStyle)
+
+	for i, item := range data.LineItems {
+		row := tableStart + 1 + i
+		values := []interface{}{
+			item.SlNo,
+			item.Equipment,
+			item.Model,
+			buildCostingSpecification(item),
+			item.Currency,
+			item.Quantity,
+			item.FOB,
+			item.Freight,
+			item.SuggestedPrice,
+			item.TotalPrice,
+		}
+		for j, value := range values {
+			cell, _ := excelize.CoordinatesToCellName(j+1, row)
+			_ = workbook.SetCellValue(sheet, cell, value)
+		}
+	}
+
+	lastRow := tableStart + len(data.LineItems)
+	if lastRow >= tableStart+1 {
+		_ = workbook.SetCellStyle(sheet, fmt.Sprintf("A%d", tableStart+1), fmt.Sprintf("J%d", lastRow), cellStyle)
+		_ = workbook.SetCellStyle(sheet, fmt.Sprintf("G%d", tableStart+1), fmt.Sprintf("J%d", lastRow), moneyStyle)
+	}
+
+	summaryRow := lastRow + 3
+	summaryValues := [][]interface{}{
+		{"Subtotal", data.Subtotal},
+		{"Discount", data.Discount},
+		{"Net Amount", data.NetAmount},
+		{fmt.Sprintf("VAT (%.0f%%)", data.VatRate), data.VAT},
+		{"Grand Total", data.GrandTotal},
+		{"Total Cost", data.TotalCost},
+		{"Profit", data.Profit},
+		{"Profit %", data.ProfitPercent},
+	}
+	for i, row := range summaryValues {
+		_ = workbook.SetCellValue(sheet, fmt.Sprintf("I%d", summaryRow+i), row[0])
+		_ = workbook.SetCellValue(sheet, fmt.Sprintf("J%d", summaryRow+i), row[1])
+	}
+	_ = workbook.SetCellStyle(sheet, fmt.Sprintf("J%d", summaryRow), fmt.Sprintf("J%d", summaryRow+len(summaryValues)-1), moneyStyle)
+
+	_ = workbook.SetColWidth(sheet, "A", "A", 8)
+	_ = workbook.SetColWidth(sheet, "B", "D", 28)
+	_ = workbook.SetColWidth(sheet, "E", "F", 12)
+	_ = workbook.SetColWidth(sheet, "G", "J", 15)
+	_ = workbook.SetPanes(sheet, &excelize.Panes{Freeze: true, Split: false, XSplit: 0, YSplit: 9, TopLeftCell: "A10", ActivePane: "bottomLeft"})
+
+	if strings.TrimSpace(data.TermsAndConditions) != "" {
+		termsSheet := "Terms"
+		if _, err := workbook.NewSheet(termsSheet); err == nil {
+			_ = workbook.SetCellValue(termsSheet, "A1", "Terms and Conditions")
+			_ = workbook.SetCellStyle(termsSheet, "A1", "A1", titleStyle)
+			_ = workbook.SetCellValue(termsSheet, "A3", data.TermsAndConditions)
+			_ = workbook.SetColWidth(termsSheet, "A", "A", 100)
+			_ = workbook.SetRowHeight(termsSheet, 3, 240)
+		}
+	}
+
+	if err := workbook.SaveAs(outputPath); err != nil {
+		return fmt.Errorf("failed to write standalone XLSX file: %v", err)
+	}
+	log.Printf("✅ Generated standalone Excel costing sheet: %s", outputPath)
+	return nil
+}
+
 // sanitizeFileName removes invalid characters from filename
 // getExportDir returns the canonical export directory for a given document type and entity.
 // Structure: EXPORTS/{Year}/Customers/{EntityName}/{Category}/
@@ -17094,6 +18105,7 @@ func (a *App) OpenExportedFile(filePath string) error {
 		// Linux/Unix: use -- for xdg-open as well
 		cmd = exec.Command("xdg-open", "--", absPath)
 	}
+	suppressCommandWindow(cmd)
 
 	return cmd.Start()
 }
@@ -17160,19 +18172,22 @@ func (a *App) CreateAccount(account ChartOfAccount) (*ChartOfAccount, error) {
 }
 
 // UpdateAccount updates an existing account
-func (a *App) UpdateAccount(accountID uint, updates map[string]interface{}) error {
+func (a *App) UpdateAccount(accountID string, updates map[string]interface{}) error {
 	if err := a.requirePermission("finance:update"); err != nil {
 		return err
 	}
 	if a.db == nil {
 		return newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
+	if strings.TrimSpace(accountID) == "" {
+		return newError("INVALID_INPUT", "Account ID is required", "")
+	}
 
 	if err := a.db.Model(&ChartOfAccount{}).Where("id = ?", accountID).Updates(updates).Error; err != nil {
 		return newError("DB_UPDATE_FAILED", "Failed to update account", err.Error())
 	}
 
-	log.Printf("✅ Updated account #%d", accountID)
+	log.Printf("✅ Updated account %s", accountID)
 	return nil
 }
 
@@ -18672,6 +19687,7 @@ type FinancialDashboard struct {
 	Period    string `json:"period"`
 	PriorYear string `json:"prior_year"`
 	AsOfDate  string `json:"as_of_date"`
+	Source    string `json:"source"`
 
 	// P&L Summary
 	Revenue      float64 `json:"revenue"`
@@ -18752,6 +19768,7 @@ func (a *App) GetFinancialDashboard() FinancialDashboard {
 		Period:    "FY2024",
 		PriorYear: "FY2023",
 		AsOfDate:  "2024-12-31",
+		Source:    "Grant Thornton FS2024 (Audited)",
 
 		// P&L - From audited financials
 		Revenue:      1605794.0,
@@ -18940,8 +19957,8 @@ type CRMCustomerDashboard struct {
 	ActiveCustomers  int     `json:"active_customers"`  // Ordered in last 12 months
 	TotalRevenue     float64 `json:"total_revenue"`     // YTD
 	RevenueYoY       float64 `json:"revenue_yoy"`       // % change
-	TotalOutstanding float64 `json:"total_outstanding"` // AR total
-	OverdueAmount    float64 `json:"overdue_amount"`    // >30 days
+	TotalOutstanding float64 `json:"total_outstanding"` // Open exposure: invoice AR + uninvoiced booked orders
+	OverdueAmount    float64 `json:"overdue_amount"`    // Invoice AR >30 days
 	OverduePct       float64 `json:"overdue_pct"`
 
 	// Top Customers
@@ -18979,118 +19996,272 @@ type CustomerMetricCard struct {
 	City           string     `json:"city"`
 }
 
-// GetCRMCustomerDashboard returns McKinsey-style customer command center metrics
-func (a *App) GetCRMCustomerDashboard() CRMCustomerDashboard {
-	if err := a.requirePermission("customers:view"); err != nil {
-		log.Printf("⚠️ GetCRMCustomerDashboard: permission denied")
-		return CRMCustomerDashboard{}
+func (a *App) latestCRMActivityYear() int {
+	var latestInvoiceYear int
+	a.db.Model(&Invoice{}).Select("COALESCE(MAX(CAST(strftime('%Y', invoice_date) AS INTEGER)), 0)").Scan(&latestInvoiceYear)
+
+	var latestOrderYear int
+	a.db.Model(&Order{}).Select("COALESCE(MAX(CAST(strftime('%Y', order_date) AS INTEGER)), 0)").Scan(&latestOrderYear)
+
+	var latestOfferYear int
+	a.db.Model(&Offer{}).Select("COALESCE(MAX(CAST(strftime('%Y', quotation_date) AS INTEGER)), 0)").Scan(&latestOfferYear)
+
+	var latestOpportunityYear int
+	a.db.Model(&Opportunity{}).Select("COALESCE(MAX(year), 0)").Scan(&latestOpportunityYear)
+
+	year := max(latestInvoiceYear, max(latestOrderYear, max(latestOfferYear, latestOpportunityYear)))
+	if year == 0 {
+		return time.Now().Year()
 	}
+	return year
+}
 
+func (a *App) buildCRMCustomerDashboardForRange(start, end, activeStart time.Time, yearLabel int) CRMCustomerDashboard {
 	dashboard := CRMCustomerDashboard{}
-
 	if a.db == nil {
-		log.Printf("⚠️ GetCRMCustomerDashboard: Database not initialized")
+		log.Printf("⚠️ CRM customer dashboard: database not initialized")
 		return dashboard
 	}
 
-	// 1. Get all customers
-	var customers []CustomerMaster
-	a.db.Find(&customers)
+	linkIndex := a.buildCustomerLinkIndex()
+	customers := linkIndex.customers
 	dashboard.TotalCustomers = len(customers)
 
-	// 2. Calculate YTD cutoff - detect latest year with invoice data
-	// This handles cases where data year differs from current system year
-	var latestInvoiceYear int
-	a.db.Model(&Invoice{}).Select("CAST(strftime('%Y', MAX(invoice_date)) AS INTEGER)").Scan(&latestInvoiceYear)
-	if latestInvoiceYear == 0 {
-		latestInvoiceYear = time.Now().Year() // Fallback to current year if no invoices
-	}
-	log.Printf("📊 CRM Dashboard using data year: %d", latestInvoiceYear)
-
-	ytdStart := time.Date(latestInvoiceYear, 1, 1, 0, 0, 0, 0, time.UTC)
-	activeStart := time.Date(latestInvoiceYear-1, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	// 3. Get invoices for revenue calculation (YTD based on actual data year)
-	var invoices []Invoice
-	a.db.Where("invoice_date >= ?", ytdStart).Find(&invoices)
-
-	// Build customer revenue map
 	customerRevenue := make(map[string]float64)
 	customerActiveInvoices := make(map[string]int)
 	customerOutstanding := make(map[string]float64)
 	customerOverdue := make(map[string]float64)
-	var totalRevenue float64
+	customerLastOrder := make(map[string]time.Time)
+	activeCustomerSet := make(map[string]bool)
+	invoicedByOrderID := make(map[string]float64)
+	var totalCommercialValue float64
+	commercialEvents := newCustomerCommercialEventCollector()
 
+	var invoices []Invoice
+	if err := a.db.Where("invoice_date >= ? AND invoice_date < ?", start, end).Find(&invoices).Error; err != nil {
+		log.Printf("⚠️ CRM customer dashboard invoice aggregation failed: %v", err)
+	}
+	now := time.Now()
 	for _, inv := range invoices {
-		customerRevenue[inv.CustomerID] += inv.GrandTotalBHD
-		totalRevenue += inv.GrandTotalBHD
+		if !invoicePostedStatus(inv.Status) {
+			continue
+		}
+		customer, ok := linkIndex.resolve(inv.CustomerID, inv.CustomerName)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(inv.OrderID) != "" {
+			invoicedByOrderID[inv.OrderID] += inv.GrandTotalBHD
+		}
 
-		if inv.Status != "Paid" {
-			customerActiveInvoices[inv.CustomerID]++
-			customerOutstanding[inv.CustomerID] += inv.OutstandingBHD
-
-			if time.Since(inv.DueDate).Hours()/24 > 30 {
-				customerOverdue[inv.CustomerID] += inv.OutstandingBHD
+		if invoiceOpenStatus(inv.Status) {
+			outstanding := invoiceOutstandingValue(inv)
+			customerActiveInvoices[customer.ID]++
+			customerOutstanding[customer.ID] += outstanding
+			if daysOverdueFrom(now, inv.DueDate) > 30 {
+				customerOverdue[customer.ID] += outstanding
 			}
 		}
 	}
-	dashboard.TotalRevenue = totalRevenue
 
-	// 4. Calculate active customers (ordered in last 12 months)
 	var orders []Order
-	a.db.Where("order_date >= ?", activeStart).Select("DISTINCT customer_id").Find(&orders)
-	activeCustomerSet := make(map[string]bool)
-	for _, o := range orders {
-		activeCustomerSet[o.CustomerID] = true
+	if err := a.db.Where("order_date >= ? AND order_date < ?", start, end).Find(&orders).Error; err != nil {
+		log.Printf("⚠️ CRM customer dashboard order aggregation failed: %v", err)
 	}
+	for _, order := range orders {
+		if !commercialOrderStatus(order.Status) {
+			continue
+		}
+		customer, ok := linkIndex.resolve(order.CustomerID, order.CustomerName)
+		if !ok {
+			continue
+		}
+		orderValue := customerCommercialOrderValue(order)
+		commercialEvents.add(customerCommercialEvent{
+			CustomerID: customer.ID,
+			OfferID:    order.OfferID,
+			Ref:        order.OrderNumber,
+			Project:    firstNonEmpty(order.CustomerReference, order.OrderNumber),
+			Status:     order.Status,
+			Source:     "order",
+			Date:       order.OrderDate,
+			Value:      orderValue,
+		},
+			"order:"+order.ID,
+			"order_number:"+order.OrderNumber,
+			"offer:"+order.OfferID,
+			"rfq:"+order.RFQID,
+		)
+
+		remainder := orderValue - invoicedByOrderID[order.ID]
+		if remainder > 0.001 {
+			customerOutstanding[customer.ID] += remainder
+		}
+		activeCustomerSet[customer.ID] = true
+		if existing, ok := customerLastOrder[customer.ID]; !ok || order.OrderDate.After(existing) {
+			customerLastOrder[customer.ID] = order.OrderDate
+		}
+	}
+
+	for _, inv := range invoices {
+		if !invoicePostedStatus(inv.Status) {
+			continue
+		}
+		customer, ok := linkIndex.resolve(inv.CustomerID, inv.CustomerName)
+		if !ok {
+			continue
+		}
+		commercialEvents.add(customerCommercialEvent{
+			CustomerID: customer.ID,
+			OfferID:    inv.OfferID,
+			Ref:        inv.InvoiceNumber,
+			Project:    firstNonEmpty(inv.CustomerReference, inv.InvoiceNumber),
+			Status:     inv.Status,
+			Source:     "invoice",
+			Date:       inv.InvoiceDate,
+			Value:      inv.GrandTotalBHD,
+		},
+			"invoice:"+inv.ID,
+			"invoice_number:"+inv.InvoiceNumber,
+			"order:"+inv.OrderID,
+			"offer:"+inv.OfferID,
+			"rfq:"+inv.RfqID,
+		)
+	}
+
+	var activeOrders []Order
+	if err := a.db.Where("order_date >= ? AND order_date < ?", activeStart, end).Find(&activeOrders).Error; err == nil {
+		for _, order := range activeOrders {
+			if !commercialOrderStatus(order.Status) {
+				continue
+			}
+			if customer, ok := linkIndex.resolve(order.CustomerID, order.CustomerName); ok {
+				activeCustomerSet[customer.ID] = true
+			}
+		}
+	}
+
+	var offers []Offer
+	if err := a.db.Where("quotation_date >= ? AND quotation_date < ?", start, end).Find(&offers).Error; err != nil {
+		log.Printf("⚠️ CRM customer dashboard offer aggregation failed: %v", err)
+	}
+	for _, offer := range offers {
+		if !commercialOfferStage(offer.Stage) || offer.TotalValueBHD <= 0 {
+			continue
+		}
+		customer, ok := linkIndex.resolve(offer.CustomerID, offer.CustomerName)
+		if !ok {
+			continue
+		}
+		commercialEvents.add(customerCommercialEvent{
+			CustomerID: customer.ID,
+			OfferID:    offer.ID,
+			Ref:        offer.OfferNumber,
+			Project:    firstNonEmpty(offer.CustomerReference, offer.ProjectName, offer.OfferNumber),
+			Status:     offer.Stage,
+			Source:     "offer",
+			Date:       offer.QuotationDate,
+			Value:      offer.TotalValueBHD,
+		},
+			"offer:"+offer.ID,
+			"offer_number:"+offer.OfferNumber,
+			"rfq:"+offer.RFQID,
+		)
+	}
+
+	var opportunities []Opportunity
+	if err := a.db.Where("year = ? OR (offer_date >= ? AND offer_date < ?)", yearLabel, start, end).Find(&opportunities).Error; err != nil {
+		log.Printf("⚠️ CRM customer dashboard opportunity aggregation failed: %v", err)
+	}
+	for _, opp := range opportunities {
+		if !commercialOfferStage(opp.Stage) || opp.RevenueBHD <= 0 {
+			continue
+		}
+		customer, ok := linkIndex.resolve(opp.CustomerID, opp.CustomerName)
+		if !ok {
+			continue
+		}
+		eventDate := opp.OfferDate
+		if eventDate.IsZero() {
+			eventDate = opp.CreatedAt
+		}
+		if eventDate.IsZero() && opp.Year > 0 {
+			eventDate = time.Date(opp.Year, time.January, 1, 0, 0, 0, 0, time.UTC)
+		}
+		commercialEvents.add(customerCommercialEvent{
+			CustomerID: customer.ID,
+			OfferID:    opp.OfferID,
+			Ref:        opp.FolderNumber,
+			Project:    firstNonEmpty(opp.Title, opp.FolderName, opp.FolderNumber),
+			Status:     opp.Stage,
+			Source:     "opportunity",
+			Date:       eventDate,
+			Value:      opp.RevenueBHD,
+		},
+			"opportunity:"+opp.ID,
+			"offer:"+opp.OfferID,
+			"folder:"+opp.FolderNumber,
+		)
+	}
+
+	for _, event := range commercialEvents.events {
+		if event.Value <= 0 {
+			continue
+		}
+		customerRevenue[event.CustomerID] += event.Value
+		totalCommercialValue += event.Value
+		activeCustomerSet[event.CustomerID] = true
+	}
+
+	dashboard.TotalRevenue = roundTo3(totalCommercialValue)
 	dashboard.ActiveCustomers = len(activeCustomerSet)
 
-	// 5. Calculate total outstanding and overdue
-	var totalOutstanding, totalOverdue float64
 	for _, amount := range customerOutstanding {
-		totalOutstanding += amount
+		dashboard.TotalOutstanding += amount
 	}
 	for _, amount := range customerOverdue {
-		totalOverdue += amount
+		dashboard.OverdueAmount += amount
 	}
-	dashboard.TotalOutstanding = totalOutstanding
-	dashboard.OverdueAmount = totalOverdue
-	if totalOutstanding > 0 {
-		dashboard.OverduePct = (totalOverdue / totalOutstanding) * 100
+	dashboard.TotalOutstanding = roundTo3(dashboard.TotalOutstanding)
+	dashboard.OverdueAmount = roundTo3(dashboard.OverdueAmount)
+	if dashboard.TotalOutstanding > 0 {
+		dashboard.OverduePct = (dashboard.OverdueAmount / dashboard.TotalOutstanding) * 100
 	}
 
-	// 6. Build customer cards
 	cards := make([]CustomerMetricCard, 0, len(customers))
 	for _, c := range customers {
+		lastOrderDate := c.LastOrderDate
+		if dynamicLast, ok := customerLastOrder[c.ID]; ok {
+			if lastOrderDate == nil || dynamicLast.After(*lastOrderDate) {
+				last := dynamicLast
+				lastOrderDate = &last
+			}
+		}
 		cards = append(cards, CustomerMetricCard{
 			ID:             c.ID,
 			BusinessName:   c.BusinessName,
 			CustomerType:   c.CustomerType,
 			PaymentGrade:   c.PaymentGrade,
-			TotalRevenue:   customerRevenue[c.ID],
+			TotalRevenue:   roundTo3(customerRevenue[c.ID]),
 			ActiveInvoices: customerActiveInvoices[c.ID],
-			OutstandingBHD: customerOutstanding[c.ID],
-			OverdueBHD:     customerOverdue[c.ID],
-			LastOrderDate:  c.LastOrderDate,
+			OutstandingBHD: roundTo3(customerOutstanding[c.ID]),
+			OverdueBHD:     roundTo3(customerOverdue[c.ID]),
+			LastOrderDate:  lastOrderDate,
 			City:           c.City,
 		})
 	}
 
-	// 7. Sort by revenue descending
 	sort.Slice(cards, func(i, j int) bool {
 		return cards[i].TotalRevenue > cards[j].TotalRevenue
 	})
 	dashboard.Customers = cards
-
-	// 8. Top 10 customers
 	if len(cards) > 10 {
 		dashboard.TopCustomers = cards[:10]
 	} else {
 		dashboard.TopCustomers = cards
 	}
 
-	// 9. Concentration risk
-	if totalRevenue > 0 {
+	if dashboard.TotalRevenue > 0 {
 		var top3, top5, top10 float64
 		for i, card := range cards {
 			if i < 3 {
@@ -19103,12 +20274,11 @@ func (a *App) GetCRMCustomerDashboard() CRMCustomerDashboard {
 				top10 += card.TotalRevenue
 			}
 		}
-		dashboard.Top3RevenuePct = (top3 / totalRevenue) * 100
-		dashboard.Top5RevenuePct = (top5 / totalRevenue) * 100
-		dashboard.Top10RevenuePct = (top10 / totalRevenue) * 100
+		dashboard.Top3RevenuePct = (top3 / dashboard.TotalRevenue) * 100
+		dashboard.Top5RevenuePct = (top5 / dashboard.TotalRevenue) * 100
+		dashboard.Top10RevenuePct = (top10 / dashboard.TotalRevenue) * 100
 	}
 
-	// 10. Grade distribution
 	for _, c := range customers {
 		rev := customerRevenue[c.ID]
 		switch c.PaymentGrade {
@@ -19126,15 +20296,36 @@ func (a *App) GetCRMCustomerDashboard() CRMCustomerDashboard {
 			dashboard.GradeDRevenue += rev
 		}
 	}
+	dashboard.GradeARevenue = roundTo3(dashboard.GradeARevenue)
+	dashboard.GradeBRevenue = roundTo3(dashboard.GradeBRevenue)
+	dashboard.GradeCRevenue = roundTo3(dashboard.GradeCRevenue)
+	dashboard.GradeDRevenue = roundTo3(dashboard.GradeDRevenue)
 
-	log.Printf("📊 CRM Customer Dashboard: %d customers, %.0f BHD revenue, %.0f BHD outstanding",
-		dashboard.TotalCustomers, dashboard.TotalRevenue, dashboard.TotalOutstanding)
+	log.Printf("📊 CRM Customer Dashboard (year=%d): %d customers, %.0f BHD commercial value, %.0f BHD outstanding",
+		yearLabel, dashboard.TotalCustomers, dashboard.TotalRevenue, dashboard.TotalOutstanding)
 
 	return dashboard
 }
 
-// GetCRMCustomerDashboardByYear returns the customer CRM dashboard filtered to a specific year
-// When year is 0, falls back to GetCRMCustomerDashboard (auto-detect latest year)
+// GetCRMCustomerDashboard returns McKinsey-style customer command center metrics.
+func (a *App) GetCRMCustomerDashboard() CRMCustomerDashboard {
+	if err := a.requirePermission("customers:view"); err != nil {
+		log.Printf("⚠️ GetCRMCustomerDashboard: permission denied")
+		return CRMCustomerDashboard{}
+	}
+	if a.db == nil {
+		log.Printf("⚠️ GetCRMCustomerDashboard: Database not initialized")
+		return CRMCustomerDashboard{}
+	}
+
+	activityYear := a.latestCRMActivityYear()
+	start := time.Date(activityYear, time.January, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(activityYear+1, time.January, 1, 0, 0, 0, 0, time.UTC)
+	activeStart := time.Date(activityYear-1, time.January, 1, 0, 0, 0, 0, time.UTC)
+	return a.buildCRMCustomerDashboardForRange(start, end, activeStart, activityYear)
+}
+
+// GetCRMCustomerDashboardByYear returns the customer CRM dashboard filtered to a specific year.
 func (a *App) GetCRMCustomerDashboardByYear(year int) CRMCustomerDashboard {
 	if year == 0 {
 		return a.GetCRMCustomerDashboard()
@@ -19142,149 +20333,18 @@ func (a *App) GetCRMCustomerDashboardByYear(year int) CRMCustomerDashboard {
 	if err := a.requirePermission("customers:view"); err != nil {
 		return CRMCustomerDashboard{}
 	}
-	// Validate year bounds
 	if year < 2020 || year > time.Now().Year()+1 {
 		return CRMCustomerDashboard{}
 	}
-
-	dashboard := CRMCustomerDashboard{}
 	if a.db == nil {
 		log.Printf("⚠️ GetCRMCustomerDashboardByYear: Database not initialized")
-		return dashboard
+		return CRMCustomerDashboard{}
 	}
 
-	// 1. Get all customers
-	var customers []CustomerMaster
-	a.db.Find(&customers)
-	dashboard.TotalCustomers = len(customers)
-
-	log.Printf("📊 CRM Customer Dashboard (year=%d)", year)
-
-	ytdStart := time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
-	ytdEnd := time.Date(year+1, 1, 1, 0, 0, 0, 0, time.UTC)
-	activeStart := time.Date(year-1, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	// 3. Get invoices for specified year
-	var invoices []Invoice
-	a.db.Where("invoice_date >= ? AND invoice_date < ?", ytdStart, ytdEnd).Find(&invoices)
-
-	// Build customer revenue map
-	customerRevenue := make(map[string]float64)
-	customerActiveInvoices := make(map[string]int)
-	customerOutstanding := make(map[string]float64)
-	customerOverdue := make(map[string]float64)
-	var totalRevenue float64
-
-	for _, inv := range invoices {
-		customerRevenue[inv.CustomerID] += inv.GrandTotalBHD
-		totalRevenue += inv.GrandTotalBHD
-
-		if inv.Status != "Paid" {
-			customerActiveInvoices[inv.CustomerID]++
-			customerOutstanding[inv.CustomerID] += inv.OutstandingBHD
-
-			if time.Since(inv.DueDate).Hours()/24 > 30 {
-				customerOverdue[inv.CustomerID] += inv.OutstandingBHD
-			}
-		}
-	}
-	dashboard.TotalRevenue = totalRevenue
-
-	// 4. Calculate active customers (ordered within the year range)
-	var orders []Order
-	a.db.Where("order_date >= ? AND order_date < ?", activeStart, ytdEnd).Select("DISTINCT customer_id").Find(&orders)
-	activeCustomerSet := make(map[string]bool)
-	for _, o := range orders {
-		activeCustomerSet[o.CustomerID] = true
-	}
-	dashboard.ActiveCustomers = len(activeCustomerSet)
-
-	// 5. Calculate total outstanding and overdue
-	var totalOutstanding, totalOverdue float64
-	for _, amount := range customerOutstanding {
-		totalOutstanding += amount
-	}
-	for _, amount := range customerOverdue {
-		totalOverdue += amount
-	}
-	dashboard.TotalOutstanding = totalOutstanding
-	dashboard.OverdueAmount = totalOverdue
-	if totalOutstanding > 0 {
-		dashboard.OverduePct = (totalOverdue / totalOutstanding) * 100
-	}
-
-	// 6. Build customer cards
-	cards := make([]CustomerMetricCard, 0, len(customers))
-	for _, c := range customers {
-		cards = append(cards, CustomerMetricCard{
-			ID:             c.ID,
-			BusinessName:   c.BusinessName,
-			CustomerType:   c.CustomerType,
-			PaymentGrade:   c.PaymentGrade,
-			TotalRevenue:   customerRevenue[c.ID],
-			ActiveInvoices: customerActiveInvoices[c.ID],
-			OutstandingBHD: customerOutstanding[c.ID],
-			OverdueBHD:     customerOverdue[c.ID],
-			LastOrderDate:  c.LastOrderDate,
-			City:           c.City,
-		})
-	}
-
-	// 7. Sort by revenue descending
-	sort.Slice(cards, func(i, j int) bool {
-		return cards[i].TotalRevenue > cards[j].TotalRevenue
-	})
-	dashboard.Customers = cards
-
-	// 8. Top 10 customers
-	if len(cards) > 10 {
-		dashboard.TopCustomers = cards[:10]
-	} else {
-		dashboard.TopCustomers = cards
-	}
-
-	// 9. Concentration risk
-	if totalRevenue > 0 {
-		var top3, top5, top10 float64
-		for i, card := range cards {
-			if i < 3 {
-				top3 += card.TotalRevenue
-			}
-			if i < 5 {
-				top5 += card.TotalRevenue
-			}
-			if i < 10 {
-				top10 += card.TotalRevenue
-			}
-		}
-		dashboard.Top3RevenuePct = (top3 / totalRevenue) * 100
-		dashboard.Top5RevenuePct = (top5 / totalRevenue) * 100
-		dashboard.Top10RevenuePct = (top10 / totalRevenue) * 100
-	}
-
-	// 10. Grade distribution
-	for _, c := range customers {
-		rev := customerRevenue[c.ID]
-		switch c.PaymentGrade {
-		case "A":
-			dashboard.GradeACount++
-			dashboard.GradeARevenue += rev
-		case "B":
-			dashboard.GradeBCount++
-			dashboard.GradeBRevenue += rev
-		case "C":
-			dashboard.GradeCCount++
-			dashboard.GradeCRevenue += rev
-		case "D":
-			dashboard.GradeDCount++
-			dashboard.GradeDRevenue += rev
-		}
-	}
-
-	log.Printf("📊 CRM Customer Dashboard (year=%d): %d customers, %.0f BHD revenue, %.0f BHD outstanding",
-		year, dashboard.TotalCustomers, dashboard.TotalRevenue, dashboard.TotalOutstanding)
-
-	return dashboard
+	start := time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(year+1, time.January, 1, 0, 0, 0, 0, time.UTC)
+	activeStart := time.Date(year-1, time.January, 1, 0, 0, 0, 0, time.UTC)
+	return a.buildCRMCustomerDashboardForRange(start, end, activeStart, year)
 }
 
 // ============================================================================
@@ -19758,9 +20818,9 @@ func (a *App) BackfillOfferItemCostBreakdown() (map[string]interface{}, error) {
 
 			// Copy exchange rate
 			if costingMatch.ExchangeRate > 0 {
-				item.ExchangeRate = costingMatch.ExchangeRate
+				item.ExchangeRate = normalizeExchangeRateToBHD("EUR", costingMatch.ExchangeRate)
 			} else {
-				item.ExchangeRate = 0.44 // Default EUR to BHD
+				item.ExchangeRate = defaultEURToBHDRate
 			}
 
 			// Calculate FOB in BHD
@@ -19803,7 +20863,7 @@ func (a *App) BackfillOfferItemCostBreakdown() (map[string]interface{}, error) {
 			// No match - use reasonable defaults
 			defaulted++
 
-			item.ExchangeRate = 0.44 // EUR to BHD
+			item.ExchangeRate = defaultEURToBHDRate
 
 			// If FOB exists, calculate FOB in BHD
 			if item.FOB > 0 {
@@ -19877,7 +20937,7 @@ func (a *App) RecalculateInvoiceItemCosts() (map[string]interface{}, error) {
 
 	// Target margin assumption (PH Trading typical gross margin from FS2024 is ~18-20%)
 	const targetMarginPercent = 20.0
-	const eurToBhdRate = 0.40 // Approximate EUR to BHD conversion
+	const eurToBhdRate = defaultEURToBHDRate
 
 	var invoiceItems []DBInvoiceItem
 	if err := a.db.Find(&invoiceItems).Error; err != nil {

@@ -256,7 +256,7 @@
               <span class="value">{profile.payment_terms_days} days</span>
             </div>
             <div class="info-item">
-              <span class="label">Outstanding</span>
+              <span class="label">Open Exposure</span>
               <span class="value">{formatCurrency(profile.outstanding_bhd)} BHD</span>
             </div>
             <div class="info-item">
@@ -336,7 +336,7 @@
             <div class="metrics-grid">
               <Card padding="md">
                 <div class="metric">
-                  <span class="metric-label">Total Revenue</span>
+                  <span class="metric-label">Total Business</span>
                   <span class="metric-value">{formatCurrency(profile.total_revenue)}</span>
                   <span class="metric-currency">BHD</span>
                 </div>
@@ -363,7 +363,7 @@
             </div>
 
             <Card padding="md">
-              <h3 class="section-title">AR AGING</h3>
+              <h3 class="section-title">EXPOSURE AGING</h3>
               <div class="aging-grid">
                 <div class="aging-item">
                   <span class="aging-label">Current</span>

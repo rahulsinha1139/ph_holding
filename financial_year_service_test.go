@@ -38,7 +38,7 @@ func TestGetDynamicFinancialDashboardExcludesDraftAndProformaFromReceivables(t *
 	app := setupTestApp(t)
 	customerID := seedTestCustomer(t, app.db, "Finance Test Customer")
 	year := 2026
-	invoiceDate := time.Date(year, time.January, 10, 0, 0, 0, 0, time.UTC)
+	invoiceDate := operationalMetricStartForYear(year).AddDate(0, 0, 1)
 	dueDate := invoiceDate.AddDate(0, 0, 30)
 
 	invoices := []Invoice{
@@ -85,6 +85,49 @@ func TestGetDynamicFinancialDashboardExcludesDraftAndProformaFromReceivables(t *
 	require.NoError(t, err)
 	require.Equal(t, 100.0, dashboard.TradeReceivables)
 	require.Equal(t, 100.0, dashboard.ARCurrent+dashboard.AR30_60+dashboard.AR60_90+dashboard.AROver90)
+}
+
+func TestGetDynamicFinancialDashboardUsesFreshStartBookedOrders(t *testing.T) {
+	app := setupTestApp(t)
+	customerID := seedTestCustomer(t, app.db, "Fresh Start Finance Customer")
+	year := 2026
+	orderDate := operationalMetricStartForYear(year).AddDate(0, 0, 2)
+	dueDate := orderDate.AddDate(0, 0, 30)
+
+	order := Order{
+		Base:          Base{ID: uuid.New().String(), CreatedAt: orderDate, UpdatedAt: orderDate},
+		OrderNumber:   "ORD-FS-2026-001",
+		CustomerID:    customerID,
+		CustomerName:  "Fresh Start Finance Customer",
+		OrderDate:     orderDate,
+		RequiredDate:  dueDate,
+		GrandTotalBHD: 140778.332,
+		Status:        "Confirmed",
+	}
+	require.NoError(t, app.db.Create(&order).Error)
+
+	draftInvoice := Invoice{
+		Base:           Base{ID: uuid.New().String(), CreatedAt: orderDate, UpdatedAt: orderDate},
+		InvoiceNumber:  "INV-FS-DRAFT-001",
+		InvoiceDate:    orderDate,
+		DueDate:        dueDate,
+		CustomerID:     customerID,
+		CustomerName:   "Fresh Start Finance Customer",
+		OrderID:        order.ID,
+		Status:         "Draft",
+		GrandTotalBHD:  798.6,
+		OutstandingBHD: 798.6,
+		SubtotalBHD:    726,
+	}
+	require.NoError(t, app.db.Create(&draftInvoice).Error)
+
+	dashboard, err := app.GetDynamicFinancialDashboard(year)
+	require.NoError(t, err)
+	require.Equal(t, 140778.332, dashboard.Revenue)
+	require.Equal(t, 140778.332, dashboard.TradeReceivables)
+	require.Equal(t, 140778.332, dashboard.ARCurrent+dashboard.AR30_60+dashboard.AR60_90+dashboard.AROver90)
+	require.Contains(t, dashboard.Source, "booked orders")
+	require.NotZero(t, dashboard.COGS)
 }
 
 func TestGetDynamicFinancialDashboardDoesNotUseOfferPipelineAsRevenue(t *testing.T) {

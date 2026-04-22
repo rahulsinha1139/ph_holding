@@ -47,10 +47,11 @@
   import { permissions } from '$lib/stores/authContext';
   import { buildWailsInput, toWailsDate } from '$lib/utils/wailsInterop';
 
-  $: canView = $permissions.includes('*') || $permissions.includes('finance:view') || $permissions.includes('finance:*');
-  $: canCreate = $permissions.includes('*') || $permissions.includes('payments:create') || $permissions.includes('payments:*') || $permissions.includes('finance:*');
-  $: canUpdate = $permissions.includes('*') || $permissions.includes('payments:update') || $permissions.includes('payments:*') || $permissions.includes('finance:*');
-  $: canDelete = $permissions.includes('*') || $permissions.includes('payments:delete') || $permissions.includes('payments:*') || $permissions.includes('finance:*');
+  $: permissionList = Array.isArray($permissions) ? $permissions : [];
+  $: canView = permissionList.includes('*') || permissionList.includes('finance:view') || permissionList.includes('finance:*');
+  $: canCreate = permissionList.includes('*') || permissionList.includes('payments:create') || permissionList.includes('payments:*') || permissionList.includes('finance:*');
+  $: canUpdate = permissionList.includes('*') || permissionList.includes('payments:update') || permissionList.includes('payments:*') || permissionList.includes('finance:*');
+  $: canDelete = permissionList.includes('*') || permissionList.includes('payments:delete') || permissionList.includes('payments:*') || permissionList.includes('finance:*');
   const dispatch = createEventDispatcher();
 
   // Props

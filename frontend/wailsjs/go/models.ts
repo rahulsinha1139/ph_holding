@@ -4891,6 +4891,11 @@ export namespace main {
 	    active_customers: number;
 	    revenue_meta: string;
 	    activity_year: number;
+	    pipeline_value_bhd: number;
+	    collection_rate: number;
+	    cash_balance_bhd: number;
+	    cash_position_note: string;
+	    fresh_start_date: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new DashboardStats(source);
@@ -4914,6 +4919,11 @@ export namespace main {
 	        this.active_customers = source["active_customers"];
 	        this.revenue_meta = source["revenue_meta"];
 	        this.activity_year = source["activity_year"];
+	        this.pipeline_value_bhd = source["pipeline_value_bhd"];
+	        this.collection_rate = source["collection_rate"];
+	        this.cash_balance_bhd = source["cash_balance_bhd"];
+	        this.cash_position_note = source["cash_position_note"];
+	        this.fresh_start_date = source["fresh_start_date"];
 	    }
 	}
 	export class DataDiscrepancy {
@@ -6733,6 +6743,7 @@ export namespace main {
 	    period: string;
 	    prior_year: string;
 	    as_of_date: string;
+	    source: string;
 	    revenue: number;
 	    revenue_yoy: number;
 	    cogs: number;
@@ -6789,6 +6800,7 @@ export namespace main {
 	        this.period = source["period"];
 	        this.prior_year = source["prior_year"];
 	        this.as_of_date = source["as_of_date"];
+	        this.source = source["source"];
 	        this.revenue = source["revenue"];
 	        this.revenue_yoy = source["revenue_yoy"];
 	        this.cogs = source["cogs"];
@@ -8444,6 +8456,7 @@ export namespace main {
 	    quote_type: string;
 	    vat_rate: number;
 	    division: string;
+	    terms_and_conditions: string;
 	    coc_coo: string;
 	    test_certificate: string;
 	    installation: string;
@@ -8491,6 +8504,7 @@ export namespace main {
 	        this.quote_type = source["quote_type"];
 	        this.vat_rate = source["vat_rate"];
 	        this.division = source["division"];
+	        this.terms_and_conditions = source["terms_and_conditions"];
 	        this.coc_coo = source["coc_coo"];
 	        this.test_certificate = source["test_certificate"];
 	        this.installation = source["installation"];
@@ -10003,6 +10017,7 @@ export namespace main {
 	
 	export class OrderFulfillmentItem {
 	    order_item_id: string;
+	    product_id: string;
 	    product_code: string;
 	    description: string;
 	    ordered_qty: number;
@@ -10010,6 +10025,7 @@ export namespace main {
 	    delivered_qty: number;
 	    invoiced_qty: number;
 	    remaining_qty: number;
+	    requires_serial_tracking: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new OrderFulfillmentItem(source);
@@ -10018,6 +10034,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.order_item_id = source["order_item_id"];
+	        this.product_id = source["product_id"];
 	        this.product_code = source["product_code"];
 	        this.description = source["description"];
 	        this.ordered_qty = source["ordered_qty"];
@@ -10025,6 +10042,7 @@ export namespace main {
 	        this.delivered_qty = source["delivered_qty"];
 	        this.invoiced_qty = source["invoiced_qty"];
 	        this.remaining_qty = source["remaining_qty"];
+	        this.requires_serial_tracking = source["requires_serial_tracking"];
 	    }
 	}
 	export class OrderFulfillment {

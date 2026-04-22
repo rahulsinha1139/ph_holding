@@ -432,9 +432,135 @@ func (a *App) GetCurrentEmployeeContext() (CurrentEmployeeContext, error) {
 				}, nil
 			}
 		}
+
+		if fallback, fallbackErr := a.ensureEmployeeContextForLicense(license); fallbackErr == nil {
+			return fallback, nil
+		} else {
+			log.Printf("⚠️ Failed to auto-resolve employee context for active license: %v", fallbackErr)
+		}
 	}
 
 	return ctx, fmt.Errorf("employee context not resolved")
+}
+
+func (a *App) ensureEmployeeContextForLicense(license *LicenseKey) (CurrentEmployeeContext, error) {
+	ctx := CurrentEmployeeContext{}
+	if a.db == nil {
+		return ctx, fmt.Errorf("database not initialized")
+	}
+	if license == nil || strings.TrimSpace(license.Key) == "" {
+		return ctx, fmt.Errorf("active license is unavailable")
+	}
+
+	name := strings.TrimSpace(license.DisplayName)
+	if name == "" && a.currentUser != nil {
+		name = firstNonEmptyCollaboration(a.currentUser.DisplayName, a.currentUser.FullName, a.currentUser.Username, a.currentUser.Email)
+	}
+	if name == "" && a.authManager != nil {
+		a.authManager.mu.RLock()
+		profile := a.authManager.Profile
+		a.authManager.mu.RUnlock()
+		if profile != nil {
+			name = firstNonEmptyCollaboration(profile.DisplayName, profile.UserPrincipalName, profile.Mail)
+		}
+	}
+	if name == "" {
+		switch strings.ToLower(strings.TrimSpace(license.Role)) {
+		case "admin", "management", "manager":
+			name = "Administrator"
+		case "sales":
+			name = "Sales User"
+		case "operations":
+			name = "Operations User"
+		default:
+			name = "AsymmFlow User"
+		}
+	}
+
+	var employee Employee
+	if err := a.db.Where("LOWER(full_name) = LOWER(?)", name).First(&employee).Error; err != nil {
+		if err != gorm.ErrRecordNotFound {
+			return ctx, fmt.Errorf("failed to lookup fallback employee: %w", err)
+		}
+
+		code, codeErr := a.generateEmployeeCode()
+		if codeErr != nil {
+			return ctx, codeErr
+		}
+
+		employee = Employee{
+			Base:             Base{CreatedBy: "system"},
+			EmployeeCode:     code,
+			FullName:         name,
+			PreferredName:    firstToken(name),
+			Department:       inferDepartmentFromRole(license.Role),
+			JobTitle:         strings.Title(strings.TrimSpace(license.Role)),
+			EmploymentStatus: "active",
+			IsActive:         true,
+		}
+		if employee.JobTitle == "" {
+			employee.JobTitle = "User"
+		}
+
+		if err := a.db.Create(&employee).Error; err != nil {
+			return ctx, fmt.Errorf("failed to create fallback employee: %w", err)
+		}
+	}
+
+	link, err := a.buildAccessLinkForLicense(employee.ID, *license)
+	if err != nil {
+		return ctx, err
+	}
+	if link.UserID == "" {
+		link.UserID = a.currentUserID
+	}
+
+	var existing EmployeeAccessLink
+	if err := a.db.Where("employee_id = ? AND license_key = ?", employee.ID, license.Key).First(&existing).Error; err == nil {
+		updates := map[string]interface{}{
+			"device_id":     link.DeviceID,
+			"access_status": "active",
+			"is_primary":    true,
+		}
+		if link.UserID != "" {
+			updates["user_id"] = link.UserID
+		}
+		if err := a.db.Model(&existing).Updates(updates).Error; err != nil {
+			return ctx, fmt.Errorf("failed to update fallback employee access link: %w", err)
+		}
+		link = existing
+		link.DeviceID = firstNonEmptyCollaboration(updates["device_id"].(string), existing.DeviceID)
+		if userID, ok := updates["user_id"].(string); ok && userID != "" {
+			link.UserID = userID
+		}
+	} else if err == gorm.ErrRecordNotFound {
+		if err := a.db.Create(&link).Error; err != nil {
+			return ctx, fmt.Errorf("failed to create fallback employee access link: %w", err)
+		}
+	} else {
+		return ctx, fmt.Errorf("failed to lookup fallback employee access link: %w", err)
+	}
+
+	log.Printf("✅ Auto-resolved employee context %s for active license role %s", employee.FullName, license.Role)
+	return CurrentEmployeeContext{
+		EmployeeID:   employee.ID,
+		EmployeeName: employee.FullName,
+		LicenseKey:   license.Key,
+		LicenseRole:  license.Role,
+		DeviceID:     link.DeviceID,
+		UserID:       link.UserID,
+		ResolvedBy:   "license_auto",
+		Permissions:  rolePermissions[license.Role],
+	}, nil
+}
+
+func firstNonEmptyCollaboration(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (a *App) CreateEmployeeProfile(employee Employee) (Employee, error) {

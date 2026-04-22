@@ -103,11 +103,61 @@ func alignTestAppWithCurrentWorkflow(t *testing.T, app *App) {
 		&LicenseKey{},
 		&ChartOfAccount{},
 		&CompanyBankAccount{},
+		&BankStatement{},
+		&BankStatementLine{},
+		&BankLinePaymentAllocation{},
 		&Offer{},
 		&OfferItem{},
 		&Opportunity{},
 	))
 	require.NoError(t, app.ensureCriticalDeploymentFoundations())
+}
+
+func TestApplyDeploymentLicenseActivationFlushResetsExistingActivationOnce(t *testing.T) {
+	app := setupTestApp(t)
+	t.Setenv("ASYMMFLOW_LICENSE_FLUSH_STAMP", "deploy-a")
+
+	now := time.Now()
+	license := LicenseKey{
+		Key:         "PH-SLS-FLUSH1",
+		Role:        "sales",
+		DisplayName: "Sales Test",
+		DeviceHash:  "device-a",
+		Activated:   true,
+		ActivatedAt: &now,
+		CreatedBy:   "test",
+	}
+	require.NoError(t, app.db.Create(&license).Error)
+
+	require.NoError(t, app.ApplyDeploymentLicenseActivationFlush())
+
+	var flushed LicenseKey
+	require.NoError(t, app.db.Where("key = ?", license.Key).First(&flushed).Error)
+	require.False(t, flushed.Activated)
+	require.Empty(t, flushed.DeviceHash)
+	require.Nil(t, flushed.ActivatedAt)
+
+	var marker Setting
+	require.NoError(t, app.db.Where("key = ?", "deployment_license_activation_flush_stamp").First(&marker).Error)
+	require.Equal(t, "deploy-a", marker.Value)
+
+	later := time.Now()
+	require.NoError(t, app.db.Model(&flushed).Updates(map[string]interface{}{
+		"activated":    true,
+		"device_hash":  "device-b",
+		"activated_at": &later,
+	}).Error)
+
+	require.NoError(t, app.ApplyDeploymentLicenseActivationFlush())
+	require.NoError(t, app.db.Where("key = ?", license.Key).First(&flushed).Error)
+	require.True(t, flushed.Activated, "same deployment stamp must not flush every launch")
+	require.Equal(t, "device-b", flushed.DeviceHash)
+
+	t.Setenv("ASYMMFLOW_LICENSE_FLUSH_STAMP", "deploy-b")
+	require.NoError(t, app.ApplyDeploymentLicenseActivationFlush())
+	require.NoError(t, app.db.Where("key = ?", license.Key).First(&flushed).Error)
+	require.False(t, flushed.Activated)
+	require.Empty(t, flushed.DeviceHash)
 }
 
 // seedTestCustomer creates a test customer and returns its ID

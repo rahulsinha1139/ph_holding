@@ -42,6 +42,7 @@
     GetSupplierInvoices,
     GetAllSupplierPayments,
     ListUnreconciledPayrollPayouts,
+    CreateSplitAllocation,
   } from '../../../wailsjs/go/main/App';
 
   // Design system components
@@ -140,11 +141,21 @@
   let matchingType = 'CUSTOMER_INVOICE';
   let matchingCandidateId = '';
   let matchingSearch = '';
+  let matchAllocations: MatchAllocationDraft[] = [];
   let matchLoading = false;
   let customerInvoiceCandidates: any[] = [];
   let supplierInvoiceCandidates: any[] = [];
   let supplierPaymentCandidates: any[] = [];
   let payrollPayoutCandidates: any[] = [];
+
+  type MatchAllocationDraft = {
+    key: string;
+    allocation_type: string;
+    entity_id: string;
+    label: string;
+    allocated_amount: number;
+    max_amount: number;
+  };
 
   // Bank account management state
   let editingAccount: BankAccount | null = null;
@@ -192,7 +203,8 @@
   $: visibleBankAccounts = bankAccounts.filter((account) => matchesCompany(account.division));
   $: visibleAllBankAccounts = allBankAccounts.filter((account) => matchesCompany(account.division));
   $: visibleCashAccounts = (cashPosition?.accounts || []).filter((account: any) => matchesCompany(account.division));
-  $: totalVisibleCashPosition = visibleCashAccounts.reduce((sum: number, account: any) => sum + (Number(account.current_balance) || 0), 0);
+  $: totalVisibleCashPosition = visibleCashAccounts.reduce((sum: number, account: any) => sum + getAccountBalanceBHD(account), 0);
+  $: cashPositionNotices = visibleCashAccounts.map((account: any) => account.notice).filter(Boolean);
   $: if (company && visibleBankAccounts.length > 0 && !visibleBankAccounts.some((account: any) => account.id === selectedAccountId)) {
     selectedAccountId = visibleBankAccounts[0].id;
     loadStatements();
@@ -208,6 +220,9 @@
   $: totalMatched = statementLines.filter(l => l.is_matched).length;
   $: unmatchedDebit = statementLines.filter(l => !l.is_matched && l.debit > 0).reduce((sum, l) => sum + l.debit, 0);
   $: unmatchedCredit = statementLines.filter(l => !l.is_matched && l.credit > 0).reduce((sum, l) => sum + l.credit, 0);
+  $: matchLineAmount = matchingLine ? formatMatchAmount(matchingLine) : 0;
+  $: matchAllocationTotal = roundAmount(matchAllocations.reduce((sum, allocation) => sum + (Number(allocation.allocated_amount) || 0), 0));
+  $: matchAllocationRemaining = roundAmount(matchLineAmount - matchAllocationTotal);
 
   // DataTable columns for statements
   const statementColumns = [
@@ -353,6 +368,16 @@
     return `${bank}${accountName}${accountNumber}${currency}`;
   }
 
+  function getAccountBalanceBHD(account: any): number {
+    return Number(
+      account?.current_balance_bhd ??
+      account?.CurrentBalanceBHD ??
+      account?.current_balance ??
+      account?.CurrentBalance ??
+      0
+    ) || 0;
+  }
+
   // escapeHtml now imported from centralized utility
 
   // Data loading - independent API calls to prevent one failure from blocking the other
@@ -451,9 +476,16 @@
     matchingLine = line;
     matchingSearch = '';
     matchingCandidateId = '';
+    matchAllocations = [];
     matchingType = line.credit > 0 ? 'CUSTOMER_INVOICE' : 'SUPPLIER_INVOICE';
     showMatchModal = true;
     void loadMatchCandidates(line);
+  }
+
+  function handleMatchingTypeChange() {
+    matchingCandidateId = '';
+    matchingSearch = '';
+    matchAllocations = [];
   }
 
   async function loadMatchCandidates(line: BankStatementLine) {
@@ -485,9 +517,14 @@
     return line.credit > 0 ? line.credit : line.debit;
   }
 
+  function roundAmount(value: number) {
+    return Math.round((Number(value) || 0) * 1000) / 1000;
+  }
+
   function buildMatchCandidateLabel(candidate: any, type: string) {
     if (type === 'CUSTOMER_INVOICE') {
-      return `${candidate.invoice_number || 'Invoice'} • ${candidate.customer_name || 'Customer'} • ${formatBHD(candidate.grand_total_bhd || 0)} BHD`;
+      const outstanding = Number(candidate.outstanding_bhd || candidate.grand_total_bhd || 0);
+      return `${candidate.invoice_number || 'Invoice'} • ${candidate.customer_name || 'Customer'} • ${formatBHD(outstanding)} BHD`;
     }
     if (type === 'SUPPLIER_PAYMENT') {
       return `${candidate.reference || candidate.invoice_number || 'Payment'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.amount_bhd || 0)} BHD`;
@@ -498,8 +535,63 @@
     return `${candidate.invoice_number || 'Invoice'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.total_bhd || 0)} BHD`;
   }
 
+  function getCandidateAmount(candidate: any, type: string) {
+    if (type === 'CUSTOMER_INVOICE') return Number(candidate.outstanding_bhd || candidate.grand_total_bhd || 0);
+    if (type === 'SUPPLIER_PAYMENT') return Number(candidate.amount_bhd || 0);
+    if (type === 'PAYROLL_PAYOUT') return Number(candidate.amount || 0);
+    return Number(candidate.total_bhd || 0);
+  }
+
+  function allocationKey(type: string, entityId: string) {
+    return `${type}:${entityId}`;
+  }
+
+  function isCandidateAllocated(candidate: any) {
+    return matchAllocations.some((allocation) => allocation.key === allocationKey(matchingType, candidate.id));
+  }
+
+  function addMatchAllocation(candidate: any) {
+    if (!matchingLine || !candidate?.id || isCandidateAllocated(candidate)) return;
+    if (matchingType === 'SUPPLIER_PAYMENT' || matchingType === 'PAYROLL_PAYOUT') {
+      toast.warning('Bulk allocation is available for invoices and expenses. Match payouts one at a time.');
+      return;
+    }
+
+    const candidateAmount = roundAmount(getCandidateAmount(candidate, matchingType));
+    const remaining = matchAllocations.length === 0 ? formatMatchAmount(matchingLine) : matchAllocationRemaining;
+    const defaultAmount = roundAmount(Math.max(0, Math.min(candidateAmount || remaining, remaining > 0 ? remaining : candidateAmount)));
+    matchAllocations = [
+      ...matchAllocations,
+      {
+        key: allocationKey(matchingType, candidate.id),
+        allocation_type: matchingType,
+        entity_id: candidate.id,
+        label: buildMatchCandidateLabel(candidate, matchingType),
+        allocated_amount: defaultAmount,
+        max_amount: candidateAmount
+      }
+    ];
+    matchingCandidateId = '';
+  }
+
+  function updateMatchAllocationAmount(key: string, event: Event) {
+    const target = event.currentTarget as HTMLInputElement;
+    const value = roundAmount(Number(target.value) || 0);
+    matchAllocations = matchAllocations.map((allocation) =>
+      allocation.key === key ? { ...allocation, allocated_amount: value } : allocation
+    );
+  }
+
+  function removeMatchAllocation(key: string) {
+    matchAllocations = matchAllocations.filter((allocation) => allocation.key !== key);
+  }
+
+  function normalizeCandidateText(value: any) {
+    return String(value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ').trim();
+  }
+
   function getFilteredMatchCandidates() {
-    const search = matchingSearch.trim().toLowerCase();
+    const search = normalizeCandidateText(matchingSearch);
     const source = matchingType === 'CUSTOMER_INVOICE'
       ? customerInvoiceCandidates
       : matchingType === 'SUPPLIER_PAYMENT'
@@ -508,32 +600,69 @@
           ? payrollPayoutCandidates
         : supplierInvoiceCandidates;
 
+    const lineAmount = matchingLine ? formatMatchAmount(matchingLine) : 0;
     return (source || []).filter((candidate) => {
       if (!search) return true;
       const haystack = [
         candidate.invoice_number,
+        candidate.po_number,
         candidate.customer_name,
         candidate.supplier_name,
         candidate.reference,
         candidate.employee_name,
         candidate.run_number,
-        candidate.payment_reference
-      ].filter(Boolean).join(' ').toLowerCase();
+        candidate.payment_reference,
+        candidate.order_number,
+        getCandidateAmount(candidate, matchingType).toFixed(3)
+      ].filter(Boolean).map(normalizeCandidateText).join(' ');
       return haystack.includes(search);
+    }).sort((a, b) => {
+      const aDiff = Math.abs(getCandidateAmount(a, matchingType) - lineAmount);
+      const bDiff = Math.abs(getCandidateAmount(b, matchingType) - lineAmount);
+      return aDiff - bDiff;
     }).slice(0, 200);
   }
 
   async function handleManualMatch() {
-    if (!matchingLine || !matchingCandidateId) {
+    if (!matchingLine) {
+      toast.warning('Select a transaction to match');
+      return;
+    }
+    if (matchAllocations.length === 0 && !matchingCandidateId) {
       toast.warning('Select a transaction target to match');
       return;
+    }
+    if (matchAllocations.length > 0) {
+      const invalidAllocation = matchAllocations.find((allocation) => !allocation.allocated_amount || allocation.allocated_amount <= 0);
+      if (invalidAllocation) {
+        toast.warning('Every allocation needs a positive amount');
+        return;
+      }
+      if (Math.abs(matchAllocationRemaining) > 0.001) {
+        toast.warning(`Allocation total must equal the bank line amount. Remaining: ${formatBHD(matchAllocationRemaining)} BHD`);
+        return;
+      }
     }
 
     matchLoading = true;
     try {
-      await ManualMatchLine(matchingLine.id, matchingType, matchingCandidateId, 'admin');
-      toast.success('Transaction matched successfully');
+      if (matchAllocations.length > 0) {
+        await CreateSplitAllocation(
+          matchingLine.id,
+          matchAllocations.map((allocation) => ({
+            allocation_type: allocation.allocation_type,
+            entity_id: allocation.entity_id,
+            allocated_amount: roundAmount(allocation.allocated_amount)
+          })),
+          'admin'
+        );
+        toast.success('Transaction allocated successfully');
+      } else {
+        await ManualMatchLine(matchingLine.id, matchingType, matchingCandidateId, 'admin');
+        toast.success('Transaction matched successfully');
+      }
       showMatchModal = false;
+      matchAllocations = [];
       if (selectedStatement) {
         await loadStatementLines(selectedStatement);
       }
@@ -931,8 +1060,9 @@
       <div class="kpi-grid">
         <Card variant="elevated">
           <div class="kpi">
-            <span class="kpi-label">Total Cash Position</span>
+            <span class="kpi-label">Cash Balance</span>
             <span class="kpi-value primary">{formatBHD(totalVisibleCashPosition)} BHD</span>
+            <span class="kpi-note">Latest statement closings</span>
           </div>
         </Card>
         <Card variant="elevated">
@@ -954,6 +1084,13 @@
           </div>
         </Card>
       </div>
+
+      {#if cashPositionNotices.length > 0}
+        <div class="cash-position-notice">
+          <strong>Statement check</strong>
+          <span>{cashPositionNotices.join(' ')}</span>
+        </div>
+      {/if}
 
       <!-- Account Selector and Actions -->
       <div class="toolbar">
@@ -1136,7 +1273,7 @@
           </div>
           <div class="form-row two-col">
             <FormGroup label="Match To">
-              <select bind:value={matchingType} class="form-select">
+              <select bind:value={matchingType} class="form-select" on:change={handleMatchingTypeChange}>
                 {#if matchingLine.credit > 0}
                   <option value="CUSTOMER_INVOICE">Customer Invoice</option>
                 {:else}
@@ -1147,7 +1284,13 @@
               </select>
             </FormGroup>
             <FormGroup label="Search">
-              <Input bind:value={matchingSearch} placeholder="Search number, customer, supplier..." />
+              <input
+                type="search"
+                class="form-input"
+                bind:value={matchingSearch}
+                placeholder="Search number, customer, supplier, amount..."
+                autocomplete="off"
+              />
             </FormGroup>
           </div>
 
@@ -1156,13 +1299,60 @@
               <WabiSpinner size="sm" />
             </div>
           {:else}
+            {#if matchAllocations.length > 0}
+              <div class="allocation-panel">
+                <div class="allocation-head">
+                  <div>
+                    <strong>Allocation plan</strong>
+                    <span>{matchAllocations.length} target{matchAllocations.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div class="allocation-balance" class:balanced={Math.abs(matchAllocationRemaining) <= 0.001} class:over={matchAllocationRemaining < -0.001}>
+                    <span>Total {formatBHD(matchAllocationTotal)} BHD</span>
+                    <span>{matchAllocationRemaining >= 0 ? 'Remaining' : 'Over'} {formatBHD(Math.abs(matchAllocationRemaining))} BHD</span>
+                  </div>
+                </div>
+                <div class="allocation-list">
+                  {#each matchAllocations as allocation (allocation.key)}
+                    <div class="allocation-row">
+                      <div class="allocation-label">
+                        <span>{allocation.label}</span>
+                        <small>Open {formatBHD(allocation.max_amount)} BHD</small>
+                      </div>
+                      <input
+                        type="number"
+                        min="0.001"
+                        step="0.001"
+                        class="allocation-input"
+                        value={allocation.allocated_amount}
+                        on:input={(event) => updateMatchAllocationAmount(allocation.key, event)}
+                      />
+                      <button type="button" class="allocation-remove" on:click={() => removeMatchAllocation(allocation.key)}>
+                        Remove
+                      </button>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
             <div class="candidate-list">
               {#if getFilteredMatchCandidates().length > 0}
                 {#each getFilteredMatchCandidates() as candidate}
-                  <label class="candidate-option">
-                    <input type="radio" bind:group={matchingCandidateId} value={candidate.id} />
-                    <span>{buildMatchCandidateLabel(candidate, matchingType)}</span>
-                  </label>
+                  <div class="candidate-option" class:in-plan={isCandidateAllocated(candidate)}>
+                    <label>
+                      <input type="radio" bind:group={matchingCandidateId} value={candidate.id} disabled={matchAllocations.length > 0} />
+                      <span>{buildMatchCandidateLabel(candidate, matchingType)}</span>
+                    </label>
+                    {#if matchingType === 'CUSTOMER_INVOICE' || matchingType === 'SUPPLIER_INVOICE' || matchingType === 'EXPENSE'}
+                      <button
+                        type="button"
+                        class="candidate-add"
+                        on:click={() => addMatchAllocation(candidate)}
+                        disabled={isCandidateAllocated(candidate)}
+                      >
+                        {isCandidateAllocated(candidate) ? 'Added' : 'Add'}
+                      </button>
+                    {/if}
+                  </div>
                 {/each}
               {:else}
                 <p class="match-hint">No matching records found for this filter.</p>
@@ -1175,8 +1365,13 @@
   {/if}
   <svelte:fragment slot="footer">
     {#if matchingLine && !matchingLine.is_matched}
-      <Button variant="primary" on:click={handleManualMatch} loading={matchLoading} disabled={!matchingCandidateId}>
-        Match Selected
+      <Button
+        variant="primary"
+        on:click={handleManualMatch}
+        loading={matchLoading}
+        disabled={(matchAllocations.length === 0 && !matchingCandidateId) || (matchAllocations.length > 0 && Math.abs(matchAllocationRemaining) > 0.001)}
+      >
+        {matchAllocations.length > 0 ? 'Match Allocations' : 'Match Selected'}
       </Button>
     {/if}
     <Button variant="secondary" on:click={() => showMatchModal = false}>Close</Button>
@@ -1481,6 +1676,29 @@
   .kpi-value.success { color: #10B981; }
   .kpi-value.warning { color: #F59E0B; }
 
+  .kpi-note {
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+
+  .cash-position-notice {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    margin: -4px 0 14px;
+    padding: 10px 12px;
+    border: 1px solid rgba(217, 149, 34, 0.24);
+    border-radius: var(--radius-md);
+    background: rgba(255, 248, 232, 0.88);
+    color: #7a4d0b;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .cash-position-notice strong {
+    white-space: nowrap;
+  }
+
   .toolbar {
     display: flex;
     justify-content: space-between;
@@ -1667,6 +1885,7 @@
   .candidate-option {
     display: flex;
     align-items: flex-start;
+    justify-content: space-between;
     gap: 10px;
     padding: 12px;
     border-radius: 14px;
@@ -1677,15 +1896,136 @@
     color: var(--text-primary);
   }
 
+  .candidate-option.in-plan {
+    border-color: rgba(16, 185, 129, 0.35);
+    background: rgba(240, 253, 244, 0.88);
+  }
+
+  .candidate-option label {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+  }
+
   .candidate-option input {
     margin-top: 2px;
     flex-shrink: 0;
   }
 
+  .candidate-add,
+  .allocation-remove {
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--surface-default);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 9px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .candidate-add:disabled {
+    cursor: default;
+    color: #059669;
+    border-color: rgba(16, 185, 129, 0.35);
+    background: rgba(240, 253, 244, 0.9);
+  }
+
+  .allocation-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-elevated);
+  }
+
+  .allocation-head,
+  .allocation-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .allocation-head strong {
+    display: block;
+    font-size: 13px;
+    color: var(--text-primary);
+  }
+
+  .allocation-head span,
+  .allocation-label small {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .allocation-balance {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    font-family: var(--font-mono);
+  }
+
+  .allocation-balance.balanced span:last-child {
+    color: #059669;
+  }
+
+  .allocation-balance.over span:last-child {
+    color: #DC2626;
+  }
+
+  .allocation-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .allocation-row {
+    grid-template-columns: minmax(0, 1fr) 130px auto;
+    padding: 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.82);
+  }
+
+  .allocation-label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .allocation-label span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+  }
+
+  .allocation-input {
+    width: 130px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--surface-default);
+    font-family: var(--font-mono);
+    text-align: right;
+  }
+
   @media (max-width: 900px) {
     .match-details,
-    .candidate-list {
+    .candidate-list,
+    .allocation-row {
       grid-template-columns: 1fr;
+    }
+
+    .allocation-balance {
+      align-items: flex-start;
     }
   }
 

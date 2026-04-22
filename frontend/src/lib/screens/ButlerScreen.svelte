@@ -139,6 +139,20 @@
         return `<div class="table-wrap"><table style="width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden;"><thead><tr>${headerHtml.replace(/<th>/g, '<th style="padding:8px 10px;border:1px solid var(--border);text-align:left;vertical-align:top;word-break:break-word;background:var(--surface-elevated);color:var(--text-primary);font-weight:600;">')}</tr></thead><tbody>${rowsHtml.replace(/<td>/g, '<td style="padding:8px 10px;border:1px solid var(--border);text-align:left;vertical-align:top;word-break:break-word;">')}</tbody></table></div>`;
     }
 
+    function formatInlineButlerMarkdown(line) {
+        let safe = escapeHtml(line);
+        safe = safe.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+        safe = safe.replace(/`([^`]+)`/g, "<code>$1</code>");
+        return safe;
+    }
+
+    function stripDecorativeMarkdown(line) {
+        return String(line || "")
+            .replace(/^#{1,6}\s+/, "")
+            .replace(/^[-*_]{3,}\s*$/, "")
+            .trim();
+    }
+
     function formatButlerMessage(text) {
         const input = String(text || "");
         if (!input) return "";
@@ -163,15 +177,42 @@
                 continue;
             }
 
-            if (!line.trim()) {
+            const trimmed = line.trim();
+
+            if (!trimmed) {
                 output.push("<br/>");
                 i += 1;
                 continue;
             }
 
-            let safe = escapeHtml(line);
-            safe = safe.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-            output.push(`<span>${safe}</span>`);
+            if (/^[-*_]{3,}\s*$/.test(trimmed)) {
+                i += 1;
+                continue;
+            }
+
+            const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+            if (headingMatch) {
+                const text = stripDecorativeMarkdown(headingMatch[2]);
+                output.push(`<div class="butler-section-title">${formatInlineButlerMarkdown(text)}</div>`);
+                i += 1;
+                continue;
+            }
+
+            const bulletMatch = trimmed.match(/^[-*•]\s+(.+)$/);
+            if (bulletMatch) {
+                output.push(`<div class="butler-list-item"><span></span><p>${formatInlineButlerMarkdown(stripDecorativeMarkdown(bulletMatch[1]))}</p></div>`);
+                i += 1;
+                continue;
+            }
+
+            const numberedMatch = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
+            if (numberedMatch) {
+                output.push(`<div class="butler-list-item numbered"><span>${escapeHtml(numberedMatch[1])}</span><p>${formatInlineButlerMarkdown(stripDecorativeMarkdown(numberedMatch[2]))}</p></div>`);
+                i += 1;
+                continue;
+            }
+
+            output.push(`<span>${formatInlineButlerMarkdown(stripDecorativeMarkdown(line))}</span>`);
             i += 1;
         }
 
@@ -2169,6 +2210,18 @@
         const type = normalizeActionType(action?.type);
         const target = String(resolveActionTarget(action?.target || "")).toLowerCase();
         const workflowKey = getActionWorkflowKey(action);
+        if (type === "clarify") {
+            const data = getActionDataObject(action);
+            const prompt = String(data.prompt || data.command || action?.prompt || action?.label || "").trim();
+            if (!prompt) {
+                addMessage("butler", "I need a prompt attached to this command choice. Please ask Butler to regenerate the options.");
+                return;
+            }
+            userInput = prompt;
+            send();
+            return;
+        }
+
         const actionState = getActionRuntimeState(action);
         if (actionState?.status === "needs_input" || actionState?.status === "invalid_payload") {
             addMessage(
@@ -2326,10 +2379,12 @@
                         {#if m.actions && m.actions.length > 0}
                             <div class="actions-row">
                                 {#each m.actions as action}
+                                    {@const actionType = normalizeActionType(action?.type || "")}
                                     {@const state = getActionRuntimeState(action)}
                                     {@const actionArmed = isActionArmed(action)}
                                     <button
                                         class="action-chip"
+                                        class:chip-clarify={actionType === "clarify"}
                                         class:chip-disabled={state.status === "needs_input" || state.status === "invalid_payload"}
                                         class:chip-warning={state.status === "needs_approval"}
                                         class:chip-ready={state.status === "ready_for_execution"}
@@ -2338,16 +2393,18 @@
                                         title={state.reason || action.label || ""}
                                         on:click={() => handleAction(action)}
                                     >
-                                        {#if action.type === "navigate"}
+                                        {#if actionType === "navigate"}
                                             <span class="chip-icon">&rarr;</span>
-                                        {:else if action.type === "analyze"}
+                                        {:else if actionType === "clarify"}
+                                            <span class="chip-icon">&rarr;</span>
+                                        {:else if actionType === "analyze"}
                                             <span class="chip-icon">&bull;</span>
                                         {:else}
                                         <span class="chip-icon">+</span>
                                         {/if}
                                         <span>{actionLabelOrFallback(action, typeof action.data === "string" ? action.data : (action.target || "Action"))}</span>
                                         <span class="chip-state">
-                                            {actionArmed ? "Confirm" : actionChipStatusLabel(state.status)}
+                                            {actionArmed ? "Confirm" : actionType === "clarify" ? "Choose" : actionChipStatusLabel(state.status)}
                                         </span>
                                     </button>
                                 {/each}
@@ -2569,6 +2626,56 @@
         overflow-wrap: anywhere;
     }
 
+    .bubble :global(.butler-section-title) {
+        margin: 8px 0 4px;
+        color: var(--text-primary);
+        font-size: 13px;
+        font-weight: 700;
+    }
+
+    .bubble :global(.butler-section-title:first-child) {
+        margin-top: 0;
+    }
+
+    .bubble :global(.butler-list-item) {
+        display: grid;
+        grid-template-columns: 14px minmax(0, 1fr);
+        gap: 6px;
+        align-items: start;
+        margin: 3px 0;
+    }
+
+    .bubble :global(.butler-list-item > span) {
+        width: 5px;
+        height: 5px;
+        margin-top: 8px;
+        border-radius: 50%;
+        background: var(--text-secondary);
+    }
+
+    .bubble :global(.butler-list-item.numbered > span) {
+        width: auto;
+        height: auto;
+        margin-top: 0;
+        border-radius: 0;
+        background: transparent;
+        color: var(--text-secondary);
+        font-size: 11px;
+        font-weight: 700;
+    }
+
+    .bubble :global(.butler-list-item p) {
+        margin: 0;
+    }
+
+    .bubble :global(code) {
+        padding: 1px 4px;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.06);
+        font-family: var(--font-mono, monospace);
+        font-size: 12px;
+    }
+
     .table-wrap {
         margin: 8px 0;
         width: 100%;
@@ -2652,6 +2759,18 @@
         background: var(--carbon);
         color: var(--canvas);
         border-color: var(--carbon);
+    }
+
+    .chip-clarify {
+        background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+        border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+        color: var(--text-primary);
+    }
+
+    .chip-clarify .chip-state {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--canvas);
     }
 
     .chip-disabled {

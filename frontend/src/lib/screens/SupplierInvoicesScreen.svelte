@@ -46,7 +46,8 @@
   import { toast } from '$lib/stores/toasts';
   import { permissions } from '$lib/stores/authContext';
 
-  $: canView = $permissions.includes('*') || $permissions.includes('po:view') || $permissions.includes('po:*');
+  $: permissionList = Array.isArray($permissions) ? $permissions : [];
+  $: canView = permissionList.includes('*') || permissionList.includes('po:view') || permissionList.includes('po:*');
   const dispatch = createEventDispatcher();
 
   // Props
@@ -604,6 +605,10 @@
     showCreateModal = true;
   }
 
+  function handleOpenCreateSupplierInvoice() {
+    openCreateModal();
+  }
+
   // Add line item to form
   function addLineItem() {
     formItems = [...formItems, { description: '', quantity: 1, unit_price: 0, total_price: 0 }];
@@ -632,7 +637,7 @@
       // Set currency based on supplier country if available
       if (supplier.country === 'Germany' || supplier.country === 'DE') {
         formData.currency = 'EUR';
-        formData.exchange_rate = 0.44;
+        formData.exchange_rate = 0.45;
       } else if (supplier.country === 'United Kingdom' || supplier.country === 'UK' || supplier.country === 'GB') {
         formData.currency = 'GBP';
         formData.exchange_rate = 0.52;
@@ -915,21 +920,13 @@
   // Auto-calculate totals
   $: formData.total_foreign = formData.subtotal_foreign + formData.vat_foreign;
 
-  // Event handler for opening create modal from parent hub
-  function handleOpenCreateSupplierInvoice() {
-    openCreateModal();
-  }
-
   onMount(() => {
     if (!canView) return;
-    loadInvoices();
-
-    // Listen for create supplier invoice events from OperationsHub header button
     window.addEventListener('openCreateSupplierInvoice', handleOpenCreateSupplierInvoice);
+    loadInvoices();
   });
 
   onDestroy(() => {
-    // Clean up event listener
     window.removeEventListener('openCreateSupplierInvoice', handleOpenCreateSupplierInvoice);
   });
 </script>
@@ -940,11 +937,11 @@
     <div class="header-embedded">
       <h2>Supplier Invoices</h2>
       <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <Button variant="primary" size="sm" on:click={openCreateModal}>
+          + New Supplier Invoice
+        </Button>
         <Button variant="secondary" size="sm" on:click={openBankReconciliation}>
           Open Bank Recon
-        </Button>
-        <Button variant="primary" size="sm" on:click={openCreateModal}>
-          + New Invoice
         </Button>
       </div>
     </div>
@@ -965,13 +962,13 @@
   </div>
 {:else}
   <!-- Full page mode -->
-  <PageLayout title="Supplier Invoices" subtitle="3-Way Matching & Payment Tracking">
+  <PageLayout title="Supplier Invoices" subtitle="OCR Capture & Payment Tracking">
     <svelte:fragment slot="header-actions">
-      <Button variant="secondary" on:click={openBankReconciliation}>
-        Open Bank Recon
-      </Button>
       <Button variant="primary" on:click={openCreateModal}>
         + New Supplier Invoice
+      </Button>
+      <Button variant="secondary" on:click={openBankReconciliation}>
+        Open Bank Recon
       </Button>
     </svelte:fragment>
 

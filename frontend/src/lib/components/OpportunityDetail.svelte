@@ -3,6 +3,7 @@
     import {
         AddOpportunityComment,
         AddRFQComment,
+        DeleteOpportunityComment,
         GetCurrentUserRole,
         GetOpportunityComments,
         GetOpportunityLineItems,
@@ -10,13 +11,12 @@
         GetRFQ,
         GetRFQComments,
         GetRFQTraceability,
-        UpdateOpportunityDetails,
         UpdateOpportunityStage,
-        UpdateRFQNotes,
         UpdateRFQStage,
     } from "../../../wailsjs/go/main/App";
     import { devLog } from "$lib/utils/devLog";
     import { toast } from "$lib/stores/toasts";
+    import { permissions } from "$lib/stores/authContext";
 
     interface LineItem {
         description?: string;
@@ -25,6 +25,7 @@
         total_price?: number;
         part_number?: string;
         unit?: string;
+        currency?: string;
     }
 
     type HistoryEntry = {
@@ -64,8 +65,10 @@
         "Closed (Lost)",
     ];
 
-    const pipelineStageOptions = ["New", "Qualified", "Proposal", "Quoted", "Won", "Lost", "On Hold"];
-    const managementRoles = new Set(["admin", "manager", "management"]);
+    const pipelineStageOptions = ["Quoted", "Won", "Lost"];
+    const deprecatedPipelineStageLabels = new Set(["New", "Qualified", "Proposal", "On Hold"]);
+    const managementRoles = new Set(["admin", "administrator", "manager", "management", "developer"]);
+    const adminRoles = new Set(["admin", "administrator", "developer"]);
 
     let activeTab: "details" | "purchase-orders" = "details";
     let purchaseOrders: PurchaseOrder[] = [];
@@ -76,14 +79,12 @@
     let comments: any[] = [];
     let newComment = "";
     let addingComment = false;
+    let deletingCommentId = "";
     let updatingStage = false;
-    let savingNotes = false;
     let currentUserRole = "";
     let lastLoadedOpportunityKey = "";
     let lastLoadedTabKey = "";
     let offerLineItems: any[] = [];
-    let editableNotes = "";
-    let editableManagementNotes = "";
 
     function parseProductDetails(productDetails?: string): LineItem[] {
         if (!productDetails) return [];
@@ -102,15 +103,50 @@
         : parseProductDetails(opportunity?.product_details);
     $: isPipelineOpportunity = opportunity?._source === "pipeline" || typeof opportunity?.id === "string";
     $: currentStageOptions = isPipelineOpportunity ? pipelineStageOptions : rfqStageOptions;
+    $: currentStageValue = isPipelineOpportunity && deprecatedPipelineStageLabels.has(opportunity?.stage || opportunity?.status)
+        ? "Pipeline"
+        : (opportunity?.stage || opportunity?.status || currentStageOptions[0]);
     $: canViewManagementComments = managementRoles.has((currentUserRole || "").toLowerCase());
-    $: notesDirty = editableNotes !== (opportunity?.notes || opportunity?.comment || "");
-    $: managementNotesDirty = editableManagementNotes !== (opportunity?.owner_notes || "");
+    $: canDeleteManagementComments = adminRoles.has((currentUserRole || "").toLowerCase());
+    $: activePermissions = Array.isArray($permissions) ? $permissions : [];
+    function hasPermission(permission: string): boolean {
+        const permissionList = Array.isArray(activePermissions) ? activePermissions : [];
+        if (permissionList.includes("*") || permissionList.includes(permission)) return true;
+        const [resource] = permission.split(":");
+        return permissionList.includes(`${resource}:*`);
+    }
+    $: canEditOffers = hasPermission("offers:edit");
+    $: canCreateOffers = hasPermission("offers:create");
 
     const formatter = new Intl.NumberFormat("en-BH", {
         style: "currency",
         currency: "BHD",
         maximumFractionDigits: 0,
     });
+
+    function formatLineMoney(item: LineItem, amount: number): string {
+        const currency = isCurrencyCode(item.currency) ? String(item.currency).trim().toUpperCase() : "BHD";
+        return new Intl.NumberFormat("en-BH", {
+            style: "currency",
+            currency,
+            maximumFractionDigits: 0,
+        }).format(amount || 0);
+    }
+
+    function isCurrencyCode(value?: string): boolean {
+        return /^(BHD|USD|EUR|GBP|SAR|AED|CHF|KWD|OMR|QAR)$/i.test(String(value || "").trim());
+    }
+
+    function normalizeLineUnit(value?: string): string {
+        const unit = String(value || "").trim();
+        return isCurrencyCode(unit) ? "" : unit;
+    }
+
+    function formatQuantity(item: LineItem): string {
+        const quantity = item.quantity || 1;
+        const unit = normalizeLineUnit(item.unit);
+        return unit ? `${quantity} ${unit}` : `${quantity}`;
+    }
 
     async function loadUserRole() {
         try {
@@ -176,7 +212,8 @@
                     unit_price: item.unit_price_bhd || item.unit_price || item.total_price || 0,
                     total_price: item.total_price || ((item.quantity || 1) * (item.unit_price_bhd || item.unit_price || 0)),
                     part_number: item.model || item.product_code || "",
-                    unit: item.currency || "",
+                    unit: normalizeLineUnit(item.unit || item.unit_of_measure || ""),
+                    currency: item.currency || "",
                     specification: item.specification || item.detailed_description || "",
                 }));
         } catch (err) {
@@ -190,16 +227,42 @@
         if (!opportunity?.id) return;
 
         try {
+            let loadedComments: any[] = [];
             if (isPipelineOpportunity) {
                 if (!canViewManagementComments) return;
-                comments = (await GetOpportunityComments(String(opportunity.id))) || [];
+                loadedComments = (await GetOpportunityComments(String(opportunity.id))) || [];
+                comments = mergeLegacyNotesIntoComments(loadedComments);
                 return;
             }
-            comments = (await GetRFQComments(Number(opportunity.id))) || [];
+            loadedComments = (await GetRFQComments(Number(opportunity.id))) || [];
+            comments = mergeLegacyNotesIntoComments(loadedComments);
         } catch (err) {
             devLog.error("Failed to load comments:", err);
             comments = [];
         }
+    }
+
+    function mergeLegacyNotesIntoComments(loadedComments: any[]) {
+        const merged = [...loadedComments];
+        const legacyEntries = [
+            opportunity?.notes || opportunity?.comment,
+        ]
+            .map((value) => String(value || "").trim())
+            .filter(Boolean);
+
+        for (const legacyComment of legacyEntries) {
+            const exists = merged.some((comment) => String(comment.comment || comment.content || "").trim() === legacyComment);
+            if (!exists) {
+                merged.unshift({
+                    id: `legacy-${merged.length}`,
+                    comment: legacyComment,
+                    created_by: "Legacy note",
+                    created_at: opportunity?.updated_at || opportunity?.created_at || null,
+                });
+            }
+        }
+
+        return merged;
     }
 
     async function handleAddComment() {
@@ -223,6 +286,28 @@
         }
     }
 
+    function canDeleteComment(comment: any) {
+        const id = String(comment?.id || "");
+        return isPipelineOpportunity && canDeleteManagementComments && id && !id.startsWith("legacy-");
+    }
+
+    async function handleDeleteComment(comment: any) {
+        const commentId = String(comment?.id || "");
+        if (!canDeleteComment(comment)) return;
+
+        deletingCommentId = commentId;
+        try {
+            await DeleteOpportunityComment(commentId);
+            await loadComments();
+            toast.success("Comment deleted");
+        } catch (err) {
+            devLog.error("Failed to delete comment:", err);
+            toast.danger(`Failed to delete comment: ${err?.message || err}`);
+        } finally {
+            deletingCommentId = "";
+        }
+    }
+
     async function handleStageChange(event: Event) {
         const newStage = (event.target as HTMLSelectElement).value;
         if (!opportunity?.id || !newStage) return;
@@ -242,36 +327,6 @@
             toast.danger("Failed to update stage");
         } finally {
             updatingStage = false;
-        }
-    }
-
-    async function handleSaveNotes() {
-        if (!opportunity?.id) return;
-
-        savingNotes = true;
-        try {
-            if (isPipelineOpportunity) {
-                await UpdateOpportunityDetails(String(opportunity.id), editableNotes, editableManagementNotes);
-                opportunity = {
-                    ...opportunity,
-                    comment: editableNotes,
-                    owner_notes: editableManagementNotes,
-                };
-            } else {
-                const updated = await UpdateRFQNotes(Number(opportunity.id), editableNotes);
-                opportunity = {
-                    ...opportunity,
-                    ...updated,
-                    notes: updated?.notes ?? editableNotes,
-                };
-            }
-            dispatch("updated");
-            toast.success("Notes updated");
-        } catch (err) {
-            devLog.error("Failed to update notes:", err);
-            toast.danger("Failed to update notes");
-        } finally {
-            savingNotes = false;
         }
     }
 
@@ -322,8 +377,6 @@
         lastLoadedTabKey = "";
         activeTab = "details";
         purchaseOrders = [];
-        editableNotes = opportunity?.notes || opportunity?.comment || "";
-        editableManagementNotes = opportunity?.owner_notes || "";
         void loadComments();
         void loadOpportunityLineItems();
         void refreshOpportunityData();
@@ -357,10 +410,13 @@
                     <span class="reference-pill">{opportunity.folder_number || opportunity.rfq_number || "Opportunity"}</span>
                     <select
                         class="stage-select"
-                        value={opportunity.stage || opportunity.status || currentStageOptions[0]}
+                        value={currentStageValue}
                         on:change={handleStageChange}
-                        disabled={updatingStage}
+                        disabled={updatingStage || !canEditOffers}
                     >
+                        {#if currentStageValue === "Pipeline"}
+                            <option value="Pipeline" disabled>Pipeline</option>
+                        {/if}
                         {#each currentStageOptions as stage}
                             <option value={stage}>{stage}</option>
                         {/each}
@@ -370,9 +426,11 @@
                 <p class="subtitle">{opportunity.client || opportunity.customer || "Unknown Customer"}</p>
             </div>
             <div class="header-actions">
-                <button class="comment-btn" on:click={handleCreateCosting}>
-                    Create Costing Sheet
-                </button>
+                {#if canCreateOffers}
+                    <button class="comment-btn" on:click={handleCreateCosting}>
+                        Create Costing Sheet
+                    </button>
+                {/if}
                 <div class="value">{formatter.format(opportunity.value || opportunity.revenue_bhd || 0)}</div>
             </div>
         </header>
@@ -386,46 +444,62 @@
             {/each}
         </section>
 
-        <section class="notes-grid">
-            <div class="note-card">
-                <div class="note-card-header">
-                    <p class="mono">Notes</p>
-                    {#if notesDirty}
-                        <span class="note-status">Unsaved</span>
+        <section class="comments-section">
+            <div class="comments-header">
+                <div>
+                    <p class="mono">Comments</p>
+                    {#if isPipelineOpportunity}
+                        <p class="comments-hint">Shared comment thread with timestamps.</p>
                     {/if}
                 </div>
-                <textarea
-                    class="note-editor"
-                    bind:value={editableNotes}
-                    rows="4"
-                    placeholder="Add notes for this opportunity..."
-                />
             </div>
-            {#if isPipelineOpportunity && canViewManagementComments}
-                <div class="note-card">
-                    <div class="note-card-header">
-                        <p class="mono">Management Notes</p>
-                        {#if managementNotesDirty}
-                            <span class="note-status">Unsaved</span>
-                        {/if}
-                    </div>
-                    <textarea
-                        class="note-editor"
-                        bind:value={editableManagementNotes}
-                        rows="4"
-                        placeholder="Add internal management notes..."
-                    />
+
+            {#if isPipelineOpportunity && !canViewManagementComments}
+                <p class="muted">Comments are visible to authorized roles.</p>
+            {:else}
+                <div class="comment-list">
+                    {#if comments.length === 0}
+                        <p class="muted">No comments yet.</p>
+                    {:else}
+                        {#each comments as comment}
+                            <div class="comment-item">
+                                <div class="comment-header">
+                                    <span class="comment-author">{comment.created_by || "User"}</span>
+                                    <div class="comment-meta">
+                                        <span class="comment-time">{formatDateTime(comment.created_at)}</span>
+                                        {#if canDeleteComment(comment)}
+                                            <button
+                                                class="comment-delete"
+                                                on:click={() => handleDeleteComment(comment)}
+                                                disabled={deletingCommentId === String(comment.id)}
+                                                title="Delete comment"
+                                            >
+                                                {deletingCommentId === String(comment.id) ? "Deleting..." : "Delete"}
+                                            </button>
+                                        {/if}
+                                    </div>
+                                </div>
+                                <p class="comment-text">{comment.comment || comment.content}</p>
+                            </div>
+                        {/each}
+                    {/if}
                 </div>
+
+                {#if (!isPipelineOpportunity && canEditOffers) || (isPipelineOpportunity && canViewManagementComments)}
+                    <div class="comment-input">
+                        <textarea
+                            bind:value={newComment}
+                            placeholder="Add a comment..."
+                            class="comment-textarea"
+                            rows="3"
+                        />
+                        <button class="comment-btn" on:click={handleAddComment} disabled={!newComment.trim() || addingComment}>
+                            {addingComment ? "Posting..." : "Post"}
+                        </button>
+                    </div>
+                {/if}
             {/if}
         </section>
-
-        {#if notesDirty || managementNotesDirty}
-            <div class="note-actions">
-                <button class="comment-btn" on:click={handleSaveNotes} disabled={savingNotes}>
-                    {savingNotes ? "Saving..." : "Save Notes"}
-                </button>
-            </div>
-        {/if}
 
         <div class="tabs-nav">
             <button class="tab-btn" class:active={activeTab === "details"} on:click={() => (activeTab = "details")}>
@@ -460,9 +534,9 @@
                                         <span class="part-number">{item.part_number}</span>
                                     {/if}
                                 </span>
-                                <span class="item-col-qty">{item.quantity || 1}{item.unit ? ` ${item.unit}` : ""}</span>
-                                <span class="item-col-price">{formatter.format(item.unit_price || 0)}</span>
-                                <span class="item-col-total">{formatter.format(item.total_price || 0)}</span>
+                                <span class="item-col-qty">{formatQuantity(item)}</span>
+                                <span class="item-col-price">{formatLineMoney(item, item.unit_price || 0)}</span>
+                                <span class="item-col-total">{formatLineMoney(item, item.total_price || 0)}</span>
                             </div>
                         {/each}
                     </div>
@@ -523,48 +597,6 @@
             </section>
         {/if}
 
-        <section class="comments-section">
-            <div class="comments-header">
-                <div>
-                    <p class="mono">Comments</p>
-                    {#if isPipelineOpportunity}
-                        <p class="comments-hint">Shared management thread with timestamps.</p>
-                    {/if}
-                </div>
-            </div>
-
-            {#if isPipelineOpportunity && !canViewManagementComments}
-                <p class="muted">Management comments are visible to manager and admin roles.</p>
-            {:else}
-                <div class="comment-input">
-                    <textarea
-                        bind:value={newComment}
-                        placeholder={isPipelineOpportunity ? "Add a management comment..." : "Add a comment..."}
-                        class="comment-textarea"
-                        rows="3"
-                    />
-                    <button class="comment-btn" on:click={handleAddComment} disabled={!newComment.trim() || addingComment}>
-                        {addingComment ? "Posting..." : "Post"}
-                    </button>
-                </div>
-
-                <div class="comment-list">
-                    {#if comments.length === 0}
-                        <p class="muted">No comments yet.</p>
-                    {:else}
-                        {#each comments as comment}
-                            <div class="comment-item">
-                                <div class="comment-header">
-                                    <span class="comment-author">{comment.created_by || "User"}</span>
-                                    <span class="comment-time">{formatDateTime(comment.created_at)}</span>
-                                </div>
-                                <p class="comment-text">{comment.comment || comment.content}</p>
-                            </div>
-                        {/each}
-                    {/if}
-                </div>
-            {/if}
-        </section>
     {:else}
         <p class="muted">Select an opportunity to view details.</p>
     {/if}
@@ -666,8 +698,7 @@
         color: var(--text-muted);
     }
 
-    .info-grid,
-    .notes-grid {
+    .info-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
         gap: 0.85rem;
@@ -675,42 +706,12 @@
     }
 
     .info-card,
-    .note-card,
     .po-card,
     .comment-item {
         padding: 1rem;
         border-radius: 16px;
         background: rgba(248, 250, 252, 0.9);
         border: 1px solid rgba(15, 23, 42, 0.06);
-    }
-
-    .note-card-header,
-    .note-actions {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.75rem;
-    }
-
-    .note-status {
-        font-size: 0.72rem;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--text-muted);
-    }
-
-    .note-editor {
-        width: 100%;
-        min-height: 110px;
-        resize: vertical;
-        border: 1px solid rgba(15, 23, 42, 0.12);
-        border-radius: 14px;
-        padding: 0.85rem 0.95rem;
-        font: inherit;
-        line-height: 1.55;
-        color: var(--text-primary);
-        background: rgba(255, 255, 255, 0.92);
-        box-sizing: border-box;
     }
 
     .tabs-nav {
@@ -817,7 +818,7 @@
 
     .comment-input {
         align-items: stretch;
-        margin-bottom: 0.9rem;
+        margin-top: 0.9rem;
     }
 
     .comment-textarea {
@@ -836,6 +837,30 @@
 
     .comment-author {
         font-weight: 700;
+    }
+
+    .comment-meta {
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+
+    .comment-delete {
+        border: 1px solid rgba(220, 38, 38, 0.18);
+        border-radius: 999px;
+        background: rgba(220, 38, 38, 0.08);
+        color: #b91c1c;
+        cursor: pointer;
+        font-size: 0.72rem;
+        font-weight: 700;
+        padding: 0.32rem 0.6rem;
+    }
+
+    .comment-delete:disabled {
+        cursor: wait;
+        opacity: 0.65;
     }
 
     .comment-text {

@@ -24,7 +24,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -104,8 +103,8 @@ func (a *App) GenerateButlerReport(reportType string, query string) (string, err
 	context := a.buildIntentContext(intent)
 
 	// 3. Call Mistral for structured analysis
-	contextJSON, _ := json.MarshalIndent(context, "", "  ")
-	reportPrompt := buildReportPrompt(reportType, query, string(contextJSON))
+	contextJSON := marshalContextForPrompt(context, butlerMaxReportContextChars)
+	reportPrompt := buildReportPrompt(reportType, query, contextJSON)
 
 	aiAnalysis, err := callMistral(mistralModelLarge, reportPrompt, query)
 	if err != nil {

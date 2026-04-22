@@ -89,15 +89,11 @@ func (a *App) normalizePurchaseOrder(po *PurchaseOrder) error {
 	}
 	po.SupplierName = supplier.SupplierName
 
-	if strings.TrimSpace(po.Currency) == "" {
+	po.Currency = strings.ToUpper(strings.TrimSpace(po.Currency))
+	if po.Currency == "" {
 		po.Currency = "BHD"
 	}
-	if po.ExchangeRate <= 0 {
-		po.ExchangeRate = 1
-	}
-	if po.Currency == "BHD" {
-		po.ExchangeRate = 1
-	}
+	po.ExchangeRate = normalizeExchangeRateToBHD(po.Currency, po.ExchangeRate)
 	if strings.TrimSpace(po.Division) == "" {
 		po.Division = a.resolveOrderDivision(po.OrderID)
 	} else {

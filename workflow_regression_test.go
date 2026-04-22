@@ -78,6 +78,71 @@ func TestGetOpportunityLineItems_FallsBackToProductDetails(t *testing.T) {
 	require.Equal(t, 1081.516, items[0].TotalPrice)
 }
 
+func TestNormalizeOpportunityLineItems_DoesNotStoreCurrencyAsUnit(t *testing.T) {
+	rawItems := []interface{}{
+		map[string]interface{}{
+			"description": "Bray 12 inch",
+			"quantity":    8,
+			"unit":        "EUR",
+			"unit_price":  2737,
+			"total_price": 21895,
+		},
+	}
+
+	normalized, count := normalizeOpportunityLineItemsJSON(rawItems)
+	require.Equal(t, 1, count)
+
+	var rows []map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(normalized), &rows))
+	require.Len(t, rows, 1)
+	require.NotContains(t, rows[0], "unit")
+	require.Equal(t, "EUR", rows[0]["currency"])
+	require.Equal(t, float64(8), rows[0]["quantity"])
+}
+
+func TestNormalizeOpportunityLineItems_ParsesCurrencyPrefixedMoney(t *testing.T) {
+	rawItems := []interface{}{
+		map[string]interface{}{
+			"description": "Bray 20 inch",
+			"quantity":    "5",
+			"unit_price":  "EUR 3,176.00",
+			"total_price": "EUR 15,880.00",
+		},
+	}
+
+	normalized, count := normalizeOpportunityLineItemsJSON(rawItems)
+	require.Equal(t, 1, count)
+
+	var rows []map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(normalized), &rows))
+	require.Len(t, rows, 1)
+	require.Equal(t, float64(3176), rows[0]["unit_price"])
+	require.Equal(t, float64(15880), rows[0]["total_price"])
+}
+
+func TestNormalizeOpportunityLineItems_RejectsPriceOnlyRows(t *testing.T) {
+	rawItems := []interface{}{
+		map[string]interface{}{
+			"unit_price":  2737,
+			"total_price": 21895,
+		},
+	}
+
+	normalized, count := normalizeOpportunityLineItemsJSON(rawItems)
+	require.Equal(t, 0, count)
+	require.Empty(t, normalized)
+}
+
+func TestGroundedCapabilitiesFastPath_IncludesDatabaseCoverage(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	reply, handled := app.tryGroundedCapabilitiesFastPath(Intent{}, "hey buddy! Can you tell us what you can do?", true)
+	require.True(t, handled)
+	require.Contains(t, reply, "Database tables indexed for guarded querying")
+	require.Contains(t, reply, "controlled ERP access paths")
+}
+
 func TestBuildFullContext_IncludesCrossModuleDatabaseAndWorkAccess(t *testing.T) {
 	app := setupTestApp(t)
 	migrateWorkflowRegressionTables(t, app)
@@ -206,6 +271,11 @@ func TestBuildFullContext_IncludesCrossModuleDatabaseAndWorkAccess(t *testing.T)
 
 	databaseAccess, ok := ctx["database_access"].(map[string]interface{})
 	require.True(t, ok)
+
+	databaseCatalog, ok := ctx["database_catalog"].(map[string]interface{})
+	require.True(t, ok)
+	require.NotZero(t, databaseCatalog["total_tables"])
+	require.NotEmpty(t, databaseCatalog["tables"])
 
 	notesLedger, ok := databaseAccess["notes_ledger"].(map[string]interface{})
 	require.True(t, ok)
@@ -590,6 +660,16 @@ func TestRepairImportedCommercialDocuments_RemovesSyntheticRowsAndRenamesImporte
 			UnitPrice:   780,
 			TotalPrice:  780,
 		},
+		{
+			Base:        Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+			OfferID:     offer.ID,
+			LineNumber:  3,
+			Description: "Line Item 3 -",
+			Equipment:   "Line Item 3",
+			Quantity:    1,
+			UnitPrice:   1,
+			TotalPrice:  1,
+		},
 	}).Error)
 
 	order := Order{
@@ -627,7 +707,27 @@ func TestRepairImportedCommercialDocuments_RemovesSyntheticRowsAndRenamesImporte
 			UnitPrice:   780,
 			TotalPrice:  780,
 		},
+		{
+			Base:        Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+			OrderID:     order.ID,
+			LineNumber:  3,
+			Description: "Line Item 3 -",
+			Equipment:   "Line Item 3",
+			Quantity:    1,
+			UnitPrice:   1,
+			TotalPrice:  1,
+		},
 	}).Error)
+
+	opportunity := Opportunity{
+		Base:           Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		FolderNumber:   "2026-64",
+		CustomerName:   offer.CustomerName,
+		Year:           2026,
+		Source:         "2026_onedrive",
+		ProductDetails: `[{"description":"iTHERM ModuLine TM411","quantity":2,"unit_price":390,"total_price":780,"part_number":"TM411-4EVR5/101"},{"description":"Line Item 2 -","quantity":1,"unit_price":1,"total_price":1}]`,
+	}
+	require.NoError(t, app.db.Create(&opportunity).Error)
 
 	require.NoError(t, repairImportedCommercialDocuments(app.db))
 
@@ -643,6 +743,11 @@ func TestRepairImportedCommercialDocuments_RemovesSyntheticRowsAndRenamesImporte
 	require.Len(t, repairedOrder.Items, 1)
 	require.Equal(t, 780.0, repairedOrder.TotalValueBHD)
 	require.Equal(t, 780.0, repairedOrder.GrandTotalBHD)
+
+	var repairedOpportunity Opportunity
+	require.NoError(t, app.db.First(&repairedOpportunity, "id = ?", opportunity.ID).Error)
+	require.Contains(t, repairedOpportunity.ProductDetails, "iTHERM ModuLine TM411")
+	require.NotContains(t, repairedOpportunity.ProductDetails, "Line Item")
 }
 
 func TestUpdateOfferFull_PersistsMetadataAndClearsHeaderFields(t *testing.T) {

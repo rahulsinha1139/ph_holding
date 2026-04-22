@@ -91,6 +91,7 @@
   }
 
   function handleBackdropKeydown(event: KeyboardEvent) {
+    if (event.currentTarget !== event.target) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       close();

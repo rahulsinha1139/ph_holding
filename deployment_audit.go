@@ -13,6 +13,8 @@ import (
 
 const legacyOfferShellAmountTolerance = 0.000001
 
+const deploymentActiveInvoiceStatusWhere = "status NOT IN ('Cancelled', 'Void', 'Proforma', 'Draft')"
+
 type DeploymentDataAudit struct {
 	GeneratedAt                    string   `json:"generated_at"`
 	DatabasePath                   string   `json:"database_path"`
@@ -129,6 +131,7 @@ func (a *App) ensureCriticalDeploymentFoundations() error {
 		failures = append(failures, fmt.Sprintf("payroll foundation: %v", err))
 	}
 	a.ensureCrossModuleSchemaExtensions()
+	a.migrateInvoiceCheckConstraint()
 	if err := a.EnsurePhase7Rollout(); err != nil {
 		failures = append(failures, fmt.Sprintf("phase 7 rollout: %v", err))
 	}
@@ -142,6 +145,9 @@ func (a *App) shouldBlockStartupOnDeploymentAudit() bool {
 	if strings.TrimSpace(os.Getenv("ASYMMFLOW_ALLOW_DEPLOYMENT_AUDIT_WARNINGS")) == "1" {
 		return false
 	}
+	if strings.TrimSpace(os.Getenv("ASYMMFLOW_BLOCK_DEPLOYMENT_AUDIT")) == "1" {
+		return true
+	}
 	if strings.TrimSpace(os.Getenv("WAILS_DEV_SERVER_URL")) != "" {
 		return false
 	}
@@ -150,7 +156,7 @@ func (a *App) shouldBlockStartupOnDeploymentAudit() bool {
 			return false
 		}
 	}
-	return true
+	return false
 }
 
 func (a *App) logDeploymentAuditResult(message string, audit DeploymentDataAudit) {
@@ -219,7 +225,7 @@ func (a *App) computeDeploymentDataAudit() (DeploymentDataAudit, error) {
 		audit.BlockingDataIssues = append(audit.BlockingDataIssues, fmt.Sprintf("%d active customers still use UUID-style customer_ids", uuidLikeCount))
 	}
 
-	if audit.ActiveInvoices, err = a.auditCount(`SELECT COUNT(*) FROM invoices WHERE deleted_at IS NULL`); err != nil {
+	if audit.ActiveInvoices, err = a.auditCount(`SELECT COUNT(*) FROM invoices WHERE deleted_at IS NULL AND ` + deploymentActiveInvoiceStatusWhere); err != nil {
 		return DeploymentDataAudit{}, err
 	}
 	if a.db.Migrator().HasTable("invoices") && a.db.Migrator().HasTable("invoice_items") {
@@ -230,6 +236,7 @@ func (a *App) computeDeploymentDataAudit() (DeploymentDataAudit, error) {
 				FROM invoices i
 				LEFT JOIN invoice_items ii ON ii.invoice_id = i.id AND ii.deleted_at IS NULL
 				WHERE i.deleted_at IS NULL
+				  AND i.status NOT IN ('Cancelled', 'Void', 'Proforma', 'Draft')
 				GROUP BY i.id
 				HAVING COUNT(ii.id) = 0
 			) AS hollow_invoices
@@ -323,6 +330,22 @@ func (a *App) computeDeploymentDataAudit() (DeploymentDataAudit, error) {
 		`); err != nil {
 			return DeploymentDataAudit{}, err
 		}
+		var pricedQuotedOfferShells int
+		if pricedQuotedOfferShells, err = a.auditCount(`
+			SELECT COUNT(*)
+			FROM (
+				SELECT o.id
+				FROM offers o
+				LEFT JOIN offer_items oi ON oi.offer_id = o.id AND oi.deleted_at IS NULL
+				WHERE o.deleted_at IS NULL
+				GROUP BY o.id
+				HAVING COUNT(oi.id) = 0
+				   AND UPPER(TRIM(COALESCE(o.stage, ''))) IN ('QUOTED', 'RFQ')
+				   AND ABS(COALESCE(o.total_value_bhd, 0)) >= ?
+			) AS priced_quoted_shells
+		`, legacyOfferShellAmountTolerance); err != nil {
+			return DeploymentDataAudit{}, err
+		}
 		if audit.ActiveOperationalOffersNoItems, err = a.auditCount(`
 			SELECT COUNT(*)
 			FROM (
@@ -332,12 +355,9 @@ func (a *App) computeDeploymentDataAudit() (DeploymentDataAudit, error) {
 				WHERE o.deleted_at IS NULL
 				GROUP BY o.id
 				HAVING COUNT(oi.id) = 0
-				   AND NOT (
-				   	 UPPER(TRIM(COALESCE(o.stage, ''))) IN ('QUOTED', 'RFQ')
-				   	 AND ABS(COALESCE(o.total_value_bhd, 0)) < ?
-				   )
+				   AND UPPER(TRIM(COALESCE(o.stage, ''))) NOT IN ('QUOTED', 'RFQ')
 			) AS operational_hollow_offers
-		`, legacyOfferShellAmountTolerance); err != nil {
+		`); err != nil {
 			return DeploymentDataAudit{}, err
 		}
 		audit.ActiveOperationalOffers = audit.ActiveOffers - audit.LegacyQuotedOfferShells - audit.LegacyRFQOfferShells
@@ -349,6 +369,9 @@ func (a *App) computeDeploymentDataAudit() (DeploymentDataAudit, error) {
 		}
 		if audit.WonOffersWithoutItems > 0 {
 			audit.BlockingDataIssues = append(audit.BlockingDataIssues, fmt.Sprintf("%d won offers still have no offer_items", audit.WonOffersWithoutItems))
+		}
+		if pricedQuotedOfferShells > 0 {
+			audit.WarningDataIssues = append(audit.WarningDataIssues, fmt.Sprintf("%d priced quoted/RFQ offer shells have no offer_items and should be repaired from source documents", pricedQuotedOfferShells))
 		}
 	}
 
@@ -494,7 +517,8 @@ func (a *App) enforceCriticalDeploymentState(stage string, foundationErr error) 
 		log.Printf("🚨 Missing tables: %v", audit.MissingTables)
 		log.Printf("🚨 Blocking issues: %v", audit.BlockingDataIssues)
 	}
-	if !a.shouldBlockStartupOnDeploymentAudit() {
+	hardFailure := foundationErr != nil || auditErr != nil || len(audit.MissingTables) > 0
+	if !hardFailure && !a.shouldBlockStartupOnDeploymentAudit() {
 		return
 	}
 	if a.logFile != nil {

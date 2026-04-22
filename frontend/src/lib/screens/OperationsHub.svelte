@@ -17,9 +17,9 @@
   $: embedded;
 
   // Tab state - GRNs removed per user request (deprecated)
-  // Operations = Supplier-side: POs to suppliers, supplier invoices, delivery notes to customers
+  // Operations = supplier-side online orders, supplier invoices, delivery notes to customers
   const tabs: Tab[] = [
-    { id: 'pos', label: 'Supplier POs', count: 0 },              // POs sent TO suppliers (clearly not customer orders)
+    { id: 'pos', label: 'Supplier Orders', count: 0 },           // Supplier-side online orders
     { id: 'supplier-invoices', label: 'Supplier Invoices', count: 0 },  // Invoices FROM suppliers
     { id: 'delivery-notes', label: 'Delivery Notes', count: 0 },        // DNs TO customers (links to customer invoices)
   ];
@@ -65,21 +65,20 @@
 
   // GRN deprecated - function removed
 
-  async function handleNewInvoice() {
-    activeTab = 'supplier-invoices';
-    await tick();
-    // Delay ensures child component has mounted and registered listeners
-    setTimeout(() => {
-      window.dispatchEvent(new CustomEvent('openCreateSupplierInvoice'));
-    }, 200);
-  }
-
   async function handleNewDN() {
     activeTab = 'delivery-notes';
     await tick();
     // Delay ensures child component has mounted and registered listeners
     setTimeout(() => {
       window.dispatchEvent(new CustomEvent('openCreateDN'));
+    }, 200);
+  }
+
+  async function handleNewSupplierInvoice() {
+    activeTab = 'supplier-invoices';
+    await tick();
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('openCreateSupplierInvoice'));
     }, 200);
   }
 
@@ -109,10 +108,10 @@
     <svelte:fragment slot="header-actions">
       {#if activeTab === 'pos'}
         <Button variant="primary" on:click={handleNewPO}>
-          + New Purchase Order
+          + New Supplier Order
         </Button>
       {:else if activeTab === 'supplier-invoices'}
-        <Button variant="primary" on:click={handleNewInvoice}>
+        <Button variant="primary" on:click={handleNewSupplierInvoice}>
           + New Supplier Invoice
         </Button>
       {:else if activeTab === 'delivery-notes'}

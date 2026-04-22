@@ -139,7 +139,7 @@
       </Card>
       <Card padding="md">
         <div class="kpi">
-          <div class="kpi-label">YTD REVENUE</div>
+          <div class="kpi-label">YTD BUSINESS</div>
           <div class="kpi-value">{formatCurrency(dashboard.total_revenue)} BHD</div>
           <div class="kpi-subtext" class:negative={dashboard.revenue_yoy < 0}>
             {dashboard.revenue_yoy > 0 ? '+' : ''}{dashboard.revenue_yoy?.toFixed(1) || 0}% YoY
@@ -148,8 +148,9 @@
       </Card>
       <Card padding="md">
         <div class="kpi">
-          <div class="kpi-label">AR OUTSTANDING</div>
+          <div class="kpi-label">OPEN EXPOSURE</div>
           <div class="kpi-value">{formatCurrency(dashboard.total_outstanding)} BHD</div>
+          <div class="kpi-subtext">AR + uninvoiced orders</div>
         </div>
       </Card>
       <Card padding="md">
@@ -167,7 +168,7 @@
     <div class="analytics-row">
       <!-- Top 10 Customers -->
       <Card padding="md">
-        <h3 class="section-title">TOP 10 BY REVENUE</h3>
+        <h3 class="section-title">TOP 10 BY BUSINESS</h3>
         <div class="top-list">
           {#each dashboard.top_customers || [] as customer, i}
             <div class="top-item" role="button" tabindex="0" on:click={() => selectCustomer(customer.id)} on:keydown={(event) => activateCustomer(customer.id, event)}>
@@ -275,7 +276,7 @@
               </div>
               <div class="metric">
                 <span class="metric-value">{formatCurrency(customer.outstanding_bhd || 0)}</span>
-                <span class="metric-label">due</span>
+                <span class="metric-label">exposure</span>
               </div>
             </div>
             {#if customer.city}

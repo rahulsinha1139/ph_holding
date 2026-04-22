@@ -22,8 +22,10 @@ package main
 import (
 	crypto_rand "crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -129,7 +131,7 @@ var rolePermissions = map[string][]string{
 		"dashboard:view",
 		"offers:view", "offers:create", "offers:edit",
 		"orders:view", "orders:create", "orders:update",
-		"invoices:view", // Can VIEW invoices but NOT create (manager/admin only)
+		"invoices:view", "invoices:create", // Can create draft customer invoices from won orders
 		"payments:view", // Can VIEW payments but NOT create (manager/admin only)
 		"projects:view", "projects:create", "projects:update",
 		"tasks:view", "tasks:create", "tasks:update",
@@ -144,7 +146,7 @@ var rolePermissions = map[string][]string{
 	"operations": {
 		"dashboard:view",
 		"orders:view", "orders:update",
-		"invoices:view", // Can VIEW invoices for procurement tracking
+		"invoices:view", "invoices:create", // Can create draft customer invoices after delivery/order processing
 		"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
 		"projects:view", "projects:create", "projects:update",
 		"tasks:view", "tasks:create", "tasks:update",
@@ -688,41 +690,143 @@ func (a *App) SeedLicenseKeys() error {
 	return nil
 }
 
+type employeeLicenseSpec struct {
+	Role        string
+	DisplayName string
+	Key         string
+	Notes       string
+}
+
+func phTradingEmployeeLicenseSpecs() []employeeLicenseSpec {
+	return []employeeLicenseSpec{
+		{Role: "admin", DisplayName: "Abhie", Key: "PH-ADM-4A0185", Notes: "PH Trading admin key for Abhie"},
+		{Role: "admin", DisplayName: "Rahul", Key: "PH-ADM-E91CC2", Notes: "PH Trading admin key for Rahul"},
+		{Role: "admin", DisplayName: "Stanley", Key: "PH-ADM-E2E4C2", Notes: "PH Trading admin key for Stanley"},
+		{Role: "admin", DisplayName: "Daniel", Key: "PH-ADM-CD4680", Notes: "PH Trading admin key for Daniel"},
+		{Role: "manager", DisplayName: "Sundar", Key: "PH-MGR-CE8180", Notes: "PH Trading manager key for Sundar"},
+		{Role: "sales", DisplayName: "Peri", Key: "PH-SLS-9A70F9", Notes: "PH Trading sales key for Peri"},
+		{Role: "sales", DisplayName: "Ebin", Key: "PH-SLS-62C4D4", Notes: "PH Trading sales key for Ebin"},
+		{Role: "sales", DisplayName: "Ramya", Key: "PH-SLS-7749F3", Notes: "PH Trading sales key for Ramya"},
+		{Role: "sales", DisplayName: "Support", Key: "PH-SLS-3C37C1", Notes: "PH Trading sales support key"},
+		{Role: "operations", DisplayName: "Clinton", Key: "PH-OPS-206C69", Notes: "PH Trading operations key for Clinton"},
+	}
+}
+
+func phTradingRoleTestLicenseSpecs() []employeeLicenseSpec {
+	return []employeeLicenseSpec{
+		{Role: "admin", DisplayName: "Admin Test", Key: "PH-ADM-6C9BF2", Notes: "PH Trading test key for admin role"},
+		{Role: "manager", DisplayName: "Manager Test", Key: "PH-MGR-49F07C", Notes: "PH Trading test key for manager role"},
+		{Role: "sales", DisplayName: "Sales Test", Key: "PH-SLS-B4AA10", Notes: "PH Trading test key for sales role"},
+		{Role: "operations", DisplayName: "Operations Test", Key: "PH-OPS-44490F", Notes: "PH Trading test key for operations role"},
+		{Role: "staff", DisplayName: "Staff Test", Key: "PH-STF-B47E0B", Notes: "PH Trading test key for staff role"},
+	}
+}
+
+func phTradingNamedLicenseSpecs() []employeeLicenseSpec {
+	specs := phTradingEmployeeLicenseSpecs()
+	specs = append(specs, phTradingRoleTestLicenseSpecs()...)
+	return specs
+}
+
+func deploymentLicenseActivationFlushStamp() string {
+	if stamp := strings.TrimSpace(os.Getenv("ASYMMFLOW_LICENSE_FLUSH_STAMP")); stamp != "" {
+		return stamp
+	}
+	if !preserveLicenseActivationsOnReseed() {
+		return "reseed-license-activation-flush"
+	}
+	return ""
+}
+
+// ApplyDeploymentLicenseActivationFlush resets existing device bindings once per
+// deployment stamp. It is intentionally separate from database reseeding: a
+// full-but-already-activated local DB still needs to ask for the new key once.
+func (a *App) ApplyDeploymentLicenseActivationFlush() error {
+	if a == nil || a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	stamp := deploymentLicenseActivationFlushStamp()
+	if stamp == "" {
+		return nil
+	}
+
+	const settingKey = "deployment_license_activation_flush_stamp"
+	var existing Setting
+	if err := a.db.Unscoped().Where("key = ?", settingKey).First(&existing).Error; err == nil {
+		if strings.TrimSpace(existing.Value) == stamp {
+			return nil
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	return a.db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&LicenseKey{}).
+			Where("activated = ? OR COALESCE(device_hash, '') <> '' OR activated_at IS NOT NULL", true).
+			Updates(map[string]interface{}{
+				"activated":    false,
+				"device_hash":  "",
+				"activated_at": nil,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+
+		updates := map[string]interface{}{
+			"value":        stamp,
+			"category":     "deployment",
+			"description":  "Last deployment stamp that reset local license activations",
+			"is_encrypted": false,
+			"deleted_at":   nil,
+		}
+		if existing.ID != "" {
+			if err := tx.Unscoped().Model(&existing).Updates(updates).Error; err != nil {
+				return err
+			}
+		} else {
+			if err := tx.Create(&Setting{
+				Key:         settingKey,
+				Value:       stamp,
+				Category:    "deployment",
+				Description: "Last deployment stamp that reset local license activations",
+				IsEncrypted: false,
+			}).Error; err != nil {
+				return err
+			}
+		}
+
+		log.Printf("🔑 Deployment license activation flush applied for stamp %s (%d bindings reset)", stamp, result.RowsAffected)
+		return nil
+	})
+}
+
 // SeedEmployeeKeys creates specific license keys linked to named employees.
 // These are the primary keys given to PH Trading staff.
 // Called on startup after SeedLicenseKeys.
 func (a *App) SeedEmployeeKeys() error {
 	log.Println("🔑 SeedEmployeeKeys: Assigning keys to employees...")
 
-	// Employee key assignments: role, display_name
-	type employeeKey struct {
-		Role        string
-		DisplayName string
-	}
-
-	employees := []employeeKey{
-		// Admin keys
-		{Role: "admin", DisplayName: "Abhie"},
-		{Role: "admin", DisplayName: "Rahul"},
-		{Role: "admin", DisplayName: "Stanley"},
-		{Role: "admin", DisplayName: "Daniel"},
-		// Manager keys
-		{Role: "manager", DisplayName: "Sundar"},
-		// Sales keys
-		{Role: "sales", DisplayName: "Peri"},
-		{Role: "sales", DisplayName: "Ebin"},
-		{Role: "sales", DisplayName: "Ramya"},
-		{Role: "sales", DisplayName: "Support"},
-		{Role: "sales", DisplayName: "Sales Test"},
-		// Operations keys
-		{Role: "operations", DisplayName: "Clinton"},
-	}
-
 	var assigned int
-	for _, emp := range employees {
+	for _, emp := range phTradingNamedLicenseSpecs() {
+		if strings.TrimSpace(emp.Key) != "" {
+			upserted, err := a.ensureNamedEmployeeKey(emp)
+			if err != nil {
+				log.Printf("⚠️ Failed to ensure key for %s: %v", emp.DisplayName, err)
+				continue
+			}
+			if upserted {
+				assigned++
+			}
+			continue
+		}
+
 		// Check if this employee already has a key assigned
 		var existing LicenseKey
 		if err := a.db.Where("display_name = ?", emp.DisplayName).First(&existing).Error; err == nil {
+			if strings.TrimSpace(existing.Notes) == "" && strings.TrimSpace(emp.Notes) != "" {
+				_ = a.db.Model(&existing).Update("notes", emp.Notes).Error
+			}
 			// Already assigned
 			continue
 		}
@@ -747,7 +851,7 @@ func (a *App) SeedEmployeeKeys() error {
 				Role:        emp.Role,
 				DisplayName: emp.DisplayName,
 				Activated:   false,
-				Notes:       fmt.Sprintf("Assigned to %s", emp.DisplayName),
+				Notes:       firstNonEmptyString(emp.Notes, fmt.Sprintf("Assigned to %s", emp.DisplayName)),
 				CreatedBy:   "system",
 			}
 			if err := a.db.Create(&newKey).Error; err != nil {
@@ -761,7 +865,7 @@ func (a *App) SeedEmployeeKeys() error {
 
 		// Assign the existing key to this employee
 		availableKey.DisplayName = emp.DisplayName
-		availableKey.Notes = fmt.Sprintf("Assigned to %s", emp.DisplayName)
+		availableKey.Notes = firstNonEmptyString(emp.Notes, fmt.Sprintf("Assigned to %s", emp.DisplayName))
 		if err := a.db.Save(&availableKey).Error; err != nil {
 			log.Printf("⚠️ Failed to assign key to %s: %v", emp.DisplayName, err)
 			continue
@@ -789,6 +893,65 @@ func (a *App) SeedEmployeeKeys() error {
 	}
 
 	return nil
+}
+
+func (a *App) ensureNamedEmployeeKey(emp employeeLicenseSpec) (bool, error) {
+	if a == nil || a.db == nil {
+		return false, fmt.Errorf("database not initialized")
+	}
+
+	key := strings.ToUpper(strings.TrimSpace(emp.Key))
+	if key == "" {
+		return false, nil
+	}
+
+	updates := map[string]interface{}{
+		"role":         emp.Role,
+		"display_name": emp.DisplayName,
+		"notes":        firstNonEmptyString(emp.Notes, fmt.Sprintf("Assigned to %s", emp.DisplayName)),
+		"created_by":   "system",
+	}
+
+	var byKey LicenseKey
+	if err := a.db.Where("key = ?", key).First(&byKey).Error; err == nil {
+		return false, a.db.Model(&byKey).Updates(updates).Error
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, err
+	}
+
+	var byName LicenseKey
+	if err := a.db.Where("role = ? AND display_name = ?", emp.Role, emp.DisplayName).
+		Order("activated DESC, id ASC").
+		First(&byName).Error; err == nil {
+		if byName.Activated {
+			record := LicenseKey{
+				Key:         key,
+				Role:        emp.Role,
+				DisplayName: emp.DisplayName,
+				Activated:   false,
+				Notes:       firstNonEmptyString(emp.Notes, fmt.Sprintf("Assigned to %s", emp.DisplayName)),
+				CreatedBy:   "system",
+			}
+			return true, a.db.Create(&record).Error
+		}
+		updates["key"] = key
+		updates["activated"] = false
+		updates["activated_at"] = nil
+		updates["device_hash"] = ""
+		return true, a.db.Model(&byName).Updates(updates).Error
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, err
+	}
+
+	record := LicenseKey{
+		Key:         key,
+		Role:        emp.Role,
+		DisplayName: emp.DisplayName,
+		Activated:   false,
+		Notes:       firstNonEmptyString(emp.Notes, fmt.Sprintf("Assigned to %s", emp.DisplayName)),
+		CreatedBy:   "system",
+	}
+	return true, a.db.Create(&record).Error
 }
 
 // CheckFirstInstall returns true if no licenses exist (first installation)

@@ -5,7 +5,6 @@
     GetDeliveryNotes,
     GetDeliveryNoteByID,
     CreateDeliveryNote,
-    CreateDeliveryNoteWithItems,
     UpdateDeliveryNote,
     DeleteDeliveryNote,
     DispatchDeliveryNote,
@@ -13,10 +12,13 @@
     GetDeliveryNotesByOrder,
     GetOrderFulfillmentDetail,
     GenerateDNNumber,
+    GenerateDeliveryNotePDF,
+    OpenExportedFile,
     ListOrders,
     ListCustomers,
     CreateDNWithSerials,
     GetAvailableSerials,
+    GetOrder,
   } from '../../../wailsjs/go/main/App';
   import { toast } from '$lib/stores/toasts';
   import { pendingDNCreate } from '$lib/stores/navigation';
@@ -60,12 +62,14 @@
   let loading = true;
   let activeFilter = 'All';
   let searchQuery = '';
+  let availableYears: string[] = [];
 
   // Create/Edit modal
   let showModal = false;
   let editingNote: any = null;
   let modalMode: 'create' | 'edit' = 'create';
   let saving = false;
+  let pdfGenerating = false;
 
   // Form state
   let formData = {
@@ -94,11 +98,198 @@
   // Order fulfillment items for DN creation (E1 enhancement)
   let fulfillmentItems: any[] = []; // Items with ship_qty for the create modal
   let loadingFulfillment = false;
+  let fulfillmentLoaded = false;
+  let fulfillmentLoadFailed = false;
 
   // Detail modal
   let showDetailModal = false;
   let selectedNote: any = null;
-  let noteItems: main.DeliveryNoteItem[] = [];
+  let noteItems: any[] = [];
+
+  function errorMessage(err: any): string {
+    return err?.message || err?.Message || err?.error || String(err || 'Unknown error');
+  }
+
+  function getDeliveryDateValue(value: any): Date | null {
+    if (!value) return null;
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    if (typeof value === 'string' || typeof value === 'number') {
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+    if (typeof value === 'object' && typeof value.toString === 'function') {
+      const parsed = new Date(value.toString());
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+    return null;
+  }
+
+  function deliveryNoteSortTime(note: any): number {
+    return getDeliveryDateValue(note?.delivery_date)?.getTime()
+      || getDeliveryDateValue(note?.created_at)?.getTime()
+      || 0;
+  }
+
+  function sortDeliveryNotesLatestFirst(notes: any[]): any[] {
+    return [...notes].sort((a, b) => {
+      const dateDelta = deliveryNoteSortTime(b) - deliveryNoteSortTime(a);
+      if (dateDelta !== 0) return dateDelta;
+      return String(b?.dn_number || '').localeCompare(String(a?.dn_number || ''), undefined, {
+        numeric: true,
+        sensitivity: 'base'
+      });
+    });
+  }
+
+  function meaningfulValue(...values: any[]): string {
+    for (const value of values) {
+      const text = String(value || '').trim();
+      if (!text || text === '-' || text === '—') continue;
+      if (['n/a', 'unknown', 'undefined', 'null'].includes(text.toLowerCase())) continue;
+      return text;
+    }
+    return '';
+  }
+
+  function resolveOrderForNote(note: any) {
+    const orderId = meaningfulValue(note?.order_id);
+    const orderReference = meaningfulValue(note?.order_reference);
+    return orders.find(order => order.id === orderId)
+      || orders.find(order => order.order_number === orderReference)
+      || null;
+  }
+
+  function resolveCustomerForNote(note: any, order: any) {
+    const customerId = meaningfulValue(note?.customer_id, order?.customer_id);
+    return customers.find(customer => customer.id === customerId) || null;
+  }
+
+  function enrichDeliveryNoteForDisplay(note: any, fallback: any = {}) {
+    const merged = { ...fallback, ...note };
+    const order = resolveOrderForNote(merged) || resolveOrderForNote(fallback);
+    const customer = resolveCustomerForNote(merged, order) || resolveCustomerForNote(fallback, order);
+
+    return {
+      ...merged,
+      order_reference: meaningfulValue(
+        merged.order_reference,
+        fallback.order_reference,
+        order?.order_number,
+        merged.order_id
+      ) || 'N/A',
+      customer_name: meaningfulValue(
+        merged.customer_name,
+        fallback.customer_name,
+        customer?.business_name,
+        order?.customer_name
+      ) || 'Unknown'
+    };
+  }
+
+  function asNumber(value: any): number {
+    const parsed = Number(value || 0);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function orderItemProductCode(item: any): string {
+    return meaningfulValue(item?.product_code, item?.model, item?.product_id) || '-';
+  }
+
+  function orderItemDescription(item: any): string {
+    return meaningfulValue(item?.description, item?.equipment, item?.specification, item?.detailed_description) || 'Line item';
+  }
+
+  function orderItemToFulfillmentRow(item: any) {
+    const orderedQty = asNumber(item?.quantity);
+    const shippedQty = asNumber(item?.quantity_shipped);
+    const remainingQty = Math.max(orderedQty - shippedQty, 0);
+    return {
+      order_item_id: item?.id || '',
+      product_id: item?.product_id || '',
+      product_code: orderItemProductCode(item),
+      description: orderItemDescription(item),
+      ordered_qty: orderedQty,
+      shipped_qty: shippedQty,
+      delivered_qty: shippedQty,
+      remaining_qty: remainingQty,
+      ship_qty: remainingQty,
+      requires_serial: false,
+      available_serials: [] as any[],
+      selected_serials: [] as string[],
+    };
+  }
+
+  function matchOrderItem(item: any, orderItems: any[]) {
+    const orderItemId = meaningfulValue(item?.order_item_id);
+    const productId = meaningfulValue(item?.product_id);
+    const productCode = meaningfulValue(item?.product_code);
+    return orderItems.find(orderItem => orderItem.id === orderItemId)
+      || orderItems.find(orderItem => productId && orderItem.product_id === productId)
+      || orderItems.find(orderItem => productCode && orderItemProductCode(orderItem) === productCode)
+      || null;
+  }
+
+  async function loadOrderForNote(note: any) {
+    const localOrder = resolveOrderForNote(note);
+    if (localOrder?.items?.length) return localOrder;
+    const orderId = meaningfulValue(note?.order_id);
+    if (!orderId) return localOrder;
+    try {
+      return await GetOrder(orderId);
+    } catch (err) {
+      console.warn('Failed to load order for delivery note detail:', err);
+      return localOrder;
+    }
+  }
+
+  async function buildDetailItems(note: any, rawItems: any[] = []) {
+    const order = await loadOrderForNote(note);
+    const orderItems = order?.items || [];
+
+    if (rawItems.length > 0) {
+      return rawItems.map(item => {
+        const matched = matchOrderItem(item, orderItems);
+        const orderedQty = asNumber(item.quantity_ordered) || asNumber(matched?.quantity);
+        const deliveredQty = asNumber(item.quantity_delivered) || orderedQty;
+        return {
+          ...item,
+          product_code: meaningfulValue(item.product_code, matched ? orderItemProductCode(matched) : '') || '-',
+          description: meaningfulValue(item.description, matched ? orderItemDescription(matched) : '') || 'Line item',
+          quantity_ordered: orderedQty,
+          quantity_delivered: deliveredQty,
+          quantity_remaining: asNumber(item.quantity_remaining) || Math.max(orderedQty - deliveredQty, 0),
+        };
+      });
+    }
+
+    if (meaningfulValue(note?.order_id)) {
+      try {
+        const fulfillment = await GetOrderFulfillmentDetail(note.order_id);
+        if (fulfillment?.items?.length) {
+          return fulfillment.items.map((item: any) => ({
+            product_code: meaningfulValue(item.product_code) || '-',
+            description: meaningfulValue(item.description) || 'Line item',
+            quantity_ordered: asNumber(item.ordered_qty),
+            quantity_delivered: asNumber(item.delivered_qty),
+            quantity_remaining: asNumber(item.remaining_qty),
+          }));
+        }
+      } catch (err) {
+        console.warn('Failed to load fulfillment items for delivery note detail:', err);
+      }
+    }
+
+    return orderItems.map((item: any) => {
+      const row = orderItemToFulfillmentRow(item);
+      return {
+        product_code: row.product_code,
+        description: row.description,
+        quantity_ordered: row.ordered_qty,
+        quantity_delivered: row.delivered_qty,
+        quantity_remaining: row.remaining_qty,
+      };
+    });
+  }
 
   // DataTable columns
   const columns = [
@@ -163,21 +354,16 @@
         ListCustomers(500, 0)
       ]);
 
-      deliveryNotes = (notesData || []).map(note => {
-        // Find associated order
-        const order = ordersData.find(o => o.id === note.order_id);
-        // Find customer
-        const customer = customersData.find(c => c.id === note.customer_id);
-
-        return {
-          ...note,
-          order_reference: order?.order_number || 'N/A',
-          customer_name: customer?.business_name || order?.customer_name || 'Unknown'
-        };
-      });
-
       customers = customersData || [];
       orders = ordersData || [];
+      deliveryNotes = sortDeliveryNotesLatestFirst((notesData || []).map(note => enrichDeliveryNoteForDisplay(note)));
+
+      const yearsSet = new Set<string>();
+      deliveryNotes.forEach(note => {
+        const deliveryDate = getDeliveryDateValue(note.delivery_date);
+        if (deliveryDate) yearsSet.add(deliveryDate.getFullYear().toString());
+      });
+      availableYears = Array.from(yearsSet).sort().reverse();
 
       applyFilters();
     } catch (err) {
@@ -209,7 +395,7 @@
       );
     }
 
-    filteredDeliveryNotes = result;
+    filteredDeliveryNotes = sortDeliveryNotesLatestFirst(result);
   }
 
   $: {
@@ -264,28 +450,29 @@
   // Open edit modal
   function openEditModal(note: main.DeliveryNote) {
     modalMode = 'edit';
-    editingNote = note;
+    const noteForForm = enrichDeliveryNoteForDisplay(note);
+    editingNote = noteForForm;
 
     // Find associated order
-    const order = orders.find(o => o.id === note.order_id);
+    const order = resolveOrderForNote(noteForForm);
 
     formData = {
-      dnNumber: note.dn_number || '',
-      orderId: note.order_id || '',
+      dnNumber: noteForForm.dn_number || '',
+      orderId: noteForForm.order_id || '',
       orderNumber: order?.order_number || '',
-      customerId: note.customer_id || '',
-      customerName: (note as any).customer_name || '',
-      deliveryDate: note.delivery_date ? new Date(note.delivery_date as any).toISOString().split('T')[0] : '',
-      deliveryAddress: note.delivery_address || '',
-      contactPerson: note.contact_person || '',
-      contactPhone: note.contact_phone || '',
-      driverName: note.driver_name || '',
-      vehicleNumber: note.vehicle_number || '',
-      transportMethod: note.transport_method || 'Own Vehicle',
-      status: note.status || 'Draft',
-      isPartialDelivery: note.is_partial_delivery || false,
-      deliverySequence: note.delivery_sequence || 1,
-      totalDeliveries: note.total_deliveries || 1
+      customerId: noteForForm.customer_id || '',
+      customerName: noteForForm.customer_name || '',
+      deliveryDate: noteForForm.delivery_date ? new Date(noteForForm.delivery_date as any).toISOString().split('T')[0] : '',
+      deliveryAddress: noteForForm.delivery_address || '',
+      contactPerson: noteForForm.contact_person || '',
+      contactPhone: noteForForm.contact_phone || '',
+      driverName: noteForForm.driver_name || '',
+      vehicleNumber: noteForForm.vehicle_number || '',
+      transportMethod: noteForForm.transport_method || 'Own Vehicle',
+      status: noteForForm.status || 'Draft',
+      isPartialDelivery: noteForForm.is_partial_delivery || false,
+      deliverySequence: noteForForm.delivery_sequence || 1,
+      totalDeliveries: noteForForm.total_deliveries || 1
     };
     showModal = true;
   }
@@ -310,8 +497,32 @@
 
     saving = true;
     try {
+      const baseNoteData: any = {
+        id: editingNote?.id || '',
+        dn_number: formData.dnNumber,
+        order_id: formData.orderId,
+        customer_id: formData.customerId,
+        delivery_date: new Date(`${formData.deliveryDate}T00:00:00`),
+        delivery_address: formData.deliveryAddress,
+        contact_person: formData.contactPerson,
+        contact_phone: formData.contactPhone,
+        driver_name: formData.driverName,
+        vehicle_number: formData.vehicleNumber,
+        transport_method: formData.transportMethod,
+        status: formData.status,
+        is_partial_delivery: formData.isPartialDelivery,
+        delivery_sequence: formData.deliverySequence,
+        total_deliveries: formData.totalDeliveries,
+        created_at: editingNote?.created_at || new Date(),
+        updated_at: new Date(),
+        version: editingNote?.version || 0,
+        created_by: editingNote?.created_by || '',
+        signed_by: editingNote?.signed_by || '',
+        signature_image: editingNote?.signature_image || ''
+      };
+
       if (modalMode === 'create' && fulfillmentItems.length > 0) {
-        // E1: Use new CreateDeliveryNoteWithItems for per-item ship quantities
+        // Preserve the full DN header while still creating per-item ship quantities.
         const itemsToShip = fulfillmentItems
           .filter((item: any) => item.ship_qty > 0)
           .map((item: any) => ({
@@ -358,42 +569,56 @@
               ship_qty: item.ship_qty,
               serial_nos: item.selected_serials || []
             }));
-          await CreateDNWithSerials(formData.orderId, serialItems);
+          const created = await CreateDNWithSerials(formData.orderId, serialItems);
+          try {
+            await UpdateDeliveryNote({
+              ...baseNoteData,
+              id: created.id,
+              dn_number: created.dn_number,
+              created_at: created.created_at,
+              updated_at: new Date(),
+              version: created.version || 1
+            });
+          } catch (metadataErr) {
+            console.warn('DN was created with serials, but metadata update failed:', metadataErr);
+          }
         } else {
-          await CreateDeliveryNoteWithItems(formData.orderId, itemsToShip);
+          const itemLookup = new Map(fulfillmentItems.map((item: any) => [item.order_item_id, item]));
+          await CreateDeliveryNote({
+            ...baseNoteData,
+            status: 'Prepared',
+            items: itemsToShip.map((input: any) => {
+              const source: any = itemLookup.get(input.order_item_id) || {};
+              return {
+                order_item_id: input.order_item_id,
+                product_id: source.product_id || '',
+                product_code: source.product_code || '',
+                description: source.description || '',
+                quantity_ordered: Number(source.ordered_qty || 0),
+                quantity_delivered: Number(input.ship_qty || 0),
+                quantity_remaining: Math.max(Number(source.remaining_qty || 0) - Number(input.ship_qty || 0), 0)
+              };
+            })
+          });
         }
         toast.success('Delivery Note created with item quantities');
       } else {
+        if (modalMode === 'create' && formData.orderId && fulfillmentLoadFailed) {
+          toast.warning('Order items could not be loaded. Please re-select the order before creating the delivery note.');
+          saving = false;
+          return;
+        }
+        if (modalMode === 'create' && formData.orderId && fulfillmentLoaded && fulfillmentItems.length === 0) {
+          toast.warning('This order has no remaining items to ship.');
+          saving = false;
+          return;
+        }
         // Fallback: Original create/edit behavior
-        const noteData: any = {
-          id: editingNote?.id || '',
-          dn_number: formData.dnNumber,
-          order_id: formData.orderId,
-          customer_id: formData.customerId,
-          delivery_date: new Date(formData.deliveryDate),
-          delivery_address: formData.deliveryAddress,
-          contact_person: formData.contactPerson,
-          contact_phone: formData.contactPhone,
-          driver_name: formData.driverName,
-          vehicle_number: formData.vehicleNumber,
-          transport_method: formData.transportMethod,
-          status: formData.status,
-          is_partial_delivery: formData.isPartialDelivery,
-          delivery_sequence: formData.deliverySequence,
-          total_deliveries: formData.totalDeliveries,
-          created_at: editingNote?.created_at || new Date(),
-          updated_at: new Date(),
-          version: editingNote?.version || 0,
-          created_by: editingNote?.created_by || '',
-          signed_by: editingNote?.signed_by || '',
-          signature_image: editingNote?.signature_image || ''
-        };
-
         if (modalMode === 'create') {
-          await CreateDeliveryNote(noteData);
+          await CreateDeliveryNote(baseNoteData);
           toast.success('Delivery Note created successfully');
         } else {
-          await UpdateDeliveryNote(noteData);
+          await UpdateDeliveryNote(baseNoteData);
           toast.success('Delivery Note updated successfully');
         }
       }
@@ -403,7 +628,7 @@
       await loadDeliveryNotes();
     } catch (err) {
       console.error('Save failed:', err);
-      toast.danger('Failed to save delivery note: ' + (err as Error).message);
+      toast.danger('Failed to save delivery note: ' + errorMessage(err));
     } finally {
       saving = false;
     }
@@ -411,15 +636,18 @@
 
   // Handle row click - open detail modal
   async function handleRowClick(row: main.DeliveryNote) {
-    selectedNote = row;
+    const rowSnapshot = enrichDeliveryNoteForDisplay(row);
+    selectedNote = rowSnapshot;
+    noteItems = [];
 
     // Load full delivery note details
     try {
       const fullNote = await GetDeliveryNoteByID(row.id);
-      selectedNote = fullNote;
-      noteItems = fullNote.items || [];
+      selectedNote = enrichDeliveryNoteForDisplay(fullNote, rowSnapshot);
+      noteItems = await buildDetailItems(selectedNote, fullNote.items || []);
     } catch (err) {
       console.error('Failed to load delivery note details:', err);
+      noteItems = await buildDetailItems(rowSnapshot, (rowSnapshot as any).items || []);
       toast.warning('Could not load full delivery note details');
     }
 
@@ -470,6 +698,23 @@
     }
   }
 
+  async function handleGeneratePDF(note: main.DeliveryNote) {
+    if (!note?.id) return;
+    pdfGenerating = true;
+    try {
+      const filePath = await GenerateDeliveryNotePDF(note.id);
+      toast.success('Delivery Note PDF generated');
+      if (filePath) {
+        await OpenExportedFile(filePath);
+      }
+    } catch (err) {
+      console.error('Delivery note PDF failed:', err);
+      toast.danger('Failed to generate delivery note PDF: ' + errorMessage(err));
+    } finally {
+      pdfGenerating = false;
+    }
+  }
+
   // Helper functions
   function formatDate(date: any): string {
     if (!date) return '—';
@@ -491,69 +736,132 @@
   async function handleOrderChange(orderId: string) {
     formData.orderId = orderId;
     fulfillmentItems = [];
+    fulfillmentLoaded = false;
+    fulfillmentLoadFailed = false;
 
-    const order = orders.find(o => o.id === orderId);
+    let order: any = orders.find(o => o.id === orderId);
+    if (!order) {
+      try {
+        order = await GetOrder(orderId);
+      } catch (err) {
+        console.error('Failed to load selected order for delivery note:', err);
+      }
+    } else if (!order.items || order.items.length === 0) {
+      try {
+        order = await GetOrder(orderId);
+      } catch (err) {
+        console.warn('Failed to hydrate selected order items for delivery note:', err);
+      }
+    }
+
     if (order) {
       formData.orderNumber = order.order_number || '';
       formData.customerId = order.customer_id || '';
       formData.customerName = order.customer_name || '';
+    }
 
-      // Load fulfillment detail for per-item ship quantities
-      loadingFulfillment = true;
-      try {
-        const fulfillment = await GetOrderFulfillmentDetail(orderId);
-        if (fulfillment && fulfillment.items) {
-          fulfillmentItems = fulfillment.items
-            .filter((item: any) => item.remaining_qty > 0.001)
-            .map((item: any) => ({
-              order_item_id: item.order_item_id,
-              product_id: item.product_id || '',
-              product_code: item.product_code,
-              description: item.description,
-              ordered_qty: item.ordered_qty,
-              shipped_qty: item.shipped_qty || 0,
-              delivered_qty: item.delivered_qty || 0,
-              remaining_qty: item.remaining_qty,
-              ship_qty: item.remaining_qty, // Default to remaining
-              // Phase 23: Serial tracking
-              requires_serial: item.requires_serial_tracking || false,
-              available_serials: [] as any[],
-              selected_serials: [] as string[],
-            }));
-          // Phase 23: Load available serials for serialized items
-          for (const item of fulfillmentItems) {
-            if (item.requires_serial && item.product_id) {
-              try {
-                const serials = await GetAvailableSerials(item.product_id);
-                item.available_serials = serials || [];
-              } catch (e) {
-                console.warn('Failed to load serials for', item.product_code, e);
-              }
+    // Load fulfillment detail for per-item ship quantities
+    loadingFulfillment = true;
+    try {
+      const fulfillment = await GetOrderFulfillmentDetail(orderId);
+      fulfillmentLoaded = true;
+      fulfillmentLoadFailed = false;
+      if (fulfillment && fulfillment.items) {
+        fulfillmentItems = fulfillment.items
+          .filter((item: any) => item.remaining_qty > 0.001)
+          .map((item: any) => ({
+            order_item_id: item.order_item_id,
+            product_id: item.product_id || '',
+            product_code: item.product_code,
+            description: item.description,
+            ordered_qty: item.ordered_qty,
+            shipped_qty: item.shipped_qty || 0,
+            delivered_qty: item.delivered_qty || 0,
+            remaining_qty: item.remaining_qty,
+            ship_qty: item.remaining_qty, // Default to remaining
+            // Phase 23: Serial tracking
+            requires_serial: item.requires_serial_tracking || false,
+            available_serials: [] as any[],
+            selected_serials: [] as string[],
+          }));
+        // Phase 23: Load available serials for serialized items
+        for (const item of fulfillmentItems) {
+          if (item.requires_serial && item.product_id) {
+            try {
+              const serials = await GetAvailableSerials(item.product_id);
+              item.available_serials = serials || [];
+            } catch (e) {
+              console.warn('Failed to load serials for', item.product_code, e);
             }
           }
         }
-
-        if (fulfillmentItems.length === 0 && fulfillment?.items?.length > 0) {
-          toast.info('All items have been fully shipped for this order');
-        }
-      } catch (err) {
-        console.error('Failed to load fulfillment detail:', err);
-        // Fallback: still allow DN creation without item detail
       }
-      loadingFulfillment = false;
 
-      // Check if there are existing delivery notes for this order
+      if (fulfillmentItems.length === 0 && (!fulfillment?.items || fulfillment.items.length === 0)) {
+        const orderItems = (order?.items || []).filter((item: any) => asNumber(item.quantity) > 0);
+        if (orderItems.length > 0) {
+          fulfillmentItems = orderItems
+            .map(orderItemToFulfillmentRow)
+            .filter((item: any) => item.remaining_qty > 0.001);
+          fulfillmentLoaded = true;
+          fulfillmentLoadFailed = fulfillmentItems.length === 0;
+          if (fulfillmentItems.length > 0) {
+            toast.warning('Loaded order items directly. Please review quantities before saving.');
+          }
+        }
+      }
+
+      if (fulfillmentItems.length === 0 && fulfillment?.items?.length > 0) {
+        toast.info('All items have been fully shipped for this order');
+      }
+    } catch (err) {
+      console.error('Failed to load fulfillment detail:', err);
+      fulfillmentLoadFailed = true;
       try {
-        const existingNotes = await GetDeliveryNotesByOrder(orderId);
-        if (existingNotes && existingNotes.length > 0) {
-          formData.isPartialDelivery = true;
-          formData.deliverySequence = existingNotes.length + 1;
-          formData.totalDeliveries = existingNotes[0].total_deliveries || existingNotes.length + 1;
-          toast.info(`Partial delivery ${formData.deliverySequence} of ${formData.totalDeliveries}`);
+        const orderDetail: any = order || await GetOrder(orderId);
+        const orderItems = (orderDetail?.items || []).filter((item: any) => Number(item.quantity || 0) > 0);
+        fulfillmentItems = orderItems.map((item: any) => {
+          const orderedQty = Number(item.quantity || 0);
+          const alreadyShipped = Number(item.quantity_shipped || 0);
+          const remainingQty = Math.max(orderedQty - alreadyShipped, 0);
+          return {
+            order_item_id: item.id,
+            product_id: item.product_id || '',
+            product_code: item.product_code,
+            description: item.description,
+            ordered_qty: orderedQty,
+            shipped_qty: alreadyShipped,
+            delivered_qty: alreadyShipped,
+            remaining_qty: remainingQty,
+            ship_qty: remainingQty,
+            requires_serial: false,
+            available_serials: [] as any[],
+            selected_serials: [] as string[],
+          };
+        }).filter((item: any) => item.remaining_qty > 0.001);
+        fulfillmentLoaded = true;
+        fulfillmentLoadFailed = fulfillmentItems.length === 0;
+        if (fulfillmentItems.length > 0) {
+          toast.warning('Loaded order items directly. Please review quantities before saving.');
         }
-      } catch (err) {
-        console.error('Failed to check existing deliveries:', err);
+      } catch (fallbackErr) {
+        console.error('Failed to load order item fallback:', fallbackErr);
       }
+    } finally {
+      loadingFulfillment = false;
+    }
+
+    // Check if there are existing delivery notes for this order
+    try {
+      const existingNotes = await GetDeliveryNotesByOrder(orderId);
+      if (existingNotes && existingNotes.length > 0) {
+        formData.isPartialDelivery = true;
+        formData.deliverySequence = existingNotes.length + 1;
+        formData.totalDeliveries = existingNotes[0].total_deliveries || existingNotes.length + 1;
+        toast.info(`Partial delivery ${formData.deliverySequence} of ${formData.totalDeliveries}`);
+      }
+    } catch (err) {
+      console.error('Failed to check existing deliveries:', err);
     }
   }
 
@@ -577,13 +885,13 @@
   }
 
   onMount(() => {
-    loadDeliveryNotes();
+    void (async () => {
+      await loadDeliveryNotes();
+      await checkPendingDNCreate();
+    })();
 
     // Listen for create DN events from OperationsHub header button
     window.addEventListener('openCreateDN', handleOpenCreateDN);
-
-    // Check for pending DN creation from OrdersScreen navigation
-    checkPendingDNCreate();
   });
 
   onDestroy(() => {
@@ -593,36 +901,104 @@
 </script>
 
 {#if embedded}
-  <!-- Embedded mode - minimal UI for dashboard widgets -->
+  <!-- Embedded mode - full delivery-note list grouped by year -->
   <div class="delivery-notes-embedded">
-    <h3>Recent Deliveries</h3>
+    <div class="embedded-header">
+      <h3>All Delivery Notes ({deliveryNotes.length})</h3>
+      <div class="embedded-stats">
+        <span class="embedded-stat">{stats.delivered} delivered</span>
+        <span class="embedded-stat">{stats.inTransit} in transit</span>
+        <span class="embedded-stat">{stats.partial} partial</span>
+      </div>
+    </div>
+
+    <div class="embedded-filters">
+      <input
+        type="text"
+        placeholder="Search delivery notes..."
+        bind:value={searchQuery}
+        class="embedded-search"
+      />
+      <select class="embedded-select" bind:value={activeFilter}>
+        <option value="All">All Status</option>
+        {#each DELIVERY_STATUSES as status}
+          <option value={status.key}>{status.label}</option>
+        {/each}
+      </select>
+    </div>
+
     {#if loading}
       <div class="loading-container">
         <WabiSpinner size="md" />
       </div>
-    {:else if deliveryNotes.length === 0}
-      <p class="empty-message">No delivery notes yet</p>
+    {:else if filteredDeliveryNotes.length === 0}
+      <p class="empty-message">No delivery notes found</p>
     {:else}
-      <div class="notes-list">
-        {#each deliveryNotes.slice(0, 5) as note}
-          <div
-            class="note-item"
-            role="button"
-            tabindex="0"
-            on:click={() => handleRowClick(note)}
-            on:keydown={(event) => (event.key === "Enter" || event.key === " ") && handleRowClick(note)}
-          >
-            <div class="note-info">
-              <span class="note-number">{note.dn_number}</span>
-              <span class="note-customer">{note.customer_name || ''}</span>
+      {#each availableYears as year}
+        {@const yearNotes = filteredDeliveryNotes.filter(note => {
+          const deliveryDate = getDeliveryDateValue(note.delivery_date);
+          return deliveryDate ? deliveryDate.getFullYear().toString() === year : false;
+        })}
+        {#if yearNotes.length > 0}
+          <div class="year-group">
+            <div class="year-header">
+              <span class="year-label">{year}</span>
+              <span class="year-count">{yearNotes.length} delivery notes</span>
             </div>
-            <div class="note-meta">
-              <StatusBadge status={note.status} size="sm" />
-              <span class="note-date">{formatDate(note.delivery_date)}</span>
+            <div class="notes-list">
+              {#each yearNotes as note}
+                <div
+                  class="note-item"
+                  role="button"
+                  tabindex="0"
+                  on:click={() => handleRowClick(note)}
+                  on:keydown={(event) => (event.key === "Enter" || event.key === " ") && handleRowClick(note)}
+                >
+                  <div class="note-left">
+                    <span class="note-number">{note.dn_number}</span>
+                    <span class="note-customer">{note.customer_name || ''}</span>
+                    <span class="note-ref">Order: {note.order_reference || 'N/A'}</span>
+                  </div>
+                  <div class="note-right">
+                    <StatusBadge status={note.status} size="sm" />
+                    <span class="note-date">{formatDate(note.delivery_date)}</span>
+                  </div>
+                </div>
+              {/each}
             </div>
           </div>
-        {/each}
-      </div>
+        {/if}
+      {/each}
+
+      {@const undatedNotes = filteredDeliveryNotes.filter(note => !getDeliveryDateValue(note.delivery_date))}
+      {#if undatedNotes.length > 0}
+        <div class="year-group">
+          <div class="year-header">
+            <span class="year-label">No Date</span>
+            <span class="year-count">{undatedNotes.length} delivery notes</span>
+          </div>
+          <div class="notes-list">
+            {#each undatedNotes as note}
+              <div
+                class="note-item"
+                role="button"
+                tabindex="0"
+                on:click={() => handleRowClick(note)}
+                on:keydown={(event) => (event.key === "Enter" || event.key === " ") && handleRowClick(note)}
+              >
+                <div class="note-left">
+                  <span class="note-number">{note.dn_number}</span>
+                  <span class="note-customer">{note.customer_name || ''}</span>
+                  <span class="note-ref">Order: {note.order_reference || 'N/A'}</span>
+                </div>
+                <div class="note-right">
+                  <StatusBadge status={note.status} size="sm" />
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
     {/if}
   </div>
 {:else}
@@ -836,7 +1212,9 @@
                 {/each}
               </tbody>
             </table>
-          {:else if formData.orderId}
+          {:else if fulfillmentLoadFailed}
+            <p class="empty-fulfillment">Order items could not be loaded. Re-select the order or refresh the screen.</p>
+          {:else if formData.orderId && fulfillmentLoaded}
             <p class="empty-fulfillment">All items in this order have been fully shipped.</p>
           {/if}
         </div>
@@ -952,7 +1330,7 @@
     title={`Delivery Note ${selectedNote.dn_number}`}
     open={showDetailModal}
     on:close={() => showDetailModal = false}
-    size="md"
+    size="xl"
   >
     <div class="note-detail">
       <!-- Header Info -->
@@ -1040,8 +1418,8 @@
               <tbody>
                 {#each noteItems as item}
                   <tr>
-                    <td>{item.product_code}</td>
-                    <td>{item.description}</td>
+                    <td class="product-code">{item.product_code || '-'}</td>
+                    <td>{item.description || '-'}</td>
                     <td class="number-col">{item.quantity_ordered}</td>
                     <td class="number-col">{item.quantity_delivered}</td>
                     <td class="number-col">{item.quantity_remaining}</td>
@@ -1051,10 +1429,18 @@
             </table>
           </div>
         </div>
+      {:else}
+        <div class="items-section">
+          <h4>Delivery Items</h4>
+          <p class="empty-fulfillment">No line items found for this delivery note.</p>
+        </div>
       {/if}
 
       <!-- Quick Actions -->
       <div class="quick-actions">
+        <Button variant="secondary" on:click={() => handleGeneratePDF(selectedNote)} disabled={pdfGenerating}>
+          {pdfGenerating ? 'Generating PDF...' : 'Download PDF'}
+        </Button>
         {#if selectedNote.status === 'Draft' || selectedNote.status === 'Prepared'}
           <Button variant="primary" on:click={() => handleDispatch(selectedNote)}>
             Dispatch
@@ -1082,65 +1468,162 @@
   /* Embedded Mode */
   .delivery-notes-embedded {
     padding: 16px;
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+  }
+
+  .embedded-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 12px;
   }
 
   .delivery-notes-embedded h3 {
-    margin: 0 0 12px 0;
+    margin: 0;
     font-size: 14px;
     font-weight: 600;
     color: var(--text-primary);
   }
 
+  .embedded-stats {
+    display: flex;
+    gap: 16px;
+  }
+
+  .embedded-stat {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono, monospace);
+    white-space: nowrap;
+  }
+
+  .embedded-filters {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .embedded-search {
+    flex: 1;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    font-size: 12px;
+    outline: none;
+  }
+
+  .embedded-search:focus {
+    border-color: var(--primary, #4F46E5);
+  }
+
+  .embedded-select {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    font-size: 12px;
+    background: transparent;
+    outline: none;
+    cursor: pointer;
+    min-width: 120px;
+  }
+
+  .year-group {
+    margin-bottom: 20px;
+  }
+
+  .year-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 2px solid var(--text-primary, #1a1a1a);
+    margin-bottom: 8px;
+  }
+
+  .year-label {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-family: var(--font-mono, monospace);
+  }
+
+  .year-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
   .notes-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 4px;
   }
 
   .note-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px;
-    background: var(--bg-subtle);
-    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    background: var(--surface, #fafafa);
+    border: 1px solid var(--border, #e5e5e5);
+    border-radius: var(--radius-md, 6px);
     cursor: pointer;
-    transition: background 0.2s;
+    transition: all 0.15s;
+    gap: 16px;
   }
 
   .note-item:hover {
-    background: var(--bg-hover);
+    background: var(--bg-hover, #f0f0f0);
+    border-color: var(--text-muted, #999);
   }
 
-  .note-info {
+  .note-left {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
   }
 
   .note-number {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
-    font-family: var(--font-mono);
+    font-family: var(--font-mono, monospace);
     color: var(--text-primary);
+    white-space: nowrap;
   }
 
   .note-customer {
     font-size: 12px;
     color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 260px;
   }
 
-  .note-meta {
+  .note-ref {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono, monospace);
+    white-space: nowrap;
+  }
+
+  .note-right {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: flex-end;
-    gap: 4px;
+    gap: 12px;
+    flex-shrink: 0;
   }
 
   .note-date {
-    font-size: 12px;
-    font-family: var(--font-mono);
+    font-size: 11px;
+    font-family: var(--font-mono, monospace);
     color: var(--text-secondary);
+    white-space: nowrap;
   }
 
   /* Full Screen Mode */
@@ -1328,15 +1811,25 @@
   .note-detail {
     display: flex;
     flex-direction: column;
-    gap: 24px;
+    gap: 18px;
   }
 
   .detail-header {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
-    padding-bottom: 16px;
-    border-bottom: 1px solid var(--border);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .detail-section,
+  .info-grid {
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .detail-section {
+    padding: 12px;
+    min-width: 0;
   }
 
   .detail-section h4 {
@@ -1351,6 +1844,7 @@
     font-size: 14px;
     color: var(--text-primary);
     margin: 0;
+    overflow-wrap: anywhere;
   }
 
   /* Info Section */
@@ -1363,11 +1857,9 @@
 
   .info-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
     padding: 12px;
-    background: var(--bg-subtle);
-    border-radius: var(--radius-md);
   }
 
   .info-item {
@@ -1420,7 +1912,7 @@
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
-    min-width: 620px;
+    min-width: 760px;
   }
 
   .items-table thead {
@@ -1440,6 +1932,14 @@
   .items-table td {
     padding: 8px;
     border-bottom: 1px solid var(--border-subtle);
+    vertical-align: top;
+  }
+
+  .items-table .product-code {
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
   }
 
   .items-table .number-col {

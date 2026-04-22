@@ -44,7 +44,8 @@
   import { escapeHtml } from '$lib/utils/escapeHtml';
   import { permissions } from '$lib/stores/authContext';
 
-  $: canView = $permissions.includes('*') || $permissions.includes('po:view') || $permissions.includes('po:*');
+  $: permissionList = Array.isArray($permissions) ? $permissions : [];
+  $: canView = permissionList.includes('*') || permissionList.includes('po:view') || permissionList.includes('po:*');
 
   // Props
   export let embedded = false;
@@ -212,6 +213,7 @@
     { value: 'USD', label: 'USD - US Dollar' },
     { value: 'EUR', label: 'EUR - Euro' },
     { value: 'GBP', label: 'GBP - British Pound' },
+    { value: 'CHF', label: 'CHF - Swiss Franc' },
     { value: 'AED', label: 'AED - UAE Dirham' },
     { value: 'SAR', label: 'SAR - Saudi Riyal' }
   ];
@@ -769,14 +771,15 @@
     const select = e.target as HTMLSelectElement;
     formData.currency = select.value;
 
-    // Set default exchange rates (these should come from a service in production)
+    // BHD per 1 unit of foreign currency.
     const rates: Record<string, number> = {
       'BHD': 1.0,
-      'USD': 2.65,  // 1 USD = 2.65 BHD
-      'EUR': 2.85,  // 1 EUR = 2.85 BHD
-      'GBP': 3.35,  // 1 GBP = 3.35 BHD
-      'AED': 0.72,  // 1 AED = 0.72 BHD
-      'SAR': 0.71   // 1 SAR = 0.71 BHD
+      'USD': 0.376,
+      'EUR': 0.45,
+      'GBP': 0.52,
+      'CHF': 0.425,
+      'AED': 0.102,
+      'SAR': 0.100
     };
 
     formData.exchange_rate = rates[formData.currency] || 1.0;
@@ -1388,6 +1391,13 @@
     </div>
 
     <svelte:fragment slot="footer">
+      <Button
+        variant="primary"
+        loading={pdfLoading}
+        on:click={() => handleGeneratePDF(viewingPO.id)}
+      >
+        Download PDF
+      </Button>
       <Button variant="secondary" on:click={() => openEditModal(viewingPO.id)}>
         Edit PO
       </Button>

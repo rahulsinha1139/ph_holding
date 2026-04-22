@@ -60,7 +60,8 @@
     };
 
     const priorityOptions = ["Normal", "Urgent", "Critical"];
-    const STATUS_OPTIONS = ["All", "New", "Qualified", "Proposal", "Quoted", "Won", "Lost", "On Hold"];
+    const STATUS_OPTIONS = ["All", "Quoted", "Won", "Lost"];
+    const DEPRECATED_STAGE_LABELS = new Set(["New", "Qualified", "Proposal", "On Hold"]);
 
     const updateDebouncedSearch = debounce((value: string) => {
         debouncedSearchQuery = value;
@@ -104,6 +105,11 @@
         return stage;
     }
 
+    function displayStage(value: any): string {
+        const stage = normalizeStage(value);
+        return DEPRECATED_STAGE_LABELS.has(stage) ? "Pipeline" : stage;
+    }
+
     function getOpportunityTimestamp(opp: any): number {
         const candidates = [
             opp?.updated_at,
@@ -135,6 +141,11 @@
         }
 
         return String(b?.id || "").localeCompare(String(a?.id || ""), undefined, { numeric: true, sensitivity: "base" });
+    }
+
+    function quotedSortBucket(opp: any): number {
+        const stage = normalizeStage(opp?.stage || opp?.status);
+        return ["Quoted", "Won", "Lost"].includes(stage) ? 1 : 0;
     }
 
     function normalizePipelineOpportunity(opp: any) {
@@ -235,7 +246,7 @@
             const stage = normalizeStage(opp.stage || opp.status);
             const value = Number(opp.value) || Number(opp.revenue_bhd) || 0;
 
-            if (stage === "New" || stage === "Qualified" || stage === "Proposal") stats.newCount++;
+            if (DEPRECATED_STAGE_LABELS.has(stage)) stats.newCount++;
             if (stage === "Quoted") stats.quotedCount++;
             if (stage === "Won") {
                 stats.wonCount++;
@@ -287,6 +298,11 @@
         }
 
         result.sort((a, b) => {
+            if (activeFilter === "All") {
+                const quoteBucketDelta = quotedSortBucket(a) - quotedSortBucket(b);
+                if (quoteBucketDelta !== 0) return quoteBucketDelta;
+            }
+
             let aValue: any = 0;
             let bValue: any = 0;
 
@@ -540,7 +556,7 @@
                             </div>
 
                             <div class="card-summary">
-                                <span class="status-badge">{opp.stage || opp.status || "New"}</span>
+                                <span class="status-badge">{displayStage(opp.stage || opp.status)}</span>
                                 <span class="card-value" class:pending={getOpportunityValue(opp) <= 0}>
                                     {formatOpportunityValue(opp)}
                                 </span>
@@ -583,7 +599,13 @@
         bind:this={opportunityModalEl}
         class="modal-backdrop"
         on:click|self={closeOpportunityModal}
-        on:keydown={(event) => (event.key === "Escape" || event.key === "Enter" || event.key === " ") && closeOpportunityModal()}
+        on:keydown={(event) => {
+            if (event.currentTarget !== event.target) return;
+            if (event.key === "Escape" || event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                closeOpportunityModal();
+            }
+        }}
         role="button"
         tabindex="0"
     >
@@ -623,7 +645,13 @@
     <div
         class="modal-backdrop"
         on:click|self={() => (showCreateForm = false)}
-        on:keydown={(event) => (event.key === "Escape" || event.key === "Enter" || event.key === " ") && (showCreateForm = false)}
+        on:keydown={(event) => {
+            if (event.currentTarget !== event.target) return;
+            if (event.key === "Escape" || event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                showCreateForm = false;
+            }
+        }}
         role="button"
         tabindex="0"
     >
@@ -687,7 +715,13 @@
     <div
         class="modal-backdrop"
         on:click|self={() => (showDeleteConfirm = false)}
-        on:keydown={(event) => (event.key === "Escape" || event.key === "Enter" || event.key === " ") && (showDeleteConfirm = false)}
+        on:keydown={(event) => {
+            if (event.currentTarget !== event.target) return;
+            if (event.key === "Escape" || event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                showDeleteConfirm = false;
+            }
+        }}
         role="button"
         tabindex="0"
     >

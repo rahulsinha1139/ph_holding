@@ -9,7 +9,8 @@
     import { permissions } from '$lib/stores/authContext';
     import { GetFinancialDashboardForYear, GetFinancialReportYears, GetCashPosition } from '../../../wailsjs/go/main/App';
 
-    $: canView = $permissions.includes('*') || $permissions.includes('finance:view') || $permissions.includes('finance:*');
+    $: permissionList = Array.isArray($permissions) ? $permissions : [];
+    $: canView = permissionList.includes('*') || permissionList.includes('finance:view') || permissionList.includes('finance:*');
 
     export let embedded = false;
 
@@ -19,6 +20,7 @@
     let selectedYear = new Date().getFullYear(); // Default to current year
     let noDataForYear = false;
     let liveCashTotal = 0; // Sum of closing balances from all bank accounts
+    let cashNoticeItems: string[] = [];
 
     const fmtCurrency = (val: number) =>
         new Intl.NumberFormat('en-BH', { style: 'currency', currency: 'BHD', minimumFractionDigits: 3, maximumFractionDigits: 3 }).format(val);
@@ -40,6 +42,34 @@
     const AUDITED_YEARS = [2023, 2024];
 
     $: isAuditedYear = AUDITED_YEARS.includes(selectedYear);
+    $: liveDataBadge = data?.source?.includes('Fresh Start') ? 'Live ERP Data' : 'Unaudited Live Data';
+    $: cashNoticeSummary = cashNoticeItems.length
+        ? `${cashNoticeItems.length} bank ${cashNoticeItems.length === 1 ? 'account needs' : 'accounts need'} statement attention`
+        : '';
+    $: cashNoticePreview = cashNoticeItems.slice(0, 3).map(formatCashNotice);
+    $: hiddenCashNoticeCount = Math.max(cashNoticeItems.length - cashNoticePreview.length, 0);
+
+    function compactAccountRef(value: string) {
+        return value
+            .replace(/\b\d{8,}\b/g, (match) => `...${match.slice(-4)}`)
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function formatCashNotice(notice: string) {
+        const clean = notice.replace(/\.$/, '').trim();
+        const missingMatch = clean.match(/^No statement imported for (.+)$/i);
+        if (missingMatch) {
+            return `Missing statement: ${compactAccountRef(missingMatch[1])}`;
+        }
+
+        const staleMatch = clean.match(/^(.+) latest statement is ([^;]+); latest imported month for (.+) is (.+)$/i);
+        if (staleMatch) {
+            return `${compactAccountRef(staleMatch[1])} is behind (${staleMatch[2]} vs ${staleMatch[3]} ${staleMatch[4]})`;
+        }
+
+        return compactAccountRef(clean);
+    }
 
     async function loadAvailableYears() {
         try {
@@ -134,6 +164,8 @@
     }
 
     $: totalAR = data ? data.ar_current + data.ar_30_60 + data.ar_60_90 + data.ar_over_90 : 0;
+    $: arBarDenominator = Math.max(totalAR, 1);
+    $: assetBarDenominator = Math.max(Number(data?.total_assets || 0), 1);
 
     async function handleYearChange() {
         await loadDashboard();
@@ -142,11 +174,13 @@
     async function loadCashPosition() {
         try {
             const pos = await GetCashPosition();
-            if (pos && typeof pos.total_bhd === 'number') {
-                liveCashTotal = pos.total_bhd + (pos.total_eur || 0);
+            if (pos) {
+                liveCashTotal = Number(pos.cash_balance_bhd ?? pos.total_bhd ?? 0);
+                cashNoticeItems = Array.isArray(pos.notices) ? pos.notices.filter(Boolean) : [];
             }
         } catch (err) {
             console.warn('GetCashPosition not available, using fallback:', err);
+            cashNoticeItems = [];
         }
     }
 
@@ -188,7 +222,7 @@
                 {#if isAuditedYear}
                     <span class="audit-badge audited">Audited by Grant Thornton</span>
                 {:else}
-                    <span class="audit-badge unaudited">From Tally Data</span>
+                    <span class="audit-badge unaudited">{liveDataBadge}</span>
                 {/if}
             </div>
         </div>
@@ -203,21 +237,38 @@
                 </div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">Gross Profit</div>
-                <div class="kpi-value">{fmtCompact(data.gross_profit)}</div>
-                <div class="kpi-sub">Margin: {fmtPct(data.gross_margin)}</div>
+                <div class="kpi-label">Cash Balance</div>
+                <div class="kpi-value">{fmtCompact(liveCashTotal > 0 ? liveCashTotal : data.cash_and_equiv)}</div>
+                <div class="kpi-sub">{liveCashTotal > 0 ? 'Latest bank statements' : 'Awaiting bank statements'}</div>
             </div>
             <div class="kpi-card">
+                <div class="kpi-label">Accounts Receivable</div>
+                <div class="kpi-value">{fmtCompact(data.trade_receivables)}</div>
+                <div class="kpi-sub">Open AR and uninvoiced orders</div>
+            </div>
+            <div class="kpi-card highlight">
                 <div class="kpi-label">Net Profit</div>
                 <div class="kpi-value">{fmtCompact(data.net_profit)}</div>
                 <div class="kpi-sub">Margin: {fmtPct(data.net_margin)}</div>
             </div>
-            <div class="kpi-card highlight">
-                <div class="kpi-label">Cash Position</div>
-                <div class="kpi-value">{fmtCompact(liveCashTotal > 0 ? liveCashTotal : data.total_liquidity)}</div>
-                <div class="kpi-sub">{liveCashTotal > 0 ? 'From bank statements' : `Ratio: ${fmtRatio(data.current_ratio)}`}</div>
-            </div>
         </div>
+
+        {#if cashNoticeItems.length}
+            <div class="statement-note">
+                <div class="statement-note-header">
+                    <strong>Statement check:</strong>
+                    <span>{cashNoticeSummary}</span>
+                </div>
+                <ul>
+                    {#each cashNoticePreview as notice}
+                        <li>{notice}</li>
+                    {/each}
+                    {#if hiddenCashNoticeCount > 0}
+                        <li>{hiddenCashNoticeCount} more {hiddenCashNoticeCount === 1 ? 'account' : 'accounts'} need review.</li>
+                    {/if}
+                </ul>
+            </div>
+        {/if}
 
         <!-- Main Grid -->
         <div class="main-grid">
@@ -235,14 +286,14 @@
                             <span class="bs-val">{fmtCurrency(data.current_assets)}</span>
                         </div>
                         <div class="bs-bar">
-                            <div class="bs-fill blue" style="width: {data.current_assets / data.total_assets * 100}%"></div>
+                            <div class="bs-fill blue" style="width: {data.current_assets / assetBarDenominator * 100}%"></div>
                         </div>
                         <div class="bs-row">
                             <span>Non-Current Assets</span>
                             <span class="bs-val">{fmtCurrency(data.non_current_assets)}</span>
                         </div>
                         <div class="bs-bar">
-                            <div class="bs-fill purple" style="width: {data.non_current_assets / data.total_assets * 100}%"></div>
+                            <div class="bs-fill purple" style="width: {data.non_current_assets / assetBarDenominator * 100}%"></div>
                         </div>
                         <div class="bs-row total">
                             <span>Total Assets</span>
@@ -257,14 +308,14 @@
                             <span class="bs-val">{fmtCurrency(data.total_liabilities)}</span>
                         </div>
                         <div class="bs-bar">
-                            <div class="bs-fill red" style="width: {data.total_liabilities / data.total_assets * 100}%"></div>
+                            <div class="bs-fill red" style="width: {data.total_liabilities / assetBarDenominator * 100}%"></div>
                         </div>
                         <div class="bs-row">
                             <span>Total Equity</span>
                             <span class="bs-val">{fmtCurrency(data.total_equity)}</span>
                         </div>
                         <div class="bs-bar">
-                            <div class="bs-fill green" style="width: {data.total_equity / data.total_assets * 100}%"></div>
+                            <div class="bs-fill green" style="width: {data.total_equity / assetBarDenominator * 100}%"></div>
                         </div>
                     </div>
                 </div>
@@ -343,28 +394,28 @@
                     <div class="ar-buckets">
                         <div class="ar-bucket">
                             <div class="ar-bar-wrap">
-                                <div class="ar-bar green" style="height: {data.ar_current / totalAR * 100}%"></div>
+                                <div class="ar-bar green" style="height: {data.ar_current / arBarDenominator * 100}%"></div>
                             </div>
                             <div class="ar-label">0-30d</div>
                             <div class="ar-val">{fmtCurrency(data.ar_current)}</div>
                         </div>
                         <div class="ar-bucket">
                             <div class="ar-bar-wrap">
-                                <div class="ar-bar lime" style="height: {data.ar_30_60 / totalAR * 100}%"></div>
+                                <div class="ar-bar lime" style="height: {data.ar_30_60 / arBarDenominator * 100}%"></div>
                             </div>
                             <div class="ar-label">31-60d</div>
                             <div class="ar-val">{fmtCurrency(data.ar_30_60)}</div>
                         </div>
                         <div class="ar-bucket">
                             <div class="ar-bar-wrap">
-                                <div class="ar-bar orange" style="height: {data.ar_60_90 / totalAR * 100}%"></div>
+                                <div class="ar-bar orange" style="height: {data.ar_60_90 / arBarDenominator * 100}%"></div>
                             </div>
                             <div class="ar-label">61-90d</div>
                             <div class="ar-val">{fmtCurrency(data.ar_60_90)}</div>
                         </div>
                         <div class="ar-bucket">
                             <div class="ar-bar-wrap">
-                                <div class="ar-bar red" style="height: {data.ar_over_90 / totalAR * 100}%"></div>
+                                <div class="ar-bar red" style="height: {data.ar_over_90 / arBarDenominator * 100}%"></div>
                             </div>
                             <div class="ar-label">>90d</div>
                             <div class="ar-val">{fmtCurrency(data.ar_over_90)}</div>
@@ -496,7 +547,7 @@
                     {:else if selectedYear === 2023}
                         <strong>Note:</strong> FY2023 included the EWA smart meter mega-contract (93% of revenue). This was a one-time project, not recurring business.
                     {:else if selectedYear === 2026}
-                        <strong>Note:</strong> FY2026 uses live finance-ledger data where available. Revenue and receivables remain invoice-based, while cash position can reflect imported bank statements.
+                        <strong>Note:</strong> FY2026 uses live fiscal-year data. Confirmed orders are included when invoices have not been posted yet.
                     {:else}
                         <strong>Note:</strong> Comparing {data.period} to {data.prior_year}. All figures in BHD.
                     {/if}
@@ -558,7 +609,7 @@
         font-family: var(--font-display);
         font-size: 20px;
         font-weight: 500;
-        letter-spacing: -0.02em;
+        letter-spacing: 0;
         color: var(--onyx, #1D1D1F);
     }
 
@@ -663,11 +714,38 @@
         border-color: var(--brand-indigo);
     }
 
+    .statement-note {
+        margin: 12px 0 16px;
+        padding: 10px 14px;
+        border: 1px solid rgba(217, 119, 6, 0.18);
+        border-radius: 8px;
+        background: rgba(255, 248, 232, 0.84);
+        color: #7a4d0b;
+        font-size: 12px;
+        line-height: 1.45;
+    }
+
+    .statement-note-header {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        flex-wrap: wrap;
+    }
+
+    .statement-note ul {
+        margin: 8px 0 0 18px;
+        padding: 0;
+    }
+
+    .statement-note li + li {
+        margin-top: 3px;
+    }
+
     .kpi-label {
         font-family: var(--font-body);
         font-size: 12px;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
+        letter-spacing: 0;
         color: var(--text-muted);
         font-weight: 500;
         line-height: 1.4;
@@ -682,7 +760,7 @@
         word-break: normal;
         overflow-wrap: anywhere;
         line-height: 1.18;
-        letter-spacing: -0.035em;
+        letter-spacing: 0;
         max-width: 100%;
     }
 
@@ -739,7 +817,7 @@
         font-size: 14px;
         font-weight: 500;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
+        letter-spacing: 0;
         line-height: 1.35;
         overflow-wrap: anywhere;
     }

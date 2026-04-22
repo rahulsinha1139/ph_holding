@@ -1599,6 +1599,12 @@ func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 			}
 			offerItems = append(offerItems, oi)
 		}
+
+		if specs := extractAnnexureSpecsFromDealFiles(deal.Files); len(specs) > 0 {
+			if enriched := enrichOfferItemsWithAnnexureSpecs(offerItems, specs); enriched > 0 {
+				log.Printf("✅ OneDrive import: enriched %d offer item(s) with annexure specs for %s", enriched, deal.FolderName)
+			}
+		}
 	}
 
 	if quotationDate.IsZero() {

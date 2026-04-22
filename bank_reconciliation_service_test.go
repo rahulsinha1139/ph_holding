@@ -10,7 +10,7 @@ import (
 
 func TestUpdateBankStatementLineRecalculatesAndClearsMatch(t *testing.T) {
 	app := setupTestApp(t)
-	require.NoError(t, app.db.AutoMigrate(&BankStatement{}, &BankStatementLine{}, &PayrollRun{}, &PayrollPayout{}))
+	require.NoError(t, app.db.AutoMigrate(&BankStatement{}, &BankStatementLine{}, &BankLinePaymentAllocation{}, &PayrollRun{}, &PayrollPayout{}, &BankReconciliationAuditLog{}))
 
 	statementID := uuid.New().String()
 	lineID := uuid.New().String()
@@ -74,4 +74,160 @@ func TestUpdateBankStatementLineRecalculatesAndClearsMatch(t *testing.T) {
 	require.Equal(t, "InProgress", updatedStatement.Status)
 	require.Nil(t, updatedStatement.ReconciledAt)
 	require.Empty(t, updatedStatement.ReconciledBy)
+}
+
+func TestCreateSplitAllocationMatchesBulkReceiptToMultipleCustomerInvoices(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&BankStatement{}, &BankStatementLine{}, &BankLinePaymentAllocation{}, &Invoice{}, &BankReconciliationAuditLog{}))
+
+	statement := BankStatement{
+		Base:            Base{ID: uuid.New().String()},
+		BankAccountID:   uuid.New().String(),
+		StatementNumber: "BULK-RECEIPT-001",
+		StatementDate:   time.Now(),
+		PeriodStart:     time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC),
+		PeriodEnd:       time.Date(2026, time.January, 31, 0, 0, 0, 0, time.UTC),
+		Division:        "PH Trading",
+		Status:          "Imported",
+	}
+	require.NoError(t, app.db.Create(&statement).Error)
+
+	line := BankStatementLine{
+		Base:            Base{ID: uuid.New().String()},
+		BankStatementID: statement.ID,
+		LineNumber:      1,
+		TransactionDate: time.Now(),
+		ValueDate:       time.Now(),
+		Description:     "Bulk customer receipt",
+		Credit:          150,
+		Balance:         150,
+	}
+	require.NoError(t, app.db.Create(&line).Error)
+
+	invoiceA := seedBankReconInvoice(t, app, "PH26/101", 100)
+	invoiceB := seedBankReconInvoice(t, app, "PH26/102", 50)
+
+	require.NoError(t, app.CreateSplitAllocation(line.ID, []AllocationInput{
+		{AllocationType: "CUSTOMER_INVOICE", EntityID: invoiceA.ID, AllocatedAmount: 100},
+		{AllocationType: "CUSTOMER_INVOICE", EntityID: invoiceB.ID, AllocatedAmount: 50},
+	}, "admin"))
+
+	var updatedLine BankStatementLine
+	require.NoError(t, app.db.First(&updatedLine, "id = ?", line.ID).Error)
+	require.True(t, updatedLine.IsMatched)
+	require.Equal(t, "Split", updatedLine.MatchType)
+	require.ElementsMatch(t, []string{invoiceA.ID, invoiceB.ID}, parseJSONArray(updatedLine.MatchedInvoiceIDs))
+
+	var allocations []BankLinePaymentAllocation
+	require.NoError(t, app.db.Where("bank_statement_line_id = ?", line.ID).Find(&allocations).Error)
+	require.Len(t, allocations, 2)
+}
+
+func TestCreateSplitAllocationAllowsOneInvoiceAcrossMultipleReceipts(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&BankStatement{}, &BankStatementLine{}, &BankLinePaymentAllocation{}, &Invoice{}, &BankReconciliationAuditLog{}))
+
+	statement := BankStatement{
+		Base:            Base{ID: uuid.New().String()},
+		BankAccountID:   uuid.New().String(),
+		StatementNumber: "PARTIAL-RECEIPT-001",
+		StatementDate:   time.Now(),
+		PeriodStart:     time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC),
+		PeriodEnd:       time.Date(2026, time.February, 28, 0, 0, 0, 0, time.UTC),
+		Division:        "PH Trading",
+		Status:          "Imported",
+	}
+	require.NoError(t, app.db.Create(&statement).Error)
+
+	invoice := seedBankReconInvoice(t, app, "PH26/201", 150)
+	lineA := seedBankReconCreditLine(t, app, statement.ID, 1, 100)
+	lineB := seedBankReconCreditLine(t, app, statement.ID, 2, 50)
+
+	require.NoError(t, app.CreateSplitAllocation(lineA.ID, []AllocationInput{
+		{AllocationType: "CUSTOMER_INVOICE", EntityID: invoice.ID, AllocatedAmount: 100},
+	}, "admin"))
+	require.NoError(t, app.CreateSplitAllocation(lineB.ID, []AllocationInput{
+		{AllocationType: "CUSTOMER_INVOICE", EntityID: invoice.ID, AllocatedAmount: 50},
+	}, "admin"))
+
+	var totalAllocated float64
+	require.NoError(t, app.db.Model(&BankLinePaymentAllocation{}).
+		Where("customer_invoice_id = ?", invoice.ID).
+		Select("COALESCE(SUM(allocated_amount), 0)").
+		Scan(&totalAllocated).Error)
+	require.Equal(t, 150.0, totalAllocated)
+
+	lineC := seedBankReconCreditLine(t, app, statement.ID, 3, 1)
+	err := app.CreateSplitAllocation(lineC.ID, []AllocationInput{
+		{AllocationType: "CUSTOMER_INVOICE", EntityID: invoice.ID, AllocatedAmount: 1},
+	}, "admin")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds remaining invoice balance")
+}
+
+func TestUnmatchLineClearsSplitAllocations(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&BankStatement{}, &BankStatementLine{}, &BankLinePaymentAllocation{}, &Invoice{}, &BankReconciliationAuditLog{}))
+
+	statement := BankStatement{
+		Base:            Base{ID: uuid.New().String()},
+		BankAccountID:   uuid.New().String(),
+		StatementNumber: "UNMATCH-SPLIT-001",
+		StatementDate:   time.Now(),
+		PeriodStart:     time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC),
+		PeriodEnd:       time.Date(2026, time.March, 31, 0, 0, 0, 0, time.UTC),
+		Division:        "PH Trading",
+		Status:          "Imported",
+	}
+	require.NoError(t, app.db.Create(&statement).Error)
+
+	invoice := seedBankReconInvoice(t, app, "PH26/301", 75)
+	line := seedBankReconCreditLine(t, app, statement.ID, 1, 75)
+	require.NoError(t, app.CreateSplitAllocation(line.ID, []AllocationInput{
+		{AllocationType: "CUSTOMER_INVOICE", EntityID: invoice.ID, AllocatedAmount: 75},
+	}, "admin"))
+	require.NoError(t, app.UnmatchLine(line.ID, "admin", "test unmatch"))
+
+	var updatedLine BankStatementLine
+	require.NoError(t, app.db.First(&updatedLine, "id = ?", line.ID).Error)
+	require.False(t, updatedLine.IsMatched)
+	require.Equal(t, "Unmatched", updatedLine.MatchType)
+
+	var allocationCount int64
+	require.NoError(t, app.db.Model(&BankLinePaymentAllocation{}).Where("bank_statement_line_id = ?", line.ID).Count(&allocationCount).Error)
+	require.Zero(t, allocationCount)
+}
+
+func seedBankReconInvoice(t *testing.T, app *App, number string, outstanding float64) Invoice {
+	t.Helper()
+	invoice := Invoice{
+		Base:           Base{ID: uuid.New().String()},
+		InvoiceNumber:  number,
+		InvoiceDate:    time.Now(),
+		CustomerID:     uuid.New().String(),
+		CustomerName:   "Bulk Customer",
+		GrandTotalBHD:  outstanding,
+		OutstandingBHD: outstanding,
+		Status:         "Sent",
+		Division:       "PH Trading",
+		DueDate:        time.Now().AddDate(0, 0, 30),
+	}
+	require.NoError(t, app.db.Create(&invoice).Error)
+	return invoice
+}
+
+func seedBankReconCreditLine(t *testing.T, app *App, statementID string, lineNumber int, amount float64) BankStatementLine {
+	t.Helper()
+	line := BankStatementLine{
+		Base:            Base{ID: uuid.New().String()},
+		BankStatementID: statementID,
+		LineNumber:      lineNumber,
+		TransactionDate: time.Now(),
+		ValueDate:       time.Now(),
+		Description:     "Customer receipt",
+		Credit:          amount,
+		Balance:         amount,
+	}
+	require.NoError(t, app.db.Create(&line).Error)
+	return line
 }

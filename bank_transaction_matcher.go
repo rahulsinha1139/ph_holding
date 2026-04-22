@@ -11,9 +11,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"regexp"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // =============================================================================
@@ -332,13 +335,20 @@ func extractBankEntityName(description string, knownCustomers, knownSuppliers []
 // matchToCustomerInvoice attempts to match a credit line to customer invoices
 func (a *App) matchToCustomerInvoice(line *BankStatementLine, invoiceNumbers []string, customerName string, division string) (bool, string, float64) {
 	division = normalizeDivisionName(division)
+	if line.Credit <= 0 {
+		return false, "", 0
+	}
+	openStatuses := []string{"Sent", "Overdue", "PartiallyPaid"}
+
 	// Try matching by invoice number first
 	for _, invNum := range invoiceNumbers {
 		var invoice Invoice
-		err := a.db.Where("invoice_number LIKE ? ESCAPE '\\\\' AND division = ?", "%"+escapeLikeWildcards(invNum)+"%", division).First(&invoice).Error
+		err := a.db.Where("invoice_number LIKE ? ESCAPE '\\\\' AND division = ? AND status IN ?", "%"+escapeLikeWildcards(invNum)+"%", division, openStatuses).First(&invoice).Error
 		if err == nil {
-			// Found matching invoice
-			return true, invoice.ID, 0.95
+			payable := payableCustomerInvoiceAmount(invoice)
+			if line.Credit <= payable+bankMatchTolerance(payable) || bankAmountsClose(line.Credit, payable) {
+				return true, invoice.ID, 0.95
+			}
 		}
 	}
 
@@ -348,20 +358,28 @@ func (a *App) matchToCustomerInvoice(line *BankStatementLine, invoiceNumbers []s
 		err := a.db.Where("business_name LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(customerName)+"%").First(&customer).Error
 		if err == nil {
 			// Found customer, look for matching invoice amount
-			var invoice Invoice
-			err = a.db.Where("customer_id = ? AND grand_total_bhd = ? AND division = ? AND status IN ?",
-				customer.ID, line.Credit, division, []string{"Sent", "Overdue", "PartiallyPaid"}).First(&invoice).Error
+			var invoices []Invoice
+			err = a.db.Where("customer_id = ? AND division = ? AND status IN ?",
+				customer.ID, division, openStatuses).Find(&invoices).Error
 			if err == nil {
-				return true, invoice.ID, 0.85
+				for _, invoice := range invoices {
+					if bankAmountsClose(line.Credit, payableCustomerInvoiceAmount(invoice)) {
+						return true, invoice.ID, 0.85
+					}
+				}
 			}
 		}
 	}
 
 	// Try matching by amount only (low confidence)
-	var invoice Invoice
-	err := a.db.Where("grand_total_bhd = ? AND division = ? AND status IN ?", line.Credit, division, []string{"Sent", "Overdue", "PartiallyPaid"}).First(&invoice).Error
+	var invoices []Invoice
+	err := a.db.Where("division = ? AND status IN ?", division, openStatuses).Limit(100).Find(&invoices).Error
 	if err == nil {
-		return true, invoice.ID, 0.60
+		for _, invoice := range invoices {
+			if bankAmountsClose(line.Credit, payableCustomerInvoiceAmount(invoice)) {
+				return true, invoice.ID, 0.60
+			}
+		}
 	}
 
 	return false, "", 0
@@ -370,12 +388,18 @@ func (a *App) matchToCustomerInvoice(line *BankStatementLine, invoiceNumbers []s
 // matchToSupplierPayment attempts to match a debit line to supplier payments
 func (a *App) matchToSupplierPayment(line *BankStatementLine, poNumbers []string, supplierName string, division string) (bool, string, float64) {
 	division = normalizeDivisionName(division)
+	if line.Debit <= 0 {
+		return false, "", 0
+	}
 	// Try matching by PO number
 	for _, poNum := range poNumbers {
-		var po PurchaseOrder
-		err := a.db.Where("po_number LIKE ? ESCAPE '\\\\' AND division = ?", "%"+escapeLikeWildcards(poNum)+"%", division).First(&po).Error
+		var invoice SupplierInvoice
+		err := a.db.Where("po_number LIKE ? ESCAPE '\\\\' AND division = ? AND status NOT IN ?",
+			"%"+escapeLikeWildcards(poNum)+"%", division, []string{"Paid", "Rejected", "Cancelled", "Void"}).First(&invoice).Error
 		if err == nil {
-			return true, po.ID, 0.90
+			if bankAmountsClose(line.Debit, invoice.TotalBHD) {
+				return true, invoice.ID, 0.90
+			}
 		}
 	}
 
@@ -445,51 +469,95 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 
 	// Validate amount ratio between bank line and matched entity
 	var entityAmount float64
+	lineAmt := line.Credit
+	if lineAmt == 0 {
+		lineAmt = line.Debit
+	}
 	switch entityType {
 	case "CUSTOMER_INVOICE":
+		if line.Credit <= 0 {
+			return fmt.Errorf("customer invoices must be matched to credit transactions")
+		}
 		var inv Invoice
 		if err := a.db.First(&inv, "id = ?", entityID).Error; err == nil {
 			if normalizeDivisionName(inv.Division) != statementDivision {
 				return fmt.Errorf("cannot match %s bank line to %s invoice", statementDivision, normalizeDivisionName(inv.Division))
 			}
-			entityAmount = inv.GrandTotalBHD
+			entityAmount = payableCustomerInvoiceAmount(inv)
+		} else {
+			return fmt.Errorf("customer invoice not found: %w", err)
 		}
 	case "SUPPLIER_INVOICE":
+		if line.Debit <= 0 {
+			return fmt.Errorf("supplier invoices must be matched to debit transactions")
+		}
 		var sinv SupplierInvoice
 		if err := a.db.First(&sinv, "id = ?", entityID).Error; err == nil {
 			if a.resolveSupplierInvoiceDivision(sinv) != statementDivision {
 				return fmt.Errorf("cannot match %s bank line to %s supplier invoice", statementDivision, a.resolveSupplierInvoiceDivision(sinv))
 			}
 			entityAmount = sinv.TotalBHD
+		} else {
+			return fmt.Errorf("supplier invoice not found: %w", err)
 		}
 	case "SUPPLIER_PAYMENT":
+		if line.Debit <= 0 {
+			return fmt.Errorf("supplier payments must be matched to debit transactions")
+		}
 		var payment SupplierPayment
 		if err := a.db.First(&payment, "id = ?", entityID).Error; err == nil {
 			if normalizeDivisionName(payment.Division) != statementDivision {
 				return fmt.Errorf("cannot match %s bank line to %s supplier payment", statementDivision, normalizeDivisionName(payment.Division))
 			}
 			entityAmount = payment.AmountBHD
+		} else {
+			return fmt.Errorf("supplier payment not found: %w", err)
 		}
 	case "PAYROLL_PAYOUT":
+		if line.Debit <= 0 {
+			return fmt.Errorf("payroll payouts must be matched to debit transactions")
+		}
 		var payout PayrollPayout
 		if err := a.db.First(&payout, "id = ?", entityID).Error; err == nil {
 			entityAmount = payout.Amount
+		} else {
+			return fmt.Errorf("payroll payout not found: %w", err)
 		}
+	case "EXPENSE":
+		if line.Debit <= 0 {
+			return fmt.Errorf("expenses must be matched to debit transactions")
+		}
+		var expense ExpenseEntry
+		if err := a.db.First(&expense, "id = ?", entityID).Error; err == nil {
+			if normalizeDivisionName(expense.Division) != statementDivision {
+				return fmt.Errorf("cannot match %s bank line to %s expense", statementDivision, normalizeDivisionName(expense.Division))
+			}
+			entityAmount = expense.TotalAmount
+			if entityAmount <= 0 {
+				entityAmount = expense.Amount + expense.VATAmount
+			}
+			if entityAmount <= 0 {
+				entityAmount = expense.Amount
+			}
+		} else {
+			return fmt.Errorf("expense not found: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported match type: %s", entityType)
 	}
 	// Reject zero-amount entities — a zero-value invoice skips all ratio checks,
 	// allowing any bank line to reconcile against a phantom or draft invoice.
 	if entityAmount <= 0 {
 		return fmt.Errorf("cannot match: entity amount is %.3f BHD — only positive-value invoices can be reconciled", entityAmount)
 	}
-	lineAmt := line.Credit
-	if lineAmt == 0 {
-		lineAmt = line.Debit
-	}
 	if lineAmt > 0 {
-		// Tightened from 0.5-2.0 to ±5% to prevent matching wildly different amounts.
-		// A 2x tolerance allowed reconciling a 10,000 BHD receipt to a 5,000 BHD invoice.
-		ratio := lineAmt / entityAmount
-		if ratio < 0.95 || ratio > 1.05 {
+		tolerance := bankMatchTolerance(entityAmount)
+		if entityType == "CUSTOMER_INVOICE" {
+			if lineAmt > entityAmount+tolerance {
+				return fmt.Errorf("amount mismatch: bank receipt %.3f BHD exceeds invoice outstanding %.3f BHD by more than %.3f BHD", lineAmt, entityAmount, tolerance)
+			}
+		} else if !bankAmountsClose(lineAmt, entityAmount) {
+			ratio := lineAmt / entityAmount
 			return fmt.Errorf("amount mismatch: bank line %.3f BHD vs entity %.3f BHD (%.1f%% difference, tolerance ±5%%)", lineAmt, entityAmount, (ratio-1)*100)
 		}
 	}
@@ -504,7 +572,7 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 	case "CUSTOMER_INVOICE":
 		updates["matched_invoice_ids"] = entityID
 	case "SUPPLIER_INVOICE":
-		updates["matched_payment_ids"] = entityID
+		updates["matched_invoice_ids"] = entityID
 	case "SUPPLIER_PAYMENT":
 		updates["matched_payment_id"] = entityID
 	case "EXPENSE":
@@ -544,6 +612,21 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 	return nil
 }
 
+func payableCustomerInvoiceAmount(invoice Invoice) float64 {
+	if invoice.OutstandingBHD > 0 {
+		return invoice.OutstandingBHD
+	}
+	return invoice.GrandTotalBHD
+}
+
+func bankMatchTolerance(amount float64) float64 {
+	return math.Max(0.001, math.Abs(amount)*0.05)
+}
+
+func bankAmountsClose(a, b float64) bool {
+	return math.Abs(a-b) <= bankMatchTolerance(math.Max(math.Abs(a), math.Abs(b)))
+}
+
 // UnmatchLine removes a match from a bank line
 func (a *App) UnmatchLine(lineID, user, reason string) error {
 	if err := a.requirePermission("finance:create"); err != nil {
@@ -568,9 +651,13 @@ func (a *App) UnmatchLine(lineID, user, reason string) error {
 		"match_type":          "Unmatched",
 		"match_confidence":    0,
 		"matched_invoice_ids": "",
-		"matched_payment_ids": "",
+		"matched_payment_id":  "",
 		"matched_expense_id":  nil,
 		"matched_journal_id":  "",
+	}
+
+	if err := a.db.Where("bank_statement_line_id = ?", lineID).Delete(&BankLinePaymentAllocation{}).Error; err != nil {
+		return fmt.Errorf("failed to clear split allocations: %w", err)
 	}
 
 	var payout PayrollPayout
@@ -611,71 +698,166 @@ func (a *App) CreateSplitAllocation(lineID string, allocations []AllocationInput
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
+	if len(allocations) == 0 {
+		return fmt.Errorf("at least one allocation is required")
+	}
 
 	var line BankStatementLine
-	if err := a.db.First(&line, "id = ?", lineID).Error; err != nil {
-		return fmt.Errorf("line not found: %w", err)
-	}
+	var allocationIDs []string
 
-	// Validate total allocation matches line amount
-	lineAmount := line.Credit
-	if lineAmount == 0 {
-		lineAmount = line.Debit
-	}
-
-	var totalAllocated float64
-	for _, alloc := range allocations {
-		totalAllocated += alloc.AllocatedAmount
-	}
-
-	// Use tolerance of 1 fils (0.001 BHD) to handle IEEE 754 floating-point rounding.
-	// Exact equality fails on sums like 100.001 + 100.002 due to binary representation.
-	const bhdRoundingTolerance = 0.001
-	diff := totalAllocated - lineAmount
-	if diff < 0 {
-		diff = -diff
-	}
-	if diff > bhdRoundingTolerance {
-		return fmt.Errorf("allocation total (%.3f) does not match line amount (%.3f) — difference %.3f exceeds 1 fils tolerance",
-			totalAllocated, lineAmount, diff)
-	}
-
-	// Create allocation records
-	for _, alloc := range allocations {
-		allocation := BankLinePaymentAllocation{
-			BankStatementLineID: lineID,
-			AllocationType:      alloc.AllocationType,
-			AllocatedAmount:     alloc.AllocatedAmount,
-			Currency:            "BHD",
-			Status:              "Allocated",
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&line, "id = ?", lineID).Error; err != nil {
+			return fmt.Errorf("line not found: %w", err)
+		}
+		if line.IsMatched {
+			return fmt.Errorf("line already matched")
 		}
 
-		switch alloc.AllocationType {
-		case "CUSTOMER_INVOICE":
-			allocation.CustomerInvoiceID = &alloc.EntityID
-		case "SUPPLIER_INVOICE":
-			allocation.SupplierInvoiceID = &alloc.EntityID
-		case "EXPENSE":
-			allocation.ExpenseEntryID = &alloc.EntityID
+		var statement BankStatement
+		if err := tx.First(&statement, "id = ?", line.BankStatementID).Error; err != nil {
+			return fmt.Errorf("statement not found: %w", err)
+		}
+		statementDivision := normalizeDivisionName(statement.Division)
+		if statementDivision == "" {
+			var account CompanyBankAccount
+			if err := tx.First(&account, "id = ?", statement.BankAccountID).Error; err == nil {
+				statementDivision = normalizeDivisionName(account.Division)
+			}
+		}
+		if statementDivision == "" {
+			statementDivision = "PH Trading"
 		}
 
-		if err := a.db.Create(&allocation).Error; err != nil {
-			return fmt.Errorf("failed to create allocation: %w", err)
+		lineAmount := line.Credit
+		if lineAmount == 0 {
+			lineAmount = line.Debit
 		}
-	}
+		if lineAmount <= 0 {
+			return fmt.Errorf("line amount must be positive")
+		}
+		const bhdRoundingTolerance = 0.001
 
-	// Mark line as matched
-	allocationIDs := make([]string, len(allocations))
-	for i, alloc := range allocations {
-		allocationIDs[i] = alloc.EntityID
-	}
+		var totalAllocated float64
+		seen := make(map[string]bool)
+		allocationRecords := make([]BankLinePaymentAllocation, 0, len(allocations))
+		allocationIDs = make([]string, 0, len(allocations))
 
-	a.db.Model(&line).Updates(map[string]interface{}{
-		"is_matched":          true,
-		"match_type":          "Split",
-		"match_confidence":    1.0,
-		"matched_invoice_ids": toJSONArray(allocationIDs),
+		for _, alloc := range allocations {
+			allocationType := strings.ToUpper(strings.TrimSpace(alloc.AllocationType))
+			entityID := strings.TrimSpace(alloc.EntityID)
+			allocatedAmount := roundBHD(alloc.AllocatedAmount)
+			if entityID == "" {
+				return fmt.Errorf("allocation target is required")
+			}
+			if allocatedAmount <= 0 {
+				return fmt.Errorf("allocation amount for %s must be positive", entityID)
+			}
+			key := allocationType + ":" + entityID
+			if seen[key] {
+				return fmt.Errorf("duplicate allocation target: %s", entityID)
+			}
+			seen[key] = true
+
+			allocation := BankLinePaymentAllocation{
+				BankStatementLineID: lineID,
+				AllocationType:      allocationType,
+				AllocatedAmount:     allocatedAmount,
+				Currency:            "BHD",
+				Status:              "Allocated",
+			}
+
+			switch allocationType {
+			case "CUSTOMER_INVOICE":
+				if line.Credit <= 0 {
+					return fmt.Errorf("customer invoices must be allocated to credit transactions")
+				}
+				var invoice Invoice
+				if err := tx.First(&invoice, "id = ?", entityID).Error; err != nil {
+					return fmt.Errorf("customer invoice not found: %w", err)
+				}
+				if normalizeDivisionName(invoice.Division) != statementDivision {
+					return fmt.Errorf("cannot allocate %s bank line to %s invoice", statementDivision, normalizeDivisionName(invoice.Division))
+				}
+				payable := payableCustomerInvoiceAmount(invoice)
+				var previouslyAllocated float64
+				if err := tx.Model(&BankLinePaymentAllocation{}).
+					Where("customer_invoice_id = ? AND status <> ? AND bank_statement_line_id <> ?", entityID, "Disputed", lineID).
+					Select("COALESCE(SUM(allocated_amount), 0)").
+					Scan(&previouslyAllocated).Error; err != nil {
+					return fmt.Errorf("failed to check existing customer allocations: %w", err)
+				}
+				remaining := roundBHD(payable - previouslyAllocated)
+				if allocatedAmount > remaining+bhdRoundingTolerance {
+					return fmt.Errorf("allocation %.3f BHD exceeds remaining invoice balance %.3f BHD", allocatedAmount, remaining)
+				}
+				idCopy := entityID
+				allocation.CustomerInvoiceID = &idCopy
+			case "SUPPLIER_INVOICE":
+				if line.Debit <= 0 {
+					return fmt.Errorf("supplier invoices must be allocated to debit transactions")
+				}
+				var invoice SupplierInvoice
+				if err := tx.First(&invoice, "id = ?", entityID).Error; err != nil {
+					return fmt.Errorf("supplier invoice not found: %w", err)
+				}
+				if a.resolveSupplierInvoiceDivision(invoice) != statementDivision {
+					return fmt.Errorf("cannot allocate %s bank line to %s supplier invoice", statementDivision, a.resolveSupplierInvoiceDivision(invoice))
+				}
+				var previouslyAllocated float64
+				if err := tx.Model(&BankLinePaymentAllocation{}).
+					Where("supplier_invoice_id = ? AND status <> ? AND bank_statement_line_id <> ?", entityID, "Disputed", lineID).
+					Select("COALESCE(SUM(allocated_amount), 0)").
+					Scan(&previouslyAllocated).Error; err != nil {
+					return fmt.Errorf("failed to check existing supplier allocations: %w", err)
+				}
+				remaining := roundBHD(invoice.TotalBHD - previouslyAllocated)
+				if allocatedAmount > remaining+bhdRoundingTolerance {
+					return fmt.Errorf("allocation %.3f BHD exceeds remaining supplier invoice balance %.3f BHD", allocatedAmount, remaining)
+				}
+				idCopy := entityID
+				allocation.SupplierInvoiceID = &idCopy
+			case "EXPENSE":
+				if line.Debit <= 0 {
+					return fmt.Errorf("expenses must be allocated to debit transactions")
+				}
+				var expense ExpenseEntry
+				if err := tx.First(&expense, "id = ?", entityID).Error; err != nil {
+					return fmt.Errorf("expense not found: %w", err)
+				}
+				if normalizeDivisionName(expense.Division) != statementDivision {
+					return fmt.Errorf("cannot allocate %s bank line to %s expense", statementDivision, normalizeDivisionName(expense.Division))
+				}
+				idCopy := entityID
+				allocation.ExpenseEntryID = &idCopy
+			default:
+				return fmt.Errorf("unsupported allocation type: %s", allocationType)
+			}
+
+			totalAllocated = roundBHD(totalAllocated + allocatedAmount)
+			allocationRecords = append(allocationRecords, allocation)
+			allocationIDs = append(allocationIDs, entityID)
+		}
+
+		diff := math.Abs(totalAllocated - lineAmount)
+		if diff > bhdRoundingTolerance {
+			return fmt.Errorf("allocation total (%.3f) does not match line amount (%.3f) — difference %.3f exceeds 1 fils tolerance",
+				totalAllocated, lineAmount, diff)
+		}
+
+		if err := tx.Create(&allocationRecords).Error; err != nil {
+			return fmt.Errorf("failed to create allocations: %w", err)
+		}
+
+		return tx.Model(&line).Updates(map[string]interface{}{
+			"is_matched":          true,
+			"match_type":          "Split",
+			"match_confidence":    1.0,
+			"matched_invoice_ids": toJSONArray(allocationIDs),
+		}).Error
 	})
+	if err != nil {
+		return err
+	}
 
 	// Log the action
 	allocJSON, _ := json.Marshal(allocations)

@@ -3,6 +3,13 @@
     import { fade } from "svelte/transition";
     import WabiSpinner from "../components/ui/WabiSpinner.svelte";
     import { toast } from "../stores/toasts";
+    import {
+        CreateAccount,
+        CreateJournalEntry,
+        GetChartOfAccounts,
+        GetJournalEntries,
+        UpdateAccount,
+    } from "../../../wailsjs/go/main/App";
 
     // Props
     export const embedded = false;
@@ -19,8 +26,25 @@
 
     // Data
     let stats = { assets: 0, liabilities: 0, equity: 0, cash: 0 };
-    let accounts = [];
-    let journals = [];
+    type AccountView = {
+        id?: string;
+        code: string;
+        name: string;
+        type: string;
+        balance?: number;
+        is_vat: boolean;
+        vat_direction?: string;
+        account_group?: string;
+        parent_account_id?: string;
+    };
+    type JournalView = {
+        id: string;
+        date: string;
+        desc: string;
+        amount: number;
+    };
+    let accounts: AccountView[] = [];
+    let journals: JournalView[] = [];
 
     // Voucher Form State per FORM_FIELD_DEFINITIONS.md Section 5
     let showVoucherModal = false;
@@ -57,34 +81,57 @@
     $: isBalanced =
         voucherTotal.debit === voucherTotal.credit && voucherTotal.debit > 0;
 
-    function createVoucher() {
+    async function createVoucher() {
         if (!isBalanced) {
             toast.warning("Debits must equal Credits");
             return;
         }
-        journals = [
-            ...journals,
-            {
-                id: `V-${Date.now()}`,
-                date: newVoucher.date,
-                desc: `${newVoucher.type}: ${newVoucher.reference || "Entry"}`,
-                amount: voucherTotal.debit,
-            },
-        ];
-        showVoucherModal = false;
-        newVoucher = {
-            type: "Payment",
-            voucher_no: "",
-            date: new Date().toISOString().split("T")[0],
-            reference: "",
-            lines: [{ account: "", debit: 0, credit: 0, narration: "" }],
-        };
-        toast.success("Voucher created");
+
+        const lines = newVoucher.lines.map((line) => {
+            const account = accounts.find((acc) => acc.code === line.account);
+            return {
+                account_id: account?.id || "",
+                account_name: account?.name || line.account,
+                debit: Number(line.debit) || 0,
+                credit: Number(line.credit) || 0,
+                description: line.narration || newVoucher.reference || newVoucher.type,
+            };
+        });
+
+        if (lines.some((line) => !line.account_id)) {
+            toast.warning("Every journal line must have an account");
+            return;
+        }
+
+        try {
+            await CreateJournalEntry({
+                entry_date: new Date(`${newVoucher.date}T00:00:00`).toISOString(),
+                description: `${newVoucher.type}: ${newVoucher.reference || "Entry"}`,
+                fiscal_year: new Date(newVoucher.date).getFullYear(),
+                fiscal_period: new Date(newVoucher.date).getMonth() + 1,
+                source_type: "manual",
+                source_id: "",
+                is_auto_generated: false,
+                lines,
+            } as any);
+            showVoucherModal = false;
+            newVoucher = {
+                type: "Payment",
+                voucher_no: "",
+                date: new Date().toISOString().split("T")[0],
+                reference: "",
+                lines: [{ account: "", debit: 0, credit: 0, narration: "" }],
+            };
+            toast.success("Voucher created");
+            await loadData();
+        } catch (e) {
+            toast.danger(`Voucher creation failed: ${String(e)}`);
+        }
     }
 
     // === CHART OF ACCOUNTS CRUD per TECHNICAL_SPECIFICATION.md Section 2.4 ===
     let showAccountModal = false;
-    let editingAccount = null;
+    let editingAccount: AccountView | null = null;
     let newAccount = {
         code: "",
         name: "",
@@ -101,6 +148,40 @@
         { value: "Expense", label: "Expenses", group: "PL" },
     ];
 
+    function accountGroupForType(type: string) {
+        return accountTypes.find((t) => t.value === type)?.group || "PL";
+    }
+
+    function vatDirectionForAccount(account: { type: string; is_vat: boolean }) {
+        if (!account.is_vat) return "";
+        return account.type === "Liability" || account.type === "Revenue"
+            ? "output"
+            : "input";
+    }
+
+    function normalizeBackendAccount(account: any): AccountView {
+        return {
+            id: account.id,
+            code: account.account_code || account.code || "",
+            name: account.account_name || account.name || "",
+            type: account.account_type || account.type || "Asset",
+            balance: Number(account.balance) || 0,
+            is_vat: Boolean(account.is_vat_account || account.is_vat),
+            vat_direction: account.vat_direction || "",
+            account_group: account.account_group || accountGroupForType(account.account_type || account.type || "Asset"),
+            parent_account_id: account.parent_account_id || "",
+        };
+    }
+
+    function normalizeBackendJournal(entry: any): JournalView {
+        return {
+            id: entry.entry_number || entry.id,
+            date: entry.entry_date ? new Date(entry.entry_date).toISOString().split("T")[0] : "",
+            desc: entry.description || "Journal entry",
+            amount: Number(entry.debit_total || entry.credit_total || 0),
+        };
+    }
+
     function openAddAccount() {
         editingAccount = null;
         newAccount = {
@@ -113,40 +194,65 @@
         showAccountModal = true;
     }
 
-    function openEditAccount(account) {
+    function openEditAccount(account: AccountView) {
         editingAccount = account;
-        newAccount = { ...account };
+        newAccount = {
+            code: account.code,
+            name: account.name,
+            type: account.type,
+            parent: account.parent_account_id || "",
+            is_vat: account.is_vat,
+        };
         showAccountModal = true;
     }
 
-    function saveAccount() {
+    async function saveAccount() {
         if (!newAccount.code || !newAccount.name) {
             toast.warning("Code and Name are required");
             return;
         }
 
-        if (editingAccount) {
-            // Update existing
-            accounts = accounts.map((a) =>
-                a.code === editingAccount.code ? { ...newAccount } : a,
-            );
-            toast.success("Account updated");
-        } else {
-            // Add new
-            if (accounts.find((a) => a.code === newAccount.code)) {
-                toast.warning("Account code already exists");
-                return;
+        try {
+            if (editingAccount) {
+                if (!editingAccount.id) {
+                    toast.warning("This account is missing its backend ID");
+                    return;
+                }
+                await UpdateAccount(editingAccount.id, {
+                    account_name: newAccount.name.trim(),
+                    account_type: newAccount.type,
+                    is_vat_account: newAccount.is_vat,
+                    vat_direction: vatDirectionForAccount(newAccount),
+                    account_group: accountGroupForType(newAccount.type),
+                });
+                toast.success("Account updated");
+            } else {
+                if (accounts.find((a) => a.code === newAccount.code)) {
+                    toast.warning("Account code already exists");
+                    return;
+                }
+                await CreateAccount({
+                    account_code: newAccount.code.trim(),
+                    account_name: newAccount.name.trim(),
+                    account_type: newAccount.type,
+                    balance: 0,
+                    is_active: true,
+                    is_vat_account: newAccount.is_vat,
+                    vat_direction: vatDirectionForAccount(newAccount),
+                    parent_account_id: newAccount.parent || "",
+                    account_group: accountGroupForType(newAccount.type),
+                } as any);
+                toast.success("Account added");
             }
-            accounts = [...accounts, { ...newAccount }];
-            toast.success("Account added");
+            showAccountModal = false;
+            await loadData();
+        } catch (e) {
+            toast.danger(`Account save failed: ${String(e)}`);
         }
-
-        showAccountModal = false;
     }
 
-    function deleteAccount(code: string) {
-        accounts = accounts.filter((a) => a.code !== code);
-        toast.success("Account deleted");
+    function deleteAccount(_code: string) {
+        toast.warning("Account deletion is not enabled from this screen yet");
     }
 
     // === BAHRAIN VAT LOGIC per TECHNICAL_SPECIFICATION.md Section 2.4 ===
@@ -171,7 +277,6 @@
     async function loadData() {
         loading = true;
         try {
-            // Mock Data if no Backend
             if (!window.go) {
                 stats = {
                     assets: 1250000,
@@ -274,10 +379,29 @@
                     },
                 ];
             } else {
-                // Real calls would go here
+                const [backendAccounts, backendJournals] = await Promise.all([
+                    GetChartOfAccounts("All"),
+                    GetJournalEntries(new Date().getFullYear(), 0, null as any, 100),
+                ]);
+                accounts = backendAccounts.map(normalizeBackendAccount);
+                journals = backendJournals.map(normalizeBackendJournal);
+                stats = {
+                    assets: accounts
+                        .filter((account) => account.type === "Asset")
+                        .reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
+                    liabilities: accounts
+                        .filter((account) => account.type === "Liability")
+                        .reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
+                    equity: accounts
+                        .filter((account) => account.type === "Equity")
+                        .reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
+                    cash: accounts
+                        .filter((account) => account.type === "Asset" && /cash|bank/i.test(account.name))
+                        .reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
+                };
             }
         } catch (e) {
-            toast.danger("Load failed");
+            toast.danger(`Accounting load failed: ${String(e)}`);
         } finally {
             loading = false;
         }

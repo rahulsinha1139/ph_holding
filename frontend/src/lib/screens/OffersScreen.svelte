@@ -51,6 +51,7 @@ $: embedded;
   interface OfferDisplay {
     id: string;
     costing_id?: string;
+    customer_id?: string;
     customer_name: string;
     project_name?: string;
     amount: number;
@@ -84,6 +85,9 @@ $: embedded;
     attention_phone?: string;
     attention_address?: string;
     discount_percent?: number;
+    quote_type?: string;
+    vat_rate?: number;
+    terms_and_conditions?: string;
     coc_coo?: string;
     test_certificate?: string;
     installation?: string;
@@ -215,7 +219,7 @@ $: embedded;
     customer_name: '',
     project_name: '',
     folder_number: '',
-    quotation_date: new Date().toISOString().split('T')[0],
+    quotation_date: todayDateInput(),
     validity_date: '',
     payment_terms: '',
     delivery_terms: '',
@@ -231,6 +235,34 @@ $: embedded;
     items: [] as EditableItem[]
   };
   let formLoading = false;
+
+  function todayDateInput(): string {
+    return dateInputFromDate(new Date());
+  }
+
+  function dateInputAfterDays(days: number): string {
+    const date = new Date();
+    date.setDate(date.getDate() + days);
+    return dateInputFromDate(date);
+  }
+
+  function dateInputFromDate(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function normalizeDateInput(value: any, fallback: string): string {
+    if (!value) return fallback;
+    if (typeof value === 'string') {
+      const match = value.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (match) return match[1];
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return fallback;
+    return dateInputFromDate(parsed);
+  }
 
   // DataTable columns configuration
   const columns = [
@@ -430,6 +462,7 @@ $: embedded;
     return {
       id: offer.id,
       costing_id: offer.costing_id,
+      customer_id: offer.customer_id || '',
       customer_name: offer.customer_name || '',
       project_name: offer.project_name || '',
       amount: offer.total_value_bhd || 0,
@@ -463,6 +496,9 @@ $: embedded;
       attention_phone: offer.attention_phone || '',
       attention_address: offer.attention_address || '',
       discount_percent: offer.discount_percent,
+      quote_type: offer.quote_type || 'Quotation',
+      vat_rate: Number(offer.vat_rate ?? 10),
+      terms_and_conditions: offer.terms_and_conditions || '',
       coc_coo: offer.coc_coo || '',
       test_certificate: offer.test_certificate || '',
       installation: offer.installation || '',
@@ -513,57 +549,88 @@ $: embedded;
     // This ensures all offers have proper line items from costing calculations
     toast.info('Opening Costing Sheet to create a new offer with line items');
 
-    // Dispatch custom event for navigation (App.svelte handles routing)
-    const event = new CustomEvent('navigate', {
-      bubbles: true,
+    window.dispatchEvent(new CustomEvent('navigateToScreen', {
       detail: { screen: 'costing', message: 'Create offer from costing sheet' }
+    }));
+  }
+
+  function buildCostingPayloadFromOffer(offer: OfferDisplay) {
+    const quotationDate = normalizeDateInput(offer.quotation_date, todayDateInput());
+    const resolvedCustomer = resolveCustomerFromOffer(offer.customer_id || '', offer.customer_name || '');
+    const itemPayload = (offer.items || []).map((item: any, index: number) => {
+      const quantity = Number(item.quantity || 1) || 1;
+      const unitPrice = Number(item.unit_price_bhd ?? item.unit_price ?? item.unitPrice ?? 0) || 0;
+      const totalPrice = Number(item.total_price ?? item.totalPrice ?? (unitPrice * quantity)) || 0;
+
+      return {
+        slNo: index + 1,
+        equipment: item.equipment || item.description || '',
+        model: item.model || item.product_code || item.product_id || '',
+        serialNumber: item.serial_number || item.serialNumber || '',
+        longCode: item.long_code || item.longCode || '',
+        specification: item.specification || '',
+        detailedDescription: item.detailed_description || item.detailedDescription || '',
+        currency: item.currency || 'BHD',
+        quantity,
+        fob: Number(item.fob ?? item.unit_cost ?? 0) || 0,
+        freight: Number(item.freight ?? 0) || 0,
+        freightPercent: Number(item.freight_percent ?? item.freightPercent ?? 0) || 0,
+        totalCost: Number(item.total_cost ?? item.totalCost ?? 0) || 0,
+        marginPercent: Number(item.margin_percent ?? item.marginPercent ?? 0) || 0,
+        suggestedPrice: unitPrice,
+        totalPrice,
+        userPrice: unitPrice,
+        userPriceSet: unitPrice > 0,
+      };
     });
-    document.dispatchEvent(event);
+    const subtotal = itemPayload.reduce((sum, item) => sum + Number(item.totalPrice || 0), 0);
+    const discount = subtotal * ((Number(offer.discount_percent || 0) || 0) / 100);
+    const vatRate = Number(offer.vat_rate ?? 10);
+
+    return {
+      source: 'offer',
+      offerId: offer.id,
+      offerNumber: offer.offer_number || '',
+      division: offer.division || selectedCompany,
+      date: quotationDate,
+      preparedBy: offer.issued_by || '',
+      customerId: resolvedCustomer.customer_id || '',
+      customerName: resolvedCustomer.customer_name || offer.customer_name || '',
+      contactPerson: offer.attention_person || '',
+      rfqReference: offer.customer_reference || offer.offer_number || '',
+      folderNumber: offer.folder_number || '',
+      costingId: offer.costing_id || offer.offer_number || '',
+      subject: offer.project_name ? `Sub: ${offer.project_name}` : `Sub: ${offer.customer_name || ''}`,
+      estDelivery: offer.delivery_weeks || '5-7 weeks',
+      deliveryTerms: offer.delivery_terms || '',
+      paymentTerms: offer.payment_terms || '',
+      orderType: 'General',
+      countryOfOrigin: offer.country_of_origin || 'DE',
+      cocCoo: offer.coc_coo || 'No',
+      testCertificate: offer.test_certificate || 'Additional charges applicable as per OEM terms',
+      installation: offer.installation || 'No',
+      commissioning: offer.commissioning || 'No',
+      testing: offer.testing || 'No',
+      lineItems: itemPayload,
+      subtotal,
+      discount,
+      netAmount: Math.max(subtotal - discount, 0),
+      vatRate,
+      vat: Math.max(subtotal - discount, 0) * (vatRate / 100),
+      grandTotal: Math.max(subtotal - discount, 0) * (1 + vatRate / 100),
+      body: '',
+      termsAndConditions: offer.terms_and_conditions || '',
+      quoteType: offer.quote_type || 'Quotation',
+    };
   }
 
   function openEditModal(offer: OfferDisplay) {
-    editingOffer = offer;
-    const defaultDate = new Date().toISOString().split('T')[0];
-    const defaultValidity = new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0];
-    const resolvedCustomer = resolveCustomerFromOffer((offer as any).customer_id || '', offer.customer_name || '');
-
-    formData = {
-      division: offer.division || selectedCompany,
-      customer_id: resolvedCustomer.customer_id,
-      customer_name: resolvedCustomer.customer_name,
-      project_name: offer.project_name || '',
-      folder_number: offer.folder_number || '',
-      quotation_date: offer.quotation_date ? new Date(offer.quotation_date).toISOString().split('T')[0] : defaultDate,
-      validity_date: offer.validity_date ? new Date(offer.validity_date).toISOString().split('T')[0] : defaultValidity,
-      payment_terms: offer.payment_terms || '',
-      delivery_terms: offer.delivery_terms || '',
-      delivery_weeks: offer.delivery_weeks || '',
-      country_of_origin: offer.country_of_origin || '',
-      contact_phone: offer.contact_phone || '',
-      customer_reference: offer.customer_reference || '',
-      attention_person: offer.attention_person || '',
-      attention_company: offer.attention_company || '',
-      attention_phone: offer.attention_phone || '',
-      attention_address: offer.attention_address || '',
-      issued_by: offer.issued_by || '',
-      items: (offer.items || []).map((item: any) => ({
-        product_id: item.product_code || '',
-        description: item.description || '',
-        equipment: item.equipment || item.description || '',
-        model: item.model || item.product_code || '',
-        specification: item.specification || '',
-        detailed_description: item.detailed_description || '',
-        currency: item.currency || 'BHD',
-        quantity: item.quantity || 0,
-        fob: item.fob || 0,
-        freight: item.freight || 0,
-        total_cost: item.total_cost || 0,
-        margin_percent: item.margin_percent || 0,
-        unit_price: item.unit_price_bhd || item.unit_price || 0,
-        total_price: item.total_price || 0
-      }))
-    };
-    showEditModal = true;
+    const payload = buildCostingPayloadFromOffer(offer);
+    sessionStorage.setItem('asymmflow.pendingCostingOffer', JSON.stringify(payload));
+    toast.info(`Opening ${offer.offer_number || 'offer'} in Costing Sheet`);
+    window.dispatchEvent(new CustomEvent('navigateToScreen', {
+      detail: { screen: 'costing', offerId: offer.id }
+    }));
   }
 
   // Handle create offer (direct from screen)
@@ -574,17 +641,12 @@ $: embedded;
     }
 
     // Validate dates
-    const quotationDate = new Date(formData.quotation_date);
-    const validityDate = new Date(formData.validity_date);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    if (quotationDate > today) {
+    if (formData.quotation_date > todayDateInput()) {
       toast.warning('Quotation date cannot be in the future');
       return;
     }
 
-    if (validityDate <= quotationDate) {
+    if (formData.validity_date <= formData.quotation_date) {
       toast.warning('Validity date must be after quotation date');
       return;
     }
@@ -683,17 +745,7 @@ $: embedded;
       return;
     }
 
-    const quotationDate = new Date(formData.quotation_date);
-    const validityDate = new Date(formData.validity_date);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    if (quotationDate > today) {
-      toast.warning('Quotation date cannot be in the future');
-      return;
-    }
-
-    if (validityDate <= quotationDate) {
+    if (formData.validity_date <= formData.quotation_date) {
       toast.warning('Validity date must be after quotation date');
       return;
     }
@@ -833,8 +885,8 @@ $: embedded;
         customer_name: resolvedCustomer.customer_name,
         project_name: offer.project_name || '',
         folder_number: offer.folder_number || '',
-        quotation_date: new Date().toISOString().split('T')[0],
-        validity_date: new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0],
+        quotation_date: todayDateInput(),
+        validity_date: dateInputAfterDays(30),
         payment_terms: offer.payment_terms || '',
         delivery_terms: offer.delivery_terms || '',
         delivery_weeks: offer.delivery_weeks || '',
@@ -922,6 +974,9 @@ $: embedded;
       toast.info(`Generating PDF for ${offer.offer_number}...`);
       const filePath = await GenerateOfferPDF(offer.id);
       toast.success(`PDF generated: ${filePath}`);
+      if (filePath) {
+        await OpenExportedFile(filePath);
+      }
     } catch (err) {
       const errorMsg = err?.message || String(err);
       toast.danger(`Failed to generate PDF: ${errorMsg}`);
@@ -941,8 +996,8 @@ $: embedded;
         division: viewOffer.division || 'PH Trading',
         project_name: viewOffer.project_name || '',
         folder_number: viewOffer.folder_number || '',
-        quotation_date: viewOffer.quotation_date ? new Date(viewOffer.quotation_date).toISOString().split('T')[0] : '',
-        validity_date: viewOffer.validity_date ? new Date(viewOffer.validity_date).toISOString().split('T')[0] : '',
+        quotation_date: normalizeDateInput(viewOffer.quotation_date, ''),
+        validity_date: normalizeDateInput(viewOffer.validity_date, ''),
         payment_terms: viewOffer.payment_terms || '',
         delivery_terms: viewOffer.delivery_terms || '',
         delivery_weeks: viewOffer.delivery_weeks || '',
@@ -1221,7 +1276,7 @@ $: embedded;
         <Input
           type="date"
           bind:value={formData.quotation_date}
-          max={new Date().toISOString().split('T')[0]}
+          max={showCreateModal ? todayDateInput() : undefined}
           required
         />
       </FormGroup>

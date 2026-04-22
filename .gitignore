@@ -68,6 +68,12 @@ test_output/
 *.tar.gz
 *.tar
 *.rar
+deploy_package/AsymmFlow_Deploy_*/
+deploy_package/AsymmFlow.app/
+deploy_package/AsymmFlow.exe
+deploy_package/.env
+deploy_package/ph_holdings.db
+deploy_package/data/ph_holdings.db
 
 # === Temporary Files ===
 *.tmp

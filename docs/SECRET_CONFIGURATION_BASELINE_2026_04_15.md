@@ -110,7 +110,7 @@ Observed characteristics:
 - SHA-256: `c1d59c94fe5515f40e29f3fcd8079bdeb892f4e0ae1c500ae7d9fe4fee53ff41`
 - contains active Supabase DB credentials
 - contains `ENABLE_CLOUD_SYNC=true`
-- pins packaged runtime to `DATABASE_PATH=data/ph_holdings.db`
+- does not pin the runtime DB; packaged `data/ph_holdings.db` is now a first-run seed
 - does not currently provide an active `MISTRAL_API_KEY`
 
 ### 2.3 Machine-level app-data env
@@ -170,8 +170,8 @@ Primary packager logic:
 Observed behavior:
 - deployment packaging reads a source env file
 - strips existing DB path overrides
-- forces `DATABASE_PATH=data/ph_holdings.db`
-- writes a packaged `.env` into the output bundle
+- leaves packaged `data/ph_holdings.db` as a first-run seed
+- writes a packaged `.env` into the output bundle without forcing the live DB path
 
 Important implication:
 - the deployment package is already designed to rely on packaged runtime config, not on hardcoded source secrets
@@ -182,8 +182,8 @@ If a future secret/config cleanup causes regressions:
 1. Restore the exact values from `.agent/secret-baselines/SECRET_CONFIGURATION_SNAPSHOT_2026_04_15.md`
 2. Restore the packaged env behavior first:
    - packaged `.env`
-   - `DATABASE_PATH=data/ph_holdings.db`
-   - bundled `data/ph_holdings.db`
+   - no forced `DATABASE_PATH` / `PH_DB_PATH`
+   - bundled seed `data/ph_holdings.db`
 3. Restore the machine-level env only if reproducing the previous local-machine behavior is necessary
 4. Verify there are still no unexpected `apiKeys.*` rows in the active DB and no surprise `settings.json` overrides
 5. Re-test:

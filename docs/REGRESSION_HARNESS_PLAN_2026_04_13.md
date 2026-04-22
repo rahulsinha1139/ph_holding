@@ -19,7 +19,7 @@ Use GitNexus to find high-value seams, then protect them with the cheapest harne
 
 Priority: P0
 
-- Invariant: packaged installs must honor `DATABASE_PATH=data/ph_holdings.db` on first run and must not silently create or select an unintended sibling DB.
+- Invariant: packaged installs must treat `data/ph_holdings.db` as a first-run seed and must use the persistent app-data DB for live writes.
 - Harness type: Go integration test plus packaged-app smoke run
 - Focus files:
   - [config.go](/Users/rahulsinha/Desktop/House_of_Projects/ph_holdings/config.go:212)

@@ -26,6 +26,7 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 253, G: 251, B: 247, A: 1}, // Wabi-Sabi paper cream
 		OnStartup:        app.startup,
+		OnBeforeClose:    app.beforeClose,
 		OnShutdown:       app.shutdown, // Graceful cleanup
 		DragAndDrop: &options.DragAndDrop{
 			EnableFileDrop:     true,

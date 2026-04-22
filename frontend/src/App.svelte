@@ -15,6 +15,7 @@
     // OneDrive import disabled — manual folder download + extraction in next session
     // import OneDriveImportScreen from "./lib/screens/OneDriveImportScreen.svelte";
     import ArrivalCeremony from "./lib/screens/ArrivalCeremony.svelte";
+    import DashboardScreen from "./lib/screens/DashboardScreen.svelte";
 
     // Auth Context
     import {
@@ -113,7 +114,7 @@
         "usermanagement",
         "rfqs",
     ]);
-    let mountedPersistentScreens: string[] = [];
+    let mountedPersistentScreens: string[] = ["dashboard"];
 
     function isPersistentScreen(screen: string) {
         return persistentScreenIDs.has(screen);
@@ -416,7 +417,7 @@
     type ScreenModule = { default: any };
 
     const screenLoaders: Record<string, () => Promise<ScreenModule>> = {
-        dashboard: () => import("./lib/screens/DashboardScreen.svelte"),
+        dashboard: () => Promise.resolve({ default: DashboardScreen }),
         opportunities: () => import("./lib/screens/SalesHub.svelte"),
         operations: () => import("./lib/screens/OperationsHub.svelte"),
         finance: () => import("./lib/screens/FinanceHub.svelte"),
@@ -432,8 +433,8 @@
         usermanagement: () => import("./lib/screens/UserManagementScreen.svelte"),
         rfqs: () => import("./lib/screens/RFQScreen.svelte"),
     };
-    const loadedScreenComponents: Record<string, any> = {};
-    let activeScreenComponent: any = null;
+    const loadedScreenComponents: Record<string, any> = { dashboard: DashboardScreen };
+    let activeScreenComponent: any = DashboardScreen;
     let activeScreenLoading = false;
     let activeScreenLoadToken = 0;
 
@@ -629,7 +630,7 @@
         const requiredPerm = screenPermissions[screenID];
         if (!requiredPerm) return true; // No permission required
 
-        const perms = $permissions || [];
+        const perms = Array.isArray($permissions) ? $permissions : [];
         if (perms.length === 0) return false;
 
         // Wildcard (admin)
@@ -932,11 +933,21 @@
                 <!-- Screen Content -->
                 <main class="screen-content">
                     {#if isPersistentScreen(currentScreen)}
-                        {#if activeScreenLoading && !loadedScreenComponents[currentScreen]}
-                            <div class="loading-screen inline-screen-loader">
-                                <div class="loading-spinner"></div>
-                                <p>Loading {screens.find((s) => s.id === currentScreen)?.label || currentScreen}...</p>
-                            </div>
+                        {#if !loadedScreenComponents[currentScreen]}
+                            {#if activeScreenLoading}
+                                <div class="loading-screen inline-screen-loader">
+                                    <div class="loading-spinner"></div>
+                                    <p>Loading {screens.find((s) => s.id === currentScreen)?.label || currentScreen}...</p>
+                                </div>
+                            {:else}
+                                <div class="coming-soon">
+                                    <h2>
+                                        {screens.find((s) => s.id === currentScreen)
+                                            ?.label || "Unknown"}
+                                    </h2>
+                                    <p class="subtitle">Screen did not finish loading. Try another section or restart the app.</p>
+                                </div>
+                            {/if}
                         {:else if mountedPersistentScreens.length > 0}
                             {#each mountedPersistentScreens as screenID (screenID)}
                                 {#if loadedScreenComponents[screenID]}
@@ -953,12 +964,12 @@
                                 {/if}
                             {/each}
                         {:else}
-                            <div class="coming-soon">
-                                <h2>
-                                    {screens.find((s) => s.id === currentScreen)
-                                        ?.label || "Unknown"}
-                                </h2>
-                                <p class="subtitle">COMING IN NEXT WAVE</p>
+                            <div class="screen-host">
+                                <svelte:component
+                                    this={loadedScreenComponents[currentScreen]}
+                                    params={screenParamsById[currentScreen] || {}}
+                                    on:navigate={(e) => navigate(e.detail)}
+                                />
                             </div>
                         {/if}
                     {:else if activeScreenComponent}

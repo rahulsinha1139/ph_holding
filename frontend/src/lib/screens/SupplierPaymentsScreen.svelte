@@ -40,15 +40,17 @@
     return (division || 'PH Trading') === company;
   }
 
-  $: canCreate = $permissions.includes('*') || $permissions.includes('payments:record') || $permissions.includes('payments:*') || $permissions.includes('finance:*');
-  $: canUpdate = $permissions.includes('*') || $permissions.includes('supplier_payments:update') || $permissions.includes('supplier_payments:*') || $permissions.includes('finance:*');
-  $: canDelete = $permissions.includes('*') || $permissions.includes('supplier_payments:delete') || $permissions.includes('supplier_payments:*') || $permissions.includes('finance:*');
+  $: permissionList = Array.isArray($permissions) ? $permissions : [];
+  $: canCreate = permissionList.includes('*') || permissionList.includes('payments:record') || permissionList.includes('payments:*') || permissionList.includes('finance:*');
+  $: canUpdate = permissionList.includes('*') || permissionList.includes('supplier_payments:update') || permissionList.includes('supplier_payments:*') || permissionList.includes('finance:*');
+  $: canDelete = permissionList.includes('*') || permissionList.includes('supplier_payments:delete') || permissionList.includes('supplier_payments:*') || permissionList.includes('finance:*');
 
   // Payment form
   let paymentForm = {
     invoice_id: '',
     amount: 0,
     currency: 'BHD',
+    exchange_rate: 1,
     method: 'Bank Transfer',
     date: new Date().toISOString().split('T')[0],
     reference: ''
@@ -242,6 +244,7 @@
       invoice_id: '',
       amount: 0,
       currency: 'BHD',
+      exchange_rate: 1,
       method: 'Bank Transfer',
       date: new Date().toISOString().split('T')[0],
       reference: ''
@@ -275,6 +278,7 @@
         invoice_id: payment.supplier_invoice_id,
         amount: Number(payment.amount_foreign || payment.amount_bhd || 0),
         currency: payment.currency || 'BHD',
+        exchange_rate: Number(payment.exchange_rate || 1),
         method: payment.payment_method || 'Bank Transfer',
         date: toInputDate(payment.payment_date),
         reference: payment.reference || ''
@@ -339,7 +343,11 @@
       } else {
         const existing = await GetSupplierPayment(editingPaymentId);
         const amountForeign = paymentForm.amount;
-        const exchangeRate = Number(existing.exchange_rate || (paymentForm.currency === 'BHD' ? 1 : 1));
+        const exchangeRate = paymentForm.currency === 'BHD' ? 1 : Number(paymentForm.exchange_rate || 0);
+        if (paymentForm.currency !== 'BHD' && exchangeRate <= 0) {
+          toast.danger('Exchange rate must be greater than zero for foreign-currency payments');
+          return;
+        }
         const amountBHD = Number((paymentForm.currency === 'BHD' ? amountForeign : amountForeign * exchangeRate).toFixed(3));
 
         await UpdateSupplierPayment(editingPaymentId, buildWailsInput(main.SupplierPayment, {
@@ -449,7 +457,7 @@
 {#if showPaymentModal}
   <div class="modal-overlay" role="button" tabindex="0" on:click|self={() => showPaymentModal = false} on:keydown={(event) => (event.key === "Enter" || event.key === " ") && (showPaymentModal = false)}>
     <div class="modal" in:fade={{ duration: 150 }}>
-      <h2>Record Supplier Payment</h2>
+      <h2>{paymentModalMode === 'edit' ? 'Edit Supplier Payment' : 'Record Supplier Payment'}</h2>
       {#if paymentModalMode === 'edit'}
         <p class="modal-intro">Editing the existing supplier payment. Invoice linkage stays locked for audit safety.</p>
       {/if}
@@ -488,6 +496,20 @@
           </select>
         </div>
       </div>
+
+      {#if paymentModalMode === 'edit' && paymentForm.currency !== 'BHD'}
+        <div class="form-group">
+          <label for="supplier-payment-exchange-rate">Exchange Rate to BHD</label>
+          <input
+            id="supplier-payment-exchange-rate"
+            type="number"
+            min="0.000001"
+            step="0.000001"
+            bind:value={paymentForm.exchange_rate}
+            disabled={paymentSaving}
+          />
+        </div>
+      {/if}
 
       <div class="form-row">
         <div class="form-group">

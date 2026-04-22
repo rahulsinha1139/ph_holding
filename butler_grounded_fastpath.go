@@ -8,6 +8,397 @@ import (
 	"time"
 )
 
+func (a *App) tryGroundedCapabilitiesFastPath(intent Intent, message string, hasFinanceAccess bool) (string, bool) {
+	if a == nil || a.db == nil {
+		return "", false
+	}
+
+	q := strings.ToLower(strings.TrimSpace(message))
+	if q == "" {
+		return "", false
+	}
+
+	capabilitySignals := []string{
+		"what can you do", "what all can you do", "all that you can do", "tell me all that you can do",
+		"what you can do", "tell us what you can do", "tell me what you can do",
+		"what are your capabilities", "what can butler do", "how can you help", "what can u do",
+		"show me all butler capabilities", "show all butler capabilities", "all butler capabilities",
+		"capabilities from live erp data", "capabilities for sales pipeline", "capabilities for finance",
+		"ocr ingestion", "task follow-up and daily briefing capabilities", "task follow up and daily briefing capabilities",
+		"report and document generation capabilities",
+	}
+	matched := false
+	for _, signal := range capabilitySignals {
+		if strings.Contains(q, signal) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return "", false
+	}
+
+	var customerCount, supplierCount, orderCount, invoiceCount, offerCount, opportunityCount, taskCount, productCount int64
+	_ = a.db.Model(&CustomerMaster{}).Count(&customerCount).Error
+	_ = a.db.Model(&SupplierMaster{}).Count(&supplierCount).Error
+	_ = a.db.Model(&Order{}).Where("status NOT IN ?", []string{"Cancelled", "Canceled", "Void"}).Count(&orderCount).Error
+	_ = a.db.Model(&Invoice{}).Where("status NOT IN ?", []string{"Cancelled", "Void", "Proforma"}).Count(&invoiceCount).Error
+	_ = a.db.Model(&Offer{}).Where("stage NOT IN ?", []string{"Lost", "Expired"}).Count(&offerCount).Error
+	_ = a.db.Model(&Opportunity{}).Count(&opportunityCount).Error
+	_ = a.db.Model(&TaskItem{}).Where("status NOT IN ?", []string{"completed", "archived"}).Count(&taskCount).Error
+	_ = a.db.Model(&ProductMaster{}).Where("is_active = ?", true).Count(&productCount).Error
+
+	currentYear := time.Now().Year()
+	yearStart := time.Date(currentYear, time.January, 1, 0, 0, 0, 0, time.Local)
+	yearEnd := yearStart.AddDate(1, 0, 0)
+	var currentYearOrders, currentYearOffers float64
+	_ = a.db.Model(&Order{}).
+		Where("order_date >= ? AND order_date < ? AND status NOT IN ?", yearStart, yearEnd, []string{"Cancelled", "Canceled", "Void"}).
+		Select("COALESCE(SUM(CASE WHEN grand_total_bhd > 0 THEN grand_total_bhd ELSE total_value_bhd END), 0)").
+		Scan(&currentYearOrders).Error
+	_ = a.db.Model(&Offer{}).
+		Where("quotation_date >= ? AND quotation_date < ? AND stage IN ?", yearStart, yearEnd, []string{"RFQ", "Quoted", "Won"}).
+		Select("COALESCE(SUM(total_value_bhd), 0)").
+		Scan(&currentYearOffers).Error
+
+	financeLine := "Financial data is permission-gated. I can discuss operational context unless your role has finance:view."
+	if hasFinanceAccess {
+		financeLine = fmt.Sprintf("For FY%d I can see confirmed orders of %s BHD and offer coverage of %s BHD.", currentYear, formatBHD(currentYearOrders), formatBHD(currentYearOffers))
+	}
+
+	databaseInventory := a.getDatabaseInventoryContext(hasFinanceAccess)
+	tableCount, _ := databaseInventory["total_tables"].(int)
+	if tableCount == 0 {
+		if tables, ok := databaseInventory["tables"].([]map[string]interface{}); ok {
+			tableCount = len(tables)
+		}
+	}
+	modulesLine := "relationships, commercial pipeline, operations, work management, products, intelligence, and system records"
+	if hasFinanceAccess {
+		modulesLine = "relationships, commercial pipeline, operations, finance, banking, payroll, work management, products, intelligence, and system records"
+	}
+
+	response := fmt.Sprintf(`I can help as a grounded ERP intelligence layer, not a generic chatbot.
+
+Live data I can use right now
+- Customers: %d
+- Suppliers: %d
+- Orders: %d
+- Customer invoices: %d
+- Active or won offers: %d
+- Pipeline opportunities: %d
+- Active work tasks: %d
+- Active products: %d
+- Database tables indexed for guarded querying: %d
+
+What I can do
+- Answer customer, supplier, order, offer, invoice, delivery, and task questions from local ERP data.
+- Build manager briefings for pipeline, AR, cash position, and operating risk.
+- Create follow-up tasks, offer drafts, customers, suppliers, and contacts when the required fields are present.
+- Prepare PDF intelligence reports from local data.
+- Keep continuity across this conversation and use recent context when you refer to the same customer, offer, or task.
+- Query across %s using controlled ERP access paths instead of guessing from memory.
+
+Finance access
+- %s
+
+How I will behave
+- I will separate actual records from projections.
+- I will say when a number is unavailable instead of inventing it.
+- If the external AI service is slow, I will still answer from local ERP data where possible.`, customerCount, supplierCount, orderCount, invoiceCount, offerCount, opportunityCount, taskCount, productCount, tableCount, modulesLine, financeLine)
+
+	return response, true
+}
+
+func isManagerFinancialBriefRequest(message string) bool {
+	q := strings.ToLower(strings.TrimSpace(message))
+	if q == "" {
+		return false
+	}
+
+	hasDocumentSignal := strings.Contains(q, "document") ||
+		strings.Contains(q, "report") ||
+		strings.Contains(q, "brief") ||
+		strings.Contains(q, "briefing") ||
+		strings.Contains(q, "manager")
+	hasFinanceSignal := strings.Contains(q, "financial") ||
+		strings.Contains(q, "finance") ||
+		strings.Contains(q, "ar") ||
+		strings.Contains(q, "receivable") ||
+		strings.Contains(q, "cash") ||
+		strings.Contains(q, "standing")
+	hasCommercialSignal := strings.Contains(q, "pipeline") ||
+		strings.Contains(q, "offer") ||
+		strings.Contains(q, "order") ||
+		strings.Contains(q, "forecast") ||
+		strings.Contains(q, "prediction")
+
+	return hasDocumentSignal && hasFinanceSignal && hasCommercialSignal
+}
+
+func requestedBriefYear(message string) int {
+	_, _, year, _, ok := parseYearWindowFromQuery(message)
+	if ok {
+		return year
+	}
+	return time.Now().Year()
+}
+
+func (a *App) tryGroundedManagerFinancialBriefFastPath(intent Intent, message string, hasFinanceAccess bool) (string, []ButlerAction, bool) {
+	if a == nil || a.db == nil || !isManagerFinancialBriefRequest(message) {
+		return "", nil, false
+	}
+	if !hasFinanceAccess {
+		return "This manager financial brief needs finance:view permission because it includes AR, cash, and supplier exposure. I can still prepare an operations-only pipeline brief if you want that version.", []ButlerAction{}, true
+	}
+
+	year := requestedBriefYear(message)
+	start := time.Date(year, time.January, 1, 0, 0, 0, 0, time.Local)
+	end := start.AddDate(1, 0, 0)
+	now := time.Now()
+	horizon := now.AddDate(0, 0, 60)
+
+	type rollupRow struct {
+		Label    string  `gorm:"column:label"`
+		Count    int64   `gorm:"column:count"`
+		TotalBHD float64 `gorm:"column:total_bhd"`
+	}
+
+	var orderCount int64
+	var orderTotal float64
+	_ = a.db.Model(&Order{}).
+		Where("order_date >= ? AND order_date < ? AND status NOT IN ?", start, end, []string{"Cancelled", "Canceled", "Void"}).
+		Count(&orderCount).Error
+	_ = a.db.Model(&Order{}).
+		Where("order_date >= ? AND order_date < ? AND status NOT IN ?", start, end, []string{"Cancelled", "Canceled", "Void"}).
+		Select("COALESCE(SUM(CASE WHEN grand_total_bhd > 0 THEN grand_total_bhd ELSE total_value_bhd END), 0)").
+		Scan(&orderTotal).Error
+
+	var activeOrderCount int64
+	var activeOrderTotal float64
+	_ = a.db.Model(&Order{}).
+		Where("order_date >= ? AND order_date < ? AND status NOT IN ?", start, end, []string{"Delivered", "Completed", "Closed", "Cancelled", "Canceled", "Void"}).
+		Count(&activeOrderCount).Error
+	_ = a.db.Model(&Order{}).
+		Where("order_date >= ? AND order_date < ? AND status NOT IN ?", start, end, []string{"Delivered", "Completed", "Closed", "Cancelled", "Canceled", "Void"}).
+		Select("COALESCE(SUM(CASE WHEN grand_total_bhd > 0 THEN grand_total_bhd ELSE total_value_bhd END), 0)").
+		Scan(&activeOrderTotal).Error
+
+	var offerRows []rollupRow
+	_ = a.db.Raw(`
+		SELECT COALESCE(stage, 'Unstaged') AS label, COUNT(*) AS count, COALESCE(SUM(total_value_bhd), 0) AS total_bhd
+		FROM offers
+		WHERE deleted_at IS NULL
+			AND quotation_date >= ?
+			AND quotation_date < ?
+			AND stage IN ('RFQ', 'Quoted', 'Won')
+		GROUP BY COALESCE(stage, 'Unstaged')
+		ORDER BY total_bhd DESC
+	`, start, end).Scan(&offerRows).Error
+
+	var offerCount int64
+	var offerTotal float64
+	for _, row := range offerRows {
+		offerCount += row.Count
+		offerTotal += row.TotalBHD
+	}
+
+	var opportunityRows []rollupRow
+	_ = a.db.Raw(`
+		SELECT COALESCE(stage, 'Unstaged') AS label, COUNT(*) AS count, COALESCE(SUM(revenue_bhd), 0) AS total_bhd
+		FROM opportunities
+		WHERE deleted_at IS NULL
+			AND year = ?
+			AND stage NOT IN ('Lost', 'Expired')
+		GROUP BY COALESCE(stage, 'Unstaged')
+		ORDER BY total_bhd DESC
+	`, year).Scan(&opportunityRows).Error
+
+	var openInvoiceAR, dueNext60, overdueAR, supplierAP float64
+	openInvoiceStatuses := []string{"Sent", "PartiallyPaid", "Overdue"}
+	_ = a.db.Model(&Invoice{}).
+		Where("status IN ? AND outstanding_bhd > 0", openInvoiceStatuses).
+		Select("COALESCE(SUM(outstanding_bhd), 0)").
+		Scan(&openInvoiceAR).Error
+	_ = a.db.Model(&Invoice{}).
+		Where("status IN ? AND outstanding_bhd > 0 AND due_date <= ?", openInvoiceStatuses, horizon).
+		Select("COALESCE(SUM(outstanding_bhd), 0)").
+		Scan(&dueNext60).Error
+	_ = a.db.Model(&Invoice{}).
+		Where("status IN ? AND outstanding_bhd > 0 AND due_date < ?", openInvoiceStatuses, now).
+		Select("COALESCE(SUM(outstanding_bhd), 0)").
+		Scan(&overdueAR).Error
+	_ = a.db.Model(&SupplierInvoice{}).
+		Where("status NOT IN ? AND COALESCE(payment_status, '') != ?", []string{"Paid", "Rejected", "Dispute"}, "Paid").
+		Select("COALESCE(SUM(total_bhd), 0)").
+		Scan(&supplierAP).Error
+
+	uninvoicedOrderExposure, pendingOrderCount, _ := a.calculateUninvoicedOrderExposure(start, end)
+	predicted60DayAR := dueNext60 + uninvoicedOrderExposure
+
+	cashBalance := 0.0
+	cashNote := "No latest bank statement balance was available."
+	if cash, err := a.computeCashPositionSnapshot(); err == nil && cash != nil {
+		cashBalance = cash.CashBalanceBHD
+		cashNote = fmt.Sprintf("Latest statement cash balance is %s BHD.", formatBHD(cashBalance))
+		if len(cash.Notices) > 0 {
+			cashNote += " Statement notices: " + strings.Join(cash.Notices, " ")
+		}
+	}
+
+	stageLines := make([]string, 0, len(offerRows))
+	for _, row := range offerRows {
+		stageLines = append(stageLines, fmt.Sprintf("- %s offers: %d records, %s BHD", firstNonEmpty(row.Label, "Unstaged"), row.Count, formatBHD(row.TotalBHD)))
+	}
+	if len(stageLines) == 0 {
+		stageLines = append(stageLines, "- No RFQ, Quoted, or Won offers found for this year.")
+	}
+
+	opportunityLines := make([]string, 0, len(opportunityRows))
+	for _, row := range opportunityRows {
+		opportunityLines = append(opportunityLines, fmt.Sprintf("- %s opportunities: %d records, %s BHD", firstNonEmpty(row.Label, "Unstaged"), row.Count, formatBHD(row.TotalBHD)))
+	}
+	if len(opportunityLines) == 0 {
+		opportunityLines = append(opportunityLines, "- No active opportunity rows found for this year.")
+	}
+
+	liquidityGap := cashBalance + dueNext60 - supplierAP
+	reportText := fmt.Sprintf(`Manager financial brief - FY%d order, offer, and AR outlook
+
+As of %s
+
+Commercial position
+- Confirmed orders: %d orders, %s BHD.
+- Active order backlog: %d orders, %s BHD.
+- Offer coverage: %d RFQ/Quoted/Won offers, %s BHD.
+- Uninvoiced confirmed-order exposure: %d orders, %s BHD.
+
+Offer pipeline by stage
+%s
+
+Opportunity pipeline by stage
+%s
+
+AR outlook for the next 60 days
+- Current open invoice AR: %s BHD.
+- Already overdue AR: %s BHD.
+- Invoice AR due by %s: %s BHD.
+- Likely invoiceable confirmed-order exposure: %s BHD.
+- Conservative 60-day AR focus: %s BHD.
+
+Financial standing
+- %s
+- Open supplier payable exposure: %s BHD.
+- Cash plus 60-day invoice AR less open supplier exposure: %s BHD.
+
+Manager interpretation
+- FY%d has real commercial coverage even where posted invoice revenue is still light.
+- Collections should separate existing invoice AR from uninvoiced order exposure; they are not the same risk.
+- The next two months should focus on turning active orders into clean invoices, then chasing existing overdue invoices.
+- This document was generated from local ERP data without waiting for the external model.`, year, now.Format("2 Jan 2006 15:04"), orderCount, formatBHD(orderTotal), activeOrderCount, formatBHD(activeOrderTotal), offerCount, formatBHD(offerTotal), pendingOrderCount, formatBHD(uninvoicedOrderExposure), strings.Join(stageLines, "\n"), strings.Join(opportunityLines, "\n"), formatBHD(openInvoiceAR), formatBHD(overdueAR), horizon.Format("2 Jan 2006"), formatBHD(dueNext60), formatBHD(uninvoicedOrderExposure), formatBHD(predicted60DayAR), cashNote, formatBHD(supplierAP), formatBHD(liquidityGap), year)
+
+	actions := []ButlerAction{}
+	if strings.Contains(strings.ToLower(message), "pdf") ||
+		strings.Contains(strings.ToLower(message), "document") ||
+		strings.Contains(strings.ToLower(message), "report") {
+		filePath, err := a.generateIntelligenceReportPDF("financial", fmt.Sprintf("FY%d Pipeline AR Outlook", year), map[string]interface{}{
+			"manager_financial_brief": map[string]interface{}{
+				"year":                       year,
+				"confirmed_order_value_bhd":  round3(orderTotal),
+				"offer_pipeline_bhd":         round3(offerTotal),
+				"open_invoice_ar_bhd":        round3(openInvoiceAR),
+				"uninvoiced_order_ar_bhd":    round3(uninvoicedOrderExposure),
+				"predicted_60_day_ar_bhd":    round3(predicted60DayAR),
+				"cash_balance_bhd":           round3(cashBalance),
+				"open_supplier_payables_bhd": round3(supplierAP),
+			},
+		}, reportText)
+		if err == nil {
+			reportText += fmt.Sprintf("\n\nGenerated document\n- %s", filePath)
+			actions = append(actions, ButlerAction{Type: "fetch", Target: "report", Label: "Open manager financial brief", Data: filePath})
+		} else {
+			reportText += fmt.Sprintf("\n\nDocument note\n- I prepared the brief in chat, but PDF generation failed locally: %v", err)
+		}
+	}
+
+	return reportText, actions, true
+}
+
+func (a *App) buildGroundedModelFallbackResponse(intent Intent, message string, context map[string]interface{}, hasFinanceAccess bool, backendErr error) ButlerResponse {
+	if msg, actions, handled := a.tryGroundedManagerFinancialBriefFastPath(intent, message, hasFinanceAccess); handled {
+		return ButlerResponse{
+			Message:    msg,
+			Actions:    actions,
+			Confidence: 0.88,
+			Context:    map[string]interface{}{"fast_path": "grounded_manager_financial_brief", "model_error": fmt.Sprint(backendErr)},
+			Metadata:   buildButlerMetadata(intent, context, hasFinanceAccess, "grounded_sql_fallback", "", "", fmt.Sprint(backendErr), backendErr),
+		}
+	}
+	if msg, handled := a.tryGroundedCapabilitiesFastPath(intent, message, hasFinanceAccess); handled {
+		return ButlerResponse{
+			Message:    msg,
+			Actions:    []ButlerAction{},
+			Confidence: 0.9,
+			Context:    map[string]interface{}{"fast_path": "grounded_capabilities", "model_error": fmt.Sprint(backendErr)},
+			Metadata:   buildButlerMetadata(intent, context, hasFinanceAccess, "grounded_sql_fallback", "", "", fmt.Sprint(backendErr), backendErr),
+		}
+	}
+
+	summary := a.getBusinessSummary()
+	customerCount := fmt.Sprint(summary["total_customers"])
+	supplierCount := fmt.Sprint(summary["total_suppliers"])
+	orderCount := fmt.Sprint(summary["total_orders"])
+	invoiceCount := fmt.Sprint(summary["total_invoices"])
+	databaseInventory := a.getDatabaseInventoryContext(hasFinanceAccess)
+	tableCount := fmt.Sprint(databaseInventory["total_tables"])
+	moduleCoverage := "relationships, commercial pipeline, operations, work management, products, intelligence, and system records"
+	if hasFinanceAccess {
+		moduleCoverage = "relationships, commercial pipeline, operations, finance, banking, payroll, work management, products, intelligence, and system records"
+	}
+
+	lines := []string{
+		"The external intelligence model did not respond quickly, so I am answering from local ERP data.",
+		"",
+		"Current local coverage",
+		fmt.Sprintf("- Customers: %s", customerCount),
+		fmt.Sprintf("- Suppliers: %s", supplierCount),
+		fmt.Sprintf("- Orders: %s", orderCount),
+		fmt.Sprintf("- Customer invoices: %s", invoiceCount),
+		fmt.Sprintf("- Queryable database tables: %s", tableCount),
+		fmt.Sprintf("- Covered modules: %s", moduleCoverage),
+	}
+
+	if hasFinanceAccess {
+		if yearSummary := a.getBusinessYearSummary(message); len(yearSummary) > 0 {
+			lines = append(lines,
+				"",
+				"Year coverage",
+				fmt.Sprintf("- Period: %v", yearSummary["period"]),
+				fmt.Sprintf("- Invoices: %v", yearSummary["invoices"]),
+				fmt.Sprintf("- Orders: %v", yearSummary["orders"]),
+				fmt.Sprintf("- Offers: %v", yearSummary["offers"]),
+				fmt.Sprintf("- Opportunities: %v", yearSummary["opportunities"]),
+			)
+		}
+	}
+
+	lines = append(lines,
+		"",
+		"What I can answer locally",
+		"- Customers, suppliers, contacts, notes, offers, opportunities, RFQs, orders, purchase orders, deliveries, products, serials, tasks, and notifications.",
+		"- Finance, AR, AP, payments, bank statements, expenses, payroll, VAT, and cash position when your role has finance:view.",
+		"- Manager reports, pipeline summaries, relationship history, task follow-ups, and cross-module record lookup from guarded ERP queries.",
+	)
+
+	return ButlerResponse{
+		Message:    strings.Join(lines, "\n"),
+		Actions:    []ButlerAction{},
+		Confidence: 0.72,
+		Context:    context,
+		Metadata:   buildButlerMetadata(intent, context, hasFinanceAccess, "grounded_sql_fallback", "", "", fmt.Sprint(backendErr), backendErr),
+	}
+}
+
 func (a *App) tryGroundedCustomerFastPath(intent Intent, message string) (string, bool) {
 	return a.tryGroundedCustomerFastPathWithHint(intent, message, "")
 }
@@ -103,6 +494,14 @@ func (a *App) tryGroundedWorkFastPath(intent Intent, message string) (string, bo
 		return "", false
 	}
 
+	if isSelfWorkReference(q) {
+		current, err := a.GetCurrentEmployeeContext()
+		if err == nil && strings.TrimSpace(current.EmployeeID) != "" {
+			displayName := firstNonEmpty(strings.TrimSpace(current.EmployeeName), "you")
+			return a.buildEmployeeTaskOverviewResponse(current.EmployeeID, displayName, q), true
+		}
+	}
+
 	employeeRef := inferEmployeeReferenceFromQuery(intent, message)
 	if employeeRef == "" {
 		return "", false
@@ -114,6 +513,20 @@ func (a *App) tryGroundedWorkFastPath(intent Intent, message string) (string, bo
 	}
 
 	return a.buildEmployeeTaskOverviewResponse(resolution.EntityID, resolution.DisplayName, q), true
+}
+
+func isSelfWorkReference(q string) bool {
+	selfSignals := []string{
+		" my task", " my tasks", " for me", "assigned to me", "task for me", "tasks for me",
+		"new task for me", "new tasks for me", "me today", "my work", "my workload",
+	}
+	padded := " " + strings.ToLower(strings.TrimSpace(q)) + " "
+	for _, signal := range selfSignals {
+		if strings.Contains(padded, signal) {
+			return true
+		}
+	}
+	return strings.Contains(padded, " tasks today ") || strings.Contains(padded, " task today ")
 }
 
 func (a *App) tryGroundedSupplierFastPath(intent Intent, message string) (string, bool) {

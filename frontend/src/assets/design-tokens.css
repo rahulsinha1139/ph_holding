@@ -10,7 +10,7 @@
   --carbon: #000000;              /* Primary action buttons, high contrast */
   --onyx: #1D1D1F;               /* Primary text, headers, active states */
   --steel: #86868B;              /* Secondary text, labels, inactive icons */
-  --ether: #F5F5F7;             /* Main app background */
+  --ether: #EDF3F7;             /* Main app background */
   --canvas: #FFFFFF;             /* Card backgrounds, inputs */
 
   /* Derived tints */
@@ -27,7 +27,7 @@
   /* ===== SEMANTIC MAPPING (backwards compatible) ===== */
   --bg-base: var(--ether);
   --surface: var(--canvas);
-  --surface-elevated: #FAFAFA;
+  --surface-elevated: #F7FAFD;
   --border: #E5E5E5;
 
   --text-primary: var(--onyx);

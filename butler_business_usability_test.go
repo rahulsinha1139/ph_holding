@@ -136,6 +136,32 @@ func TestTryGroundedWorkFastPath_TaskSummaryByEmployee(t *testing.T) {
 	require.Contains(t, reply, "Review calibration backlog")
 }
 
+func TestTryGroundedWorkFastPath_SelfTaskQueryUsesCurrentEmployee(t *testing.T) {
+	app := setupHybridFeatureTestApp(t)
+	current := seedCurrentAdminContext(t, app, "Rahul")
+
+	dueToday := time.Now()
+	require.NoError(t, app.db.Create(&TaskItem{
+		Base:               Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		Title:              "Call Veolia about delivery note",
+		Status:             "open",
+		Priority:           "high",
+		TaskType:           "operations",
+		AssigneeEmployeeID: &current.EmployeeID,
+		CreatorEmployeeID:  current.EmployeeID,
+		DueDate:            &dueToday,
+	}).Error)
+
+	reply, handled := app.tryGroundedWorkFastPath(
+		classifyIntent("what are the new task for me today?"),
+		"what are the new task for me today?",
+	)
+
+	require.True(t, handled)
+	require.Contains(t, reply, "Rahul")
+	require.Contains(t, reply, "Call Veolia about delivery note")
+}
+
 func TestTryGroundedSupplierFastPath_PaymentAndPurchaseHistory(t *testing.T) {
 	app, _ := seedButlerBusinessHarnessFixture(t)
 

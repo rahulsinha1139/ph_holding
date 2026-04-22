@@ -192,9 +192,20 @@ export interface EmployeeContributionSummary {
 
 const isDesktop = () => Boolean((window as any)?.go?.main?.App);
 const COLLABORATIVE_REFRESH_INTERVAL_MS = 15_000;
+const COLLABORATIVE_REFRESH_TIMEOUT_MS = 5_000;
 
 let collaborativeRefreshInFlight: Promise<void> | null = null;
 let lastCollaborativeRefreshAt = 0;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutID: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    timeoutID = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutID) clearTimeout(timeoutID);
+  });
+}
 
 function toEmployeeProfile(employee: main.Employee): EmployeeProfile {
   return {
@@ -512,10 +523,12 @@ export async function refreshCollaborativeWorkspace(
     return;
   }
 
-  collaborativeRefreshInFlight = RefreshCollaborativeWorkspace()
+  const refreshPromise = RefreshCollaborativeWorkspace()
     .then(() => {
       lastCollaborativeRefreshAt = Date.now();
-    })
+    });
+
+  collaborativeRefreshInFlight = withTimeout(refreshPromise, COLLABORATIVE_REFRESH_TIMEOUT_MS, "Collaborative refresh")
     .finally(() => {
       collaborativeRefreshInFlight = null;
     });

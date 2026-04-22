@@ -254,21 +254,22 @@ type Offer struct {
 	LostReason        string `gorm:"type:varchar(2000)" json:"lost_reason"`
 
 	// PDF Generation Fields (Terms & Conditions)
-	PaymentTerms      string  `gorm:"type:varchar(500);default:'30 days from Date of Delivery'" json:"payment_terms"`
-	DeliveryTerms     string  `gorm:"type:varchar(500);default:'DAP Bahrain at your store or PH Trading'" json:"delivery_terms"`
-	DeliveryWeeks     string  `gorm:"size:50;default:'4-6 weeks'" json:"delivery_weeks"`
-	CountryOfOrigin   string  `gorm:"size:100;default:'Germany / USA'" json:"country_of_origin"`
-	IssuedBy          string  `gorm:"size:100" json:"issued_by"`
-	ContactPhone      string  `gorm:"size:50" json:"contact_phone"`
-	CustomerReference string  `gorm:"size:255" json:"customer_reference"` // RFQ/enquiry reference
-	AttentionPerson   string  `gorm:"size:255" json:"attention_person"`   // Contact name
-	AttentionCompany  string  `gorm:"size:255" json:"attention_company"`
-	AttentionPhone    string  `gorm:"size:50" json:"attention_phone"`
-	AttentionAddress  string  `gorm:"type:varchar(1000)" json:"attention_address"`
-	DiscountPercent   float64 `json:"discount_percent"`
-	QuoteType         string  `gorm:"size:50;default:'Quotation'" json:"quote_type"` // "Quotation" or "Budgetary Quote"
-	VatRate           float64 `gorm:"default:10" json:"vat_rate"`                    // VAT percentage (default 10%)
-	Division          string  `gorm:"size:100;default:'PH Trading'" json:"division"`
+	PaymentTerms       string  `gorm:"type:varchar(500);default:'30 days from Date of Delivery'" json:"payment_terms"`
+	DeliveryTerms      string  `gorm:"type:varchar(500);default:'DAP Bahrain at your store or PH Trading'" json:"delivery_terms"`
+	DeliveryWeeks      string  `gorm:"size:50;default:'4-6 weeks'" json:"delivery_weeks"`
+	CountryOfOrigin    string  `gorm:"size:100;default:'Germany / USA'" json:"country_of_origin"`
+	IssuedBy           string  `gorm:"size:100" json:"issued_by"`
+	ContactPhone       string  `gorm:"size:50" json:"contact_phone"`
+	CustomerReference  string  `gorm:"size:255" json:"customer_reference"` // RFQ/enquiry reference
+	AttentionPerson    string  `gorm:"size:255" json:"attention_person"`   // Contact name
+	AttentionCompany   string  `gorm:"size:255" json:"attention_company"`
+	AttentionPhone     string  `gorm:"size:50" json:"attention_phone"`
+	AttentionAddress   string  `gorm:"type:varchar(1000)" json:"attention_address"`
+	DiscountPercent    float64 `json:"discount_percent"`
+	QuoteType          string  `gorm:"size:50;default:'Quotation'" json:"quote_type"` // "Quotation" or "Budgetary Quote"
+	VatRate            float64 `gorm:"default:10" json:"vat_rate"`                    // VAT percentage (default 10%)
+	Division           string  `gorm:"size:100;default:'PH Trading'" json:"division"`
+	TermsAndConditions string  `gorm:"type:text" json:"terms_and_conditions"`
 
 	// Additional costing header fields
 	CocCoo          string `gorm:"size:50" json:"coc_coo"`                    // Certificate of Conformity/Country of Origin
@@ -1204,6 +1205,27 @@ type CostingHistory struct {
 }
 
 func (CostingHistory) TableName() string { return "costing_history" }
+
+type CostingLineItemData struct {
+	ID                string    `gorm:"primaryKey;type:text" json:"id"`
+	CostingSheetID    int       `gorm:"index" json:"costing_sheet_id"`
+	ProductNumber     int       `json:"product_number"`
+	Equipment         string    `gorm:"type:text" json:"equipment"`
+	Model             string    `gorm:"type:text" json:"model"`
+	Specification     string    `gorm:"type:text" json:"specification"`
+	Supplier          string    `gorm:"type:text" json:"supplier"`
+	Quantity          float64   `json:"quantity"`
+	FobEUR            float64   `json:"fob_eur"`
+	ExchangeRate      float64   `json:"exchange_rate"`
+	TotalCostBHD      float64   `json:"total_cost_bhd"`
+	MarkupPercent     float64   `json:"markup_percent"`
+	SellingPriceBHD   float64   `json:"selling_price_bhd"`
+	TotalSuggestedBHD float64   `json:"total_suggested_bhd"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+func (CostingLineItemData) TableName() string { return "costing_line_items" }
 
 type GradeChange struct {
 	Base

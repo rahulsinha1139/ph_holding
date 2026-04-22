@@ -190,7 +190,7 @@ CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 wails build
 SUPABASE_DB_HOST=aws-1-ap-southeast-1.pooler.supabase.com
 SUPABASE_DB_PORT=5432
 SUPABASE_DB_USER=postgres.xkyydcxxkzjbnsrmzkpp
-SUPABASE_DB_PASSWORD=PHHoldings2026
+SUPABASE_DB_PASSWORD=<supabase-db-password>
 ENABLE_CLOUD_SYNC=true
 MISTRAL_API_KEY=your_key
 ```

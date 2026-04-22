@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -113,6 +114,7 @@ var dbSyncTables = []string{
 	"bank_accounts",
 	"bank_statements",
 	"bank_statement_lines",
+	"bank_line_payment_allocations",
 	"bank_expense_entries",
 	"costing_sheet_data",
 	"costing_line_items",
@@ -243,7 +245,7 @@ func (a *App) SyncNowWithProgress() DBSyncResult {
 	})
 
 	pushedCount := 0
-	lastSync := a.dbManager.getLastSyncTime()
+	syncErrors := []string{}
 
 	for i, table := range dbSyncTables {
 		a.emitDBSyncProgress(DBSyncProgress{
@@ -256,9 +258,11 @@ func (a *App) SyncNowWithProgress() DBSyncResult {
 			Message:         fmt.Sprintf("Uploading %s...", table),
 		})
 
-		count, err := a.syncTablePush(table, lastSync)
+		tableSince := a.dbManager.getLastSyncTimeForTable(table, "push")
+		count, err := a.syncTablePush(table, tableSince)
 		if err != nil {
 			log.Printf("Push error for %s: %v", table, err)
+			syncErrors = append(syncErrors, fmt.Sprintf("push %s: %v", table, err))
 			continue
 		}
 		pushedCount += count
@@ -289,9 +293,11 @@ func (a *App) SyncNowWithProgress() DBSyncResult {
 			Message:         fmt.Sprintf("Downloading %s...", table),
 		})
 
-		count, err := a.syncTablePull(table, lastSync)
+		tableSince := a.dbManager.getLastSyncTimeForTable(table, "pull")
+		count, err := a.syncTablePull(table, tableSince)
 		if err != nil {
 			log.Printf("Pull error for %s: %v", table, err)
+			syncErrors = append(syncErrors, fmt.Sprintf("pull %s: %v", table, err))
 			continue
 		}
 		pulledCount += count
@@ -299,6 +305,29 @@ func (a *App) SyncNowWithProgress() DBSyncResult {
 	}
 
 	result.RecordsPulled = pulledCount
+
+	if len(syncErrors) > 0 {
+		duration := time.Since(startTime)
+		result.Success = false
+		result.TablesProcessed = totalTables
+		result.Duration = duration.Round(time.Second).String()
+		result.Error = fmt.Sprintf("%d sync table errors: %s", len(syncErrors), strings.Join(syncErrors, "; "))
+		a.saveSetting("db_sync_last_status", "failed")
+		a.emitDBSyncProgress(DBSyncProgress{
+			Phase:           "error",
+			TablesCompleted: totalTables,
+			TablesTotal:     totalTables,
+			RecordsSynced:   totalRecordsSynced,
+			Percentage:      100,
+			Message:         "Sync finished with table errors",
+			Error:           result.Error,
+		})
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "sync:complete", result)
+		}
+		log.Printf("DB Sync completed with errors: pushed=%d, pulled=%d, duration=%s, errors=%s", pushedCount, pulledCount, result.Duration, result.Error)
+		return result
+	}
 
 	// Update last sync time
 	a.saveSetting("db_sync_last_at", time.Now().Format(time.RFC3339))
@@ -392,7 +421,9 @@ func (a *App) syncTablePush(table string, since time.Time) (int, error) {
 
 	// Count records to sync
 	var count int64
-	a.db.Table(table).Where("updated_at > ?", since).Count(&count)
+	if err := a.db.Table(table).Where("updated_at > ?", since).Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("count local %s records: %w", table, err)
+	}
 	if count == 0 {
 		return 0, nil
 	}
@@ -423,15 +454,30 @@ func (a *App) syncTablePush(table string, since time.Time) (int, error) {
 		// SAFE UPSERT: Update if exists, create if not
 		id := record["id"]
 		result := a.dbManager.Remote().Table(table).Where("id = ?", id).Updates(record)
+		if result.Error != nil {
+			return synced, fmt.Errorf("update remote %s/%v: %w", table, id, result.Error)
+		}
 		if result.RowsAffected == 0 {
 			// Record doesn't exist in cloud, create it
-			a.dbManager.Remote().Table(table).Create(record)
+			if err := a.dbManager.Remote().Table(table).Create(record).Error; err != nil {
+				return synced, fmt.Errorf("create remote %s/%v: %w", table, id, err)
+			}
 		}
 		synced++
 	}
 
 	if skipped > 0 {
 		log.Printf("Sync %s: %d synced, %d skipped (validation failed)", table, synced, skipped)
+	}
+
+	if synced > 0 {
+		a.db.Create(&SyncRecord{
+			SyncTable:     table,
+			RecordID:      fmt.Sprintf("batch_%d", synced),
+			SyncedAt:      time.Now(),
+			Direction:     "push",
+			ConflictState: "none",
+		})
 	}
 
 	return synced, nil
@@ -445,7 +491,9 @@ func (a *App) syncTablePull(table string, since time.Time) (int, error) {
 
 	// Count records to sync
 	var count int64
-	a.dbManager.Remote().Table(table).Where("updated_at > ?", since).Count(&count)
+	if err := a.dbManager.Remote().Table(table).Where("updated_at > ?", since).Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("count remote %s records: %w", table, err)
+	}
 	if count == 0 {
 		return 0, nil
 	}
@@ -472,11 +520,26 @@ func (a *App) syncTablePull(table string, since time.Time) (int, error) {
 		}
 
 		result := a.db.Table(table).Where("id = ?", id).Updates(record)
+		if result.Error != nil {
+			return synced, fmt.Errorf("update local %s/%v: %w", table, id, result.Error)
+		}
 		if result.RowsAffected == 0 {
 			// Record doesn't exist locally, create it
-			a.db.Table(table).Create(record)
+			if err := a.db.Table(table).Create(record).Error; err != nil {
+				return synced, fmt.Errorf("create local %s/%v: %w", table, id, err)
+			}
 		}
 		synced++
+	}
+
+	if synced > 0 {
+		a.db.Create(&SyncRecord{
+			SyncTable:     table,
+			RecordID:      fmt.Sprintf("batch_%d", synced),
+			SyncedAt:      time.Now(),
+			Direction:     "pull",
+			ConflictState: "none",
+		})
 	}
 
 	return synced, nil
@@ -751,8 +814,13 @@ func (a *App) StartBackgroundDBSync() {
 				if a.dbManager != nil && a.dbManager.IsOnline() {
 					lastSync := a.dbManager.getLastSyncTime()
 
-					pushed, _ := a.dbManager.SyncToRemote(lastSync)
-					pulled, _ := a.dbManager.SyncFromRemote(lastSync)
+					pushed, pushErr := a.dbManager.SyncToRemote(lastSync)
+					pulled, pullErr := a.dbManager.SyncFromRemote(lastSync)
+					if pushErr != nil || pullErr != nil {
+						log.Printf("Background DB sync completed with errors: pushed=%d pulled=%d push=%v pull=%v", pushed, pulled, pushErr, pullErr)
+						a.saveSetting("db_sync_last_status", "failed")
+						continue
+					}
 
 					if pushed > 0 || pulled > 0 {
 						log.Printf("Background DB sync: pushed=%d, pulled=%d", pushed, pulled)

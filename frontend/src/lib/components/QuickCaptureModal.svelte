@@ -35,6 +35,7 @@
     let selectedCustomerId: string | null = null;
     let selectedSupplierId: string | null = null;
     let selectedBankAccountId = "";
+    let loadingBankAccounts = false;
 
     // Filtered lists for search
     $: filteredCustomers = customerSearchTerm.length > 0
@@ -74,23 +75,35 @@
 
     // Load customers and suppliers when modal opens
     async function loadEntities() {
-        if (customers.length > 0 && suppliers.length > 0 && bankAccounts.length > 0) return;
+        if (customers.length > 0 && suppliers.length > 0) return;
         loadingEntities = true;
         try {
-            const [custResult, suppResult, bankResult] = await Promise.all([
+            const [custResult, suppResult] = await Promise.all([
                 ListCustomers(1000, 0),
-                ListSuppliers(500, 0),
-                GetActiveBankAccounts()
+                ListSuppliers(500, 0)
             ]);
             customers = (custResult || []).sort((a, b) => (a.business_name || '').localeCompare(b.business_name || ''));
             suppliers = (suppResult || []).sort((a, b) => (a.supplier_name || '').localeCompare(b.supplier_name || ''));
-            bankAccounts = (bankResult || []).sort((a, b) => `${a.bank_name || ''}${a.account_number || ''}`.localeCompare(`${b.bank_name || ''}${b.account_number || ''}`));
-            syncDetectedBankAccountSelection();
-            console.log(`Loaded ${customers.length} customers, ${suppliers.length} suppliers, ${bankAccounts.length} bank accounts`);
+            console.log(`Loaded ${customers.length} customers, ${suppliers.length} suppliers`);
         } catch (err) {
             console.error('Failed to load entities:', err);
         } finally {
             loadingEntities = false;
+        }
+    }
+
+    async function loadBankAccounts() {
+        if (bankAccounts.length > 0 || loadingBankAccounts) return;
+        loadingBankAccounts = true;
+        try {
+            const bankResult = await GetActiveBankAccounts();
+            bankAccounts = (bankResult || []).sort((a, b) => `${a.bank_name || ''}${a.account_number || ''}`.localeCompare(`${b.bank_name || ''}${b.account_number || ''}`));
+            syncDetectedBankAccountSelection();
+        } catch (err) {
+            bankAccounts = [];
+            console.warn('Bank accounts unavailable for this user or device:', err);
+        } finally {
+            loadingBankAccounts = false;
         }
     }
 
@@ -165,6 +178,64 @@
     // Bank: {date, description, reference, debit, credit, balance}
     let lineItems: Array<any> = [];
 
+    function parseNum(v: any): number {
+        if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+        if (typeof v === "string") {
+            const match = v
+                .replace(/\b(BHD|USD|EUR|GBP|SAR|AED|CHF|KWD|OMR|QAR)\b/gi, "")
+                .replace(/,/g, "")
+                .match(/[-+]?\d*\.?\d+/);
+            return match ? parseFloat(match[0]) || 0 : 0;
+        }
+        return 0;
+    }
+
+    function isCurrencyCode(value: any): boolean {
+        return /^(BHD|USD|EUR|GBP|SAR|AED|CHF|KWD|OMR|QAR)$/i.test(String(value || "").trim());
+    }
+
+    function normalizeLineUnit(value: any): string {
+        const unit = String(value || "").trim();
+        if (!unit || isCurrencyCode(unit)) return "pcs";
+        return unit;
+    }
+
+    function normalizeCommercialLineItem(item: any) {
+        const rawUnit = item.unit || item.uom || item.unit_of_measure;
+        const rawCurrency = item.currency || (isCurrencyCode(rawUnit) ? rawUnit : "");
+        const description =
+            item.description ||
+            item.item_description ||
+            item.item ||
+            item.name ||
+            item.equipment ||
+            item.product ||
+            item.product_name ||
+            item.model ||
+            item.part_number ||
+            "";
+        const partNumber =
+            item.part_number ||
+            item.part_no ||
+            item.item_code ||
+            item.product_code ||
+            item.model ||
+            item.long_code ||
+            "";
+        const unitPrice = parseNum(item.unit_price ?? item.unit_price_bhd ?? item.price ?? item.rate);
+        const totalPrice = parseNum(item.total_price ?? item.total ?? item.line_total);
+        const quantity = parseNum(item.quantity ?? item.qty) || (totalPrice > 0 && unitPrice > 0 ? totalPrice / unitPrice : 1);
+
+        return {
+            description: String(description || "").trim(),
+            quantity,
+            unit: normalizeLineUnit(rawUnit),
+            part_number: String(partNumber || "").trim(),
+            unit_price: unitPrice || (quantity > 0 && totalPrice > 0 ? totalPrice / quantity : 0),
+            currency: isCurrencyCode(rawCurrency) ? String(rawCurrency).trim().toUpperCase() : undefined,
+        };
+    }
+
     // Duplicate RFQ detection state
     let duplicateRFQ: any = null;
     let showDuplicateWarning = false;
@@ -202,6 +273,9 @@
 
     $: if (show && selectedType === 'bank_statement' && bankAccounts.length > 0 && !selectedBankAccountId) {
         syncDetectedBankAccountSelection();
+    }
+    $: if (show && selectedType === 'bank_statement' && bankAccounts.length === 0 && !loadingBankAccounts) {
+        loadBankAccounts();
     }
 
     // Auto-analyze with Butler when modal opens (debounced)
@@ -372,13 +446,7 @@
                     balance: parseFloat(String(item.balance ?? 0).replace(/,/g, '')) || 0
                 }));
             } else {
-                lineItems = data.line_items.map((item: any) => ({
-                    description: item.description || "",
-                    quantity: parseFloat(item.quantity) || 1,
-                    unit: item.unit || "pcs",
-                    part_number: item.part_number || "",
-                    unit_price: parseFloat(item.unit_price) || 0
-                }));
+                lineItems = data.line_items.map(normalizeCommercialLineItem);
             }
         } else {
             lineItems = [];
@@ -914,13 +982,6 @@
 
         // Merge line items from Butler
         if (butlerInsights.extracted_items && Array.isArray(butlerInsights.extracted_items)) {
-            // Helper: parse number that may be formatted with commas (e.g. "1,234.567")
-            const parseNum = (v: any): number => {
-                if (typeof v === 'number') return v;
-                if (typeof v === 'string') return parseFloat(v.replace(/,/g, '')) || 0;
-                return 0;
-            };
-
             // Helper: convert DD/MM/YYYY or DD-MM-YYYY to YYYY-MM-DD for HTML date input
             const toISODate = (d: string): string => {
                 if (!d) return "";
@@ -944,13 +1005,7 @@
                     credit: parseNum(item.credit),
                     balance: parseNum(item.balance),
                 }))
-                : butlerInsights.extracted_items.map((item: any) => ({
-                    description: item.description || "",
-                    quantity: parseNum(item.quantity) || 1,
-                    unit: item.unit || "pcs",
-                    part_number: item.part_number || "",
-                    unit_price: parseNum(item.unit_price)
-                }));
+                : butlerInsights.extracted_items.map(normalizeCommercialLineItem);
 
             console.log('[Butler Merge] Mapped', butlerItems.length, 'butler items, existing lineItems:', lineItems.length);
             if (butlerItems.length > 0) {
@@ -1020,7 +1075,11 @@
             }
 
             const itemCount = lineItems.length;
-            toast.success(`Butler found ${itemCount} ${selectedType === 'bank_statement' ? 'transactions' : 'line items'}!`);
+            if (itemCount > 0) {
+                toast.success(`Butler found ${itemCount} ${selectedType === 'bank_statement' ? 'transactions' : 'line items'}!`);
+            } else {
+                toast.warning("Butler could not extract line items. Please review the text before saving.");
+            }
 
             // Auto-switch to items tab if items were found
             if (itemCount > 0) {
@@ -1036,7 +1095,7 @@
 
     // Check for duplicate RFQ
     async function checkDuplicate(): Promise<boolean> {
-        if (selectedType !== 'rfq' && selectedType !== 'quotation' && selectedType !== 'costing') {
+        if (selectedType !== 'rfq' && selectedType !== 'quotation' && selectedType !== 'costing' && selectedType !== 'excel_data') {
             return false; // Only check duplicates for RFQ-type docs
         }
 

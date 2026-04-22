@@ -40,11 +40,13 @@ func TestSeedDefaultRoles_AllowsStartupSystemContext(t *testing.T) {
 	require.NoError(t, app.db.Where("name = ?", "sales").First(&salesRole).Error)
 	require.Contains(t, salesRole.Permissions, "suppliers:create")
 	require.Contains(t, salesRole.Permissions, "po:view")
+	require.Contains(t, salesRole.Permissions, "invoices:create")
 
 	var operationsRole Role
 	require.NoError(t, app.db.Where("name = ?", "operations").First(&operationsRole).Error)
 	require.Contains(t, operationsRole.Permissions, "po:create")
 	require.Contains(t, operationsRole.Permissions, "delivery_notes:view")
+	require.Contains(t, operationsRole.Permissions, "invoices:create")
 }
 
 func TestRequirePermission_FallsBackToLicenseWhenUserRoleIsStale(t *testing.T) {
@@ -67,6 +69,7 @@ func TestRequirePermission_FallsBackToLicenseWhenUserRoleIsStale(t *testing.T) {
 	require.NoError(t, app.requirePermission("suppliers:create"))
 	require.NoError(t, app.requirePermission("po:view"))
 	require.NoError(t, app.requirePermission("orders:update"))
+	require.NoError(t, app.requirePermission("invoices:create"))
 	require.Error(t, app.requirePermission("finance:view"))
 }
 
@@ -103,6 +106,7 @@ func TestGetUserPermissions_MergesCurrentUserRoleWithLicensePermissions(t *testi
 	require.Contains(t, perms, "suppliers:view")
 	require.Contains(t, perms, "suppliers:create")
 	require.Contains(t, perms, "po:view")
+	require.Contains(t, perms, "invoices:create")
 }
 
 func TestUpdateRFQNotes_RequiresOffersEditPermission(t *testing.T) {

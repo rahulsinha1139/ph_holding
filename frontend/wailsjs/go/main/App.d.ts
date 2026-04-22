@@ -43,6 +43,8 @@ export function AnalyzeDocumentWithButler(arg1:string,arg2:string,arg3:Record<st
 
 export function ApplyCreditNote(arg1:string):Promise<void>;
 
+export function ApplyDeploymentLicenseActivationFlush():Promise<void>;
+
 export function ApplyReconciliation(arg1:string):Promise<void>;
 
 export function ApproveCostingSheet(arg1:number,arg2:string):Promise<void>;
@@ -331,6 +333,8 @@ export function DeleteGRN(arg1:string):Promise<void>;
 
 export function DeleteOfferNote(arg1:string):Promise<void>;
 
+export function DeleteOpportunityComment(arg1:string):Promise<void>;
+
 export function DeleteOrder(arg1:string):Promise<void>;
 
 export function DeletePayment(arg1:string):Promise<void>;
@@ -456,6 +460,8 @@ export function GenerateDailyBriefing(arg1:string):Promise<main.ChatResponse>;
 export function GenerateDashboardReport():Promise<string>;
 
 export function GenerateDataImportTemplate():Promise<string>;
+
+export function GenerateDeliveryNotePDF(arg1:string):Promise<string>;
 
 export function GenerateEInvoiceXML(arg1:string):Promise<string>;
 
@@ -1511,7 +1517,7 @@ export function UnblockDevice(arg1:string):Promise<void>;
 
 export function UnmatchLine(arg1:string,arg2:string,arg3:string):Promise<void>;
 
-export function UpdateAccount(arg1:number,arg2:Record<string, any>):Promise<void>;
+export function UpdateAccount(arg1:string,arg2:Record<string, any>):Promise<void>;
 
 export function UpdateBankAccount(arg1:string,arg2:Record<string, any>):Promise<main.CompanyBankAccount>;
 

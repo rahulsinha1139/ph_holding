@@ -74,6 +74,10 @@ export function ApplyCreditNote(arg1) {
   return window['go']['main']['App']['ApplyCreditNote'](arg1);
 }
 
+export function ApplyDeploymentLicenseActivationFlush() {
+  return window['go']['main']['App']['ApplyDeploymentLicenseActivationFlush']();
+}
+
 export function ApplyReconciliation(arg1) {
   return window['go']['main']['App']['ApplyReconciliation'](arg1);
 }
@@ -650,6 +654,10 @@ export function DeleteOfferNote(arg1) {
   return window['go']['main']['App']['DeleteOfferNote'](arg1);
 }
 
+export function DeleteOpportunityComment(arg1) {
+  return window['go']['main']['App']['DeleteOpportunityComment'](arg1);
+}
+
 export function DeleteOrder(arg1) {
   return window['go']['main']['App']['DeleteOrder'](arg1);
 }
@@ -900,6 +908,10 @@ export function GenerateDashboardReport() {
 
 export function GenerateDataImportTemplate() {
   return window['go']['main']['App']['GenerateDataImportTemplate']();
+}
+
+export function GenerateDeliveryNotePDF(arg1) {
+  return window['go']['main']['App']['GenerateDeliveryNotePDF'](arg1);
 }
 
 export function GenerateEInvoiceXML(arg1) {

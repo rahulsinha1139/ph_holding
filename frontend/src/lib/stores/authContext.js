@@ -22,6 +22,10 @@ export const roles = writable([]);
 // User permissions array
 export const permissions = writable([]);
 
+export function normalizePermissionList(value) {
+    return Array.isArray(value) ? value : [];
+}
+
 /**
  * Derived store: Is user logged in?
  */
@@ -59,18 +63,20 @@ export const isManagement = derived(currentUser, $user =>
  */
 export function createPermissionChecker() {
     let perms = [];
-    permissions.subscribe(p => perms = p);
+    permissions.subscribe(p => perms = normalizePermissionList(p));
 
     return (permission) => {
+        const safePerms = normalizePermissionList(perms);
+
         // Wildcard access
-        if (perms.includes('*')) return true;
+        if (safePerms.includes('*')) return true;
 
         // Direct match
-        if (perms.includes(permission)) return true;
+        if (safePerms.includes(permission)) return true;
 
         // Wildcard pattern (e.g., "customers:*" matches "customers:read")
         const [resource] = permission.split(':');
-        if (perms.includes(`${resource}:*`)) return true;
+        if (safePerms.includes(`${resource}:*`)) return true;
 
         return false;
     };
@@ -81,12 +87,13 @@ export function createPermissionChecker() {
  */
 export const navVisibility = derived([currentUser, permissions], ([$user, $perms]) => {
     if (!$user) return {};
+    const safePerms = normalizePermissionList($perms);
 
     const hasPermission = (perm) => {
-        if ($perms.includes('*')) return true;
-        if ($perms.includes(perm)) return true;
+        if (safePerms.includes('*')) return true;
+        if (safePerms.includes(perm)) return true;
         const [resource] = perm.split(':');
-        return $perms.includes(`${resource}:*`);
+        return safePerms.includes(`${resource}:*`);
     };
 
     return {
@@ -113,9 +120,9 @@ export const navVisibility = derived([currentUser, permissions], ([$user, $perms
         payroll: hasPermission('payroll:read'),
 
         // Administration (Management only)
-        userManagement: hasPermission('users:read') || $perms.includes('*'),
-        authManagement: $perms.includes('*'),
-        security: $perms.includes('*'),
+        userManagement: hasPermission('users:read') || safePerms.includes('*'),
+        authManagement: safePerms.includes('*'),
+        security: safePerms.includes('*'),
         settings: hasPermission('settings:read:basic') || hasPermission('settings:read'),
     };
 });
@@ -139,7 +146,7 @@ export async function initAuthContext() {
         // Load user permissions
         if (user?.id) {
             const perms = await GetUserPermissions(user.id);
-            permissions.set(perms);
+            permissions.set(normalizePermissionList(perms));
         }
 
         // Only log in development mode to prevent information disclosure
@@ -147,7 +154,7 @@ export async function initAuthContext() {
             console.log('Auth context initialized:', {
                 user: user?.full_name,
                 role: user?.role_name,
-                permissions: (await GetUserPermissions(user?.id))?.length || 0
+                permissions: normalizePermissionList(await GetUserPermissions(user?.id)).length
             });
         }
 
@@ -172,7 +179,7 @@ export async function refreshUser() {
 
         if (user?.id) {
             const perms = await GetUserPermissions(user.id);
-            permissions.set(perms);
+            permissions.set(normalizePermissionList(perms));
         }
     } catch (err) {
         console.error('Failed to refresh user:', err);

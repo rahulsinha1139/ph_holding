@@ -201,6 +201,7 @@ func getHardwareID() (string, error) {
 	case "windows":
 		// Use WMIC to get motherboard serial
 		cmd := exec.Command("wmic", "baseboard", "get", "serialnumber")
+		suppressCommandWindow(cmd)
 		output, err := cmd.Output()
 		if err == nil {
 			for _, line := range strings.Split(string(output), "\n") {
@@ -213,6 +214,7 @@ func getHardwareID() (string, error) {
 	case "darwin":
 		// Use ioreg to get IOPlatformSerialNumber (Mac serial number)
 		cmd := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice")
+		suppressCommandWindow(cmd)
 		output, err := cmd.Output()
 		if err == nil {
 			for _, line := range strings.Split(string(output), "\n") {

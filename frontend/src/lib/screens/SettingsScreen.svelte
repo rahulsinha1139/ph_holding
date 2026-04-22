@@ -114,11 +114,12 @@
 
   $: isAdmin = userRole === 'admin';
   function hasPermission(permission: string): boolean {
-    if (!$permissions || $permissions.length === 0) return false;
-    if ($permissions.includes('*')) return true;
-    if ($permissions.includes(permission)) return true;
+    const permissionList = Array.isArray($permissions) ? $permissions : [];
+    if (permissionList.length === 0) return false;
+    if (permissionList.includes('*')) return true;
+    if (permissionList.includes(permission)) return true;
     const [resource] = permission.split(':');
-    return $permissions.includes(`${resource}:*`);
+    return permissionList.includes(`${resource}:*`);
   }
   $: canOpenDeployment = hasPermission('settings:update');
   $: sections = [

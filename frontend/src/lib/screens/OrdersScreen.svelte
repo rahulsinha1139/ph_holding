@@ -40,8 +40,18 @@
     { key: 'InProgress', label: 'In Progress', color: 'indigo' },
     { key: 'PartiallyDelivered', label: 'Partially Delivered', color: 'amber' },
     { key: 'FullyDelivered', label: 'Fully Delivered', color: 'green' },
+    { key: 'Invoiced', label: 'Invoiced', color: 'emerald' },
     { key: 'Cancelled', label: 'Cancelled', color: 'red' }
   ];
+
+  function errorMessage(err: unknown) {
+    if (err instanceof Error && err.message) return err.message;
+    if (typeof err === 'string') return err;
+    if (err && typeof err === 'object' && 'message' in err) {
+      return String((err as { message?: unknown }).message || err);
+    }
+    return String(err || 'Unknown error');
+  }
 
   // State
   let orders: main.Order[] = [];
@@ -123,6 +133,13 @@
   let orderItems: EditableOrderItem[] = [];
   let deliveryProgress = { delivered: 0, total: 0, percentage: 0 };
   let fulfillmentStatus: any = null;
+  type ConfirmVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'success' | 'warning';
+  let confirmDialogOpen = false;
+  let confirmDialogTitle = '';
+  let confirmDialogMessage = '';
+  let confirmDialogConfirmLabel = 'Confirm';
+  let confirmDialogVariant: ConfirmVariant = 'primary';
+  let confirmDialogResolve: ((confirmed: boolean) => void) | null = null;
 
   function getOrderDateValue(value: any): Date | null {
     if (!value) return null;
@@ -167,6 +184,26 @@
 
   function safeTrim(value: unknown): string {
     return typeof value === 'string' ? value.trim() : '';
+  }
+
+  function normalizeOrderStatusKey(value: unknown): string {
+    const raw = safeTrim(value);
+    const compact = raw.toLowerCase().replace(/[\s_-]+/g, '');
+
+    if (!compact || compact === 'all') return '';
+    if (compact.includes('invoice')) return 'Invoiced';
+    if (compact.includes('partial') && compact.includes('deliver')) return 'PartiallyDelivered';
+    if (compact.includes('deliver') || compact.includes('complete') || compact.includes('closed')) return 'FullyDelivered';
+    if (compact.includes('progress') || compact.includes('process')) return 'InProgress';
+    if (compact.includes('cancel') || compact.includes('void')) return 'Cancelled';
+    if (compact.includes('confirm') || compact.includes('open') || compact.includes('pending')) return 'Confirmed';
+
+    return raw;
+  }
+
+  function orderMatchesStatus(order: main.Order, statusKey: string): boolean {
+    if (statusKey === 'All') return true;
+    return normalizeOrderStatusKey(order.status) === statusKey;
   }
 
   function isSummaryLineItem(item: Partial<EditableOrderItem>): boolean {
@@ -229,18 +266,15 @@
   }
 
   function recalculateFormItems() {
-    formItems = sanitizeFormItems(formItems);
-    const hasMeaningfulItems = formItems.some(item =>
-      item.description.trim() || item.product_code.trim() || item.quantity > 0 || item.unit_price_bhd > 0
-    );
-    if (hasMeaningfulItems) {
-      formData.totalValue = roundMoney(formItems.reduce((sum, item) => sum + (item.total_price || 0), 0));
-    }
+    const normalizedItems = sanitizeFormItems(formItems);
+    formItems = normalizedItems.length > 0 ? normalizedItems : [createEmptyFormItem(1)];
+    formData.totalValue = roundMoney(normalizedItems.reduce((sum, item) => sum + (item.total_price || 0), 0));
   }
 
   function addFormItem() {
-    formItems = [...formItems, createEmptyFormItem(formItems.length + 1)];
-    recalculateFormItems();
+    const normalizedItems = sanitizeFormItems(formItems);
+    formItems = [...normalizedItems, createEmptyFormItem(normalizedItems.length + 1)];
+    formData.totalValue = roundMoney(normalizedItems.reduce((sum, item) => sum + (item.total_price || 0), 0));
   }
 
   function removeFormItem(index: number) {
@@ -260,6 +294,34 @@
         ((item.unit_price_bhd || 0) <= 0 || (item.total_price || 0) <= 0)
       ).length
     };
+  }
+
+  function askActionConfirmation(options: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    variant?: ConfirmVariant;
+  }): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (confirmDialogResolve) {
+        confirmDialogResolve(false);
+      }
+      confirmDialogTitle = options.title;
+      confirmDialogMessage = options.message;
+      confirmDialogConfirmLabel = options.confirmLabel || 'Confirm';
+      confirmDialogVariant = options.variant || 'primary';
+      confirmDialogResolve = resolve;
+      confirmDialogOpen = true;
+    });
+  }
+
+  function resolveActionConfirmation(confirmed: boolean) {
+    const resolver = confirmDialogResolve;
+    confirmDialogOpen = false;
+    confirmDialogResolve = null;
+    if (resolver) {
+      resolver(confirmed);
+    }
   }
 
   // DataTable columns
@@ -370,7 +432,7 @@
 
     // Status filter
     if (activeFilter !== 'All') {
-      result = result.filter(o => o.status === activeFilter);
+      result = result.filter(o => orderMatchesStatus(o, activeFilter));
     }
 
     // Year filter
@@ -411,9 +473,9 @@
   // Stats
   $: stats = {
     total: orders.length,
-    confirmed: orders.filter(o => o.status === 'Confirmed').length,
-    inProgress: orders.filter(o => o.status === 'InProgress').length,
-    delivered: orders.filter(o => o.status === 'FullyDelivered').length,
+    confirmed: orders.filter(o => orderMatchesStatus(o, 'Confirmed')).length,
+    inProgress: orders.filter(o => orderMatchesStatus(o, 'InProgress')).length,
+    delivered: orders.filter(o => orderMatchesStatus(o, 'FullyDelivered')).length,
     totalValue: orders.reduce((sum, o) => sum + (o.total_value_bhd || 0), 0)
   };
 
@@ -453,7 +515,7 @@
       orderDate: fullOrder.order_date ? new Date(fullOrder.order_date as any).toISOString().split('T')[0] : '',
       requiredDate: fullOrder.required_date ? new Date(fullOrder.required_date as any).toISOString().split('T')[0] : '',
       totalValue: fullOrder.total_value_bhd || 0,
-      status: fullOrder.status || 'Confirmed',
+      status: normalizeOrderStatusKey(fullOrder.status) || 'Confirmed',
       paymentTerms: fullOrder.payment_terms || 'Net 30',
       deliveryTerms: fullOrder.delivery_terms || 'Ex-Works'
     };
@@ -487,7 +549,7 @@
       safeTrim(item.description) || safeTrim(item.product_code) || item.quantity > 0 || item.unit_price_bhd > 0
     );
 
-    if (modalMode === 'edit' && normalizedItems.length === 0 && formData.totalValue <= 0) {
+    if (normalizedItems.length === 0) {
       toast.warning('Add at least one line item with quantity and price before saving this order');
       return;
     }
@@ -532,14 +594,35 @@
       formData.totalValue = computedTotalValue;
 
       if (modalMode === 'create') {
-        // Create new order
-        await CreateOrder(
+        const createdOrder = await CreateOrder(
           formData.orderNumber,
           formData.customerName,
           formData.totalValue,
           formData.orderDate,
           formData.status
         );
+
+        const createdOrderWithItems = {
+          ...createdOrder,
+          order_number: formData.orderNumber,
+          customer_po_number: formData.customerPONumber,
+          customer_id: resolvedCustomerId,
+          customer_name: formData.customerName,
+          order_date: formData.orderDate,
+          required_date: formData.requiredDate,
+          total_value_bhd: computedTotalValue,
+          grand_total_bhd: computedTotalValue,
+      status: formData.status,
+          payment_terms: formData.paymentTerms,
+          delivery_terms: formData.deliveryTerms,
+          items: normalizedItems.map((item, index) => ({
+            ...item,
+            line_number: index + 1,
+            total_price: roundMoney(item.quantity * item.unit_price_bhd)
+          }))
+        };
+
+        await UpdateOrder(createdOrder.id, createdOrderWithItems as any);
         toast.success('Order created successfully');
       } else if (modalMode === 'edit' && editingOrder) {
         // Send full order update, not just status
@@ -610,6 +693,13 @@
 
   // Quick actions
   async function handleCreateDeliveryNote(order: main.Order) {
+    if (isProcessingAction) return;
+
+    if (!orderItems || orderItems.length === 0) {
+      toast.warning('This order has no saved line items. Delivery notes need the actual items to ship; edit or re-import the order before creating a DN.');
+      return;
+    }
+
     // Set pending DN creation in store (DeliveryNotesScreen will consume on mount)
     pendingDNCreate.request(order.id, order.order_number || '', order.customer_name || '');
     showDetailModal = false;
@@ -622,7 +712,13 @@
   async function handleCreateInvoice(order: main.Order) {
     if (isProcessingAction) return;
 
-    if (!confirm(`Create invoice for order ${order.order_number}?\nThis will generate a billing record for ${order.customer_name}.`)) {
+    const confirmed = await askActionConfirmation({
+      title: 'Create Invoice',
+      message: `Create invoice for order ${order.order_number}? This will generate a billing record for ${order.customer_name}.`,
+      confirmLabel: 'Create Invoice',
+      variant: 'primary'
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -645,10 +741,49 @@
     }
   }
 
+  async function handleCreatePurchaseOrder(order: main.Order) {
+    if (isProcessingAction) return;
+
+    if (!orderItems || orderItems.length === 0) {
+      toast.warning('This order has no saved line items. Supplier orders need item detail; edit or re-import the order before creating a PO.');
+      return;
+    }
+
+    const confirmed = await askActionConfirmation({
+      title: 'Create Supplier Order',
+      message: `Create a draft supplier order from ${order.order_number}? If the order contains items from multiple suppliers, create supplier orders separately.`,
+      confirmLabel: 'Create Supplier Order',
+      variant: 'secondary'
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    isProcessingAction = true;
+    try {
+      const po = await CreatePOFromOrder(order.id, '', []);
+      toast.success(`Supplier order ${po.po_number} created`);
+      showDetailModal = false;
+      window.dispatchEvent(new CustomEvent('navigateToScreen', {
+        detail: { screen: 'operations', tab: 'pos' }
+      }));
+    } catch (err) {
+      toast.danger('Failed to create supplier order: ' + errorMessage(err));
+    } finally {
+      isProcessingAction = false;
+    }
+  }
+
   async function handleCreateProforma(order: main.Order) {
     if (isProcessingAction) return;
 
-    if (!confirm(`Create proforma invoice for order ${order.order_number}?\nThis is a reference document, not a tax invoice.`)) {
+    const confirmed = await askActionConfirmation({
+      title: 'Create Proforma',
+      message: `Create proforma invoice for order ${order.order_number}? This is a reference document, not a tax invoice.`,
+      confirmLabel: 'Create Proforma',
+      variant: 'secondary'
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -665,31 +800,7 @@
       }));
       await loadOrders();
     } catch (err) {
-      toast.danger('Failed to create proforma: ' + (err as Error).message);
-    } finally {
-      isProcessingAction = false;
-    }
-  }
-
-  async function handleCreatePO(order: main.Order) {
-    if (isProcessingAction) return;
-
-    if (!orderItems || orderItems.length === 0) {
-      toast.warning('No order items loaded. Please close and reopen the order details.');
-      return;
-    }
-
-    isProcessingAction = true;
-    try {
-      const itemIDs = orderItems.map(item => item.id);
-      const po = await CreatePOFromOrder(order.id, '', itemIDs);
-      toast.success(`PO ${po.po_number} created`);
-      showDetailModal = false;
-      window.dispatchEvent(new CustomEvent('navigateToScreen', {
-        detail: { screen: 'operations', tab: 'pos' }
-      }));
-    } catch (err) {
-      toast.danger('Failed to create PO: ' + (err as Error).message);
+      toast.danger('Failed to create proforma: ' + errorMessage(err));
     } finally {
       isProcessingAction = false;
     }
@@ -699,7 +810,13 @@
     if (isProcessingAction) return;
     if (!selectedOrder) return;
 
-    if (!confirm(`Mark order ${selectedOrder.order_number} as fully delivered?\n\nThis will update the order status without creating a GRN record.`)) {
+    const confirmed = await askActionConfirmation({
+      title: 'Mark Delivered',
+      message: `Mark order ${selectedOrder.order_number} as fully delivered? This updates the order status without creating a GRN record.`,
+      confirmLabel: 'Mark Delivered',
+      variant: 'primary'
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -719,7 +836,13 @@
   async function handleDeleteOrder(order: main.Order) {
     if (isDeleting) return;
 
-    if (!confirm(`Are you sure you want to delete order ${order.order_number}? This cannot be undone.`)) {
+    const confirmed = await askActionConfirmation({
+      title: 'Delete Order',
+      message: `Delete order ${order.order_number}? This cannot be undone.`,
+      confirmLabel: 'Delete Order',
+      variant: 'danger'
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -949,7 +1072,7 @@
             class:active={activeFilter === status.key}
             on:click={() => activeFilter = status.key}
           >
-            {status.label} ({orders.filter(o => o.status === status.key).length})
+            {status.label} ({orders.filter(o => orderMatchesStatus(o, status.key)).length})
           </button>
         {/each}
       </div>
@@ -1022,6 +1145,7 @@
     title={modalMode === 'create' ? 'New Order' : 'Edit Order'}
     open={showModal}
     on:close={() => showModal = false}
+    size="xl"
   >
     <form on:submit|preventDefault={handleSubmit}>
       <div class="form-row">
@@ -1073,7 +1197,7 @@
             min="0"
             bind:value={formData.totalValue}
             placeholder="0.000"
-            readonly={modalMode === 'edit'}
+            readonly
           />
         </FormGroup>
 
@@ -1109,68 +1233,32 @@
         </FormGroup>
       </div>
 
-      {#if modalMode === 'edit'}
-        <div class="line-items-panel">
-          <div class="line-items-panel-header">
-            <div>
-              <h4>Order Line Items</h4>
-              <p>Update each line separately so order totals, delivery notes, and invoices stay accurate.</p>
-            </div>
-            <Button variant="ghost" type="button" on:click={addFormItem}>
-              + Add Line
-            </Button>
+      <div class="line-items-panel">
+        <div class="line-items-panel-header">
+          <div>
+            <h4>Order Line Items</h4>
+            <p>Capture each line separately so delivery notes, invoices, and purchase orders stay accurate.</p>
           </div>
+          <Button variant="ghost" type="button" on:click={addFormItem}>
+            + Add Line
+          </Button>
+        </div>
 
-          {#if getLineItemIssues(formItems).missingItems}
-            <div class="line-item-alert">
-              This order has no line items yet. Add them now so downstream documents carry the right quantities and values.
-            </div>
-          {:else if getLineItemIssues(formItems).zeroPriceItems > 0}
-            <div class="line-item-alert">
-              {getLineItemIssues(formItems).zeroPriceItems} line item{getLineItemIssues(formItems).zeroPriceItems === 1 ? '' : 's'} still have zero pricing. Please complete them before saving.
-            </div>
-          {/if}
+        {#if getLineItemIssues(formItems).missingItems}
+          <div class="line-item-alert">
+            This order has no line items yet. Add them now so downstream documents carry the right quantities and values.
+          </div>
+        {:else if getLineItemIssues(formItems).zeroPriceItems > 0}
+          <div class="line-item-alert">
+            {getLineItemIssues(formItems).zeroPriceItems} line item{getLineItemIssues(formItems).zeroPriceItems === 1 ? '' : 's'} still have zero pricing. Please complete them before saving.
+          </div>
+        {/if}
 
-          <div class="line-items-grid">
-            <div class="line-items-grid-header">
-              <span>Code</span>
-              <span>Description</span>
-              <span class="number-col">Qty</span>
-              <span class="number-col">Unit Price</span>
-              <span class="number-col">Line Total</span>
-              <span></span>
-            </div>
-            {#each formItems as item, index}
-              <div class="line-items-grid-row">
-                <input
-                  class="form-input compact"
-                  bind:value={formItems[index].product_code}
-                  placeholder="Code"
-                  on:blur={recalculateFormItems}
-                />
-                <input
-                  class="form-input compact"
-                  bind:value={formItems[index].description}
-                  placeholder="Description"
-                  on:blur={recalculateFormItems}
-                />
-                <input
-                  class="form-input compact number-input"
-                  type="number"
-                  min="0"
-                  step="0.001"
-                  bind:value={formItems[index].quantity}
-                  on:input={recalculateFormItems}
-                />
-                <input
-                  class="form-input compact number-input"
-                  type="number"
-                  min="0"
-                  step="0.001"
-                  bind:value={formItems[index].unit_price_bhd}
-                  on:input={recalculateFormItems}
-                />
-                <div class="line-total-cell">{formatCurrency(roundMoney((item.quantity || 0) * (item.unit_price_bhd || 0)))}</div>
+        <div class="line-items-list">
+          {#each formItems as item, index}
+            <div class="line-item-editor">
+              <div class="line-item-editor-head">
+                <span>Line {index + 1}</span>
                 <button
                   type="button"
                   class="line-remove-btn"
@@ -1181,10 +1269,60 @@
                   Remove
                 </button>
               </div>
-            {/each}
-          </div>
+
+              <div class="line-item-top-row">
+                <label class="line-field">
+                  <span>Code</span>
+                  <input
+                    class="form-input compact"
+                    bind:value={formItems[index].product_code}
+                    placeholder="Code"
+                    on:blur={recalculateFormItems}
+                  />
+                </label>
+                <label class="line-field description-field">
+                  <span>Description</span>
+                  <input
+                    class="form-input compact"
+                    bind:value={formItems[index].description}
+                    placeholder="Description"
+                    on:blur={recalculateFormItems}
+                  />
+                </label>
+              </div>
+
+              <div class="line-item-bottom-row">
+                <label class="line-field">
+                  <span>Quantity</span>
+                  <input
+                    class="form-input compact number-input"
+                    type="number"
+                    min="0"
+                    step="0.001"
+                    bind:value={formItems[index].quantity}
+                    on:input={recalculateFormItems}
+                  />
+                </label>
+                <label class="line-field">
+                  <span>Unit Price</span>
+                  <input
+                    class="form-input compact number-input"
+                    type="number"
+                    min="0"
+                    step="0.001"
+                    bind:value={formItems[index].unit_price_bhd}
+                    on:input={recalculateFormItems}
+                  />
+                </label>
+                <div class="line-total-cell">
+                  <span>Line Total</span>
+                  <strong>{formatCurrency(roundMoney((item.quantity || 0) * (item.unit_price_bhd || 0)))}</strong>
+                </div>
+              </div>
+            </div>
+          {/each}
         </div>
-      {/if}
+      </div>
 
       <div class="modal-actions">
         <Button variant="ghost" on:click={() => showModal = false} disabled={saving}>
@@ -1245,13 +1383,13 @@
         <h4>Traceability Chain</h4>
         <div class="chain">
           <div class="chain-link">
-            <span class="chain-label">RFQ</span>
-            <span class="chain-value">{selectedOrder.customer_po_number || 'N/A'}</span>
+            <span class="chain-label">RFQ / Enquiry</span>
+            <span class="chain-value">{selectedOrder.customer_reference || selectedOrder.rfq_id || 'N/A'}</span>
           </div>
           <span class="chain-arrow">></span>
           <div class="chain-link">
             <span class="chain-label">Offer</span>
-            <span class="chain-value">—</span>
+            <span class="chain-value">{selectedOrder.offer_number || 'N/A'}</span>
           </div>
           <span class="chain-arrow">></span>
           <div class="chain-link active">
@@ -1316,14 +1454,12 @@
 
       <!-- Quick Actions (conditional on order state) -->
       <div class="quick-actions">
-        {#if selectedOrder.status !== 'Cancelled'}
-          <Button variant="secondary" on:click={() => handleCreatePO(selectedOrder)} disabled={isProcessingAction}>
-            Create PO
-          </Button>
-        {/if}
         {#if selectedOrder.status !== 'Cancelled' && (!fulfillmentStatus || fulfillmentStatus?.fulfillment_pct < 1.0)}
           <Button variant="secondary" on:click={() => handleCreateDeliveryNote(selectedOrder)} disabled={isProcessingAction}>
             Create Delivery Note
+          </Button>
+          <Button variant="secondary" on:click={() => handleCreatePurchaseOrder(selectedOrder)} disabled={isProcessingAction}>
+            Create Supplier Order
           </Button>
         {/if}
         {#if selectedOrder.status !== 'Cancelled' && selectedOrder.status !== 'FullyDelivered'}
@@ -1347,6 +1483,27 @@
         </Button>
         <Button variant="ghost" on:click={() => handleDeleteOrder(selectedOrder)} disabled={isDeleting || isProcessingAction} style="color: #EF4444;">
           Delete Order
+        </Button>
+      </div>
+    </div>
+  </Modal>
+{/if}
+
+{#if confirmDialogOpen}
+  <Modal
+    title={confirmDialogTitle}
+    open={confirmDialogOpen}
+    on:close={() => resolveActionConfirmation(false)}
+    size="sm"
+  >
+    <div class="confirm-dialog">
+      <p>{confirmDialogMessage}</p>
+      <div class="confirm-actions">
+        <Button variant="secondary" on:click={() => resolveActionConfirmation(false)}>
+          Cancel
+        </Button>
+        <Button variant={confirmDialogVariant} on:click={() => resolveActionConfirmation(true)}>
+          {confirmDialogConfirmLabel}
         </Button>
       </div>
     </div>
@@ -1748,34 +1905,59 @@
     color: var(--text-secondary);
   }
 
-  .line-items-grid {
+  .line-items-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 12px;
   }
 
-  .line-items-grid-header,
-  .line-items-grid-row {
-    display: grid;
-    grid-template-columns: minmax(100px, 0.9fr) minmax(220px, 2fr) minmax(80px, 0.7fr) minmax(110px, 0.9fr) minmax(120px, 0.9fr) auto;
-    gap: 10px;
-    align-items: center;
-  }
-
-  .line-items-grid-header {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-secondary);
-    padding: 0 2px;
-  }
-
-  .line-items-grid-row {
+  .line-item-editor {
     background: var(--surface);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
-    padding: 10px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .line-item-editor-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+
+  .line-item-top-row {
+    display: grid;
+    grid-template-columns: minmax(140px, 0.45fr) minmax(320px, 1fr);
+    gap: 12px;
+  }
+
+  .line-item-bottom-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 0.35fr) minmax(150px, 0.45fr) minmax(160px, 0.5fr);
+    gap: 12px;
+    align-items: end;
+  }
+
+  .line-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .line-field span,
+  .line-total-cell span {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-secondary);
   }
 
   .compact {
@@ -1788,11 +1970,24 @@
   }
 
   .line-total-cell {
+    min-height: 36px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--bg-subtle);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
     text-align: right;
     font-size: 12px;
-    font-weight: 600;
     font-family: var(--font-mono);
     color: var(--text-primary);
+  }
+
+  .line-total-cell strong {
+    font-size: 13px;
+    font-weight: 700;
   }
 
   .line-remove-btn {
@@ -1808,6 +2003,18 @@
   .line-remove-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  @media (max-width: 840px) {
+    .form-row,
+    .line-item-top-row,
+    .line-item-bottom-row {
+      grid-template-columns: 1fr;
+    }
+
+    .line-total-cell {
+      text-align: left;
+    }
   }
 
   .line-item-alert {
@@ -1987,6 +2194,26 @@
     gap: 8px;
     padding-top: 16px;
     border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+
+  .confirm-dialog {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .confirm-dialog p {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
   }
 
   /* Warning banner for orders with no line items */
@@ -2041,15 +2268,4 @@
     margin-top: -4px;
   }
 
-  @media (max-width: 920px) {
-    .line-items-grid-header,
-    .line-items-grid-row {
-      grid-template-columns: 1fr 1fr;
-    }
-
-    .line-total-cell,
-    .number-input {
-      text-align: left;
-    }
-  }
 </style>

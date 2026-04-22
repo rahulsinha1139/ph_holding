@@ -363,13 +363,9 @@
     selectedTaskId = taskID;
 
     try {
-      if (loading) {
-        return;
-      }
-
       let opened = false;
       for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
-        if (attempt > 0) {
+        if (attempt > 0 && !loading) {
           await load({ refreshRemote: true, forceRemote: true });
         }
         opened = await loadTaskDetail(taskID, { suppressErrorToast: true });
@@ -429,8 +425,9 @@
       }
       queuePendingTaskOpen(created.id);
       primeTaskDetail(created);
-      await load({ refreshRemote: true, forceRemote: true });
-      await openTaskAfterRefresh(created.id);
+      pendingOpenTaskId = "";
+      void load({ refreshRemote: true, forceRemote: true, silent: true });
+      void loadTaskDetail(created.id, { suppressErrorToast: true });
       toast.success("Task created");
     } catch (err) {
       toast.danger(`Failed to create task: ${String(err)}`);
@@ -562,8 +559,20 @@
   }
 
   async function selectTask(taskID: string) {
-    queuePendingTaskOpen(taskID);
+    if (!taskID) return;
+    pendingOpenTaskId = "";
     taskModalOpen = true;
+    const cachedTask = [...myTasks, ...teamTasks, ...projectTasks].find((task) => task.id === taskID);
+    if (cachedTask) {
+      primeTaskDetail(cachedTask);
+    } else {
+      queuePendingTaskOpen(taskID);
+    }
+    const opened = await loadTaskDetail(taskID, { suppressErrorToast: Boolean(cachedTask) });
+    if (!opened && cachedTask) {
+      primeTaskDetail(cachedTask);
+      toast.warning("Showing cached task details while sync catches up.");
+    }
   }
 
   function closeTaskModal() {
@@ -655,6 +664,7 @@
     selectedTaskId = task.id;
     taskComments = [];
     taskActivity = [];
+    taskDetailLoading = false;
     selectedTaskTitleDraft = task.title || "";
     selectedTaskDescriptionDraft = task.description || "";
     selectedTaskPriorityDraft = task.priority || "medium";

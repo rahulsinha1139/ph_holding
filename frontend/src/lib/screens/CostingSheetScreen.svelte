@@ -2,14 +2,15 @@
     import { onMount } from "svelte";
     import { toast } from "$lib/stores/toasts";
     import { permissions } from '$lib/stores/authContext';
+    $: permissionList = Array.isArray($permissions) ? $permissions : [];
     $: canView =
-        $permissions.includes('*') ||
-        $permissions.includes('costing:read') ||
-        $permissions.includes('costing:*') ||
-        $permissions.includes('offers:view') ||
-        $permissions.includes('offers:create') ||
-        $permissions.includes('rfq:view') ||
-        $permissions.includes('orders:view');
+        permissionList.includes('*') ||
+        permissionList.includes('costing:read') ||
+        permissionList.includes('costing:*') ||
+        permissionList.includes('offers:view') ||
+        permissionList.includes('offers:create') ||
+        permissionList.includes('rfq:view') ||
+        permissionList.includes('orders:view');
     import WabiSpinner from "../components/ui/WabiSpinner.svelte";
     import Button from "../components/ui/Button.svelte";
     import Card from "../components/ui/Card.svelte";
@@ -116,25 +117,44 @@
         if (!productDetails) return [];
         try {
             const parsed = JSON.parse(productDetails);
-            if (Array.isArray(parsed)) return parsed;
-            if (parsed && typeof parsed === 'object') return [parsed];
+            const items = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === 'object' ? [parsed] : []);
+            return items.filter((item: any) => !isSyntheticSeedItem(item));
         } catch {
             return [];
         }
-        return [];
+    }
+
+    function isSyntheticSeedItem(item: any): boolean {
+        const values = [
+            item?.description,
+            item?.equipment,
+            item?.name,
+            item?.part_number,
+            item?.model,
+            item?.product_code,
+        ];
+        return values.some((value) => /^line item\s+\d+\s*-?$/i.test(String(value || '').trim()));
     }
 
     function mapSeedItemsToCosting(seedItems: any[]): LineItem[] {
         const mapped = seedItems.slice(0, 10).map((seedItem: any) => {
             const item = createNewLineItem();
+            const quantity = Number(seedItem.quantity) || 1;
+            const explicitBHDUnitPrice = Number(seedItem.unit_price_bhd) || 0;
+            const totalPrice = Number(seedItem.total_price) || 0;
+            const foreignUnitPrice = Number(seedItem.unit_price) || (totalPrice > 0 ? totalPrice / quantity : 0);
+            const currency = explicitBHDUnitPrice > 0 ? 'BHD' : String(seedItem.currency || 'BHD').trim().toUpperCase();
+            const currencyRate = currencyOptions.find((option) => option.code === currency)?.rate || 1.0;
+
             item.equipment = seedItem.description || seedItem.equipment || seedItem.name || '';
             item.model = seedItem.part_number || seedItem.model || seedItem.product_code || seedItem.sku || '';
             item.longCode = seedItem.long_code || '';
             item.specification = seedItem.specification || '';
             item.detailedDescription = seedItem.detailed_description || '';
-            item.quantity = Number(seedItem.quantity) || 1;
-            item.currency = seedItem.currency || 'BHD';
-            item.fobForeign = Number(seedItem.unit_price_bhd || seedItem.unit_price || 0) || 0;
+            item.quantity = quantity;
+            item.currency = currencyOptions.some((option) => option.code === currency) ? currency : 'BHD';
+            item.exchangeRate = item.currency === 'BHD' ? 1.0 : currencyRate;
+            item.fobForeign = explicitBHDUnitPrice || foreignUnitPrice || 0;
             return item;
         }).filter((item: LineItem) => item.equipment || item.model || item.detailedDescription);
 
@@ -273,7 +293,7 @@ Please find our pricing and scope below. We trust the proposal meets your requir
     ];
     const currencyOptions = [
         { code: 'BHD', rate: 1.0 },
-        { code: 'EUR', rate: 0.44 },
+        { code: 'EUR', rate: 0.45 },
         { code: 'USD', rate: 0.376 },
         { code: 'GBP', rate: 0.52 },
         { code: 'CHF', rate: 0.43 },
@@ -440,7 +460,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         // Get exchange rate from currency
         const curr = currencyOptions.find(c => c.code === item.currency);
         if (!(item.exchangeRate > 0)) {
-            item.exchangeRate = curr?.rate || 0.44;
+            item.exchangeRate = curr?.rate || 0.45;
         }
 
         // FOB and Freight in BHD
@@ -592,6 +612,16 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     }
                 } finally {
                     sessionStorage.removeItem('asymmflow.pendingCostingOpportunity');
+                }
+            }
+
+            const pendingCostingOffer = sessionStorage.getItem('asymmflow.pendingCostingOffer');
+            if (pendingCostingOffer) {
+                try {
+                    const pending = JSON.parse(pendingCostingOffer);
+                    restoreOfferCostingPayload(pending);
+                } finally {
+                    sessionStorage.removeItem('asymmflow.pendingCostingOffer');
                 }
             }
         } catch (err) {
@@ -791,6 +821,30 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         }
     }
 
+    function normalizeCustomerName(value: string) {
+        return (value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    }
+
+    function resolveCustomerForCostingPayload(customerId: string, customerName: string) {
+        const byId = customerId ? customers.find((c: any) => c.id === customerId) : null;
+        if (byId) {
+            return {
+                customerId: byId.id,
+                customerName: byId.business_name || customerName || '',
+            };
+        }
+
+        const normalizedName = normalizeCustomerName(customerName);
+        const byName = normalizedName
+            ? customers.find((c: any) => normalizeCustomerName(c.business_name || c.name || '') === normalizedName)
+            : null;
+
+        return {
+            customerId: byName?.id || customerId || '',
+            customerName: byName?.business_name || customerName || '',
+        };
+    }
+
     function startNewCosting() {
         // Start a blank costing without opportunity
         selectedOpportunityId = '';
@@ -837,8 +891,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         return {
             ...createNewLineItem(),
             slNo: item.slNo || item.sl_no || index + 1,
-            equipment: item.equipment || '',
-            model: item.model || '',
+            equipment: item.equipment || item.description || '',
+            model: item.model || item.product_code || item.product_id || '',
             serialNumber: item.serialNumber || item.serial_number || '',
             longCode: item.longCode || item.long_code || '',
             specification: item.specification || '',
@@ -871,6 +925,10 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     function restoreCostingPayload(revision: any, parsed: any) {
         const payload = Array.isArray(parsed) ? { lineItems: parsed } : (parsed || {});
         const persistedLineItems = Array.isArray(payload.lineItems) ? payload.lineItems : [];
+        const resolvedCustomer = resolveCustomerForCostingPayload(
+            payload.customerId || payload.customer_id || header.customerId,
+            payload.customerName || payload.customer_name || header.customerName,
+        );
 
         lineItems = persistedLineItems.length > 0
             ? persistedLineItems.map((item: any, index: number) => normalisePersistedLineItem(item, index))
@@ -881,8 +939,9 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             division: payload.division || header.division,
             date: payload.date || header.date,
             preparedBy: payload.preparedBy || revision.created_by || header.preparedBy,
-            customerName: payload.customerName || header.customerName,
+            customerName: resolvedCustomer.customerName || header.customerName,
             contactPerson: payload.contactPerson || header.contactPerson,
+            customerId: resolvedCustomer.customerId || header.customerId,
             rfqReference: payload.rfqReference || header.rfqReference,
             folderNumber: payload.folderNumber || header.folderNumber,
             costingId: payload.costingId || header.costingId,
@@ -912,6 +971,18 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         calculateAll();
     }
 
+    function restoreOfferCostingPayload(payload: any) {
+        selectedOpportunityId = '';
+        selectedOpportunity = null;
+        rfqCostings = [];
+        selectedRevision = null;
+        currentCostingId = null;
+        restoreCostingPayload({ id: null, created_by: payload.preparedBy || '' }, payload);
+        showCostingForm = true;
+        isDirty = false;
+        toast.success(`Loaded ${payload.offerNumber || 'offer'} into the costing sheet`);
+    }
+
     // ========================================
     // EXPORT FUNCTIONS
     // ========================================
@@ -920,6 +991,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             division: header.division,
             date: header.date,
             preparedBy: header.preparedBy,
+            customerId: header.customerId,
             customerName: header.customerName,
             contactPerson: header.contactPerson,
             rfqReference: header.rfqReference,
