@@ -41,6 +41,7 @@
     ListCustomerInvoices,
     GetSupplierInvoices,
     GetAllSupplierPayments,
+    ListExpenseEntries,
     ListUnreconciledPayrollPayouts,
     CreateSplitAllocation,
   } from '../../../wailsjs/go/main/App';
@@ -146,6 +147,7 @@
   let customerInvoiceCandidates: any[] = [];
   let supplierInvoiceCandidates: any[] = [];
   let supplierPaymentCandidates: any[] = [];
+  let expenseCandidates: any[] = [];
   let payrollPayoutCandidates: any[] = [];
 
   type MatchAllocationDraft = {
@@ -491,10 +493,11 @@
   async function loadMatchCandidates(line: BankStatementLine) {
     matchLoading = true;
     try {
-      const [allCustomerInvoices, allSupplierInvoices, supplierPayments] = await Promise.all([
+      const [allCustomerInvoices, allSupplierInvoices, supplierPayments, expenses] = await Promise.all([
         ListCustomerInvoices(1000, 0).catch(() => []),
         GetSupplierInvoices().catch(() => []),
-        GetAllSupplierPayments().catch(() => [])
+        GetAllSupplierPayments().catch(() => []),
+        ListExpenseEntries('', false).catch(() => [])
       ]);
 
       customerInvoiceCandidates = (allCustomerInvoices || []).filter((invoice: any) => {
@@ -507,6 +510,14 @@
         return matchesCompany(invoice?.division) && paymentStatus !== 'paid' && !['cancelled', 'void', 'rejected'].includes(status);
       });
       supplierPaymentCandidates = (supplierPayments || []).filter((payment: any) => matchesCompany(payment?.division));
+      expenseCandidates = (expenses || []).filter((expense: any) => {
+        const status = String(expense?.status || '').toLowerCase();
+        const paymentStatus = String(expense?.payment_status || '').toLowerCase();
+        return matchesCompany(expense?.division)
+          && paymentStatus !== 'paid'
+          && !['cancelled', 'canceled', 'void', 'rejected'].includes(status)
+          && getCandidateAmount(expense, 'EXPENSE') > 0;
+      });
       payrollPayoutCandidates = (await ListUnreconciledPayrollPayouts().catch(() => [])).filter((payout: any) => matchesCompany(payout?.division));
     } finally {
       matchLoading = false;
@@ -532,6 +543,11 @@
     if (type === 'PAYROLL_PAYOUT') {
       return `${candidate.run_number || 'Payroll'} • ${candidate.employee_name || 'Employee'} • ${formatBHD(candidate.amount || 0)} BHD${candidate.payment_reference ? ` • ${candidate.payment_reference}` : ''}`;
     }
+    if (type === 'EXPENSE') {
+      const amount = getCandidateAmount(candidate, type);
+      const name = candidate.vendor_name || candidate.category_name || candidate.cost_center || 'Expense';
+      return `${candidate.entry_number || 'Expense'} • ${name} • ${formatBHD(amount)} BHD`;
+    }
     return `${candidate.invoice_number || 'Invoice'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.total_bhd || 0)} BHD`;
   }
 
@@ -539,6 +555,7 @@
     if (type === 'CUSTOMER_INVOICE') return Number(candidate.outstanding_bhd || candidate.grand_total_bhd || 0);
     if (type === 'SUPPLIER_PAYMENT') return Number(candidate.amount_bhd || 0);
     if (type === 'PAYROLL_PAYOUT') return Number(candidate.amount || 0);
+    if (type === 'EXPENSE') return Number(candidate.total_amount || ((Number(candidate.amount) || 0) + (Number(candidate.vat_amount) || 0)) || candidate.amount || 0);
     return Number(candidate.total_bhd || 0);
   }
 
@@ -598,7 +615,9 @@
         ? supplierPaymentCandidates
         : matchingType === 'PAYROLL_PAYOUT'
           ? payrollPayoutCandidates
-        : supplierInvoiceCandidates;
+          : matchingType === 'EXPENSE'
+            ? expenseCandidates
+            : supplierInvoiceCandidates;
 
     const lineAmount = matchingLine ? formatMatchAmount(matchingLine) : 0;
     return (source || []).filter((candidate) => {
@@ -613,6 +632,11 @@
         candidate.run_number,
         candidate.payment_reference,
         candidate.order_number,
+        candidate.entry_number,
+        candidate.description,
+        candidate.category_name,
+        candidate.vendor_name,
+        candidate.cost_center,
         getCandidateAmount(candidate, matchingType).toFixed(3)
       ].filter(Boolean).map(normalizeCandidateText).join(' ');
       return haystack.includes(search);
@@ -1278,6 +1302,7 @@
                   <option value="CUSTOMER_INVOICE">Customer Invoice</option>
                 {:else}
                   <option value="SUPPLIER_INVOICE">Supplier Invoice</option>
+                  <option value="EXPENSE">Expense</option>
                   <option value="SUPPLIER_PAYMENT">Supplier Payment</option>
                   <option value="PAYROLL_PAYOUT">Payroll Payout</option>
                 {/if}

@@ -198,6 +198,98 @@ func TestUnmatchLineClearsSplitAllocations(t *testing.T) {
 	require.Zero(t, allocationCount)
 }
 
+func TestCreateSplitAllocationMatchesSupplierInvoiceAndExpense(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&BankStatement{}, &BankStatementLine{}, &BankLinePaymentAllocation{}, &SupplierInvoice{}, &ExpenseEntry{}, &BankReconciliationAuditLog{}))
+
+	statement := BankStatement{
+		Base:            Base{ID: uuid.New().String()},
+		BankAccountID:   uuid.New().String(),
+		StatementNumber: "PAYMENT-SPLIT-001",
+		StatementDate:   time.Now(),
+		PeriodStart:     time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC),
+		PeriodEnd:       time.Date(2026, time.April, 30, 0, 0, 0, 0, time.UTC),
+		Division:        "PH Trading",
+		Status:          "Imported",
+	}
+	require.NoError(t, app.db.Create(&statement).Error)
+
+	line := BankStatementLine{
+		Base:            Base{ID: uuid.New().String()},
+		BankStatementID: statement.ID,
+		LineNumber:      1,
+		TransactionDate: time.Now(),
+		ValueDate:       time.Now(),
+		Description:     "Supplier invoice and office expense payment",
+		Debit:           175,
+		Balance:         -175,
+	}
+	require.NoError(t, app.db.Create(&line).Error)
+
+	supplierInvoice := SupplierInvoice{
+		Base:          Base{ID: uuid.New().String()},
+		SupplierID:    uuid.New().String(),
+		SupplierName:  "Test Supplier",
+		InvoiceNumber: "SI-001",
+		InvoiceDate:   time.Now(),
+		DueDate:       time.Now().AddDate(0, 0, 30),
+		Currency:      "BHD",
+		ExchangeRate:  1,
+		TotalBHD:      125,
+		Status:        "Approved",
+		PaymentStatus: "Unpaid",
+		MatchStatus:   "Matched",
+		Division:      "PH Trading",
+	}
+	require.NoError(t, app.db.Create(&supplierInvoice).Error)
+
+	expense := ExpenseEntry{
+		Base:          Base{ID: uuid.New().String()},
+		EntryNumber:   "EXP-001",
+		Division:      "PH Trading",
+		ExpenseDate:   time.Now(),
+		Description:   "Office expense",
+		CategoryID:    uuid.New().String(),
+		Currency:      "BHD",
+		Amount:        50,
+		TotalAmount:   50,
+		Status:        "approved",
+		PaymentStatus: "unpaid",
+	}
+	require.NoError(t, app.db.Create(&expense).Error)
+
+	require.NoError(t, app.CreateSplitAllocation(line.ID, []AllocationInput{
+		{AllocationType: "SUPPLIER_INVOICE", EntityID: supplierInvoice.ID, AllocatedAmount: 125},
+		{AllocationType: "EXPENSE", EntityID: expense.ID, AllocatedAmount: 50},
+	}, "admin"))
+
+	var allocations []BankLinePaymentAllocation
+	require.NoError(t, app.db.Where("bank_statement_line_id = ?", line.ID).Find(&allocations).Error)
+	require.Len(t, allocations, 2)
+
+	var expenseAllocation BankLinePaymentAllocation
+	require.NoError(t, app.db.Where("expense_entry_id = ?", expense.ID).First(&expenseAllocation).Error)
+	require.Equal(t, 50.0, expenseAllocation.AllocatedAmount)
+
+	overpayLine := BankStatementLine{
+		Base:            Base{ID: uuid.New().String()},
+		BankStatementID: statement.ID,
+		LineNumber:      2,
+		TransactionDate: time.Now(),
+		ValueDate:       time.Now(),
+		Description:     "Duplicate expense payment",
+		Debit:           1,
+		Balance:         -176,
+	}
+	require.NoError(t, app.db.Create(&overpayLine).Error)
+
+	err := app.CreateSplitAllocation(overpayLine.ID, []AllocationInput{
+		{AllocationType: "EXPENSE", EntityID: expense.ID, AllocatedAmount: 1},
+	}, "admin")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds remaining expense balance")
+}
+
 func seedBankReconInvoice(t *testing.T, app *App, number string, outstanding float64) Invoice {
 	t.Helper()
 	invoice := Invoice{

@@ -532,13 +532,10 @@ func (a *App) ManualMatchLine(lineID, entityType, entityID, user string) error {
 			if normalizeDivisionName(expense.Division) != statementDivision {
 				return fmt.Errorf("cannot match %s bank line to %s expense", statementDivision, normalizeDivisionName(expense.Division))
 			}
-			entityAmount = expense.TotalAmount
-			if entityAmount <= 0 {
-				entityAmount = expense.Amount + expense.VATAmount
+			if !isExpenseReconcilable(expense) {
+				return fmt.Errorf("expense %s is not open for bank reconciliation", firstNonEmptyString(expense.EntryNumber, expense.ID))
 			}
-			if entityAmount <= 0 {
-				entityAmount = expense.Amount
-			}
+			entityAmount = payableExpenseEntryAmount(expense)
 		} else {
 			return fmt.Errorf("expense not found: %w", err)
 		}
@@ -617,6 +614,30 @@ func payableCustomerInvoiceAmount(invoice Invoice) float64 {
 		return invoice.OutstandingBHD
 	}
 	return invoice.GrandTotalBHD
+}
+
+func payableExpenseEntryAmount(expense ExpenseEntry) float64 {
+	if expense.TotalAmount > 0 {
+		return expense.TotalAmount
+	}
+	if expense.Amount+expense.VATAmount > 0 {
+		return expense.Amount + expense.VATAmount
+	}
+	return expense.Amount
+}
+
+func isExpenseReconcilable(expense ExpenseEntry) bool {
+	status := strings.ToLower(strings.TrimSpace(expense.Status))
+	paymentStatus := strings.ToLower(strings.TrimSpace(expense.PaymentStatus))
+	if paymentStatus == "paid" {
+		return false
+	}
+	switch status {
+	case "rejected", "cancelled", "canceled", "void":
+		return false
+	default:
+		return true
+	}
 }
 
 func bankMatchTolerance(amount float64) float64 {
@@ -826,6 +847,20 @@ func (a *App) CreateSplitAllocation(lineID string, allocations []AllocationInput
 				}
 				if normalizeDivisionName(expense.Division) != statementDivision {
 					return fmt.Errorf("cannot allocate %s bank line to %s expense", statementDivision, normalizeDivisionName(expense.Division))
+				}
+				if !isExpenseReconcilable(expense) {
+					return fmt.Errorf("expense %s is not open for bank reconciliation", firstNonEmptyString(expense.EntryNumber, expense.ID))
+				}
+				var previouslyAllocated float64
+				if err := tx.Model(&BankLinePaymentAllocation{}).
+					Where("expense_entry_id = ? AND status <> ? AND bank_statement_line_id <> ?", entityID, "Disputed", lineID).
+					Select("COALESCE(SUM(allocated_amount), 0)").
+					Scan(&previouslyAllocated).Error; err != nil {
+					return fmt.Errorf("failed to check existing expense allocations: %w", err)
+				}
+				remaining := roundBHD(payableExpenseEntryAmount(expense) - previouslyAllocated)
+				if allocatedAmount > remaining+bhdRoundingTolerance {
+					return fmt.Errorf("allocation %.3f BHD exceeds remaining expense balance %.3f BHD", allocatedAmount, remaining)
 				}
 				idCopy := entityID
 				allocation.ExpenseEntryID = &idCopy
