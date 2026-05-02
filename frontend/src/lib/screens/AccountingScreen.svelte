@@ -6,6 +6,9 @@
     import {
         CreateAccount,
         CreateJournalEntry,
+        ExportVATReturnData,
+        GenerateBalanceSheet,
+        GenerateProfitAndLoss,
         GetChartOfAccounts,
         GetJournalEntries,
         UpdateAccount,
@@ -45,6 +48,8 @@
     };
     let accounts: AccountView[] = [];
     let journals: JournalView[] = [];
+    let reportYear = new Date().getFullYear();
+    let reportLoading = "";
 
     // Voucher Form State per FORM_FIELD_DEFINITIONS.md Section 5
     let showVoucherModal = false;
@@ -253,6 +258,32 @@
 
     function deleteAccount(_code: string) {
         toast.warning("Account deletion is not enabled from this screen yet");
+    }
+
+    async function generateAccountingReport(type: "pl" | "balance" | "vat") {
+        if (reportYear < 2000 || reportYear > 2030) {
+            toast.warning("Report year must be between 2000 and 2030");
+            return;
+        }
+
+        reportLoading = type;
+        try {
+            if (type === "pl") {
+                await GenerateProfitAndLoss(reportYear);
+                toast.success(`Profit & Loss generated for ${reportYear}`);
+            } else if (type === "balance") {
+                await GenerateBalanceSheet(reportYear);
+                toast.success(`Balance Sheet generated for ${reportYear}`);
+            } else {
+                const quarter = Math.floor(new Date().getMonth() / 3) + 1;
+                const filePath = await ExportVATReturnData(reportYear, quarter);
+                toast.success(`VAT return exported: ${filePath || `Q${quarter} ${reportYear}`}`);
+            }
+        } catch (e) {
+            toast.danger(`Report generation failed: ${String(e)}`);
+        } finally {
+            reportLoading = "";
+        }
     }
 
     // === BAHRAIN VAT LOGIC per TECHNICAL_SPECIFICATION.md Section 2.4 ===
@@ -580,20 +611,42 @@
                 </div>
             {:else if currentView === "reports"}
                 <div class="reports-grid" in:fade>
+                    <div class="report-controls">
+                        <label for="accounting-report-year">Fiscal Year</label>
+                        <input
+                            id="accounting-report-year"
+                            type="number"
+                            min="2000"
+                            max="2030"
+                            bind:value={reportYear}
+                        />
+                    </div>
                     <div class="report-card">
                         <div class="icon">P&L</div>
                         <h4>Profit & Loss</h4>
-                        <button class="btn-sm">Generate</button>
+                        <button
+                            class="btn-sm"
+                            on:click={() => generateAccountingReport("pl")}
+                            disabled={Boolean(reportLoading)}
+                        >{reportLoading === "pl" ? "Generating..." : "Generate"}</button>
                     </div>
                     <div class="report-card">
                         <div class="icon">Balance</div>
                         <h4>Balance Sheet</h4>
-                        <button class="btn-sm">Generate</button>
+                        <button
+                            class="btn-sm"
+                            on:click={() => generateAccountingReport("balance")}
+                            disabled={Boolean(reportLoading)}
+                        >{reportLoading === "balance" ? "Generating..." : "Generate"}</button>
                     </div>
                     <div class="report-card">
                         <div class="icon">VAT</div>
                         <h4>VAT Return</h4>
-                        <button class="btn-sm">Generate</button>
+                        <button
+                            class="btn-sm"
+                            on:click={() => generateAccountingReport("vat")}
+                            disabled={Boolean(reportLoading)}
+                        >{reportLoading === "vat" ? "Exporting..." : "Generate"}</button>
                     </div>
                 </div>
             {/if}
@@ -987,6 +1040,28 @@
         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
         gap: var(--space-4);
     }
+    .report-controls {
+        background: var(--paper-subtle);
+        padding: 20px;
+        border-radius: 12px;
+        border: 1px solid var(--border-subtle);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+    .report-controls label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--ink-light);
+    }
+    .report-controls input {
+        padding: 8px 10px;
+        border: 1px solid var(--border-medium);
+        border-radius: 6px;
+        background: var(--paper);
+        color: var(--ink);
+    }
     .report-card {
         background: var(--paper-subtle);
         padding: 20px;
@@ -1009,6 +1084,10 @@
         border-radius: 6px;
         cursor: pointer;
         font-size: 12px;
+    }
+    .btn-sm:disabled {
+        cursor: wait;
+        opacity: 0.62;
     }
 
     /* Modal */

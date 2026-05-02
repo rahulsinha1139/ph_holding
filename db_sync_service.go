@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -96,6 +97,9 @@ var dbSyncTables = []string{
 	"entity_notes",
 	"invoice_sequences",
 	"license_keys",
+	"user_activity_sessions",
+	"user_activity_events",
+	"user_activity_weekly_summaries",
 	"employees",
 	"employee_access_links",
 	"employee_compensation_profiles",
@@ -111,6 +115,7 @@ var dbSyncTables = []string{
 	"task_activity",
 	"notifications",
 	"notification_receipts",
+	"delete_approval_requests",
 	"bank_accounts",
 	"bank_statements",
 	"bank_statement_lines",
@@ -120,8 +125,31 @@ var dbSyncTables = []string{
 	"costing_line_items",
 	"costing_history",
 	"opportunities",
+	"opportunity_edit_conflicts",
 	"rfq_data",
 	"offer_data",
+}
+
+func activeDBSyncTables() []string {
+	excluded := map[string]bool{}
+	for _, raw := range strings.Split(os.Getenv("ASYMMFLOW_SYNC_EXCLUDE_TABLES"), ",") {
+		table := strings.TrimSpace(raw)
+		if table != "" {
+			excluded[table] = true
+		}
+	}
+	if len(excluded) == 0 {
+		return append([]string(nil), dbSyncTables...)
+	}
+
+	tables := make([]string, 0, len(dbSyncTables))
+	for _, table := range dbSyncTables {
+		if excluded[table] {
+			continue
+		}
+		tables = append(tables, table)
+	}
+	return tables
 }
 
 // emitDBSyncProgress sends a sync progress event to the frontend
@@ -233,7 +261,18 @@ func (a *App) SyncNowWithProgress() DBSyncResult {
 		}
 	}
 
-	totalTables := len(dbSyncTables)
+	syncTables := activeDBSyncTables()
+	totalTables := len(syncTables)
+	if totalTables == 0 {
+		result.Success = true
+		result.Duration = time.Since(startTime).Round(time.Second).String()
+		a.emitDBSyncProgress(DBSyncProgress{
+			Phase:      "complete",
+			Message:    "No sync tables are enabled",
+			Percentage: 100,
+		})
+		return result
+	}
 	totalRecordsSynced := 0
 
 	// PHASE 1: Push local changes to cloud
@@ -247,7 +286,7 @@ func (a *App) SyncNowWithProgress() DBSyncResult {
 	pushedCount := 0
 	syncErrors := []string{}
 
-	for i, table := range dbSyncTables {
+	for i, table := range syncTables {
 		a.emitDBSyncProgress(DBSyncProgress{
 			Phase:           "uploading",
 			CurrentTable:    table,
@@ -282,7 +321,7 @@ func (a *App) SyncNowWithProgress() DBSyncResult {
 
 	pulledCount := 0
 
-	for i, table := range dbSyncTables {
+	for i, table := range syncTables {
 		a.emitDBSyncProgress(DBSyncProgress{
 			Phase:           "downloading",
 			CurrentTable:    table,
@@ -418,6 +457,14 @@ func (a *App) syncTablePush(table string, since time.Time) (int, error) {
 	if a.dbManager.Remote() == nil {
 		return 0, nil
 	}
+	localColumnTypes, err := syncDBColumnTypes(a.db, table)
+	if err != nil {
+		return 0, fmt.Errorf("inspect local %s columns: %w", table, err)
+	}
+	if !syncColumnExists(localColumnTypes, "updated_at") {
+		log.Printf("Skipping push sync for %s: local table has no updated_at column for incremental sync", table)
+		return 0, nil
+	}
 
 	// Count records to sync
 	var count int64
@@ -435,6 +482,11 @@ func (a *App) syncTablePush(table string, since time.Time) (int, error) {
 	}
 	defer rows.Close()
 
+	remoteColumnTypes, err := syncDBColumnTypes(a.dbManager.Remote(), table)
+	if err != nil {
+		return 0, fmt.Errorf("inspect remote %s columns: %w", table, err)
+	}
+
 	synced := 0
 	skipped := 0
 	for rows.Next() {
@@ -451,17 +503,12 @@ func (a *App) syncTablePush(table string, since time.Time) (int, error) {
 			continue
 		}
 
+		remoteRecord := normalizeRecordForRemoteSyncSchema(record, remoteColumnTypes)
+
 		// SAFE UPSERT: Update if exists, create if not
-		id := record["id"]
-		result := a.dbManager.Remote().Table(table).Where("id = ?", id).Updates(record)
-		if result.Error != nil {
-			return synced, fmt.Errorf("update remote %s/%v: %w", table, id, result.Error)
-		}
-		if result.RowsAffected == 0 {
-			// Record doesn't exist in cloud, create it
-			if err := a.dbManager.Remote().Table(table).Create(record).Error; err != nil {
-				return synced, fmt.Errorf("create remote %s/%v: %w", table, id, err)
-			}
+		id := remoteRecord["id"]
+		if err := syncUpsertRecordByIDOrNaturalKey(a.dbManager.Remote(), table, remoteRecord, remoteColumnTypes); err != nil {
+			return synced, fmt.Errorf("upsert remote %s/%v: %w", table, id, err)
 		}
 		synced++
 	}
@@ -488,6 +535,18 @@ func (a *App) syncTablePull(table string, since time.Time) (int, error) {
 	if a.dbManager.Remote() == nil {
 		return 0, nil
 	}
+	if isUserActivitySyncTable(table) && !a.currentSessionCanAccessActivityMonitoring() {
+		log.Printf("Skipping pull sync for %s: confidential activity monitoring is restricted to Rahul/Mentor", table)
+		return 0, nil
+	}
+	remoteColumnTypes, err := syncDBColumnTypes(a.dbManager.Remote(), table)
+	if err != nil {
+		return 0, fmt.Errorf("inspect remote %s columns: %w", table, err)
+	}
+	if !syncColumnExists(remoteColumnTypes, "updated_at") {
+		log.Printf("Skipping pull sync for %s: remote table has no updated_at column for incremental sync", table)
+		return 0, nil
+	}
 
 	// Count records to sync
 	var count int64
@@ -496,6 +555,10 @@ func (a *App) syncTablePull(table string, since time.Time) (int, error) {
 	}
 	if count == 0 {
 		return 0, nil
+	}
+	localColumnTypes, err := syncDBColumnTypes(a.db, table)
+	if err != nil {
+		return 0, fmt.Errorf("inspect local %s columns: %w", table, err)
 	}
 
 	// Get records
@@ -518,6 +581,7 @@ func (a *App) syncTablePull(table string, since time.Time) (int, error) {
 		if id == nil {
 			continue
 		}
+		record = normalizeRecordForRemoteSyncSchema(record, localColumnTypes)
 
 		result := a.db.Table(table).Where("id = ?", id).Updates(record)
 		if result.Error != nil {
@@ -627,7 +691,18 @@ func (a *App) FirstRunSyncWithProgress() DBSyncResult {
 	}
 
 	// Download all tables with progress
-	totalTables := len(dbSyncTables)
+	syncTables := activeDBSyncTables()
+	totalTables := len(syncTables)
+	if totalTables == 0 {
+		result.Success = true
+		result.Duration = time.Since(startTime).Round(time.Second).String()
+		a.emitDBSyncProgress(DBSyncProgress{
+			Phase:      "complete",
+			Message:    "No sync tables are enabled",
+			Percentage: 100,
+		})
+		return result
+	}
 	totalRecords := 0
 
 	a.emitDBSyncProgress(DBSyncProgress{
@@ -637,7 +712,7 @@ func (a *App) FirstRunSyncWithProgress() DBSyncResult {
 		Percentage:  15,
 	})
 
-	for i, table := range dbSyncTables {
+	for i, table := range syncTables {
 		// Get count from cloud
 		var tableCount int64
 		if a.dbManager.Remote() != nil {

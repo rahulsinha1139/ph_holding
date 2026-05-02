@@ -109,12 +109,12 @@ var rolePermissions = map[string][]string{
 		"dashboard:view",
 		"offers:view", "offers:create", "offers:edit",
 		"orders:view", "orders:create", "orders:edit", "orders:update",
-		"finance:view", "finance:create", "finance:delete", // Bank reconciliation needs finance:delete
+		"finance:view", "finance:create",
 		"expenses:view", "expenses:create", "expenses:update",
 		"payroll:view", "payroll:create", "payroll:update", "payroll:approve",
-		"invoices:view", "invoices:create", "invoices:update", // Invoice management
-		"payments:view", "payments:create", "payments:update", // Payment management (NO payments:delete - admin only)
-		"customers:view", "customers:edit", "customers:delete",
+		"invoices:view", "invoices:create", "invoices:update", "invoices:approve", // Invoice management
+		"payments:view", "payments:create", "payments:update", "payments:record", // Payment management (NO payments:delete - admin only)
+		"customers:view", "customers:edit",
 		"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
 		"po:view", "po:create", "po:update", "po:approve", // Full PO management
 		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
@@ -123,7 +123,10 @@ var rolePermissions = map[string][]string{
 		"notifications:view", "notifications:update",
 		"hr:view", "hr:create", "hr:update",
 		"grn:view", "grn:create",
-		"documents:create", "documents:view", // OCR features
+		"reports:view", "reports:generate",
+		"settings:view",
+		"data:import",
+		"documents:create", "documents:view", "documents:classify", // OCR features
 		"intelligence:chat", "intelligence:reports",
 		"users:view",
 	},
@@ -131,7 +134,7 @@ var rolePermissions = map[string][]string{
 		"dashboard:view",
 		"offers:view", "offers:create", "offers:edit",
 		"orders:view", "orders:create", "orders:update",
-		"invoices:view", "invoices:create", // Can create draft customer invoices from won orders
+		"invoices:view", "invoices:create", "invoices:update", // Can create and update draft customer invoices from won orders
 		"payments:view", // Can VIEW payments but NOT create (manager/admin only)
 		"projects:view", "projects:create", "projects:update",
 		"tasks:view", "tasks:create", "tasks:update",
@@ -139,14 +142,16 @@ var rolePermissions = map[string][]string{
 		"customers:view", "customers:edit",
 		"suppliers:view", "suppliers:create",
 		"po:view", "po:create", // Sales can raise supplier POs tied to their commercial flow
-		"delivery_notes:view",                // Can view delivery notes
-		"documents:create", "documents:view", // OCR features for scanning customer docs
+		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", // Sales can prepare DNs from won orders
+		"rfq:view", "rfq:create",
+		"reports:view",
+		"documents:create", "documents:view", "documents:classify", // OCR features for scanning customer docs
 		"intelligence:chat",
 	},
 	"operations": {
 		"dashboard:view",
 		"orders:view", "orders:update",
-		"invoices:view", "invoices:create", // Can create draft customer invoices after delivery/order processing
+		"invoices:view", "invoices:create", "invoices:update", // Can create/update draft customer invoices after delivery/order processing
 		"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
 		"projects:view", "projects:create", "projects:update",
 		"tasks:view", "tasks:create", "tasks:update",
@@ -154,14 +159,26 @@ var rolePermissions = map[string][]string{
 		"grn:view", "grn:create",
 		"po:view", "po:create", "po:update", "po:send", // Full PO lifecycle
 		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
-		"documents:create", "documents:view", // OCR features for scanning supplier docs
+		"reports:view",
+		"settings:view",
+		"documents:create", "documents:view", "documents:classify", // OCR features for scanning supplier docs
 		"intelligence:chat",
 	},
 	"staff": {
 		"dashboard:view",
+		"customers:view",
+		"suppliers:view",
+		"invoices:view",
+		"orders:view",
+		"payments:view",
+		"offers:view",
 		"projects:view",
 		"tasks:view", "tasks:create", "tasks:update",
 		"notifications:view", "notifications:update",
+		"reports:view",
+		"settings:view",
+		"documents:create", "documents:view", "documents:classify",
+		"intelligence:chat",
 	},
 }
 
@@ -701,6 +718,7 @@ func phTradingEmployeeLicenseSpecs() []employeeLicenseSpec {
 	return []employeeLicenseSpec{
 		{Role: "admin", DisplayName: "Abhie", Key: "PH-ADM-4A0185", Notes: "PH Trading admin key for Abhie"},
 		{Role: "admin", DisplayName: "Rahul", Key: "PH-ADM-E91CC2", Notes: "PH Trading admin key for Rahul"},
+		{Role: "admin", DisplayName: "Mentor", Key: "PH-ADM-8F2A41", Notes: "PH Trading admin key for Mentor"},
 		{Role: "admin", DisplayName: "Stanley", Key: "PH-ADM-E2E4C2", Notes: "PH Trading admin key for Stanley"},
 		{Role: "admin", DisplayName: "Daniel", Key: "PH-ADM-CD4680", Notes: "PH Trading admin key for Daniel"},
 		{Role: "manager", DisplayName: "Sundar", Key: "PH-MGR-CE8180", Notes: "PH Trading manager key for Sundar"},
@@ -732,15 +750,12 @@ func deploymentLicenseActivationFlushStamp() string {
 	if stamp := strings.TrimSpace(os.Getenv("ASYMMFLOW_LICENSE_FLUSH_STAMP")); stamp != "" {
 		return stamp
 	}
-	if !preserveLicenseActivationsOnReseed() {
-		return "reseed-license-activation-flush"
-	}
 	return ""
 }
 
 // ApplyDeploymentLicenseActivationFlush resets existing device bindings once per
-// deployment stamp. It is intentionally separate from database reseeding: a
-// full-but-already-activated local DB still needs to ask for the new key once.
+// explicit deployment stamp. Database reseeding preserves activations by default;
+// normal update installers must not make users enter their keys again.
 func (a *App) ApplyDeploymentLicenseActivationFlush() error {
 	if a == nil || a.db == nil {
 		return fmt.Errorf("database not initialized")

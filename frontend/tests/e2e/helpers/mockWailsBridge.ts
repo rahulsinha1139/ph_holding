@@ -5,6 +5,7 @@ type MockWailsBridgeOptions = {
   notificationReadDelayMs?: number;
   collaborativeDataReadyAfterRefreshCount?: number;
   taskDetailsReadyAfterRefreshCount?: number;
+  projectContextDelayMs?: number;
 };
 
 export async function installMockWailsBridge(page: Page, options: MockWailsBridgeOptions = {}) {
@@ -15,6 +16,7 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
     const WORKFLOW_STATE_KEY = '__ph_e2e_workflow_state__';
     (window as any).__wailsFileDropCallbacks = [];
     (window as any).__wailsOCRCalls = [];
+    (window as any).__wailsDocumentSaveCalls = [];
 
     const now = () => new Date().toISOString();
     const safeJson = (value: string | null, fallback: any) => {
@@ -146,6 +148,8 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
           rfq_number: 'RFQ-2026-001',
         },
       ],
+      rfqComments: {},
+      opportunityComments: {},
       pipeline: [
         {
           id: 'pipe-1',
@@ -312,6 +316,19 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
           project_type: 'internal',
           description: 'Regression project used for E2E task routing coverage.',
           status: 'active',
+        },
+      ],
+      collaborativeProjectMembers: [
+        {
+          id: 'project-member-1',
+          project_id: 'proj-1',
+          employee_id: 'emp-peri',
+          employee_name: 'Peri',
+          project_name: 'Butler Rollout',
+          role: 'Member',
+          allocation_percent: 100,
+          is_active: true,
+          joined_at: now(),
         },
       ],
       collaborativeTasks: [
@@ -622,6 +639,13 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
 
     const defaultVoid = () => Promise.resolve();
     const defaultValue = (value: any) => Promise.resolve(value);
+    const delayedValue = (value: any, delayMs = 0) => new Promise((resolve) => {
+      if (delayMs <= 0) {
+        resolve(value);
+        return;
+      }
+      window.setTimeout(() => resolve(value), delayMs);
+    });
 
     const app = new Proxy({}, {
       get(_, prop) {
@@ -776,6 +800,33 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
                 return defaultValue([]);
               }
             }
+            case 'CanResolveOpportunityConflicts':
+              return defaultValue(true);
+            case 'ListOpportunityEditConflicts':
+              return defaultValue(readWorkflowState().opportunityConflicts || []);
+            case 'ResolveOpportunityEditConflict': {
+              const [conflictId, action] = args;
+              const state = readWorkflowState();
+              state.opportunityConflicts = (state.opportunityConflicts || []).map((conflict: any) => (
+                String(conflict.id) === String(conflictId)
+                  ? { ...conflict, status: action === 'apply' ? 'applied' : 'rejected', resolution_action: action }
+                  : conflict
+              ));
+              writeWorkflowState(state);
+              return defaultValue({ conflict: state.opportunityConflicts.find((item: any) => String(item.id) === String(conflictId)) });
+            }
+            case 'UpdateOpportunityStageWithVersion': {
+              const [opportunityId, stage] = args;
+              const state = readWorkflowState();
+              const opportunity = findPipelineOpportunity(state, String(opportunityId));
+              if (!opportunity) {
+                return Promise.reject(new Error('Opportunity not found'));
+              }
+              opportunity.stage = String(stage || '').trim();
+              opportunity.version = Number(opportunity.version || 1) + 1;
+              writeWorkflowState(state);
+              return defaultValue(opportunity);
+            }
             case 'UpdateOpportunityDetails': {
               const [opportunityId, comment, ownerNotes] = args;
               const state = readWorkflowState();
@@ -785,6 +836,19 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
               }
               opportunity.comment = String(comment || '').trim();
               opportunity.owner_notes = String(ownerNotes || '').trim();
+              writeWorkflowState(state);
+              return defaultValue(opportunity);
+            }
+            case 'UpdateOpportunityDetailsWithVersion': {
+              const [opportunityId, , comment, ownerNotes] = args;
+              const state = readWorkflowState();
+              const opportunity = findPipelineOpportunity(state, String(opportunityId));
+              if (!opportunity) {
+                return Promise.reject(new Error('Opportunity not found'));
+              }
+              opportunity.comment = String(comment || '').trim();
+              opportunity.owner_notes = String(ownerNotes || '').trim();
+              opportunity.version = Number(opportunity.version || 1) + 1;
               writeWorkflowState(state);
               return defaultValue(opportunity);
             }
@@ -820,6 +884,24 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
               const state = readWorkflowState();
               return defaultValue(collaborativeDataReady(state) ? (state.collaborativeProjects || []) : []);
             }
+            case 'CreateCollaborativeProject': {
+              const state = readWorkflowState();
+              const payload = args[0] || {};
+              const project = {
+                id: `proj-created-${Date.now()}`,
+                name: String(payload.name || '').trim(),
+                project_type: String(payload.project_type || 'internal'),
+                description: String(payload.description || ''),
+                status: 'active',
+                owner_employee_id: 'emp-peri',
+                owner_name: 'Peri',
+                created_at: now(),
+                updated_at: now(),
+              };
+              state.collaborativeProjects = [project, ...(state.collaborativeProjects || [])];
+              writeWorkflowState(state);
+              return defaultValue(project);
+            }
             case 'ListMyCollaborativeTasks': {
               const state = readWorkflowState();
               return defaultValue(collaborativeDataReady(state) ? (state.collaborativeTasks || []) : []);
@@ -834,36 +916,50 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
               const tasks = collaborativeDataReady(state)
                 ? (state.collaborativeTasks || []).filter((task: any) => String(task.project_id) === projectID)
                 : [];
-              return defaultValue(tasks);
+              return delayedValue(tasks, Number(opts.projectContextDelayMs || 0));
             }
             case 'ListCollaborativeProjectMembers': {
               const state = readWorkflowState();
+              const projectID = String(args[0] || '');
               if (!collaborativeDataReady(state)) {
-                return defaultValue([]);
+                return delayedValue([], Number(opts.projectContextDelayMs || 0));
               }
-              return defaultValue([
-                {
-                  id: 'project-member-1',
-                  project_id: 'proj-1',
-                  employee_id: 'emp-peri',
-                  employee_name: 'Peri',
-                  project_name: 'Butler Rollout',
-                  role: 'Member',
-                  allocation_percent: 100,
-                  is_active: true,
-                  joined_at: now(),
-                },
-              ]);
+              const members = (state.collaborativeProjectMembers || []).filter((member: any) => String(member.project_id) === projectID);
+              return delayedValue(members, Number(opts.projectContextDelayMs || 0));
+            }
+            case 'AddCollaborativeProjectMember': {
+              const state = readWorkflowState();
+              const [projectID, employeeID, role] = args;
+              const project = (state.collaborativeProjects || []).find((item: any) => String(item.id) === String(projectID));
+              const employee = (state.employeeProfiles || []).find((item: any) => String(item.id) === String(employeeID));
+              if (!project || !employee) {
+                return Promise.reject(new Error('Project or employee not found'));
+              }
+              const member = {
+                id: `project-member-${Date.now()}`,
+                project_id: project.id,
+                employee_id: employee.id,
+                employee_name: employee.full_name,
+                project_name: project.name,
+                role: String(role || 'Member'),
+                allocation_percent: 100,
+                is_active: true,
+                joined_at: now(),
+              };
+              state.collaborativeProjectMembers = [member, ...(state.collaborativeProjectMembers || [])];
+              writeWorkflowState(state);
+              return defaultValue(member);
             }
             case 'ListCollaborativeProjectActivity': {
               const state = readWorkflowState();
               if (!collaborativeDataReady(state)) {
-                return defaultValue([]);
+                return delayedValue([], Number(opts.projectContextDelayMs || 0));
               }
-              return defaultValue((state.collaborativeTaskActivity || []).filter((item: any) => {
+              const activity = (state.collaborativeTaskActivity || []).filter((item: any) => {
                 const task = (state.collaborativeTasks || []).find((candidate: any) => String(candidate.id) === String(item.task_id));
                 return String(task?.project_id || '') === String(args[0] || '');
-              }));
+              });
+              return delayedValue(activity, Number(opts.projectContextDelayMs || 0));
             }
             case 'GetCollaborativeTask': {
               const state = readWorkflowState();
@@ -959,6 +1055,16 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
             case 'AnalyzeDocumentWithButler':
               return defaultValue(mockButlerInsight);
             case 'SaveDocumentToEntity':
+              (window as any).__wailsDocumentSaveCalls.push({
+                fileName: args[0],
+                filePath: args[1],
+                documentType: args[2],
+                extractedText: args[3],
+                confidence: args[4],
+                processingTimeMs: args[5],
+                engine: args[6],
+                extractedDataJSON: args[7],
+              });
               return defaultValue({ routed: true, entity_id: 'ocr-doc-1' });
             case 'SaveOCRDocument':
             case 'UpdateRFQStage':
@@ -966,11 +1072,33 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
             case 'GetRFQTraceability':
               return defaultVoid();
             case 'GetRFQComments':
+              return defaultValue(readWorkflowState().rfqComments?.[String(args[0])] || []);
             case 'GetOpportunityComments':
-              return defaultValue([]);
-            case 'AddRFQComment':
-            case 'AddOpportunityComment':
+              return defaultValue(readWorkflowState().opportunityComments?.[String(args[0])] || []);
+            case 'AddRFQComment': {
+              const [rfqId, comment] = args;
+              const state = readWorkflowState();
+              const key = String(rfqId);
+              state.rfqComments = state.rfqComments || {};
+              state.rfqComments[key] = [
+                ...(state.rfqComments[key] || []),
+                { id: `rfq-comment-${Date.now()}`, comment, created_by: 'Developer', created_at: now() },
+              ];
+              writeWorkflowState(state);
               return defaultVoid();
+            }
+            case 'AddOpportunityComment': {
+              const [opportunityId, comment] = args;
+              const state = readWorkflowState();
+              const key = String(opportunityId);
+              state.opportunityComments = state.opportunityComments || {};
+              state.opportunityComments[key] = [
+                ...(state.opportunityComments[key] || []),
+                { id: `opportunity-comment-${Date.now()}`, comment, created_by: 'Developer', created_at: now() },
+              ];
+              writeWorkflowState(state);
+              return defaultVoid();
+            }
             case 'CreateCostingSheet':
             case 'UpdateCostingSheet':
               return defaultVoid();

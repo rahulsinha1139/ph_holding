@@ -5,6 +5,7 @@
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import ContextTaskModal from '$lib/components/ContextTaskModal.svelte';
   import { toast } from '$lib/stores/toasts';
+  import { formatBHDValue } from '$lib/utils/formatters';
   import { GetCustomerFullProfile, AddCustomerNote, UpdateCustomer, AddCustomerContact, DeleteCustomer } from '../../../wailsjs/go/main/App';
   import type { main } from '../../../wailsjs/go/models';
 
@@ -150,7 +151,7 @@
   }
 
   function formatCurrency(value: number): string {
-    return (value || 0).toFixed(3);
+    return formatBHDValue(value || 0);
   }
 
   onMount(loadProfile);

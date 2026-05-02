@@ -53,4 +53,24 @@ test.describe('Work notification task handoff', () => {
     await expect(page.locator('#modal-title')).toHaveText('Review salary expense forecast');
     await expect(page.getByText(/task not found/i)).toHaveCount(0);
   });
+
+  test('keeps the employee directory available after creating an empty project', async ({ page }) => {
+    await installMockWailsBridge(page, {
+      collaborativeDataReadyAfterRefreshCount: 0,
+      projectContextDelayMs: 2000,
+    });
+    await page.goto(BASE_URL);
+
+    await page.getByRole('link', { name: 'Work' }).click();
+    await expect(page.getByRole('heading', { name: 'Work.' })).toBeVisible();
+    await page.getByRole('button', { name: 'Projects' }).click();
+
+    await page.getByPlaceholder('Project name').fill('Empty Sync Project');
+    await page.getByPlaceholder('What is this project for?').fill('Regression coverage for brand-new projects with no members yet.');
+    await page.getByRole('button', { name: 'Create Project' }).click();
+
+    await expect(page.getByRole('button', { name: /Empty Sync Project/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Peri/ })).toBeVisible({ timeout: 1000 });
+    await expect(page.getByText('Loading members...')).toHaveCount(0);
+  });
 });

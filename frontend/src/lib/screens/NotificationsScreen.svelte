@@ -2,7 +2,14 @@
   import { onMount, onDestroy } from "svelte";
   import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
   import { toast } from "../stores/toasts";
-  import { listNotifications, markNotificationAsRead, refreshCollaborativeWorkspace, type NotificationItem } from "$lib/api/collaboration";
+  import {
+    getCurrentEmployeeContext,
+    listNotifications,
+    markNotificationAsRead,
+    refreshCollaborativeWorkspace,
+    reviewDeleteApprovalRequest,
+    type NotificationItem
+  } from "$lib/api/collaboration";
 
   const pendingTaskStorageKey = "asymmflow.pendingCollaborativeTaskId";
   const NOTIFICATIONS_CACHE_TTL_MS = 20_000;
@@ -18,6 +25,8 @@
   let unreadOnly = false;
   let notifications: NotificationItem[] = [];
   let loadRequestSeq = 0;
+  let currentRole = "";
+  let reviewingDeleteRequestID = "";
 
   function snapshotKey() {
     return unreadOnly ? "unread" : "all";
@@ -157,8 +166,22 @@
     return notification.source_type === "task" || notification.notification_type === "task";
   }
 
+  function isDeleteApprovalNotification(notification: NotificationItem): boolean {
+    return notification.source_type === "delete_approval" || notification.notification_type === "delete_approval";
+  }
+
+  function isPendingDeleteApproval(notification: NotificationItem): boolean {
+    const payload = parsePayload(notification);
+    return isDeleteApprovalNotification(notification)
+      && payload.action === "delete_requested"
+      && notification.status !== "read";
+  }
+
+  $: isAdmin = ["admin", "administrator", "developer"].includes(currentRole.toLowerCase());
+
   function notificationTone(notification: NotificationItem): string {
     if (notification.status === "read") return "read";
+    if (isDeleteApprovalNotification(notification)) return "delete-approval";
     if (isTaskNotification(notification)) return "task";
     return "system";
   }
@@ -184,6 +207,26 @@
     }
   }
 
+  async function reviewDelete(notification: NotificationItem, decision: "approve" | "reject") {
+    const payload = parsePayload(notification);
+    const requestID = String(payload.request_id || notification.source_id || "").trim();
+    if (!requestID) {
+      toast.danger("Delete request is missing its approval id");
+      return;
+    }
+    const notes = decision === "reject" ? (prompt("Reason for rejection") || "") : "";
+    reviewingDeleteRequestID = requestID;
+    try {
+      await reviewDeleteApprovalRequest(requestID, decision, notes);
+      toast.success(decision === "approve" ? "Delete approved and completed" : "Delete request rejected");
+      await load({ refreshRemote: true, silent: true });
+    } catch (err) {
+      toast.danger(`Delete review failed: ${String(err)}`);
+    } finally {
+      reviewingDeleteRequestID = "";
+    }
+  }
+
   $: groupedNotifications = notifications.reduce((groups: { label: string; items: NotificationItem[] }[], notification) => {
     const label = bucketLabel(notification);
     const existing = groups.find((group) => group.label === label);
@@ -196,6 +239,9 @@
   }, []);
 
   onMount(() => {
+    getCurrentEmployeeContext().then((ctx) => {
+      currentRole = ctx?.license_role || "";
+    }).catch(() => undefined);
     void hydrateNotifications();
     EventsOn("notifications:new", () => void load({ silent: true }));
     EventsOn("notifications:updated", () => void load({ silent: true }));
@@ -254,6 +300,13 @@
                     </div>
                   {/if}
 
+                  {#if isDeleteApprovalNotification(notification)}
+                    <div class="delete-preview">
+                      <strong>{parsePayload(notification).entity_label || "Delete request"}</strong>
+                      <span>{parsePayload(notification).entity_type || "record"} · requested by {senderLabel(notification)}</span>
+                    </div>
+                  {/if}
+
                   <div class="card-meta">
                     <span>{notification.created_at ? new Date(notification.created_at).toLocaleString() : "Just now"}</span>
                     {#if notification.read_at}
@@ -264,6 +317,21 @@
                   <div class="card-actions">
                     {#if isTaskNotification(notification)}
                       <button class="primary-action" on:click={() => openNotification(notification)}>Open task</button>
+                    {/if}
+                    {#if isAdmin && isPendingDeleteApproval(notification)}
+                      <button
+                        class="primary-action danger"
+                        on:click={() => reviewDelete(notification, "approve")}
+                        disabled={reviewingDeleteRequestID === (parsePayload(notification).request_id || notification.source_id)}
+                      >
+                        Approve Delete
+                      </button>
+                      <button
+                        on:click={() => reviewDelete(notification, "reject")}
+                        disabled={reviewingDeleteRequestID === (parsePayload(notification).request_id || notification.source_id)}
+                      >
+                        Reject
+                      </button>
                     {/if}
                     {#if notification.status !== "read"}
                       <button on:click={() => markRead(notification.id)}>Mark read</button>
@@ -350,6 +418,11 @@
     box-shadow: 0 14px 32px rgba(15, 23, 42, 0.04);
   }
 
+  .notification-card.delete-approval {
+    border-color: rgba(185, 28, 28, 0.28);
+    box-shadow: 0 14px 32px rgba(127, 29, 29, 0.06);
+  }
+
   .notification-card.system {
     border-color: rgba(148, 163, 184, 0.3);
   }
@@ -390,7 +463,8 @@
     color: var(--text-primary);
   }
 
-  .task-preview {
+  .task-preview,
+  .delete-preview {
     display: grid;
     gap: 4px;
     padding: 12px 14px;
@@ -398,7 +472,12 @@
     background: rgba(14, 116, 144, 0.06);
   }
 
-  .task-preview span {
+  .delete-preview {
+    background: rgba(254, 226, 226, 0.7);
+  }
+
+  .task-preview span,
+  .delete-preview span {
     color: var(--text-secondary);
     font-size: 13px;
   }
@@ -432,6 +511,16 @@
     background: #111827;
     color: white;
     border-color: #111827;
+  }
+
+  .primary-action.danger {
+    background: #b91c1c;
+    border-color: #b91c1c;
+  }
+
+  button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
   }
 
   .toggle {

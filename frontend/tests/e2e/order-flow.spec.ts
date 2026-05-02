@@ -26,7 +26,7 @@ test.describe('Commercial workflow smoke', () => {
     await page.getByRole('button', { name: new RegExp(opportunityTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) }).first().click();
 
     await expect(page.locator('#opportunity-modal-title')).toHaveText(opportunityTitle);
-    await expect(page.getByPlaceholder('Add notes for this opportunity...')).toHaveValue('Need fast commercial turnaround.');
+    await expect(page.getByText('Need fast commercial turnaround.')).toBeVisible();
     await page.getByRole('button', { name: /Close/ }).click();
   });
 
@@ -52,7 +52,7 @@ test.describe('Commercial workflow smoke', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Operations' }).click();
-    await page.getByRole('button', { name: /\+ New Purchase Order/ }).click();
+    await page.getByRole('button', { name: /\+ New (Supplier|Purchase) Order/ }).click();
 
     await expect(page.getByText('Create Purchase Order')).toBeVisible();
     await page.locator('.po-form select.select-input').first().selectOption({ label: 'Endress+Hauser' });
@@ -61,8 +61,8 @@ test.describe('Commercial workflow smoke', () => {
     await page.locator('.items-list input[type="number"]').first().fill('3');
     await page.locator('.items-list input[type="number"]').nth(1).fill('850');
 
-    await expect(page.getByText('2550.000 BHD').first()).toBeVisible();
-    await expect(page.getByText('2805.000 BHD').first()).toBeVisible();
+    await expect(page.getByText('2,550.000 BHD').first()).toBeVisible();
+    await expect(page.getByText('2,805.000 BHD').first()).toBeVisible();
     await expect(page.getByRole('button', { name: 'Create PO' })).toBeVisible();
   });
 });

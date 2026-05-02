@@ -461,6 +461,9 @@ func (a *App) UpdateSupplierInvoiceWithPayment(inv SupplierInvoice, createPaymen
 
 // DeleteSupplierInvoice deletes a supplier invoice (soft delete)
 func (a *App) DeleteSupplierInvoice(id string) error {
+	if ok, err := a.guardDeleteOrRequest("po:create", "supplier_invoice", id, "Supplier invoice"); !ok {
+		return err
+	}
 	if err := a.requirePermission("po:create"); err != nil {
 		return err
 	}

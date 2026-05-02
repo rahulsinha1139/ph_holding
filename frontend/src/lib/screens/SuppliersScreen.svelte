@@ -13,12 +13,13 @@
   import { fade } from 'svelte/transition';
 
   // Wails API imports
-  import {
-    ListSuppliers,
-    CreateSupplier,
-    GetPurchaseOrdersBySupplier,
-    GetSupplierInvoicesBySupplier
-  } from '../../../wailsjs/go/main/App';
+	  import {
+	    ListSuppliers,
+	    CreateSupplier,
+	    DeleteSupplier,
+	    GetPurchaseOrdersBySupplier,
+	    GetSupplierInvoicesBySupplier
+	  } from '../../../wailsjs/go/main/App';
 
   // Design system components
   import PageLayout from '$lib/components/layout/PageLayout.svelte';
@@ -29,6 +30,7 @@
   import WabiModal from '$lib/components/ui/WabiModal.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
+  import { formatBHD } from '$lib/utils/formatters';
 
   // Props
   export let embedded = false;
@@ -45,14 +47,20 @@
   let searchQuery = '';
   let selectedStatus: SupplierStatus = 'all';
 
-  // Create supplier state
-  let showCreateModal = false;
-  let creating = false;
-  let newSupplier: any = {
-    supplier_name: '', supplier_code: '', supplier_type: 'Manufacturer',
-    primary_contact: '', email: '', phone: '', country: 'Bahrain',
-    address: '', tax_id: '', brands_handled: '', lead_time_days: 14,
-  };
+	  // Create supplier state
+	  let showCreateModal = false;
+	  let creating = false;
+	  let deletingSupplierId = '';
+
+	  function emptySupplierForm() {
+	    return {
+	      supplier_name: '', supplier_code: '', supplier_type: '',
+	      primary_contact: '', email: '', phone: '', country: '',
+	      address: '', tax_id: '', brands_handled: '', lead_time_days: '',
+	    };
+	  }
+
+	  let newSupplier: any = emptySupplierForm();
 
   async function handleCreateSupplier() {
     if (!newSupplier.supplier_name?.trim()) {
@@ -61,18 +69,18 @@
     }
     creating = true;
     try {
-      const prefix = newSupplier.supplier_name.substring(0, 4).toUpperCase().replace(/[^A-Z]/g, '');
-      const suffix = Date.now().toString().slice(-4);
-      newSupplier.supplier_code = newSupplier.supplier_code || `SUP-${prefix}${suffix}`;
-      await CreateSupplier(newSupplier);
-      toast.success(`Created supplier: ${newSupplier.supplier_name}`);
-      showCreateModal = false;
-      newSupplier = {
-        supplier_name: '', supplier_code: '', supplier_type: 'Manufacturer',
-        primary_contact: '', email: '', phone: '', country: 'Bahrain',
-        address: '', tax_id: '', brands_handled: '', lead_time_days: 14,
-      };
-      await loadSuppliers();
+	      const prefix = newSupplier.supplier_name.substring(0, 4).toUpperCase().replace(/[^A-Z]/g, '');
+	      const suffix = Date.now().toString().slice(-4);
+	      const payload = {
+	        ...newSupplier,
+	        supplier_code: newSupplier.supplier_code || `SUP-${prefix}${suffix}`,
+	        lead_time_days: Number(newSupplier.lead_time_days) || 0,
+	      };
+	      await CreateSupplier(payload);
+	      toast.success(`Created supplier: ${newSupplier.supplier_name}`);
+	      showCreateModal = false;
+	      newSupplier = emptySupplierForm();
+	      await loadSuppliers();
     } catch (e) {
       toast.danger(`Create failed: ${String(e)}`);
     } finally {
@@ -156,16 +164,24 @@
       render: (row: any) => {
         return `
           <div style="display: flex; gap: 8px; justify-content: center;">
-            <button
-              class="action-btn action-btn-view"
+	            <button
+	              class="action-btn action-btn-view"
               data-action="view"
               data-id="${row.id}"
               aria-label="View supplier details"
-            >
-              View
-            </button>
-          </div>
-        `;
+	            >
+	              View
+	            </button>
+	            <button
+	              class="action-btn action-btn-delete"
+	              data-action="delete"
+	              data-id="${row.id}"
+	              aria-label="Delete supplier"
+	            >
+	              Delete
+	            </button>
+	          </div>
+	        `;
       }
     }
   ];
@@ -258,14 +274,36 @@
 
     if (!supplier) return;
 
-    if (action === 'view') {
-      if (embedded) {
-        dispatch('select', { id: supplier.id || supplier.supplier_id });
-      } else {
-        openSupplierDetail(supplier);
-      }
-    }
-  }
+	    if (action === 'view') {
+	      if (embedded) {
+	        dispatch('select', { id: supplier.id || supplier.supplier_id });
+	      } else {
+	        openSupplierDetail(supplier);
+	      }
+	    } else if (action === 'delete') {
+	      void handleDeleteSupplier(supplier);
+	    }
+	  }
+
+	  async function handleDeleteSupplier(supplier: any) {
+	    const supplierId = supplier?.id || supplier?.supplier_id;
+	    const supplierName = supplier?.supplier_name || 'this supplier';
+	    if (!supplierId || !confirm(`Delete ${supplierName}?`)) {
+	      return;
+	    }
+	    deletingSupplierId = supplierId;
+	    try {
+	      await DeleteSupplier(supplierId);
+	      toast.success(`Deleted supplier: ${supplierName}`);
+	      showDetailModal = false;
+	      selectedSupplier = null;
+	      await loadSuppliers();
+	    } catch (err) {
+	      toast.danger(`Delete failed: ${String(err)}`);
+	    } finally {
+	      deletingSupplierId = '';
+	    }
+	  }
 
   // Computed: Summary stats
   $: totalSuppliers = suppliers.length;
@@ -283,7 +321,7 @@
 
 <PageLayout title="Suppliers" subtitle="Vendor & Partner Directory" {embedded}>
   <svelte:fragment slot="header-actions">
-    <Button variant="primary" on:click={() => showCreateModal = true}>
+    <Button variant="primary" on:click={() => { newSupplier = emptySupplierForm(); showCreateModal = true; }}>
       + New Supplier
     </Button>
     <Button variant="secondary" on:click={loadSuppliers}>
@@ -446,7 +484,7 @@
                   <span class="summary-status">
                     <StatusBadge status={po.status || 'Pending'} size="sm" />
                   </span>
-                  <span class="summary-amount">{(po.total_amount || 0).toFixed(3)} BHD</span>
+                  <span class="summary-amount">{formatBHD(po.total_amount || 0)}</span>
                 </div>
               </div>
             {/each}
@@ -485,7 +523,7 @@
                   <span class="summary-status">
                     <StatusBadge status={invoice.status || 'Pending'} size="sm" />
                   </span>
-                  <span class="summary-amount">{(invoice.total_amount || invoice.amount || 0).toFixed(3)} BHD</span>
+                  <span class="summary-amount">{formatBHD(invoice.total_amount || invoice.amount || 0)}</span>
                 </div>
               </div>
             {/each}
@@ -498,10 +536,17 @@
     </div>
   {/if}
 
-  <svelte:fragment slot="footer">
-    <Button variant="ghost" on:click={() => showDetailModal = false}>
-      Close
-    </Button>
+	  <svelte:fragment slot="footer">
+	    <Button
+	      variant="danger"
+	      on:click={() => handleDeleteSupplier(selectedSupplier)}
+	      disabled={deletingSupplierId === (selectedSupplier?.id || selectedSupplier?.supplier_id)}
+	    >
+	      {deletingSupplierId === (selectedSupplier?.id || selectedSupplier?.supplier_id) ? 'Deleting...' : 'Delete Supplier'}
+	    </Button>
+	    <Button variant="ghost" on:click={() => showDetailModal = false}>
+	      Close
+	    </Button>
   </svelte:fragment>
 </WabiModal>
 
@@ -518,9 +563,10 @@
     </div>
     <div>
       <label for="supplier-type" style="font-size: 12px; color: var(--steel); display: block; margin-bottom: 4px;">Supplier Type</label>
-      <select id="supplier-type" bind:value={newSupplier.supplier_type} style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;">
-        <option>Manufacturer</option>
-        <option>Distributor</option>
+	      <select id="supplier-type" bind:value={newSupplier.supplier_type} style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-secondary); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 14px;">
+	        <option value="" disabled>Select type</option>
+	        <option>Manufacturer</option>
+	        <option>Distributor</option>
         <option>Agent</option>
         <option>Service Provider</option>
       </select>
@@ -707,12 +753,23 @@
     color: var(--brand-indigo);
   }
 
-  :global(.action-btn-view:hover) {
-    background: var(--brand-indigo);
-    color: white;
-  }
+	  :global(.action-btn-view:hover) {
+	    background: var(--brand-indigo);
+	    color: white;
+	  }
 
-  :global(.status-badge) {
+	  :global(.action-btn-delete) {
+	    background: #fee2e2;
+	    color: #991b1b;
+	    border: 1px solid rgba(185, 28, 28, 0.24);
+	  }
+
+	  :global(.action-btn-delete:hover) {
+	    background: #fecaca;
+	    border-color: rgba(185, 28, 28, 0.42);
+	  }
+
+	  :global(.status-badge) {
     display: inline-block;
     padding: 4px 8px;
     border-radius: 12px;

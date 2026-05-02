@@ -225,6 +225,9 @@ func TestExtractCustomerName(t *testing.T) {
 		{"107 TATWEER ANALYZER", "dn.pdf", "TATWEER"},
 		{"no-customer-folder", "ALBA_invoice.pdf", "ALBA"},
 		{"generic-folder", "BAPCO_PO.pdf", "BAPCO"},
+		{"Documents/AsymmFlow Exports/Veolia_Energy_Gulf_WLL/RFQ", "Quotation_123.pdf", "Veolia Energy Gulf WLL"},
+		{`C:\Users\PH\Documents\AsymmFlow Exports\The_Bahrain_Petroleum_Co._(Bapco)\Delivery_Notes`, "DN.pdf", "The Bahrain Petroleum Co. (Bapco)"},
+		{"Documents/AsymmFlow Exports/Suppliers/Endress_Hauser/Orders", "PO.pdf", ""},
 	}
 
 	for _, tt := range tests {

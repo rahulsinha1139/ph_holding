@@ -10,9 +10,35 @@
  */
 export function formatDays(value: number | string | null | undefined): string {
   if (value === null || value === undefined) return '—';
-  const num = typeof value === 'number' ? value : parseFloat(String(value));
+  const num = toNumber(value);
   if (isNaN(num)) return '—';
   return num.toFixed(1);
+}
+
+function toNumber(value: number | string | null | undefined): number {
+  if (value === null || value === undefined) return NaN;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
+  return parseFloat(String(value).replace(/,/g, ''));
+}
+
+/**
+ * Format a number with thousands separators.
+ * @param value - number or string
+ * @param decimals - fixed decimal places
+ * @returns formatted string like "1,234.567"
+ */
+export function formatNumber(value: number | string | null | undefined, decimals = 0): string {
+  const num = toNumber(value);
+  if (isNaN(num)) {
+    return Number(0).toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    });
+  }
+  return num.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  });
 }
 
 /**
@@ -21,13 +47,7 @@ export function formatDays(value: number | string | null | undefined): string {
  * @returns formatted string like "1,234.567 BHD"
  */
 export function formatBHD(value: number | string | null | undefined): string {
-  if (value === null || value === undefined) return '0.000 BHD';
-  const num = typeof value === 'number' ? value : parseFloat(String(value));
-  if (isNaN(num)) return '0.000 BHD';
-  return num.toLocaleString('en-US', {
-    minimumFractionDigits: 3,
-    maximumFractionDigits: 3
-  }) + ' BHD';
+  return formatBHDValue(value) + ' BHD';
 }
 
 /**
@@ -36,13 +56,7 @@ export function formatBHD(value: number | string | null | undefined): string {
  * @returns formatted string like "1,234.567"
  */
 export function formatBHDValue(value: number | string | null | undefined): string {
-  if (value === null || value === undefined) return '0.000';
-  const num = typeof value === 'number' ? value : parseFloat(String(value));
-  if (isNaN(num)) return '0.000';
-  return num.toLocaleString('en-US', {
-    minimumFractionDigits: 3,
-    maximumFractionDigits: 3
-  });
+  return formatNumber(value, 3);
 }
 
 /**
@@ -52,9 +66,9 @@ export function formatBHDValue(value: number | string | null | undefined): strin
  */
 export function formatPercent(value: number | string | null | undefined): string {
   if (value === null || value === undefined) return '0.0%';
-  const num = typeof value === 'number' ? value : parseFloat(String(value));
+  const num = toNumber(value);
   if (isNaN(num)) return '0.0%';
-  return num.toFixed(1) + '%';
+  return formatNumber(num, 1) + '%';
 }
 
 /**
@@ -64,9 +78,9 @@ export function formatPercent(value: number | string | null | undefined): string
  */
 export function formatRatio(value: number | string | null | undefined): string {
   if (value === null || value === undefined) return '0.00x';
-  const num = typeof value === 'number' ? value : parseFloat(String(value));
+  const num = toNumber(value);
   if (isNaN(num)) return '0.00x';
-  return num.toFixed(2) + 'x';
+  return formatNumber(num, 2) + 'x';
 }
 
 /**
@@ -88,9 +102,9 @@ export function formatCurrencyCompact(value: number | null | undefined): string 
  */
 export function formatNumber1(value: number | string | null | undefined): string {
   if (value === null || value === undefined) return '—';
-  const num = typeof value === 'number' ? value : parseFloat(String(value));
+  const num = toNumber(value);
   if (isNaN(num)) return '—';
-  return num.toFixed(1);
+  return formatNumber(num, 1);
 }
 
 /**

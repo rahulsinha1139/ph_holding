@@ -8,7 +8,7 @@
     import { EventsOff, EventsOn } from "../../../wailsjs/runtime/runtime";
     import { main } from "../../../wailsjs/go/models";
     import ContextTaskModal from "../components/ContextTaskModal.svelte";
-    import { listMyTasks, listTeamTasks, type CollaborativeTask } from "$lib/api/collaboration";
+    import { listMyTasks, listTeamTasks, refreshCollaborativeWorkspace, type CollaborativeTask } from "$lib/api/collaboration";
     import WabiSpinner from "../components/ui/WabiSpinner.svelte";
 
     let loading = true;
@@ -51,6 +51,8 @@
     let followUpSummary = "* No follow-up issues";
     let totalTaskSignals = 0;
     let taskModalOpen = false;
+    let taskSignalsPermissionLoaded = false;
+    let taskSignalRequestSeq = 0;
 
     $: activeDashboardTasks = dashboardTasks
         .filter((task) => !["completed", "archived", "cancelled", "canceled"].includes((task.status || "").toLowerCase()))
@@ -247,18 +249,6 @@
               },
           ];
 
-    $: cashFocus = canViewFinance
-        ? [
-              { label: "Cash balance", value: formatCurrency(stats.cashBalance), note: "bank" },
-              { label: "AR", value: formatCurrency(stats.outstandingAR), note: "open" },
-              { label: "Pipeline cover", value: formatCurrency(stats.pipelineValue), note: "active" },
-          ]
-        : [
-              { label: "Active RFQs", value: formatCount(stats.activeRFQs), note: "open" },
-              { label: "Pipeline", value: formatCurrency(stats.pipelineValue), note: "quoted" },
-              { label: "Active orders", value: formatCount(stats.activeOrders), note: "handoff" },
-          ];
-
     async function loadData() {
         loading = true;
         try {
@@ -291,14 +281,23 @@
             loading = false;
         }
 
-        void loadTaskSignals();
+        void loadTaskSignals({ refreshRemote: true });
     }
 
-    async function loadTaskSignals() {
+    async function loadTaskSignals(options: { refreshRemote?: boolean } = {}) {
+        const requestSeq = ++taskSignalRequestSeq;
         if (!canViewTasks) {
-            followUpTasks = [];
-            dashboardTasks = [];
+            if (activePermissions.length > 0) {
+                followUpTasks = [];
+                dashboardTasks = [];
+            }
             return;
+        }
+
+        if (options.refreshRemote) {
+            await refreshCollaborativeWorkspace({ minIntervalMs: 5_000 }).catch((err) => {
+                devLog.warn("Dashboard collaborative refresh failed", err);
+            });
         }
 
         const [legacyRows, myTaskRows] = await Promise.all([
@@ -311,6 +310,7 @@
                 return [];
             }),
         ]);
+        if (requestSeq !== taskSignalRequestSeq) return;
         followUpTasks = legacyRows || [];
         dashboardTasks = myTaskRows || [];
         if (dashboardTasks.length === 0 && Array.isArray(activePermissions) && activePermissions.includes("*")) {
@@ -319,6 +319,15 @@
                 return [];
             });
         }
+    }
+
+    $: if (!canViewTasks && taskSignalsPermissionLoaded) {
+        taskSignalsPermissionLoaded = false;
+    }
+
+    $: if (canViewTasks && !taskSignalsPermissionLoaded) {
+        taskSignalsPermissionLoaded = true;
+        void loadTaskSignals({ refreshRemote: true });
     }
 
     function formatCurrency(val: number): string {
@@ -330,8 +339,6 @@
 
     function formatCompactCurrency(val: number): string {
         const amount = Number(val || 0);
-        if (amount >= 1000000) return `${(amount / 1000000).toFixed(2)}M BHD`;
-        if (amount >= 1000) return `${(amount / 1000).toFixed(1)}K BHD`;
         return `${amount.toLocaleString("en-US", { maximumFractionDigits: 0 })} BHD`;
     }
 
@@ -466,13 +473,16 @@
             devLog.info("Dashboard received data:refresh event", data);
             loadData();
         });
+        EventsOn("tasks:updated", () => void loadTaskSignals());
+        EventsOn("notifications:updated", () => void loadTaskSignals());
+        EventsOn("employees:updated", () => void loadTaskSignals({ refreshRemote: true }));
     });
 
     onDestroy(() => {
         if (clockTimer) {
             clearInterval(clockTimer);
         }
-        EventsOff("data:refresh");
+        EventsOff("data:refresh", "tasks:updated", "notifications:updated", "employees:updated");
     });
 </script>
 
@@ -528,35 +538,6 @@
                             </div>
                         {/each}
                     </div>
-                    <div class="micro-grid">
-                        {#if canViewFinance}
-                            <div>
-                                <span>Cash balance</span>
-                                <strong>{formatCurrency(stats.cashBalance)}</strong>
-                            </div>
-                            <div>
-                                <span>Pipeline pressure</span>
-                                <strong>{formatCurrency(stats.pipelineValue)}</strong>
-                            </div>
-                            <div>
-                                <span>Open AR</span>
-                                <strong>{formatCurrency(stats.outstandingAR)}</strong>
-                            </div>
-                        {:else}
-                            <div>
-                                <span>Open RFQs</span>
-                                <strong>{formatCount(stats.activeRFQs)}</strong>
-                            </div>
-                            <div>
-                                <span>Pipeline pressure</span>
-                                <strong>{formatCurrency(stats.pipelineValue)}</strong>
-                            </div>
-                            <div>
-                                <span>Win rate</span>
-                                <strong>{Math.round(stats.winRate)}%</strong>
-                            </div>
-                        {/if}
-                    </div>
                 </article>
 
                 <article class="panel alerts-panel">
@@ -597,32 +578,9 @@
                             <strong>{formatCurrency(stats.outstandingAR)}</strong>
                         </div>
                     </article>
-                {:else}
-                    <article class="panel receivables-panel">
-                        <div class="panel-head">
-                            <span>Pipeline</span>
-                            <strong>{stats.activeRFQs} open</strong>
-                        </div>
-                        <div class="receivable-row primary">
-                            <div>
-                                <span>Active quotation value</span>
-                                <strong>{formatCurrency(stats.pipelineValue)}</strong>
-                            </div>
-                            <small>{Math.round(stats.winRate)}% win rate</small>
-                        </div>
-                        <div class="collection-bar">
-                            <span style={`width: ${Math.min(100, Math.max(0, stats.winRate))}%`}></span>
-                        </div>
-                        <div class="receivable-meta">
-                            <span>RFQs</span>
-                            <strong>{formatCount(stats.activeRFQs)}</strong>
-                            <span>Orders</span>
-                            <strong>{formatCount(stats.activeOrders)}</strong>
-                        </div>
-                    </article>
                 {/if}
 
-                <article class="panel activity-panel">
+                <article class="panel activity-panel" class:wide={!canViewFinance}>
                     <div class="panel-head">
                         <span>Tasks</span>
                         <button class="panel-action" type="button" on:click={openTaskModal}>New Task</button>
@@ -644,16 +602,6 @@
                         <button class="empty-state empty-action" type="button" on:click={openTaskModal}>No active tasks. Create one.</button>
                     {/if}
                 </article>
-            </section>
-
-            <section class="cash-strip" aria-label="Dashboard attention">
-                {#each cashFocus as item}
-                    <article>
-                        <span>{item.label}</span>
-                        <strong>{item.value}</strong>
-                        <small>{item.note}</small>
-                    </article>
-                {/each}
             </section>
         </main>
     {/if}
@@ -732,8 +680,7 @@
     }
 
     .metric-card,
-    .panel,
-    .cash-strip article {
+    .panel {
         background: rgba(255, 255, 255, 0.78);
         border: 1px solid rgba(205, 216, 226, 0.82);
         border-radius: 8px;
@@ -768,8 +715,7 @@
     }
 
     .metric-label,
-    .panel-head span,
-    .cash-strip span {
+    .panel-head span {
         color: #8190a2;
         font-size: 10px;
         font-weight: 800;
@@ -947,33 +893,6 @@
         outline-offset: 2px;
     }
 
-    .micro-grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 10px;
-        margin-top: 16px;
-    }
-
-    .micro-grid div {
-        padding: 12px;
-        border-radius: 6px;
-        background: #eef4f9;
-    }
-
-    .micro-grid span {
-        display: block;
-        color: #8293a8;
-        font-size: 10px;
-        font-weight: 700;
-    }
-
-    .micro-grid strong {
-        display: block;
-        margin-top: 5px;
-        color: #2f4054;
-        font-size: 13px;
-    }
-
     .alert-row {
         align-items: flex-start;
         justify-content: flex-start;
@@ -1010,6 +929,11 @@
     .receivables-panel,
     .activity-panel {
         min-height: 260px;
+    }
+
+    .activity-panel.wide {
+        grid-column: 1 / -1;
+        min-height: 220px;
     }
 
     .receivable-row {
@@ -1118,36 +1042,9 @@
         background: #f3f8fd;
     }
 
-    .cash-strip {
-        display: grid;
-        grid-template-columns: 1.4fr 1fr 1.2fr;
-        gap: 10px;
-    }
-
-    .cash-strip article {
-        min-height: 74px;
-        padding: 14px 16px;
-    }
-
-    .cash-strip strong {
-        display: block;
-        margin-top: 8px;
-        color: #283548;
-        font-size: 18px;
-    }
-
-    .cash-strip small {
-        display: block;
-        margin-top: 2px;
-        color: #7c8da1;
-        font-size: 10px;
-        font-weight: 700;
-    }
-
     @media (max-width: 1180px) {
         .kpi-strip,
-        .decision-grid,
-        .cash-strip {
+        .decision-grid {
             grid-template-columns: 1fr 1fr;
         }
     }
@@ -1162,9 +1059,7 @@
         }
 
         .kpi-strip,
-        .decision-grid,
-        .cash-strip,
-        .micro-grid {
+        .decision-grid {
             grid-template-columns: 1fr;
         }
 

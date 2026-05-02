@@ -214,6 +214,7 @@ func (a *App) EnsureCollaborativeFoundation() error {
 		&ProjectMember{},
 		&Notification{},
 		&NotificationReceipt{},
+		&DeleteApprovalRequest{},
 		&TaskItem{},
 		&TaskComment{},
 		&TaskActivity{},
@@ -421,7 +422,7 @@ func (a *App) GetCurrentEmployeeContext() (CurrentEmployeeContext, error) {
 
 		name := strings.TrimSpace(license.DisplayName)
 		if name != "" {
-			if err := a.db.Where("LOWER(full_name) = LOWER(?)", name).First(&employee).Error; err == nil {
+			if employee, err := a.findEmployeeByDisplayName(name); err == nil {
 				return CurrentEmployeeContext{
 					EmployeeID:   employee.ID,
 					EmployeeName: employee.FullName,
@@ -441,6 +442,59 @@ func (a *App) GetCurrentEmployeeContext() (CurrentEmployeeContext, error) {
 	}
 
 	return ctx, fmt.Errorf("employee context not resolved")
+}
+
+func (a *App) findEmployeeByDisplayName(name string) (Employee, error) {
+	var employee Employee
+	name = strings.TrimSpace(name)
+	if a.db == nil {
+		return employee, fmt.Errorf("database not initialized")
+	}
+	if name == "" {
+		return employee, gorm.ErrRecordNotFound
+	}
+
+	if err := a.db.
+		Where("deleted_at IS NULL AND is_active = ? AND (LOWER(full_name) = LOWER(?) OR LOWER(preferred_name) = LOWER(?) OR LOWER(employee_code) = LOWER(?))", true, name, name, name).
+		Order("full_name ASC").
+		First(&employee).Error; err == nil {
+		return employee, nil
+	} else if err != gorm.ErrRecordNotFound {
+		return employee, err
+	}
+
+	normalizedTarget := normalizeEmployeeLookupName(name)
+	if normalizedTarget == "" {
+		return employee, gorm.ErrRecordNotFound
+	}
+
+	var employees []Employee
+	if err := a.db.
+		Where("deleted_at IS NULL AND is_active = ?", true).
+		Order("full_name ASC").
+		Find(&employees).Error; err != nil {
+		return employee, err
+	}
+	for _, candidate := range employees {
+		if normalizeEmployeeLookupName(candidate.FullName) == normalizedTarget ||
+			normalizeEmployeeLookupName(candidate.PreferredName) == normalizedTarget ||
+			normalizeEmployeeLookupName(candidate.EmployeeCode) == normalizedTarget {
+			return candidate, nil
+		}
+	}
+
+	return employee, gorm.ErrRecordNotFound
+}
+
+func normalizeEmployeeLookupName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
 }
 
 func (a *App) ensureEmployeeContextForLicense(license *LicenseKey) (CurrentEmployeeContext, error) {
@@ -477,8 +531,8 @@ func (a *App) ensureEmployeeContextForLicense(license *LicenseKey) (CurrentEmplo
 		}
 	}
 
-	var employee Employee
-	if err := a.db.Where("LOWER(full_name) = LOWER(?)", name).First(&employee).Error; err != nil {
+	employee, err := a.findEmployeeByDisplayName(name)
+	if err != nil {
 		if err != gorm.ErrRecordNotFound {
 			return ctx, fmt.Errorf("failed to lookup fallback employee: %w", err)
 		}
@@ -1657,6 +1711,9 @@ func (a *App) UpdateCollaborativeTask(task TaskItem) (TaskItem, error) {
 }
 
 func (a *App) DeleteCollaborativeTask(taskID string) error {
+	if ok, err := a.guardDeleteOrRequest("tasks:delete", "collaborative_task", taskID, "Task"); !ok {
+		return err
+	}
 	if err := a.requirePermission("tasks:delete"); err != nil {
 		return err
 	}

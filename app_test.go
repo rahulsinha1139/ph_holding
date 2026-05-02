@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +94,29 @@ func setupTestApp(t *testing.T) *App {
 	return app
 }
 
+func TestGetExportDirGroupsDocumentsByEntityWithoutYearDepth(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	app := &App{}
+
+	customerDir := app.getExportDir("customer", "The Bahrain Petroleum Co. (Bapco)", "RFQ", 2026)
+	require.Equal(t,
+		filepath.Join(homeDir, "Documents", "AsymmFlow Exports", sanitizeFileName("The Bahrain Petroleum Co. (Bapco)"), "RFQ"),
+		customerDir,
+	)
+	require.DirExists(t, customerDir)
+	require.NotContains(t, customerDir, string(filepath.Separator)+"2026"+string(filepath.Separator))
+
+	supplierDir := app.getExportDir("supplier", "Endress+Hauser", "Orders", 2026)
+	require.Equal(t,
+		filepath.Join(homeDir, "Documents", "AsymmFlow Exports", "Suppliers", sanitizeFileName("Endress+Hauser"), "Orders"),
+		supplierDir,
+	)
+	require.DirExists(t, supplierDir)
+	require.NotContains(t, supplierDir, string(filepath.Separator)+"2026"+string(filepath.Separator))
+}
+
 func alignTestAppWithCurrentWorkflow(t *testing.T, app *App) {
 	t.Helper()
 
@@ -111,6 +135,141 @@ func alignTestAppWithCurrentWorkflow(t *testing.T, app *App) {
 		&Opportunity{},
 	))
 	require.NoError(t, app.ensureCriticalDeploymentFoundations())
+}
+
+func TestNonAdminDeleteCreatesApprovalRequestAndAdminApprovalDeletes(t *testing.T) {
+	app := setupTestApp(t)
+
+	customer := CustomerMaster{
+		Base:         Base{ID: uuid.New().String()},
+		CustomerCode: "CUST-DELETE-APPROVAL",
+		BusinessName: "Delete Approval Customer",
+	}
+	require.NoError(t, app.db.Create(&customer).Error)
+
+	adminEmployee := Employee{
+		Base:             Base{ID: "employee-admin"},
+		EmployeeCode:     "EMP-ADMIN",
+		FullName:         "Admin User",
+		EmploymentStatus: "active",
+		IsActive:         true,
+	}
+	salesEmployee := Employee{
+		Base:             Base{ID: "employee-sales"},
+		EmployeeCode:     "EMP-SALES",
+		FullName:         "Sales User",
+		EmploymentStatus: "active",
+		IsActive:         true,
+	}
+	require.NoError(t, app.db.Create(&adminEmployee).Error)
+	require.NoError(t, app.db.Create(&salesEmployee).Error)
+	require.NoError(t, app.db.Create(&LicenseKey{Key: "PH-ADM-TEST01", Role: "admin", DisplayName: "Admin User"}).Error)
+	require.NoError(t, app.db.Create(&EmployeeAccessLink{
+		Base:         Base{ID: "link-admin"},
+		EmployeeID:   adminEmployee.ID,
+		LicenseKey:   "PH-ADM-TEST01",
+		UserID:       "admin-user",
+		AccessStatus: "active",
+		IsPrimary:    true,
+	}).Error)
+	require.NoError(t, app.db.Create(&EmployeeAccessLink{
+		Base:         Base{ID: "link-sales"},
+		EmployeeID:   salesEmployee.ID,
+		LicenseKey:   "PH-SLS-TEST01",
+		UserID:       "sales-user",
+		AccessStatus: "active",
+		IsPrimary:    true,
+	}).Error)
+
+	app.currentUserID = "sales-user"
+	app.currentUser = &User{
+		Base:     Base{ID: "sales-user"},
+		Username: "sales-user",
+		RoleName: "sales",
+		Role: Role{
+			Name:        "sales",
+			DisplayName: "Sales",
+			Permissions: `["customers:view","customers:edit","notifications:view"]`,
+		},
+	}
+
+	err := app.DeleteCustomer(customer.ID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "delete approval requested")
+
+	var customerCount int64
+	require.NoError(t, app.db.Model(&CustomerMaster{}).Where("id = ?", customer.ID).Count(&customerCount).Error)
+	require.EqualValues(t, 1, customerCount)
+
+	var request DeleteApprovalRequest
+	require.NoError(t, app.db.Where("entity_type = ? AND entity_id = ?", "customer", customer.ID).First(&request).Error)
+	require.Equal(t, "pending", request.Status)
+
+	var adminNotificationCount int64
+	require.NoError(t, app.db.Model(&Notification{}).
+		Where("employee_id = ? AND source_type = ? AND source_id = ?", adminEmployee.ID, "delete_approval", request.ID).
+		Count(&adminNotificationCount).Error)
+	require.EqualValues(t, 1, adminNotificationCount)
+
+	app.currentUserID = "admin-user"
+	app.currentUser = &User{
+		Base:     Base{ID: "admin-user"},
+		Username: "admin-user",
+		RoleName: "admin",
+		Role: Role{
+			Name:        "admin",
+			DisplayName: "Administrator",
+			Permissions: `["*"]`,
+		},
+	}
+
+	reviewed, err := app.ReviewDeleteApprovalRequest(request.ID, "approve", "verified duplicate")
+	require.NoError(t, err)
+	require.Equal(t, "approved", reviewed.Status)
+	require.NoError(t, app.db.Model(&CustomerMaster{}).Where("id = ?", customer.ID).Count(&customerCount).Error)
+	require.EqualValues(t, 0, customerCount)
+}
+
+func TestAdminLicenseCanDeleteCustomersAndSuppliersWithStaleUserRole(t *testing.T) {
+	app := setupTestApp(t)
+
+	customer := CustomerMaster{
+		Base:         Base{ID: uuid.New().String()},
+		CustomerCode: "CUST-ADMIN-LICENSE-DELETE",
+		BusinessName: "Admin License Delete Customer",
+	}
+	supplier := SupplierMaster{
+		Base:         Base{ID: uuid.New().String()},
+		SupplierCode: "SUP-ADMIN-LICENSE-DELETE",
+		SupplierName: "Admin License Delete Supplier",
+	}
+	require.NoError(t, app.db.Create(&customer).Error)
+	require.NoError(t, app.db.Create(&supplier).Error)
+	require.NoError(t, app.db.Create(&LicenseKey{
+		Key:        "PH-ADM-DELETE",
+		Role:       "admin",
+		Activated:  true,
+		DeviceHash: app.getDeviceHash(),
+	}).Error)
+
+	app.currentUserID = "sales-user"
+	app.currentUser = &User{
+		Base:     Base{ID: "sales-user"},
+		Username: "sales-user",
+		RoleName: "sales",
+		Role: Role{
+			Name:        "sales",
+			DisplayName: "Sales",
+			Permissions: `["customers:view","suppliers:view"]`,
+		},
+	}
+
+	require.NoError(t, app.DeleteCustomer(customer.ID))
+	require.NoError(t, app.DeleteSupplier(supplier.ID))
+
+	var deleteRequests int64
+	require.NoError(t, app.db.Model(&DeleteApprovalRequest{}).Count(&deleteRequests).Error)
+	require.EqualValues(t, 0, deleteRequests)
 }
 
 func TestApplyDeploymentLicenseActivationFlushResetsExistingActivationOnce(t *testing.T) {
@@ -158,6 +317,31 @@ func TestApplyDeploymentLicenseActivationFlushResetsExistingActivationOnce(t *te
 	require.NoError(t, app.db.Where("key = ?", license.Key).First(&flushed).Error)
 	require.False(t, flushed.Activated)
 	require.Empty(t, flushed.DeviceHash)
+}
+
+func TestApplyDeploymentLicenseActivationFlushIgnoresReseedFlagWithoutExplicitStamp(t *testing.T) {
+	app := setupTestApp(t)
+	t.Setenv("ASYMMFLOW_FLUSH_LICENSE_ON_RESEED", "true")
+	t.Setenv("ASYMMFLOW_LICENSE_FLUSH_STAMP", "")
+
+	now := time.Now()
+	license := LicenseKey{
+		Key:         "PH-SLS-STAY1",
+		Role:        "sales",
+		DisplayName: "Sales Test",
+		DeviceHash:  "device-a",
+		Activated:   true,
+		ActivatedAt: &now,
+		CreatedBy:   "test",
+	}
+	require.NoError(t, app.db.Create(&license).Error)
+
+	require.NoError(t, app.ApplyDeploymentLicenseActivationFlush())
+
+	var persisted LicenseKey
+	require.NoError(t, app.db.Where("key = ?", license.Key).First(&persisted).Error)
+	require.True(t, persisted.Activated, "normal reseed/update packages must preserve activated licenses")
+	require.Equal(t, "device-a", persisted.DeviceHash)
 }
 
 // seedTestCustomer creates a test customer and returns its ID

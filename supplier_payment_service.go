@@ -10,7 +10,7 @@ import (
 
 // Supplier payment service constants
 const (
-	FloatingPointTolerance = 0.001           // Tolerance for BHD float comparisons
+	FloatingPointTolerance = 0.001          // Tolerance for BHD float comparisons
 	FuturePaymentWindow    = 24 * time.Hour // Maximum future date allowed for payments
 )
 
@@ -193,15 +193,15 @@ func (a *App) RecordSupplierPayment(invoiceID string, amount float64, currency, 
 			"BHD",
 			true,
 			map[string]interface{}{
-				"supplier_id":      invoice.SupplierID,
-				"invoice_number":   invoice.InvoiceNumber,
-				"payment_method":   method,
-				"payment_date":     date,
-				"reference":        reference,
-				"amount_foreign":   amount,
-				"currency":         currency,
-				"exchange_rate":    exchangeRate,
-				"payment_status":   "recorded",
+				"supplier_id":    invoice.SupplierID,
+				"invoice_number": invoice.InvoiceNumber,
+				"payment_method": method,
+				"payment_date":   date,
+				"reference":      reference,
+				"amount_foreign": amount,
+				"currency":       currency,
+				"exchange_rate":  exchangeRate,
+				"payment_status": "recorded",
 			},
 		)
 	}
@@ -420,6 +420,9 @@ func (a *App) UpdateSupplierPayment(id string, payment SupplierPayment) (*Suppli
 // DeleteSupplierPayment deletes a supplier payment by ID
 // P3 FIX: Added missing CRUD operation for consistency
 func (a *App) DeleteSupplierPayment(id string) error {
+	if ok, err := a.guardDeleteOrRequest("supplier_payments:delete", "supplier_payment", id, "Supplier payment"); !ok {
+		return err
+	}
 	if err := a.requirePermission("supplier_payments:delete"); err != nil {
 		return err
 	}

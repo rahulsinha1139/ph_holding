@@ -21,6 +21,7 @@
   // State for tabs demo
   let activeTab1 = 'inbox';
   let activeTab2 = 'orders';
+  let demoButtonState = 'No demo action selected';
 
   // Theme toggle
   function toggleTheme() {
@@ -159,14 +160,15 @@
     
     <div class="component-demo">
       <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 12px;">
-        <Button variant="primary">Primary Button</Button>
-        <Button variant="secondary">Secondary Button</Button>
-        <Button variant="ghost">Ghost Button</Button>
+        <Button variant="primary" on:click={() => (demoButtonState = 'Primary demo action')}>Primary Button</Button>
+        <Button variant="secondary" on:click={() => (demoButtonState = 'Secondary demo action')}>Secondary Button</Button>
+        <Button variant="ghost" on:click={() => (demoButtonState = 'Ghost demo action')}>Ghost Button</Button>
       </div>
       <div style="display: flex; gap: 12px; align-items: center;">
-        <Button variant="primary" disabled>Disabled Primary</Button>
-        <Button variant="secondary" disabled>Disabled Secondary</Button>
+        <Button variant="primary" disabled on:click={() => (demoButtonState = 'Disabled primary demo action')}>Disabled Primary</Button>
+        <Button variant="secondary" disabled on:click={() => (demoButtonState = 'Disabled secondary demo action')}>Disabled Secondary</Button>
       </div>
+      <p class="meta" style="margin-top: 10px;">{demoButtonState}</p>
     </div>
   </section>
 

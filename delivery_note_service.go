@@ -214,14 +214,6 @@ func (a *App) GenerateDeliveryNotePDF(id string) (string, error) {
 
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.SetAutoPageBreak(false, 0)
-	footer := strings.Join(append(profile.AddressLines, "VAT No.: "+profile.VATNumber, "Tel: +973 17 587654, Fax: +973 17 564456"), "  |  ")
-	pdf.SetFooterFunc(func() {
-		pdf.SetFont("Times", "", 8)
-		pdf.SetTextColor(80, 80, 80)
-		pdf.SetXY(25, 282)
-		pdf.CellFormat(160, 4, sanitizeForPDF(footer), "", 0, "C", false, 0, "")
-		pdf.SetTextColor(20, 20, 20)
-	})
 	pdf.AddPage()
 	a.applyLetterheadForDivision(pdf, profile.Division)
 
@@ -286,11 +278,14 @@ func (a *App) GenerateDeliveryNotePDF(id string) (string, error) {
 	tableY := y + 16
 	tableEndY := a.drawDeliveryNoteTable(pdf, tableY, dn.Items, profile.Division)
 
-	signatureY := mathMax(tableEndY+10, 222.0)
-	if signatureY+24 > 278 {
+	const signatureBlockHeight = 22.0
+	const signatureDefaultY = 222.0
+	const deliveryNoteFooterSafeY = 268.0
+	signatureY := mathMax(tableEndY+10, signatureDefaultY)
+	if signatureY+signatureBlockHeight > deliveryNoteFooterSafeY {
 		pdf.AddPage()
 		a.applyLetterheadForDivision(pdf, profile.Division)
-		signatureY = 222.0
+		signatureY = signatureDefaultY
 	}
 	pdf.SetFont("Times", "B", 10)
 	pdf.SetXY(35, signatureY)
@@ -324,7 +319,7 @@ func (a *App) drawDeliveryNoteTable(pdf *gofpdf.Fpdf, y float64, items []Deliver
 	widths := []float64{13, 89, 25, 25}
 	headers := []string{"Item\nNo", "Order Code Description", "Qty ordered", "Qty Delivered"}
 	rowHeight := 10.0
-	pageBottomY := 270.0
+	pageBottomY := 252.0
 
 	drawHeader := func(headerY float64) {
 		pdf.SetLineWidth(0.2)
@@ -559,6 +554,9 @@ func (a *App) UpdateDeliveryNote(dn DeliveryNote) (DeliveryNote, error) {
 
 // DeleteDeliveryNote deletes a delivery note (soft delete)
 func (a *App) DeleteDeliveryNote(id string) error {
+	if ok, err := a.guardDeleteOrRequest("delivery_notes:delete", "delivery_note", id, "Delivery note"); !ok {
+		return err
+	}
 	if err := a.requirePermission("delivery_notes:delete"); err != nil {
 		return err
 	}

@@ -14,7 +14,7 @@ Run these in order from the source snapshot root.
 
 ### 1. Generate a staging report only
 
-This scans the 2025 folder, parses costing files, matches customers, and writes audit CSV/JSON files into `reports/`.
+This scans the 2025 folder, parses costing files, detects supplier invoices and quotes, matches customers, and writes audit CSV/JSON files into `reports/`.
 
 ```bash
 ONEDRIVE_IMPORT_ROOT="/path/to/Offers 2025" \
@@ -28,6 +28,7 @@ Expected output:
 - `opportunities.csv`
 - `costings.csv`
 - `line_items.csv`
+- `supplier_documents.csv`
 - `db_audit.csv`
 - `summary.json`
 
@@ -39,6 +40,7 @@ Check:
 - duplicate-looking matches
 - folders with no commercial data
 - obvious title/customer mismatches
+- supplier invoice and supplier quote rows in `supplier_documents.csv`
 
 Do not import yet if the staging report still looks noisy.
 
@@ -70,13 +72,26 @@ Expected output:
 - `spot_check_samples.csv`
 - `summary.json`
 
+## Supplier Invoice And Quote Staging
+
+The staging pass also writes `supplier_documents.csv`. This is review-only data for now.
+
+Supported file types:
+
+- PDF
+- RTF
+- DOCX
+
+Legacy `.doc` files should be converted to `.docx`, `.rtf`, or PDF before staging. Supplier documents are normally detected from execution-style folders and filenames containing supplier, invoice, inv, quote, sales order, Endress, or execution signals.
+
 ## Important Notes
 
-- The import is now year-aware.
+- The import is year-aware.
 - 2025 imports are tagged as `2025_onedrive`.
 - 2026 imports remain tagged as `2026_onedrive`.
 - This flow is safer than importing directly because it gives you a staging report first.
 - Do not run old legacy date-fix utilities against imported 2025/2026 data.
+- `supplier_documents.csv` is staging-only and should be reviewed before any DB import work is built on top of it.
 
 ## Recommended Review Criteria
 
@@ -85,7 +100,8 @@ Expected output:
 - Stage correctness: `Qualified`, `Quoted`, `Won`
 - Grand totals versus parsed line-item totals
 - Missing `offer_items` or hollow commercial records
+- Supplier invoice totals, invoice dates, quote totals, payment terms, and item counts
 
 ## After This
 
-Once the 2025 OneDrive pass is staged and reviewed, we can reconcile that against Tally imports to produce a cleaner commercial history across 2025 and 2026.
+Once the 2025 OneDrive pass is staged and reviewed, we can reconcile that against Tally imports and supplier commercial documents to produce a cleaner commercial history across 2025 and 2026.

@@ -272,26 +272,26 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.appStartTime = time.Now()
 
-	// EARLY diagnostic — write to /tmp before anything else
-	earlyDiag := filepath.Join(os.TempDir(), "asymmflow_startup.log")
-	os.Remove(earlyDiag)
-	if f, err := os.Create(earlyDiag); err == nil {
-		fmt.Fprintf(f, "%s STARTUP BEGIN\n", time.Now().Format("15:04:05.000"))
-		fmt.Fprintf(f, "%s CWD: %s\n", time.Now().Format("15:04:05.000"), func() string { d, _ := os.Getwd(); return d }())
-		if ex, err := os.Executable(); err == nil {
-			fmt.Fprintf(f, "%s EXE: %s\n", time.Now().Format("15:04:05.000"), ex)
-		}
-		f.Close()
+	appendStartupDiagnostic("ONSTARTUP: begin")
+	appendStartupDiagnostic("ONSTARTUP: cwd=%s", func() string { d, _ := os.Getwd(); return d }())
+	if ex, err := os.Executable(); err == nil {
+		appendStartupDiagnostic("ONSTARTUP: exe=%s", ex)
 	}
 
 	// 1. Setup File Logging with rotation (FIX: Handle error, store file handle for cleanup)
-	rotateLogFile("app_debug.log", 50*1024*1024, 5) // 50MB max, keep 5 rotated logs
-	logFile, err := os.OpenFile("app_debug.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
+	logPath := appDebugLogPath()
+	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
+		appendStartupDiagnostic("ONSTARTUP: failed to create log directory for %s: %v", logPath, err)
+	}
+	rotateLogFile(logPath, 50*1024*1024, 5) // 50MB max, keep 5 rotated logs
+	logFile, err := os.OpenFile(logPath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	if err != nil {
+		appendStartupDiagnostic("ONSTARTUP: failed to open app log %s: %v", logPath, err)
 		log.Printf(" Failed to open log file: %v, logging to stderr", err)
 	} else {
 		a.logFile = logFile // Store for cleanup in shutdown()
 		log.SetOutput(logFile)
+		appendStartupDiagnostic("ONSTARTUP: app log path=%s", logPath)
 	}
 
 	// 2. Initialize Structured Logger (dev mode for console, production mode for cloud)
@@ -309,6 +309,7 @@ func (a *App) startup(ctx context.Context) {
 
 	defer func() {
 		if r := recover(); r != nil {
+			appendStartupDiagnostic("ONSTARTUP: panic: %v", r)
 			log.Printf("🔥 CRITICAL PANIC: %v", r)
 			if AppLogger != nil {
 				AppLogger.Fatal("Application panic", fmt.Errorf("%v", r), map[string]interface{}{
@@ -548,16 +549,10 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	// Startup diagnostic: write progress to known location
-	diagPath := filepath.Join(os.TempDir(), "asymmflow_startup.log")
 	diagLog := func(msg string) {
-		f, _ := os.OpenFile(diagPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if f != nil {
-			fmt.Fprintf(f, "%s %s\n", time.Now().Format("15:04:05.000"), msg)
-			f.Close()
-		}
+		appendStartupDiagnostic("%s", msg)
 		log.Println(msg)
 	}
-	os.Remove(diagPath) // Fresh start
 	diagLog(fmt.Sprintf("STARTUP: DB path = %s", dbPath))
 
 	// Auto-migrate the schema - Full ERP schema
@@ -661,10 +656,14 @@ func (a *App) startup(ctx context.Context) {
 				&DeviceUser{},
 				&Employee{},
 				&EmployeeAccessLink{},
+				&UserActivitySession{},
+				&UserActivityEvent{},
+				&UserActivityWeeklySummary{},
 				&Project{},
 				&ProjectMember{},
 				&Notification{},
 				&NotificationReceipt{},
+				&DeleteApprovalRequest{},
 				&TaskItem{},
 				&TaskComment{},
 				&TaskActivity{},
@@ -705,6 +704,7 @@ func (a *App) startup(ctx context.Context) {
 
 				// Phase 33: Pipeline Opportunities
 				&Opportunity{},
+				&OpportunityEditConflict{},
 				&ARAgingBucket{},
 				&BankLinePaymentAllocation{},
 			}
@@ -760,6 +760,11 @@ func (a *App) startup(ctx context.Context) {
 		if integrityResult != "ok" {
 			AppLogger.Warn("Database integrity issue detected on startup", map[string]interface{}{
 				"result": integrityResult,
+			})
+		}
+		if backupResult := a.runScheduledBackupIfDueInternal("startup"); backupResult["success"] == false {
+			AppLogger.Warn("Scheduled database backup failed on startup", map[string]interface{}{
+				"error": backupResult["error"],
 			})
 		}
 	}
@@ -1476,10 +1481,23 @@ func (a *App) ensureCrossModuleSchemaExtensions() {
 	// Mature deployment databases skip runCustomMigrations() during startup,
 	// so keep the offer division repair in the always-run foundation path too.
 	a.migrateOfferDivisionSupport()
+	a.addColumnIfNotExists("offers", "terms_and_conditions", "TEXT")
+	a.addColumnIfNotExists("offers", "subject", "TEXT")
+	a.addColumnIfNotExists("offers", "body", "TEXT")
+	if err := repairImportedCommercialDocuments(a.db); err != nil {
+		log.Printf("⚠️ Commercial document repair skipped: %v", err)
+	}
 
 	// Keep division-aware finance/schema extensions consistent across startup,
 	// deployment audits, and test harnesses so note fields and company routing
 	// remain backed by real SQLite columns.
+	a.addColumnIfNotExists("opportunities", "product_details", "TEXT")
+	a.addColumnIfNotExists("opportunities", "division", "TEXT DEFAULT 'PH Trading'")
+	if a.hasColumn("opportunities", "division") {
+		if err := a.db.Exec("UPDATE opportunities SET division = 'PH Trading' WHERE division IS NULL OR TRIM(division) = ''").Error; err != nil {
+			log.Printf("⚠️ Opportunity division backfill skipped: %v", err)
+		}
+	}
 	a.addColumnIfNotExists("purchase_orders", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("purchase_order_items", "supplier_part_number", "TEXT")
 	a.addColumnIfNotExists("supplier_invoices", "division", "TEXT DEFAULT 'PH Trading'")
@@ -4793,9 +4811,74 @@ func repairImportedOpportunityMetadata(db *gorm.DB) error {
 	return nil
 }
 
+type convertedOfferItemRestore struct {
+	ActiveID      string  `gorm:"column:active_id"`
+	RawUnitPrice  float64 `gorm:"column:raw_unit_price"`
+	RawTotalPrice float64 `gorm:"column:raw_total_price"`
+}
+
+func restoreConvertedOfferPricesFromDeletedSiblings(db *gorm.DB) (int, error) {
+	if db == nil {
+		return 0, nil
+	}
+
+	var candidates []convertedOfferItemRestore
+	if err := db.Raw(`
+		SELECT
+			active.id AS active_id,
+			deleted.unit_price AS raw_unit_price,
+			deleted.total_price AS raw_total_price
+		FROM offer_items active
+		JOIN offer_items deleted
+			ON deleted.offer_id = active.offer_id
+			AND COALESCE(deleted.line_number, 0) = COALESCE(active.line_number, 0)
+			AND deleted.deleted_at IS NOT NULL
+		WHERE active.deleted_at IS NULL
+			AND UPPER(TRIM(COALESCE(active.currency, ''))) NOT IN ('', 'BHD')
+			AND COALESCE(active.exchange_rate, 0) > 0
+			AND COALESCE(deleted.total_price, 0) > COALESCE(active.total_price, 0)
+			AND ABS(COALESCE(active.total_price, 0) - (COALESCE(deleted.total_price, 0) * COALESCE(active.exchange_rate, 0))) <= MAX(0.05, COALESCE(deleted.total_price, 0) * 0.01)
+	`).Scan(&candidates).Error; err != nil {
+		return 0, err
+	}
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+
+	seen := map[string]bool{}
+	restored := 0
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		for _, candidate := range candidates {
+			if candidate.ActiveID == "" || seen[candidate.ActiveID] || candidate.RawTotalPrice <= 0 {
+				continue
+			}
+			seen[candidate.ActiveID] = true
+			if err := tx.Model(&OfferItem{}).
+				Where("id = ?", candidate.ActiveID).
+				Updates(map[string]interface{}{
+					"unit_price":  candidate.RawUnitPrice,
+					"total_price": candidate.RawTotalPrice,
+				}).Error; err != nil {
+				return err
+			}
+			restored++
+		}
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	return restored, nil
+}
+
 func repairImportedCommercialDocuments(db *gorm.DB) error {
 	if db == nil {
 		return nil
+	}
+
+	if restored, err := restoreConvertedOfferPricesFromDeletedSiblings(db); err != nil {
+		log.Printf("⚠️ Converted offer price restore skipped: %v", err)
+	} else if restored > 0 {
+		log.Printf("✅ Restored %d offer item sale prices that had been multiplied by FX", restored)
 	}
 
 	var offers []Offer
@@ -4841,7 +4924,8 @@ func repairImportedCommercialDocuments(db *gorm.DB) error {
 			}
 		}
 
-		convertForeignPrices := shouldConvertForeignCommercialSubtotal(rawSubtotal, convertedSubtotal, totalCost)
+		_ = convertedSubtotal // Historical diagnostic only; sale totals are already stored in BHD.
+		convertForeignPrices := false
 		commercialSubtotal := rawSubtotal
 		if convertForeignPrices {
 			commercialSubtotal = convertedSubtotal
@@ -4875,9 +4959,6 @@ func repairImportedCommercialDocuments(db *gorm.DB) error {
 			discount := commercialSubtotal * (offer.DiscountPercent / 100.0)
 			netAmount := commercialSubtotal - discount
 			vatRate := offer.VatRate
-			if vatRate == 0 && netAmount > 0 {
-				vatRate = 10
-			}
 			totalValueBHD := roundTo3(netAmount + (netAmount * vatRate / 100.0))
 			if math.Abs(offer.TotalValueBHD-totalValueBHD) > 0.01 {
 				updates["total_value_bhd"] = totalValueBHD
@@ -5246,51 +5327,11 @@ func (a *App) UpdateRFQStage(rfqID uint, stage string) error {
 }
 
 func (a *App) UpdateOpportunityStage(opportunityID, stage string) error {
-	if err := a.requirePermission("offers:edit"); err != nil {
+	updated, err := a.UpdateOpportunityStageWithVersion(opportunityID, stage, 0)
+	if err != nil {
 		return err
 	}
-	if a.db == nil {
-		return fmt.Errorf("database not initialized")
-	}
-
-	validStages := map[string]bool{
-		"New":       true,
-		"Qualified": true,
-		"Proposal":  true,
-		"Quoted":    true,
-		"Won":       true,
-		"Lost":      true,
-		"On Hold":   true,
-	}
-	if !validStages[stage] {
-		return fmt.Errorf("invalid stage: %s", stage)
-	}
-
-	var current Opportunity
-	if err := a.db.First(&current, "id = ?", opportunityID).Error; err != nil {
-		return fmt.Errorf("opportunity not found: %v", err)
-	}
-
-	if current.Stage == "Lost" && stage != "Lost" {
-		return fmt.Errorf("invalid transition: lost opportunities cannot be reopened")
-	}
-	if current.Stage == "Won" && stage != "Won" && stage != "Lost" {
-		return fmt.Errorf("invalid transition: won opportunities cannot revert to %s", stage)
-	}
-
-	updates := map[string]interface{}{
-		"stage": stage,
-	}
-	if stage == "Won" || stage == "Lost" {
-		now := time.Now()
-		updates["closed_date"] = &now
-	}
-
-	if err := a.db.Model(&Opportunity{}).Where("id = ?", opportunityID).Updates(updates).Error; err != nil {
-		return fmt.Errorf("failed to update opportunity stage: %v", err)
-	}
-
-	log.Printf("✅ Updated opportunity %s stage: %s → %s", opportunityID, current.Stage, stage)
+	log.Printf("✅ Updated opportunity %s stage to %s (version %d)", opportunityID, updated.Stage, updated.Version)
 	return nil
 }
 
@@ -5298,6 +5339,9 @@ func (a *App) UpdateOpportunityStage(opportunityID, stage string) error {
 func (a *App) DeleteRFQ(id uint) error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
+	}
+	if ok, err := a.guardDeleteOrRequest("offers:edit", "rfq", strconv.FormatUint(uint64(id), 10), fmt.Sprintf("RFQ #%d", id)); !ok {
+		return err
 	}
 
 	// SERVER-SIDE PERMISSION CHECK: Require offers:edit for RFQ deletion
@@ -5512,6 +5556,13 @@ func (a *App) CheckDuplicateOpportunity(reference, customer, project string) (*O
 func (a *App) DeleteRFQWithCascade(id uint, cascade bool) (*DeleteCascadeResult, error) {
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
+	}
+	entityType := "rfq"
+	if cascade {
+		entityType = "rfq_cascade"
+	}
+	if ok, err := a.guardDeleteOrRequest("offers:edit", entityType, strconv.FormatUint(uint64(id), 10), fmt.Sprintf("RFQ #%d", id)); !ok {
+		return nil, err
 	}
 
 	// SERVER-SIDE PERMISSION CHECK: Require offers:edit for RFQ cascade delete
@@ -6210,6 +6261,9 @@ func (a *App) UpdateCostingSheet(id uint, data CostingSheetData) (*CostingSheetD
 // DeleteCostingSheet deletes a costing sheet by ID
 // P3 FIX: Added missing CRUD operation for consistency
 func (a *App) DeleteCostingSheet(id uint) error {
+	if ok, err := a.guardDeleteOrRequest("offers:delete", "costing_sheet", strconv.FormatUint(uint64(id), 10), fmt.Sprintf("Costing Sheet #%d", id)); !ok {
+		return err
+	}
 	if err := a.requirePermission("offers:delete"); err != nil {
 		return err
 	}
@@ -6684,6 +6738,7 @@ type OfferUpdateItem struct {
 	TotalCost           float64 `json:"total_cost"`
 	MarginPercent       float64 `json:"margin_percent"`
 	TotalPrice          float64 `json:"total_price"`
+	ExchangeRate        float64 `json:"exchange_rate"`
 }
 
 // OfferUpdateData represents data for creating or updating an offer
@@ -6706,6 +6761,8 @@ type OfferUpdateData struct {
 	AttentionCompany  string            `json:"attention_company"`
 	AttentionPhone    string            `json:"attention_phone"`
 	AttentionAddress  string            `json:"attention_address"`
+	Subject           string            `json:"subject"`
+	Body              string            `json:"body"`
 	QuoteType         string            `json:"quote_type"`
 	VatRate           float64           `json:"vat_rate"`
 	Discount          float64           `json:"discount"`
@@ -6744,11 +6801,11 @@ func normalizeExchangeRateToBHD(currency string, rate float64) float64 {
 
 	defaultRate := defaultExchangeRateToBHD(currency)
 	if currency == "EUR" {
-		if rate <= 0 || rate > 2 || math.Abs(rate-0.44) < 0.005 || math.Abs(rate-0.410) < 0.005 {
+		if rate <= 0 || rate > 2 || math.Abs(rate-1) < 0.0001 || math.Abs(rate-0.44) < 0.005 || math.Abs(rate-0.410) < 0.005 {
 			return defaultRate
 		}
 	}
-	if rate <= 0 || rate > 2 {
+	if rate <= 0 || rate > 2 || math.Abs(rate-1) < 0.0001 {
 		return defaultRate
 	}
 	return rate
@@ -6794,8 +6851,78 @@ func isSyntheticCommercialSummary(description, productCode, model, equipment str
 	return false
 }
 
+func buildOfferItemsFromCostingData(offerID string, data CostingExportData) []OfferItem {
+	items := make([]OfferItem, 0, len(data.LineItems))
+	for _, item := range data.LineItems {
+		if isSyntheticCommercialSummary(item.Equipment, item.Model, item.Model, item.Equipment) {
+			continue
+		}
+		quantity := float64(item.Quantity)
+		if quantity <= 0 {
+			quantity = 1
+		}
+		unitPrice := item.SuggestedPrice
+		lineTotal := item.TotalPrice
+		if lineTotal <= 0 && unitPrice > 0 {
+			lineTotal = unitPrice * quantity
+		}
+		if unitPrice <= 0 && lineTotal > 0 {
+			unitPrice = lineTotal / quantity
+		}
+		items = append(items, OfferItem{
+			Base:        Base{ID: uuid.New().String()},
+			OfferID:     offerID,
+			LineNumber:  len(items) + 1,
+			ProductCode: item.Model,
+			Model:       item.Model,
+			LongCode:    item.LongCode,
+			Description: fmt.Sprintf("%s - %s", item.Equipment, item.Model),
+			Quantity:    quantity,
+			UnitPrice:   unitPrice,
+			// Currency/exchange rate describe the source costing currency. UnitPrice and
+			// TotalPrice are already customer-facing BHD sale values and must not be
+			// multiplied by this rate again.
+			Equipment:           item.Equipment,
+			Specification:       item.Specification,
+			DetailedDescription: item.DetailedDescription,
+			Currency:            firstNonEmptyString(item.Currency, "BHD"),
+			FOB:                 item.FOB,
+			Freight:             item.Freight,
+			TotalCost:           item.TotalCost,
+			MarginPercent: func() float64 {
+				if item.MarkupPercent != 0 {
+					return item.MarkupPercent
+				}
+				return item.MarginPercent
+			}(),
+			TotalPrice:      lineTotal,
+			ExchangeRate:    normalizeExchangeRateToBHD(item.Currency, item.ExchangeRate),
+			FobBHD:          item.FobBHD,
+			FreightBHD:      item.FreightBHD,
+			Insurance:       item.Insurance,
+			CustomsPercent:  item.CustomsPercent,
+			CustomsBHD:      item.CustomsBHD,
+			HandlingPercent: item.HandlingPercent,
+			HandlingBHD:     item.HandlingBHD,
+			FinancePercent:  item.FinancePercent,
+			FinanceBHD:      item.FinanceBHD,
+			OtherCosts:      item.OtherCosts,
+			UserPrice:       item.UserPrice,
+			UserPriceSet:    item.UserPriceSet,
+		})
+	}
+	return items
+}
+
 // SaveCostingAsOffer creates a proper Offer with OfferItems from costing sheet data
 func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
+	if strings.TrimSpace(data.OfferID) != "" {
+		if err := a.requirePermission("offers:edit"); err != nil {
+			return nil, err
+		}
+		return a.updateOfferFromCostingData(data)
+	}
+
 	if err := a.requirePermission("offers:create"); err != nil {
 		return nil, err
 	}
@@ -6901,6 +7028,8 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 		AttentionPerson:    data.ContactPerson,
 		AttentionCompany:   data.CustomerName,
 		TermsAndConditions: data.TermsAndConditions,
+		Subject:            strings.TrimSpace(data.Subject),
+		Body:               strings.TrimSpace(data.Body),
 		VatRate:            data.VatRate,
 		Division:           normalizeDivisionName(data.Division),
 		DiscountPercent: func() float64 {
@@ -6917,53 +7046,9 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 		Testing:         data.Testing,
 	}
 
-	// Create offer items from costing line items (with full costing data for viewing)
-	for _, item := range data.LineItems {
-		if isSyntheticCommercialSummary(item.Equipment, item.Model, item.Model, item.Equipment) {
-			continue
-		}
-		offerItem := OfferItem{
-			Base:        Base{ID: uuid.New().String()},
-			OfferID:     offer.ID,
-			LineNumber:  len(offer.Items) + 1,
-			ProductCode: item.Model,
-			Model:       item.Model,
-			LongCode:    item.LongCode,
-			Description: fmt.Sprintf("%s - %s", item.Equipment, item.Model),
-			Quantity:    float64(item.Quantity),
-			UnitPrice:   item.SuggestedPrice,
-			// Extended fields for full costing data visibility (Fix #5)
-			Equipment:           item.Equipment,
-			Specification:       item.Specification,
-			DetailedDescription: item.DetailedDescription,
-			Currency:            item.Currency,
-			FOB:                 item.FOB,
-			Freight:             item.Freight,
-			TotalCost:           item.TotalCost,
-			MarginPercent: func() float64 {
-				if item.MarkupPercent != 0 {
-					return item.MarkupPercent
-				}
-				return item.MarginPercent
-			}(),
-			TotalPrice: item.TotalPrice,
-			// Full cost breakdown (Fix 2026-02-05)
-			ExchangeRate:    item.ExchangeRate,
-			FobBHD:          item.FobBHD,
-			FreightBHD:      item.FreightBHD,
-			Insurance:       item.Insurance,
-			CustomsPercent:  item.CustomsPercent,
-			CustomsBHD:      item.CustomsBHD,
-			HandlingPercent: item.HandlingPercent,
-			HandlingBHD:     item.HandlingBHD,
-			FinancePercent:  item.FinancePercent,
-			FinanceBHD:      item.FinanceBHD,
-			OtherCosts:      item.OtherCosts,
-			UserPrice:       item.UserPrice,
-			UserPriceSet:    item.UserPriceSet,
-		}
-		offer.Items = append(offer.Items, offerItem)
-	}
+	// Create offer items from costing line items (with full costing data for viewing).
+	// Line totals are already BHD sale prices.
+	offer.Items = buildOfferItemsFromCostingData(offer.ID, data)
 	if len(offer.Items) == 0 {
 		return nil, fmt.Errorf("cannot create offer: no valid line items after filtering")
 	}
@@ -7007,6 +7092,154 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 
 	log.Printf("✅ Created Offer %s for %s (%.3f BHD, %d items)", offerNumber, data.CustomerName, data.GrandTotal, len(data.LineItems))
 	return offer, nil
+}
+
+func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error) {
+	offerID := strings.TrimSpace(data.OfferID)
+	if offerID == "" {
+		return nil, fmt.Errorf("offer id is required for update")
+	}
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	if data.VatRate < 0 || data.VatRate > 100 {
+		return nil, fmt.Errorf("VAT rate must be between 0%% and 100%%, got %.1f%%", data.VatRate)
+	}
+	validQuoteTypes := map[string]bool{
+		"":                   true,
+		"Quotation":          true,
+		"Budgetary Quote":    true,
+		"Budgetary Estimate": true,
+		"Technical Offer":    true,
+		"Commercial Offer":   true,
+	}
+	if !validQuoteTypes[data.QuoteType] {
+		return nil, fmt.Errorf("invalid quote type: %q", data.QuoteType)
+	}
+
+	var offer Offer
+	if err := a.db.Preload("Items").First(&offer, "id = ?", offerID).Error; err != nil {
+		return nil, fmt.Errorf("offer not found: %w", err)
+	}
+	if offer.Stage == "Won" || offer.Stage == "Lost" {
+		return nil, fmt.Errorf("cannot edit terminal offer stage '%s'", offer.Stage)
+	}
+
+	items := buildOfferItemsFromCostingData(offer.ID, data)
+	if len(items) == 0 {
+		return nil, fmt.Errorf("cannot update offer: no valid line items after filtering")
+	}
+
+	quotationDate := offer.QuotationDate
+	if strings.TrimSpace(data.Date) != "" {
+		if t, err := time.Parse("2006-01-02", data.Date); err == nil {
+			quotationDate = t
+		}
+	}
+
+	customerID := strings.TrimSpace(data.CustomerID)
+	customerName := strings.TrimSpace(data.CustomerName)
+	if customerID == "" && customerName != "" {
+		var customer CustomerMaster
+		if err := a.db.Where("business_name LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(customerName)+"%").First(&customer).Error; err == nil {
+			customerID = customer.ID
+			customerName = customer.BusinessName
+		}
+	}
+
+	subtotal := 0.0
+	for _, item := range items {
+		subtotal += commercialLineTotal(item.Quantity, item.UnitPrice, item.TotalPrice)
+	}
+	if data.Subtotal > 0 {
+		subtotal = data.Subtotal
+	}
+	discount := math.Max(0, data.Discount)
+	netAmount := math.Max(0, subtotal-discount)
+	grandTotal := data.GrandTotal
+	if grandTotal <= 0 {
+		grandTotal = netAmount + (netAmount * data.VatRate / 100.0)
+	}
+	totalCost := data.TotalCost
+	if totalCost <= 0 {
+		totalCost = sumOfferItemCost(items)
+	}
+	margin := 0.0
+	if netAmount > 0 {
+		margin = ((netAmount - totalCost) / netAmount) * 100
+	}
+
+	offer.CustomerID = customerID
+	if customerName != "" {
+		offer.CustomerName = customerName
+	}
+	offer.QuotationDate = quotationDate
+	offer.TotalValueBHD = roundTo3(grandTotal)
+	offer.EstimatedMargin = roundTo3(margin)
+	if strings.TrimSpace(data.QuoteType) != "" {
+		offer.QuoteType = strings.TrimSpace(data.QuoteType)
+	}
+	offer.PaymentTerms = strings.TrimSpace(data.PaymentTerms)
+	offer.DeliveryTerms = strings.TrimSpace(data.DeliveryTerms)
+	offer.DeliveryWeeks = strings.TrimSpace(data.EstDelivery)
+	offer.CountryOfOrigin = strings.TrimSpace(data.CountryOfOrigin)
+	offer.IssuedBy = strings.TrimSpace(data.PreparedBy)
+	offer.CustomerReference = strings.TrimSpace(data.RfqReference)
+	offer.AttentionPerson = strings.TrimSpace(data.ContactPerson)
+	offer.AttentionCompany = strings.TrimSpace(data.CustomerName)
+	offer.TermsAndConditions = strings.TrimSpace(data.TermsAndConditions)
+	if strings.TrimSpace(data.Subject) != "" {
+		offer.Subject = strings.TrimSpace(data.Subject)
+	}
+	if strings.TrimSpace(data.Body) != "" {
+		offer.Body = strings.TrimSpace(data.Body)
+	}
+	offer.VatRate = data.VatRate
+	offer.Division = normalizeDivisionName(data.Division)
+	if subtotal > 0 {
+		offer.DiscountPercent = (discount / subtotal) * 100
+	} else {
+		offer.DiscountPercent = 0
+	}
+	offer.CocCoo = strings.TrimSpace(data.CocCoo)
+	offer.TestCertificate = strings.TrimSpace(data.TestCertificate)
+	offer.Installation = strings.TrimSpace(data.Installation)
+	offer.Commissioning = strings.TrimSpace(data.Commissioning)
+	offer.Testing = strings.TrimSpace(data.Testing)
+	offer.RevisionNumber++
+
+	opportunityUpdates := map[string]interface{}{}
+	opportunityUpdates["folder_number"] = strings.TrimSpace(data.FolderNumber)
+	if strings.TrimSpace(data.ProjectName) != "" {
+		opportunityUpdates["title"] = strings.TrimSpace(data.ProjectName)
+	} else if strings.TrimSpace(data.Subject) != "" {
+		opportunityUpdates["title"] = strings.TrimPrefix(strings.TrimSpace(data.Subject), "Sub:")
+	}
+	if strings.TrimSpace(offer.CustomerName) != "" {
+		opportunityUpdates["customer_name"] = strings.TrimSpace(offer.CustomerName)
+	}
+
+	if err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("offer_id = ?", offer.ID).Delete(&OfferItem{}).Error; err != nil {
+			return fmt.Errorf("failed to replace offer items: %w", err)
+		}
+		if err := tx.Create(&items).Error; err != nil {
+			return fmt.Errorf("failed to save offer items: %w", err)
+		}
+		if err := tx.Save(&offer).Error; err != nil {
+			return fmt.Errorf("failed to update offer: %w", err)
+		}
+		if err := tx.Model(&Opportunity{}).Where("offer_id = ?", offer.ID).Updates(opportunityUpdates).Error; err != nil {
+			log.Printf("⚠️ Failed to sync linked opportunity metadata for offer %s: %v", offer.OfferNumber, err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	offer.Items = items
+	log.Printf("✅ Updated Offer %s from costing sheet (Rev %d, %.3f BHD)", offer.OfferNumber, offer.RevisionNumber, offer.TotalValueBHD)
+	return &offer, nil
 }
 
 // linkOfferToOpportunity finds the matching opportunity record and updates its offer_id and stage.
@@ -7435,6 +7668,8 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 	offer.AttentionCompany = strings.TrimSpace(data.AttentionCompany)
 	offer.AttentionPhone = strings.TrimSpace(data.AttentionPhone)
 	offer.AttentionAddress = strings.TrimSpace(data.AttentionAddress)
+	offer.Subject = strings.TrimSpace(data.Subject)
+	offer.Body = strings.TrimSpace(data.Body)
 	if data.QuoteType != "" {
 		offer.QuoteType = data.QuoteType
 	}
@@ -7475,7 +7710,12 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 				if lineTotal <= 0 && item.Quantity > 0 && item.UnitPrice > 0 {
 					lineTotal = item.Quantity * item.UnitPrice
 				}
+				unitPrice := item.UnitPrice
+				if unitPrice <= 0 && item.Quantity > 0 && lineTotal > 0 {
+					unitPrice = lineTotal / item.Quantity
+				}
 				totalValue += lineTotal
+				exchangeRate := normalizeExchangeRateToBHD(item.Currency, item.ExchangeRate)
 
 				offer.Items = append(offer.Items, OfferItem{
 					Base:                Base{ID: uuid.New().String()},
@@ -7485,7 +7725,7 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 					Model:               item.Model,
 					Description:         item.Description,
 					Quantity:            item.Quantity,
-					UnitPrice:           item.UnitPrice,
+					UnitPrice:           unitPrice,
 					Equipment:           item.Equipment,
 					Specification:       item.Specification,
 					DetailedDescription: item.DetailedDescription,
@@ -7494,10 +7734,13 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 					Freight:             item.Freight,
 					TotalCost:           item.TotalCost,
 					MarginPercent:       item.MarginPercent,
-					TotalPrice:          item.TotalPrice,
+					TotalPrice:          lineTotal,
+					ExchangeRate:        exchangeRate,
 				})
 			}
-			offer.TotalValueBHD = totalValue
+			discount := math.Max(0, data.Discount)
+			netAmount := math.Max(0, totalValue-discount)
+			offer.TotalValueBHD = roundTo3(netAmount + (netAmount * offer.VatRate / 100.0))
 
 			if len(offer.Items) > 0 {
 				if err := tx.Create(&offer.Items).Error; err != nil {
@@ -7574,6 +7817,9 @@ func (a *App) GetOfferNotes(offerID string) ([]OfferNote, error) {
 
 // DeleteOfferNote deletes a specific note by ID, scoped to the given offer
 func (a *App) DeleteOfferNote(noteID string) error {
+	if ok, err := a.guardDeleteOrRequest("offers:edit", "offer_note", noteID, "Offer note"); !ok {
+		return err
+	}
 	if err := a.requirePermission("offers:edit"); err != nil {
 		return err
 	}
@@ -7851,48 +8097,7 @@ func (a *App) MarkOfferLost(offerID string, reason string) error {
 }
 
 func (a *App) UpdateOpportunityDetails(opportunityID, comment, ownerNotes string) (*Opportunity, error) {
-	if err := a.requirePermission("offers:edit"); err != nil {
-		return nil, err
-	}
-	if a.db == nil {
-		return nil, fmt.Errorf("database not initialized")
-	}
-
-	opportunityID = strings.TrimSpace(opportunityID)
-	if opportunityID == "" {
-		return nil, fmt.Errorf("opportunity ID is required")
-	}
-
-	var opp Opportunity
-	if err := a.db.First(&opp, "id = ?", opportunityID).Error; err != nil {
-		return nil, fmt.Errorf("opportunity not found: %w", err)
-	}
-
-	comment = strings.TrimSpace(comment)
-	ownerNotes = strings.TrimSpace(ownerNotes)
-	if len(comment) > 2000 {
-		comment = comment[:2000]
-	}
-	if len(ownerNotes) > 2000 {
-		ownerNotes = ownerNotes[:2000]
-	}
-
-	if !a.currentSessionIsManagementOrAbove() {
-		ownerNotes = opp.OwnerNotes
-	}
-
-	updates := map[string]interface{}{
-		"comment":     comment,
-		"owner_notes": ownerNotes,
-	}
-
-	if err := a.db.Model(&Opportunity{}).Where("id = ?", opportunityID).Updates(updates).Error; err != nil {
-		return nil, fmt.Errorf("failed to update opportunity details: %w", err)
-	}
-
-	opp.Comment = comment
-	opp.OwnerNotes = ownerNotes
-	return &opp, nil
+	return a.UpdateOpportunityDetailsWithVersion(opportunityID, 0, comment, ownerNotes)
 }
 
 // ============================================================================
@@ -8337,6 +8542,9 @@ func (a *App) UpdateOrder(id string, order Order) (*Order, error) {
 
 // DeleteOrder deletes an order and its items (only if no invoices/POs/DNs linked)
 func (a *App) DeleteOrder(orderID string) error {
+	if ok, err := a.guardDeleteOrRequest("orders:delete", "order", orderID, "Order"); !ok {
+		return err
+	}
 	if err := a.requirePermission("orders:delete"); err != nil {
 		return err
 	}
@@ -9404,6 +9612,9 @@ func (a *App) UpdateCustomerContact(contact CustomerContact) (*CustomerContact, 
 
 // DeleteCustomerContact removes a contact
 func (a *App) DeleteCustomerContact(contactID string) error {
+	if ok, err := a.guardDeleteOrRequest("customers:delete", "customer_contact", contactID, "Customer contact"); !ok {
+		return err
+	}
 	if err := a.requirePermission("customers:delete"); err != nil {
 		return err
 	}
@@ -9462,6 +9673,9 @@ func (a *App) UpdateSupplierContact(contact SupplierContact) (*SupplierContact, 
 
 // DeleteSupplierContact removes a contact
 func (a *App) DeleteSupplierContact(contactID string) error {
+	if ok, err := a.guardDeleteOrRequest("suppliers:delete", "supplier_contact", contactID, "Supplier contact"); !ok {
+		return err
+	}
 	if err := a.requirePermission("suppliers:delete"); err != nil {
 		return err
 	}
@@ -9678,6 +9892,9 @@ func (a *App) DeleteCustomer(id string) error {
 	if a.db == nil {
 		return newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
+	if ok, err := a.guardDeleteOrRequest("customers:delete", "customer", id, "Customer"); !ok {
+		return err
+	}
 
 	// SERVER-SIDE PERMISSION CHECK: Require customers:delete or admin (wildcard)
 	if err := a.requirePermission("customers:delete"); err != nil {
@@ -9703,6 +9920,9 @@ func (a *App) DeleteCustomer(id string) error {
 func (a *App) DeleteSupplier(id string) error {
 	if a.db == nil {
 		return newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+	if ok, err := a.guardDeleteOrRequest("suppliers:delete", "supplier", id, "Supplier"); !ok {
+		return err
 	}
 
 	// SERVER-SIDE PERMISSION CHECK: Require suppliers:delete or admin (wildcard)
@@ -11894,6 +12114,9 @@ func (a *App) QuickCaptureDocument(filePath string) (map[string]interface{}, err
 	// Classify document type using AI-first classifier (Mistral)
 	// Falls back to regex if Mistral is unavailable
 	classification := a.AIClassifyDocumentType(result.Text, filepath.Base(filePath))
+	if classification == nil {
+		classification = a.classifyDocumentForOCR(result.Text, filepath.Base(filePath))
+	}
 	docType := classification.DocumentType
 
 	// Build suggested actions from classification
@@ -12635,6 +12858,9 @@ func (a *App) ProcessDocumentWithOCR(filePath string, docType string) (*OCRResul
 	// Auto-detect document type using AI classifier if "auto" was specified
 	if docType == "auto" && result.Text != "" {
 		aiResult := a.AIClassifyDocumentType(result.Text, filepath.Base(filePath))
+		if aiResult == nil {
+			aiResult = a.classifyDocumentForOCR(result.Text, filepath.Base(filePath))
+		}
 		if aiResult != nil {
 			result.DocumentType = aiResult.DocumentType
 			log.Printf("🤖 AI-detected document type: %s (confidence: %.2f)", aiResult.DocumentType, aiResult.Confidence)
@@ -12815,6 +13041,9 @@ func (a *App) UpdateQuickCapture(id uint, title, content, tags, priority, status
 
 // DeleteQuickCapture deletes a quick capture
 func (a *App) DeleteQuickCapture(id string) error {
+	if ok, err := a.guardDeleteOrRequest("notes:delete", "quick_capture", id, "Quick capture"); !ok {
+		return err
+	}
 	if err := a.requirePermission("notes:delete"); err != nil {
 		return err
 	}
@@ -12956,6 +13185,65 @@ func (a *App) SaveOCRDocument(fileName, filePath, documentType, extractedText st
 	return &doc, nil
 }
 
+func normalizeOCRDocumentType(documentType string) string {
+	docType := strings.TrimSpace(documentType)
+	if docType == "" {
+		return "other"
+	}
+
+	canonical := map[string]string{
+		"RFQ":             "rfq",
+		"Invoice":         "invoice",
+		"CustomerInvoice": "invoice",
+		"SupplierInvoice": "supplier_invoice",
+		"PurchaseOrder":   "purchase_order",
+		"PO":              "purchase_order",
+		"Quotation":       "quotation",
+		"Quote":           "quotation",
+		"DeliveryNote":    "delivery_note",
+		"BankStatement":   "bank_statement",
+		"Costing":         "costing",
+		"CostingSheet":    "costing",
+		"ExcelData":       "excel_data",
+		"Contract":        "contract",
+		"Report":          "report",
+		"Other":           "other",
+	}
+	if normalized, ok := canonical[docType]; ok {
+		return normalized
+	}
+
+	lower := strings.ToLower(docType)
+	lower = strings.NewReplacer(" ", "_", "-", "_").Replace(lower)
+	switch lower {
+	case "customer_invoice":
+		return "invoice"
+	case "po":
+		return "purchase_order"
+	case "quote":
+		return "quotation"
+	default:
+		return lower
+	}
+}
+
+func (a *App) requireDocumentRoutingPermission(documentType string) error {
+	switch documentType {
+	case "rfq", "quotation", "costing", "excel_data":
+		return a.requirePermission("offers:create")
+	case "invoice":
+		return a.requirePermission("invoices:create")
+	case "purchase_order", "supplier_invoice":
+		return a.requirePermission("po:create")
+	case "delivery_note":
+		return a.requirePermission("delivery_notes:create")
+	case "bank_statement":
+		return a.requirePermission("finance:create")
+	default:
+		return nil
+	}
+}
+
 // SaveDocumentToEntity routes an OCR-processed document to the correct domain table
 // based on the detected/selected document type. Also saves to OCRDocument for audit trail.
 // Returns the created entity ID and any error.
@@ -12965,6 +13253,11 @@ func (a *App) SaveDocumentToEntity(fileName, filePath, documentType, extractedTe
 	}
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
+	}
+
+	documentType = normalizeOCRDocumentType(documentType)
+	if err := a.requireDocumentRoutingPermission(documentType); err != nil {
+		return nil, err
 	}
 
 	// Parse extracted data
@@ -15310,22 +15603,21 @@ func (a *App) SeedDefaultRoles() error {
 			Description: "All operations INCLUDING finance (no device/user management)",
 			Permissions: `[
 				"dashboard:view",
-				"customers:view", "customers:edit", "customers:delete",
-				"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update", "suppliers:delete",
-				"invoices:view", "invoices:create", "invoices:approve",
+				"customers:view", "customers:edit",
+				"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
+				"invoices:view", "invoices:create", "invoices:update", "invoices:approve",
 				"orders:view", "orders:create", "orders:edit", "orders:update",
 				"payments:view", "payments:create", "payments:update", "payments:record",
 				"reports:view", "reports:generate",
 				"settings:view",
 				"data:import",
-				"records:delete",
-				"documents:view", "documents:create",
+				"documents:view", "documents:create", "documents:classify",
 				"intelligence:chat",
-				"finance:view",
+				"finance:view", "finance:create",
 				"expenses:view", "expenses:create", "expenses:update",
 				"payroll:view", "payroll:create", "payroll:update", "payroll:approve",
 				"projects:view", "projects:create", "projects:update",
-				"tasks:view", "tasks:create", "tasks:update", "tasks:delete",
+				"tasks:view", "tasks:create", "tasks:update",
 				"notifications:view", "notifications:update",
 				"hr:view", "hr:create", "hr:update",
 				"offers:view", "offers:create", "offers:edit",
@@ -15345,14 +15637,14 @@ func (a *App) SeedDefaultRoles() error {
 				"orders:view", "orders:create", "orders:update",
 				"offers:view", "offers:create", "offers:edit",
 				"rfq:view", "rfq:create",
-				"invoices:view", "invoices:create",
+				"invoices:view", "invoices:create", "invoices:update",
 				"payments:view",
 				"projects:view", "projects:create", "projects:update",
-				"tasks:view", "tasks:create", "tasks:update", "tasks:delete",
+				"tasks:view", "tasks:create", "tasks:update",
 				"notifications:view", "notifications:update",
 				"po:view", "po:create",
-				"delivery_notes:view",
-				"documents:view", "documents:create",
+				"delivery_notes:view", "delivery_notes:create", "delivery_notes:update",
+				"documents:view", "documents:create", "documents:classify",
 				"intelligence:chat",
 				"reports:view"
 			]`,
@@ -15367,13 +15659,13 @@ func (a *App) SeedDefaultRoles() error {
 				"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
 				"po:view", "po:create", "po:update", "po:send",
 				"projects:view", "projects:create", "projects:update",
-				"tasks:view", "tasks:create", "tasks:update", "tasks:delete",
+				"tasks:view", "tasks:create", "tasks:update",
 				"notifications:view", "notifications:update",
 				"grn:view", "grn:create",
 				"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
 				"orders:view", "orders:update",
-				"invoices:view", "invoices:create",
-				"documents:view", "documents:create",
+				"invoices:view", "invoices:create", "invoices:update",
+				"documents:view", "documents:create", "documents:classify",
 				"intelligence:chat",
 				"reports:view",
 				"settings:view"
@@ -15391,13 +15683,13 @@ func (a *App) SeedDefaultRoles() error {
 				"invoices:view",
 				"orders:view",
 				"payments:view",
-				"documents:view", "documents:create",
+				"documents:view", "documents:create", "documents:classify",
 				"intelligence:chat",
 				"reports:view",
 				"settings:view",
 				"offers:view",
 				"projects:view",
-				"tasks:view", "tasks:create", "tasks:update", "tasks:delete",
+				"tasks:view", "tasks:create", "tasks:update",
 				"notifications:view", "notifications:update"
 			]`,
 		},
@@ -15822,6 +16114,15 @@ func (a *App) requirePermission(permission string) error {
 		}
 	}
 
+	if isDeletePermission(permission) && !a.currentSessionHasAdminRoleOnly() {
+		role := strings.TrimSpace(a.GetCurrentUserRole())
+		if role == "" {
+			role = "unknown"
+		}
+		log.Printf("🚫 DELETE BLOCKED: role '%s' attempted '%s' without admin approval", role, permission)
+		return fmt.Errorf("delete requires admin approval: permission '%s' cannot be used by role %s", permission, role)
+	}
+
 	// METHOD 1: Check User-based authentication first
 	if a.currentUser != nil {
 		if err := a.checkUserPermission(permission); err == nil {
@@ -15879,6 +16180,8 @@ func permissionAliases(permission string) []string {
 	aliasGroups := [][]string{
 		{"customers:edit", "customers:update"},
 		{"suppliers:edit", "suppliers:update"},
+		{"offers:edit", "offers:update"},
+		{"invoices:edit", "invoices:update"},
 		{"po:view", "purchase_orders:view"},
 		{"po:create", "purchase_orders:create"},
 		{"po:update", "purchase_orders:update"},
@@ -16246,7 +16549,7 @@ func (a *App) GetAuditLogs(limit int, resource string, action string) ([]AuditLo
 		limit = 100
 	}
 
-	query := a.db.Order("timestamp DESC").Limit(limit)
+	query := a.db.Order("created_at DESC").Limit(limit)
 
 	if resource != "" {
 		query = query.Where("resource = ?", resource)
@@ -16397,11 +16700,7 @@ func (a *App) currentSessionIsManagementOrAbove() bool {
 }
 
 func (a *App) currentSessionIsAdministrator() bool {
-	role := strings.ToLower(strings.TrimSpace(a.GetCurrentUserRole()))
-	if role == "admin" || role == "administrator" || role == "developer" {
-		return true
-	}
-	return a.currentSessionHasPermission("settings:update")
+	return a.currentSessionHasAdminRoleOnly()
 }
 
 func (a *App) getCurrentUserDisplayName() string {
@@ -16721,8 +17020,12 @@ func (a *App) assessCostingRisk(result *CostingResult, customer *Customer, grade
 type CostingExportData struct {
 	// Header
 	Division        string `json:"division"`
+	Source          string `json:"source"`
+	OfferID         string `json:"offerId"`
+	OfferNumber     string `json:"offerNumber"`
 	Date            string `json:"date"`
 	PreparedBy      string `json:"preparedBy"`
+	CustomerID      string `json:"customerId"`
 	CustomerName    string `json:"customerName"`
 	ContactPerson   string `json:"contactPerson"`
 	RfqReference    string `json:"rfqReference"`
@@ -17308,16 +17611,21 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 	// Draw line items
 	pdf.SetFont("main", "", 8)
 	for _, item := range data.LineItems {
-		// Check if we need a new page (leave room for item + possible description)
-		estimatedHeight := 24.0
-		if item.DetailedDescription != "" {
-			lines := len(item.DetailedDescription) / 80 // Rough estimate of lines
-			if lines < 1 {
-				lines = 1
-			}
-			estimatedHeight += float64(lines) * 10
+		description := strings.TrimSpace(item.Equipment)
+		if description == "" {
+			description = firstNonEmptyString(item.Model, item.LongCode, "Line item")
 		}
-		if currentY+estimatedHeight > 750 {
+		descriptionLines := wrapText(description, 44)
+		if len(descriptionLines) == 0 {
+			descriptionLines = []string{"Line item"}
+		}
+		modelLines := []string{}
+		if strings.TrimSpace(item.Model) != "" {
+			modelLines = wrapText("Model: "+strings.TrimSpace(item.Model), 52)
+		}
+		rowHeight := math.Max(24, 8+float64(len(descriptionLines))*9+float64(len(modelLines))*8)
+
+		if currentY+rowHeight > 750 {
 			// Add new page with letterhead
 			pdf.AddPage()
 			drawCostingLetterhead()
@@ -17329,24 +17637,23 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 		pdf.SetXY(colX[0]+2, rowY)
 		pdf.Cell(nil, fmt.Sprintf("%d", item.SlNo))
 
-		// Description (Equipment - Model)
-		desc := item.Equipment
-		if item.Model != "" {
-			desc += "\nModel: " + item.Model
-		}
+		// Description and model, wrapped inside the description column.
 		if hasBold {
 			pdf.SetFont("mainBold", "", 8)
 		}
-		pdf.SetXY(colX[1]+2, rowY)
-		pdf.Cell(nil, item.Equipment)
-
-		// Model on next line
-		descY := rowY + 10
-		if item.Model != "" {
-			pdf.SetFont("main", "", 7)
+		descY := rowY
+		for _, line := range descriptionLines {
 			pdf.SetXY(colX[1]+2, descY)
-			pdf.Cell(nil, "Model: "+item.Model)
+			pdf.Cell(nil, sanitizeForPDF(line))
 			descY += 9
+		}
+		if len(modelLines) > 0 {
+			pdf.SetFont("main", "", 7)
+			for _, line := range modelLines {
+				pdf.SetXY(colX[1]+2, descY)
+				pdf.Cell(nil, sanitizeForPDF(line))
+				descY += 8
+			}
 		}
 
 		// Long Code and Detailed Description are shown ONLY on Annexure page (not page 1)
@@ -17364,13 +17671,7 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 		pdf.SetXY(colX[4]+2, rowY)
 		pdf.Cell(nil, fmt.Sprintf("%.3f", item.TotalPrice))
 
-		// Dynamic row height based on content
-		minRowY := descY + 4
-		if minRowY > rowY+24 {
-			currentY = minRowY
-		} else {
-			currentY += 24
-		}
+		currentY += rowHeight
 
 		// Detailed description is shown only on Annexure page (not here on page 1)
 
@@ -17840,12 +18141,240 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 		}
 	}
 
+	if err := appendDetailedCostingWorkbookSheet(workbook, data); err != nil {
+		return "", err
+	}
+
 	if err := workbook.SaveAs(outputPath); err != nil {
 		return "", fmt.Errorf("failed to write XLSX file: %v", err)
 	}
 
 	log.Printf("✅ Generated Excel costing sheet from template: %s", outputPath)
 	return outputPath, nil
+}
+
+func appendDetailedCostingWorkbookSheet(workbook *excelize.File, data CostingExportData) error {
+	sheet := "Detailed Costing"
+	if sheetIndex, err := workbook.GetSheetIndex(sheet); err == nil && sheetIndex >= 0 {
+		_ = workbook.DeleteSheet(sheet)
+	}
+
+	index, err := workbook.NewSheet(sheet)
+	if err != nil {
+		return fmt.Errorf("failed to create detailed costing sheet: %v", err)
+	}
+	workbook.SetActiveSheet(index)
+
+	titleStyle, _ := workbook.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Size: 16, Color: "1D1D1F"},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+	})
+	sectionStyle, _ := workbook.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Color: "FFFFFF"},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"334155"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Horizontal: "left", Vertical: "center"},
+	})
+	labelStyle, _ := workbook.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Color: "475569"},
+		Alignment: &excelize.Alignment{Vertical: "top", WrapText: true},
+		Border:    []excelize.Border{{Type: "left", Color: "E2E8F0", Style: 1}, {Type: "right", Color: "E2E8F0", Style: 1}, {Type: "top", Color: "E2E8F0", Style: 1}, {Type: "bottom", Color: "E2E8F0", Style: 1}},
+	})
+	cellStyle, _ := workbook.NewStyle(&excelize.Style{
+		Alignment: &excelize.Alignment{Vertical: "top", WrapText: true},
+		Border:    []excelize.Border{{Type: "left", Color: "E2E8F0", Style: 1}, {Type: "right", Color: "E2E8F0", Style: 1}, {Type: "top", Color: "E2E8F0", Style: 1}, {Type: "bottom", Color: "E2E8F0", Style: 1}},
+	})
+	headerStyle, _ := workbook.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Color: "FFFFFF"},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"1D1D1F"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center", WrapText: true},
+		Border:    []excelize.Border{{Type: "left", Color: "CBD5E1", Style: 1}, {Type: "right", Color: "CBD5E1", Style: 1}, {Type: "top", Color: "CBD5E1", Style: 1}, {Type: "bottom", Color: "CBD5E1", Style: 1}},
+	})
+	moneyStyle, _ := workbook.NewStyle(&excelize.Style{
+		NumFmt:    40,
+		Alignment: &excelize.Alignment{Horizontal: "right", Vertical: "top"},
+		Border:    []excelize.Border{{Type: "left", Color: "E2E8F0", Style: 1}, {Type: "right", Color: "E2E8F0", Style: 1}, {Type: "top", Color: "E2E8F0", Style: 1}, {Type: "bottom", Color: "E2E8F0", Style: 1}},
+	})
+	numberStyle, _ := workbook.NewStyle(&excelize.Style{
+		NumFmt:    4,
+		Alignment: &excelize.Alignment{Horizontal: "right", Vertical: "top"},
+		Border:    []excelize.Border{{Type: "left", Color: "E2E8F0", Style: 1}, {Type: "right", Color: "E2E8F0", Style: 1}, {Type: "top", Color: "E2E8F0", Style: 1}, {Type: "bottom", Color: "E2E8F0", Style: 1}},
+	})
+
+	lastColumn := "AD"
+	_ = workbook.MergeCell(sheet, "A1", lastColumn+"1")
+	_ = workbook.SetCellValue(sheet, "A1", firstNonEmptyString(data.QuoteType, "Quotation")+" - Complete Costing Export")
+	_ = workbook.SetCellStyle(sheet, "A1", lastColumn+"1", titleStyle)
+	_ = workbook.SetRowHeight(sheet, 1, 26)
+
+	_ = workbook.MergeCell(sheet, "A3", lastColumn+"3")
+	_ = workbook.SetCellValue(sheet, "A3", "Header and Commercial Terms")
+	_ = workbook.SetCellStyle(sheet, "A3", lastColumn+"3", sectionStyle)
+
+	headerRows := [][]interface{}{
+		{"Division", data.Division, "Date", data.Date, "Prepared By", data.PreparedBy, "Quote Type", data.QuoteType},
+		{"Customer", data.CustomerName, "Customer ID", data.CustomerID, "Contact Person", data.ContactPerson, "Customer TRN", data.CustomerTRN},
+		{"RFQ Reference", data.RfqReference, "Folder No.", data.FolderNumber, "Costing ID", data.CostingId, "Subject", data.Subject},
+		{"Payment Terms", data.PaymentTerms, "Delivery Terms", data.DeliveryTerms, "Estimated Delivery", data.EstDelivery, "Order Type", data.OrderType},
+		{"Country of Origin", data.CountryOfOrigin, "COC/COO", data.CocCoo, "Test Certificate", data.TestCertificate, "Place of Supply", data.PlaceOfSupply},
+		{"Installation", data.Installation, "Commissioning", data.Commissioning, "Testing", data.Testing, "Tax Category", data.TaxCategory},
+		{"Source Offer", data.OfferNumber, "Source Offer ID", data.OfferID, "Linked Opportunity ID", data.OpportunityId, "Project", data.ProjectName},
+	}
+
+	for i, row := range headerRows {
+		excelRow := i + 4
+		for j, value := range row {
+			cell, _ := excelize.CoordinatesToCellName(j+1, excelRow)
+			_ = workbook.SetCellValue(sheet, cell, value)
+			if j%2 == 0 {
+				_ = workbook.SetCellStyle(sheet, cell, cell, labelStyle)
+			} else {
+				_ = workbook.SetCellStyle(sheet, cell, cell, cellStyle)
+			}
+		}
+	}
+
+	bodyRow := 12
+	_ = workbook.MergeCell(sheet, fmt.Sprintf("A%d", bodyRow), fmt.Sprintf("%s%d", lastColumn, bodyRow))
+	_ = workbook.SetCellValue(sheet, fmt.Sprintf("A%d", bodyRow), "PDF Body")
+	_ = workbook.SetCellStyle(sheet, fmt.Sprintf("A%d", bodyRow), fmt.Sprintf("%s%d", lastColumn, bodyRow), sectionStyle)
+	_ = workbook.MergeCell(sheet, fmt.Sprintf("A%d", bodyRow+1), fmt.Sprintf("%s%d", lastColumn, bodyRow+2))
+	_ = workbook.SetCellValue(sheet, fmt.Sprintf("A%d", bodyRow+1), data.Body)
+	_ = workbook.SetCellStyle(sheet, fmt.Sprintf("A%d", bodyRow+1), fmt.Sprintf("%s%d", lastColumn, bodyRow+2), cellStyle)
+	_ = workbook.SetRowHeight(sheet, bodyRow+1, 48)
+
+	tableStart := 16
+	headers := []string{
+		"Sl No", "Supplier", "Equipment", "Model", "Long Code", "Specification", "Detailed Description",
+		"Currency", "Qty", "Exchange Rate", "Unit Price FOB", "FOB BHD", "Freight %", "Freight Foreign",
+		"Freight BHD", "Insurance", "Customs %", "Customs BHD", "Handling %", "Handling BHD",
+		"Finance %", "Finance BHD", "Extra Cost", "Unit PH Cost BHD", "Total PH Cost BHD",
+		"Markup %", "Suggested Unit Price", "Manual Unit Price", "Manual Price Used", "Line Total BHD",
+	}
+	for i, value := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, tableStart)
+		_ = workbook.SetCellValue(sheet, cell, value)
+	}
+	_ = workbook.SetCellStyle(sheet, fmt.Sprintf("A%d", tableStart), fmt.Sprintf("%s%d", lastColumn, tableStart), headerStyle)
+	_ = workbook.SetRowHeight(sheet, tableStart, 34)
+
+	for i, item := range data.LineItems {
+		row := tableStart + 1 + i
+		quantity := item.Quantity
+		if quantity <= 0 {
+			quantity = 1
+		}
+		manualUnitPrice := interface{}("")
+		if item.UserPriceSet {
+			manualUnitPrice = item.UserPrice
+		}
+		manualUsed := "No"
+		if item.UserPriceSet {
+			manualUsed = "Yes"
+		}
+		values := []interface{}{
+			item.SlNo,
+			item.Supplier,
+			item.Equipment,
+			item.Model,
+			item.LongCode,
+			item.Specification,
+			item.DetailedDescription,
+			item.Currency,
+			quantity,
+			item.ExchangeRate,
+			item.FOB,
+			item.FobBHD,
+			item.FreightPercent,
+			item.Freight,
+			item.FreightBHD,
+			item.Insurance,
+			item.CustomsPercent,
+			item.CustomsBHD,
+			item.HandlingPercent,
+			item.HandlingBHD,
+			item.FinancePercent,
+			item.FinanceBHD,
+			item.OtherCosts,
+			item.TotalCost,
+			item.TotalCost * float64(quantity),
+			item.MarkupPercent,
+			item.SuggestedPrice,
+			manualUnitPrice,
+			manualUsed,
+			item.TotalPrice,
+		}
+		for j, value := range values {
+			cell, _ := excelize.CoordinatesToCellName(j+1, row)
+			_ = workbook.SetCellValue(sheet, cell, value)
+		}
+		_ = workbook.SetCellStyle(sheet, fmt.Sprintf("A%d", row), fmt.Sprintf("%s%d", lastColumn, row), cellStyle)
+		for _, col := range []string{"J", "M", "Q", "S", "U", "Z"} {
+			_ = workbook.SetCellStyle(sheet, fmt.Sprintf("%s%d", col, row), fmt.Sprintf("%s%d", col, row), numberStyle)
+		}
+		for _, col := range []string{"K", "L", "N", "O", "P", "R", "T", "V", "W", "X", "Y", "AA", "AB", "AD"} {
+			_ = workbook.SetCellStyle(sheet, fmt.Sprintf("%s%d", col, row), fmt.Sprintf("%s%d", col, row), moneyStyle)
+		}
+		if strings.TrimSpace(item.DetailedDescription) != "" || strings.TrimSpace(item.Specification) != "" {
+			_ = workbook.SetRowHeight(sheet, row, 54)
+		}
+	}
+
+	lastItemRow := tableStart + len(data.LineItems)
+	if len(data.LineItems) == 0 {
+		lastItemRow = tableStart
+	}
+	summaryStart := lastItemRow + 3
+	_ = workbook.MergeCell(sheet, fmt.Sprintf("A%d", summaryStart), fmt.Sprintf("H%d", summaryStart))
+	_ = workbook.SetCellValue(sheet, fmt.Sprintf("A%d", summaryStart), "Summary")
+	_ = workbook.SetCellStyle(sheet, fmt.Sprintf("A%d", summaryStart), fmt.Sprintf("H%d", summaryStart), sectionStyle)
+
+	summaryRows := [][]interface{}{
+		{"Subtotal", data.Subtotal, "Discount", data.Discount, "Net Amount", data.NetAmount, "Hidden Charges", data.HiddenCharges},
+		{"VAT Rate %", data.VatRate, "VAT Amount", data.VAT, "Grand Total", data.GrandTotal, "Total PH Cost", data.TotalCost},
+		{"Profit", data.Profit, "Profit %", data.ProfitPercent, "Line Items", len(data.LineItems), "Currency", "BHD"},
+	}
+	for i, row := range summaryRows {
+		excelRow := summaryStart + 1 + i
+		for j, value := range row {
+			cell, _ := excelize.CoordinatesToCellName(j+1, excelRow)
+			_ = workbook.SetCellValue(sheet, cell, value)
+			if j%2 == 0 {
+				_ = workbook.SetCellStyle(sheet, cell, cell, labelStyle)
+			} else {
+				_ = workbook.SetCellStyle(sheet, cell, cell, cellStyle)
+			}
+		}
+	}
+	for _, col := range []string{"B", "D", "F", "H"} {
+		_ = workbook.SetCellStyle(sheet, fmt.Sprintf("%s%d", col, summaryStart+1), fmt.Sprintf("%s%d", col, summaryStart+3), moneyStyle)
+	}
+	for _, cell := range []string{
+		fmt.Sprintf("B%d", summaryStart+2),
+		fmt.Sprintf("D%d", summaryStart+3),
+		fmt.Sprintf("F%d", summaryStart+3),
+		fmt.Sprintf("H%d", summaryStart+3),
+	} {
+		_ = workbook.SetCellStyle(sheet, cell, cell, cellStyle)
+	}
+
+	termsStart := summaryStart + 6
+	_ = workbook.MergeCell(sheet, fmt.Sprintf("A%d", termsStart), fmt.Sprintf("%s%d", lastColumn, termsStart))
+	_ = workbook.SetCellValue(sheet, fmt.Sprintf("A%d", termsStart), "Terms and Conditions")
+	_ = workbook.SetCellStyle(sheet, fmt.Sprintf("A%d", termsStart), fmt.Sprintf("%s%d", lastColumn, termsStart), sectionStyle)
+	_ = workbook.MergeCell(sheet, fmt.Sprintf("A%d", termsStart+1), fmt.Sprintf("%s%d", lastColumn, termsStart+4))
+	_ = workbook.SetCellValue(sheet, fmt.Sprintf("A%d", termsStart+1), data.TermsAndConditions)
+	_ = workbook.SetCellStyle(sheet, fmt.Sprintf("A%d", termsStart+1), fmt.Sprintf("%s%d", lastColumn, termsStart+4), cellStyle)
+	_ = workbook.SetRowHeight(sheet, termsStart+1, 120)
+
+	_ = workbook.SetColWidth(sheet, "A", "B", 10)
+	_ = workbook.SetColWidth(sheet, "C", "C", 28)
+	_ = workbook.SetColWidth(sheet, "D", "E", 20)
+	_ = workbook.SetColWidth(sheet, "F", "G", 38)
+	_ = workbook.SetColWidth(sheet, "H", "I", 12)
+	_ = workbook.SetColWidth(sheet, "J", "AD", 15)
+	_ = workbook.SetPanes(sheet, &excelize.Panes{Freeze: true, Split: false, XSplit: 0, YSplit: tableStart, TopLeftCell: "A17", ActivePane: "bottomLeft"})
+
+	return nil
 }
 
 func writeStandaloneCostingWorkbook(data CostingExportData, outputPath string) error {
@@ -17966,6 +18495,10 @@ func writeStandaloneCostingWorkbook(data CostingExportData, outputPath string) e
 		}
 	}
 
+	if err := appendDetailedCostingWorkbookSheet(workbook, data); err != nil {
+		return err
+	}
+
 	if err := workbook.SaveAs(outputPath); err != nil {
 		return fmt.Errorf("failed to write standalone XLSX file: %v", err)
 	}
@@ -17974,11 +18507,14 @@ func writeStandaloneCostingWorkbook(data CostingExportData, outputPath string) e
 }
 
 // sanitizeFileName removes invalid characters from filename
-// getExportDir returns the canonical export directory for a given document type and entity.
-// Structure: EXPORTS/{Year}/Customers/{EntityName}/{Category}/
+// getExportDir returns the canonical export directory for generated files.
+// Client builds write to a shallow user-facing folder, while still grouping
+// customer-facing documents by customer:
+// Documents/AsymmFlow Exports/{Customer}/{Category}/
+// Documents/AsymmFlow Exports/Suppliers/{Supplier}/{Category}/
 //
-//	EXPORTS/{Year}/Suppliers/{EntityName}/{Category}/
-//	EXPORTS/{Year}/Reports/
+// If the user's Documents folder cannot be resolved, it falls back to the
+// application data root.
 //
 // Category mapping:
 //
@@ -17989,28 +18525,30 @@ func (a *App) getExportDir(entityType, entityName, category string, docYear int)
 	if paths == nil {
 		return filepath.Join(".", "EXPORTS")
 	}
-	if docYear <= 0 {
-		docYear = time.Now().Year()
+	root := filepath.Join(paths.ProjectRoot, "EXPORTS")
+	if homeDir, err := os.UserHomeDir(); err == nil && strings.TrimSpace(homeDir) != "" {
+		root = filepath.Join(homeDir, "Documents", "AsymmFlow Exports")
 	}
-	yearStr := fmt.Sprintf("%d", docYear)
-	safeName := sanitizeFileName(entityName)
+	safeCategory := sanitizeFileName(category)
+	if safeCategory == "" || safeCategory == "unnamed" {
+		safeCategory = "General"
+	}
+	safeEntity := sanitizeFileName(entityName)
 
 	var dir string
 	switch strings.ToLower(entityType) {
 	case "customer":
-		if safeName == "" || safeName == "unnamed" {
-			dir = filepath.Join(paths.ProjectRoot, "EXPORTS", yearStr, "Customers", "Unassigned", category)
-		} else {
-			dir = filepath.Join(paths.ProjectRoot, "EXPORTS", yearStr, "Customers", safeName, category)
+		if safeEntity == "" || safeEntity == "unnamed" {
+			safeEntity = "Unassigned_Customer"
 		}
+		dir = filepath.Join(root, safeEntity, safeCategory)
 	case "supplier":
-		if safeName == "" || safeName == "unnamed" {
-			dir = filepath.Join(paths.ProjectRoot, "EXPORTS", yearStr, "Suppliers", "Unassigned", category)
-		} else {
-			dir = filepath.Join(paths.ProjectRoot, "EXPORTS", yearStr, "Suppliers", safeName, category)
+		if safeEntity == "" || safeEntity == "unnamed" {
+			safeEntity = "Unassigned_Supplier"
 		}
+		dir = filepath.Join(root, "Suppliers", safeEntity, safeCategory)
 	default:
-		dir = filepath.Join(paths.ProjectRoot, "EXPORTS", yearStr, "Reports")
+		dir = filepath.Join(root, "Reports")
 	}
 	os.MkdirAll(dir, 0755)
 	return dir

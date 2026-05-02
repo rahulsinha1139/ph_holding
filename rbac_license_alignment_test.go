@@ -41,12 +41,17 @@ func TestSeedDefaultRoles_AllowsStartupSystemContext(t *testing.T) {
 	require.Contains(t, salesRole.Permissions, "suppliers:create")
 	require.Contains(t, salesRole.Permissions, "po:view")
 	require.Contains(t, salesRole.Permissions, "invoices:create")
+	require.Contains(t, salesRole.Permissions, "invoices:update")
+	require.Contains(t, salesRole.Permissions, "delivery_notes:create")
+	require.Contains(t, salesRole.Permissions, "delivery_notes:update")
+	require.True(t, app.CheckPermissionByRole("sales", "offers:update"))
 
 	var operationsRole Role
 	require.NoError(t, app.db.Where("name = ?", "operations").First(&operationsRole).Error)
 	require.Contains(t, operationsRole.Permissions, "po:create")
 	require.Contains(t, operationsRole.Permissions, "delivery_notes:view")
 	require.Contains(t, operationsRole.Permissions, "invoices:create")
+	require.Contains(t, operationsRole.Permissions, "invoices:update")
 }
 
 func TestRequirePermission_FallsBackToLicenseWhenUserRoleIsStale(t *testing.T) {
@@ -70,6 +75,10 @@ func TestRequirePermission_FallsBackToLicenseWhenUserRoleIsStale(t *testing.T) {
 	require.NoError(t, app.requirePermission("po:view"))
 	require.NoError(t, app.requirePermission("orders:update"))
 	require.NoError(t, app.requirePermission("invoices:create"))
+	require.NoError(t, app.requirePermission("invoices:update"))
+	require.NoError(t, app.requirePermission("delivery_notes:create"))
+	require.NoError(t, app.requirePermission("delivery_notes:update"))
+	require.NoError(t, app.requirePermission("offers:update"))
 	require.Error(t, app.requirePermission("finance:view"))
 }
 
@@ -107,6 +116,9 @@ func TestGetUserPermissions_MergesCurrentUserRoleWithLicensePermissions(t *testi
 	require.Contains(t, perms, "suppliers:create")
 	require.Contains(t, perms, "po:view")
 	require.Contains(t, perms, "invoices:create")
+	require.Contains(t, perms, "invoices:update")
+	require.Contains(t, perms, "delivery_notes:create")
+	require.Contains(t, perms, "delivery_notes:update")
 }
 
 func TestUpdateRFQNotes_RequiresOffersEditPermission(t *testing.T) {
@@ -257,4 +269,107 @@ func TestSeedDefaultRoles_HybridFeaturePermissionsAreAssignedByRole(t *testing.T
 	require.Contains(t, staffRole.Permissions, "notifications:view")
 	require.NotContains(t, staffRole.Permissions, "expenses:view")
 	require.NotContains(t, staffRole.Permissions, "payroll:view")
+}
+
+func rolePermissionMapGrants(roleName, permission string) bool {
+	for _, granted := range rolePermissions[roleName] {
+		if permissionGranted(granted, permission) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRBACWorkflowMatrixMatchesSeededRolesAndLicenseRoles(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.SeedDefaultRoles())
+
+	tests := []struct {
+		role  string
+		allow []string
+		deny  []string
+	}{
+		{
+			role: "manager",
+			allow: []string{
+				"finance:view", "finance:create",
+				"payments:create", "payments:record",
+				"invoices:create", "invoices:update",
+				"po:create", "po:approve",
+				"delivery_notes:dispatch", "delivery_notes:confirm",
+				"documents:create", "documents:classify",
+				"reports:generate",
+			},
+			deny: []string{"payments:delete", "users:manage"},
+		},
+		{
+			role: "sales",
+			allow: []string{
+				"offers:create", "offers:update",
+				"rfq:create",
+				"orders:create", "orders:update",
+				"invoices:create", "invoices:update",
+				"po:create",
+				"delivery_notes:create", "delivery_notes:update",
+				"documents:create", "documents:classify",
+				"reports:view",
+			},
+			deny: []string{
+				"finance:view", "finance:create",
+				"payments:create",
+				"delivery_notes:dispatch", "delivery_notes:confirm",
+				"users:view", "users:manage",
+			},
+		},
+		{
+			role: "operations",
+			allow: []string{
+				"orders:update",
+				"invoices:create", "invoices:update",
+				"po:create", "po:update", "po:send",
+				"delivery_notes:create", "delivery_notes:dispatch", "delivery_notes:confirm",
+				"grn:create",
+				"documents:create", "documents:classify",
+				"settings:view", "reports:view",
+			},
+			deny: []string{
+				"finance:view", "finance:create",
+				"payments:create",
+				"offers:create",
+				"users:view", "users:manage",
+			},
+		},
+		{
+			role: "staff",
+			allow: []string{
+				"dashboard:view",
+				"customers:view", "suppliers:view",
+				"offers:view", "orders:view", "invoices:view", "payments:view",
+				"documents:view", "documents:create", "documents:classify",
+				"settings:view", "reports:view",
+			},
+			deny: []string{
+				"offers:create",
+				"orders:create", "invoices:create",
+				"po:create",
+				"delivery_notes:create",
+				"finance:view", "finance:create",
+				"payments:create",
+				"users:view", "users:manage",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.role, func(t *testing.T) {
+			for _, permission := range tt.allow {
+				require.True(t, app.CheckPermissionByRole(tt.role, permission), "seeded %s should allow %s", tt.role, permission)
+				require.True(t, rolePermissionMapGrants(tt.role, permission), "license %s should allow %s", tt.role, permission)
+			}
+			for _, permission := range tt.deny {
+				require.False(t, app.CheckPermissionByRole(tt.role, permission), "seeded %s should deny %s", tt.role, permission)
+				require.False(t, rolePermissionMapGrants(tt.role, permission), "license %s should deny %s", tt.role, permission)
+			}
+		})
+	}
 }

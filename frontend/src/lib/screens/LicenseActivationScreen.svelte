@@ -13,10 +13,10 @@
     let error = "";
 
     // Valid role codes for license keys
-    const VALID_ROLES = ['ADM', 'MGR', 'SLS', 'OPS', 'DEV'];
+    const VALID_ROLES = ['ADM', 'MGR', 'SLS', 'OPS', 'STF', 'DEV'];
 
     // Validate license key format: PH-{3 letters}-{6 alphanumeric}
-    const LICENSE_KEY_PATTERN = /^PH-(ADM|MGR|SLS|OPS|DEV)-[A-Z0-9]{6}$/;
+    const LICENSE_KEY_PATTERN = /^PH-(ADM|MGR|SLS|OPS|STF|DEV)-[A-Z0-9]{6}$/;
 
     // Format key as user types (uppercase, add dashes)
     function formatKey(event: Event) {
@@ -37,7 +37,7 @@
 
         // Validate format when complete length is reached
         if (licenseKey.length === 13 && !LICENSE_KEY_PATTERN.test(licenseKey)) {
-            error = "Invalid key format. Use PH-XXX-YYYYYY where XXX is ADM, MGR, SLS, OPS, or DEV";
+            error = "Invalid key format. Use PH-XXX-YYYYYY where XXX is ADM, MGR, SLS, OPS, STF, or DEV";
         } else if (licenseKey.length === 13) {
             error = ""; // Clear error if valid
         }

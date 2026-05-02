@@ -2,6 +2,8 @@ package main
 
 import (
 	"embed"
+	"fmt"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -12,6 +14,9 @@ import (
 var assets embed.FS
 
 func main() {
+	resetStartupDiagnostics()
+	appendStartupDiagnostic("MAIN: starting Wails runtime")
+
 	// Create an instance of the app structure
 	app := NewApp()
 
@@ -41,6 +46,7 @@ func main() {
 	})
 
 	if err != nil {
-		println("Error:", err.Error())
+		appendStartupDiagnostic("MAIN: Wails runtime returned error: %v", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
 	}
 }

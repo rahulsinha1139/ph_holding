@@ -426,7 +426,7 @@ func (a *App) ChatWithButler(message string) (ButlerResponse, error) {
 		if !hasFinanceAccess {
 			log.Printf("🔒 Butler financial query blocked: user role=%s license role=%s lacks finance:view", userRole, licenseRole)
 			return ButlerResponse{
-				Message:    "Financial data access requires manager or admin privileges.\n\nYou can still ask me about:\n• Customer information\n• Supplier details\n• Order status\n• Operations and pipeline\n\nFor financial reports and metrics, please contact your manager.",
+				Message:    "Financial data access requires manager or admin privileges.\n\nYou can still ask me about:\n• RFQ, offer, and order status by number\n• Item, model, serial, and product lookups\n• Customer emails and follow-ups\n• Sales pipeline status without revenue, profit, margin, cash, AR/AP, or payment figures\n\nFor financial reports and metrics, please contact your manager.",
 				Actions:    []ButlerAction{},
 				Confidence: 0.95,
 				Context: map[string]interface{}{
@@ -785,6 +785,10 @@ func (a *App) buildIntentContext(intent Intent) map[string]interface{} {
 		}
 	}
 
+	if !hasFinanceAccess {
+		a.redactRestrictedBusinessContext(context)
+	}
+
 	return context
 }
 
@@ -912,6 +916,10 @@ func (a *App) buildFullContext(intent Intent) map[string]interface{} {
 
 	// Competition — win/loss analysis, ABB flag, lost reasons, win rate by product
 	context["competition_analysis"] = a.getCompetitionContext()
+
+	if !hasFinanceAccess {
+		a.redactRestrictedBusinessContext(context)
+	}
 
 	return context
 }
@@ -3786,6 +3794,173 @@ func (a *App) redactFinancialFromContext(ctx map[string]interface{}) {
 	delete(ctx, "top_outstanding_customers")
 }
 
+func (a *App) redactRestrictedBusinessContext(context map[string]interface{}) {
+	if context == nil {
+		return
+	}
+
+	for _, key := range []string{
+		"financial_data",
+		"ar_summary",
+		"cashflow_projection",
+		"banking_data",
+		"credit_notes",
+		"dso_analysis",
+		"customer_profitability",
+		"forecast_intelligence",
+		"business_period_summary",
+		"business_year_summary",
+		"customer_period_summary",
+	} {
+		delete(context, key)
+	}
+
+	if customerCtx, ok := context["customer_data"].(map[string]interface{}); ok {
+		a.redactFinancialFromContext(customerCtx)
+	}
+	if supplierCtx, ok := context["supplier_data"].(map[string]interface{}); ok {
+		redactSupplierFinancialContext(supplierCtx)
+	}
+	if operationsCtx, ok := context["operations_data"].(map[string]interface{}); ok {
+		redactOperationsFinancialContext(operationsCtx)
+	}
+	if riskCtx, ok := context["risk_data"].(map[string]interface{}); ok {
+		redactRiskFinancialContext(riskCtx)
+	}
+	redactFinancialKeysRecursive(context)
+}
+
+func redactSupplierFinancialContext(ctx map[string]interface{}) {
+	for _, key := range []string{
+		"yearly_purchase_summary",
+		"recent_purchase_orders",
+		"total_po_value_recent",
+		"recent_supplier_invoices",
+		"total_supplier_invoice_value",
+		"recent_payments",
+	} {
+		delete(ctx, key)
+	}
+	redactListMaps(ctx["issues"], func(row map[string]interface{}) {
+		delete(row, "cost_bhd")
+	})
+	redactListMaps(ctx["top_suppliers"], func(row map[string]interface{}) {
+		delete(row, "total_po")
+	})
+}
+
+func redactOperationsFinancialContext(ctx map[string]interface{}) {
+	for _, key := range []string{
+		"active_order_value_bhd",
+		"active_po_value_bhd",
+		"active_offer_pipeline_bhd",
+	} {
+		delete(ctx, key)
+	}
+	redactListMaps(ctx["recent_orders"], func(row map[string]interface{}) {
+		delete(row, "total")
+	})
+	redactListMaps(ctx["recent_offers_detail"], func(row map[string]interface{}) {
+		delete(row, "value")
+		delete(row, "margin")
+		redactListMaps(row["items"], func(item map[string]interface{}) {
+			delete(item, "unit_price_bhd")
+			delete(item, "margin_pct")
+		})
+	})
+	redactListMaps(ctx["active_opportunities"], func(row map[string]interface{}) {
+		delete(row, "revenue")
+	})
+}
+
+func redactRiskFinancialContext(ctx map[string]interface{}) {
+	for _, key := range []string{
+		"total_overdue_bhd",
+		"total_overdue_ap_bhd",
+		"overdue_invoices",
+		"overdue_supplier_invoices",
+		"high_risk_customers",
+		"critical_risk_customers",
+	} {
+		delete(ctx, key)
+	}
+}
+
+func redactListMaps(value interface{}, redact func(map[string]interface{})) {
+	switch entries := value.(type) {
+	case []map[string]interface{}:
+		for _, entry := range entries {
+			redact(entry)
+		}
+	case []interface{}:
+		for _, entry := range entries {
+			if row, ok := entry.(map[string]interface{}); ok {
+				redact(row)
+			}
+		}
+	}
+}
+
+func redactFinancialKeysRecursive(value interface{}) {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		for key, child := range typed {
+			if isRestrictedFinanceContextKey(key) {
+				delete(typed, key)
+				continue
+			}
+			redactFinancialKeysRecursive(child)
+		}
+	case []map[string]interface{}:
+		for _, child := range typed {
+			redactFinancialKeysRecursive(child)
+		}
+	case []interface{}:
+		for _, child := range typed {
+			redactFinancialKeysRecursive(child)
+		}
+	}
+}
+
+func isRestrictedFinanceContextKey(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	if lower == "" {
+		return false
+	}
+	fragments := []string{
+		"amount",
+		"balance",
+		"bhd",
+		"cash",
+		"cost",
+		"credit_limit",
+		"expense",
+		"grand_total",
+		"margin",
+		"outstanding",
+		"payable",
+		"payment",
+		"price",
+		"profit",
+		"receivable",
+		"revenue",
+		"salary",
+		"subtotal",
+		"supplier_invoice_value",
+		"total_po",
+		"total_value",
+		"unit_price",
+		"value_bhd",
+		"weighted_pipeline",
+	}
+	for _, fragment := range fragments {
+		if strings.Contains(lower, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
 // getSupplierContext fetches supplier-specific data
 func (a *App) getSupplierContext(entityName string) map[string]interface{} {
 	result := make(map[string]interface{})
@@ -5944,13 +6119,19 @@ DATA-GROUNDING RULES:
 - If the user asks whether the system has access to a year's data, answer with coverage across invoices, orders, offers, and opportunities rather than only invoiced revenue.
 - If period summary is empty, do not infer from lifetime data and present period-specific result only.
 
+RBAC AND SALES-SAFE RULES:
+- Treat context as role-scoped. If financial_data, ar_summary, banking_data, cashflow_projection, dso_analysis, customer_profitability, and forecast_intelligence are absent, the current user is not cleared for finance.
+- For finance-restricted users, do not answer revenue, profit, margin, cash, AR/AP, bank, payment, outstanding, salary, total sales, or pipeline-value questions, even if the wording references sales pipeline or offers.
+- Sales-safe help is allowed for RFQ/offer/order status by number, item/model/serial lookup, customer emails, follow-ups, delivery status, and next actions without money, margin, cash, or payment figures.
+- If a restricted user asks for financial details, briefly say manager/admin permission is required and offer the closest sales-safe route.
+
 COMPANY PROFILE:
 - Industry: Process Instrumentation & Control Systems (Bahrain)
 - Currency: BHD (Bahraini Dinar, 3 decimal places = fils)
 - Divisions: PH Trading (primary) + AHS Trading (secondary)
 - VAT Rate: 10%%
 
-FULL DATA ACCESS — you have live data on:
+ROLE-SCOPED DATA ACCESS — you may have live data on:
 • CUSTOMERS: live customer accounts — profiles, grades (A/B/C/D), payment behavior, credit limits, outstanding AR, invoices, orders, contacts, CRM notes, follow-up tasks, active offers, AR risk tiers
 • CUSTOMER ACTIVITY: Dormant customers (no orders 6+ months), new customers this year, lapsed customers (ordered last year but not this year), customer retention signals
 • CUSTOMER PROFITABILITY: Revenue and gross margin by customer — top earners, lowest margin accounts (pricing opportunities)
@@ -5984,17 +6165,17 @@ COMPLETE BUSINESS DATA:
 %s
 
 YOUR CAPABILITIES:
-1. Answer ANY question about the business — customers, suppliers, finance, operations, pipeline, risk
+1. Answer role-authorized questions about the business — customers, suppliers, finance, operations, pipeline, risk
 2. Discuss FUTURE PROSPECTS — use only explicit pipeline data, payment predictions, and win probability from context
 3. STRATEGIC ANALYSIS — recommend actions, identify patterns, surface insights from data trends
-4. FORECASTING — estimate future revenue using pipeline × close probability, analyze payment timing risk
+4. FORECASTING — for finance-cleared users estimate future revenue using pipeline × close probability and payment timing risk; for sales users limit pipeline answers to status/count/next action
 5. WHAT-IF SCENARIOS — reason about hypothetical situations with explicit stated assumptions
 7. RELATIONSHIP ANALYSIS — cross-reference customers, orders, offers, and payments to find patterns
 8. DAILY PRIORITIZATION — tell the team what to focus on today: overdue collections, expiring offers, stuck deliveries, pending approvals
 9. CUSTOMER HEALTH — identify dormant accounts, churn risk, and new customer opportunities worth nurturing
 10. COMPETITIVE INTELLIGENCE — analyze win/loss patterns and pricing vs margin trade-offs when present in context
 11. SUPPLIER BENCHMARKING — compare lead times and QC reliability by supplier from context
-12. PAYMENT BEHAVIOR — DSO by customer, predict who will pay late, recommend collection priority
+12. PAYMENT BEHAVIOR — finance-cleared only: DSO by customer, predict who will pay late, recommend collection priority
 13. SERVICE FOLLOW-UPS — identify installed equipment that is likely due for calibration, warranty action, or annual service
 14. DOCUMENT READINESS — before drafting quotations or service offers, verify resolved customer/contact context and missing fields
 15. PROACTIVE BRIEFING — summarize what needs attention today across collections, operations, service, and approvals

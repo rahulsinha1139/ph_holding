@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -233,6 +234,7 @@ func TestAHSDocumentExportsUseAHSTradingBranding(t *testing.T) {
 }
 
 func TestAHSCostingExportEmbedsLetterhead(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	app := setupTestApp(t)
 
 	exportPath, err := app.ExportCostingToPDF(CostingExportData{
@@ -274,4 +276,52 @@ func TestAHSCostingExportEmbedsLetterhead(t *testing.T) {
 	data, readErr := os.ReadFile(exportPath)
 	require.NoError(t, readErr)
 	require.Contains(t, string(data), "/Subtype /Image", "costing export should embed the company letterhead image")
+}
+
+func TestCostingPDFWrapsLongCommercialDescription(t *testing.T) {
+	if _, err := exec.LookPath("pdftotext"); err != nil {
+		t.Skip("pdftotext not available for PDF text-order regression")
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	app := setupTestApp(t)
+
+	exportPath, err := app.ExportCostingToPDF(CostingExportData{
+		Division:      "PH Trading",
+		Date:          "2026-04-27",
+		PreparedBy:    "Sales Test",
+		CustomerName:  "Seapeak Bahrain Operations LLC",
+		Subject:       "Unit Price",
+		EstDelivery:   "5-7 weeks",
+		DeliveryTerms: "DAP Bahrain at your store or PH Trading",
+		PaymentTerms:  "30 days from Date of Delivery",
+		QuoteType:     "Quotation",
+		VatRate:       10,
+		LineItems: []CostingExportLineItem{
+			{
+				SlNo:           1,
+				Equipment:      "Differential Pressure Indicator Transmitter Deltabar FMD78, Endress+Hauser, NEMA4X/6P IP66/IP67, with SW Filter-A DP",
+				Model:          "FMD78-AEA7HE3AFMBW+PDSCZ1",
+				Quantity:       1,
+				SuggestedPrice: 540,
+				TotalPrice:     540,
+			},
+		},
+		Subtotal:   540,
+		VAT:        54,
+		GrandTotal: 594,
+		Body:       "Please find our pricing and scope below.",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if exportPath != "" {
+			_ = os.Remove(exportPath)
+		}
+	})
+
+	output, err := exec.Command("pdftotext", exportPath, "-").Output()
+	require.NoError(t, err)
+	text := string(output)
+	require.NotContains(t, text, "540.000IP66", "description text must not run into the unit price column")
+	require.Contains(t, text, "FMD78-AEA7HE3AFMBW+PDSCZ1")
 }

@@ -28,6 +28,7 @@
     GetFXGainLossSummary,
   } from '../../../wailsjs/go/main/App';
   import { escapeHtml } from '$lib/utils/escapeHtml';
+  import { formatNumber } from '$lib/utils/formatters';
 
   // Design system components
   import PageLayout from '$lib/components/layout/PageLayout.svelte';
@@ -236,12 +237,12 @@
 
   // Formatters
   function formatBHD(value: number): string {
-    return value?.toFixed(3) || '0.000';
+    return formatNumber(value || 0, 3);
   }
 
   function formatAmount(value: number, currency: string): string {
     const decimals = currency === 'BHD' || currency === 'KWD' || currency === 'OMR' ? 3 : 2;
-    return value?.toFixed(decimals) || '0.00';
+    return formatNumber(value || 0, decimals);
   }
 
   function formatDate(dateValue: any): string {

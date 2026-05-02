@@ -5,6 +5,7 @@
   import Button from '$lib/components/ui/Button.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
+  import { formatNumber } from '$lib/utils/formatters';
 
   const dispatch = createEventDispatcher();
 
@@ -17,18 +18,23 @@
   let selectedYear = currentYear;
   const availableYears = [0, ...Array.from({ length: Math.max(currentYear - earliestDashboardYear + 1, 1) }, (_, index) => currentYear - index)];
   let showCreateModal = false;
-  let newCustomer = {
-    business_name: '',
-    customer_code: '',
-    customer_type: 'Corporate',
-    address_line1: '',
-    city: '',
-    country: 'Bahrain',
-    trn: '',
-    industry: '',
-    payment_grade: 'B',
-    relation_years: 0
-  };
+
+  function emptyCustomerForm() {
+    return {
+      business_name: '',
+      customer_code: '',
+      customer_type: '',
+      address_line1: '',
+      city: '',
+      country: '',
+      trn: '',
+      industry: '',
+      payment_grade: '',
+      relation_years: 0
+    };
+  }
+
+  let newCustomer = emptyCustomerForm();
 
   async function loadDashboard() {
     loading = true;
@@ -80,24 +86,11 @@
   }
 
   function resetForm() {
-    newCustomer = {
-      business_name: '',
-      customer_code: '',
-      customer_type: 'Corporate',
-      address_line1: '',
-      city: '',
-      country: 'Bahrain',
-      trn: '',
-      industry: '',
-      payment_grade: 'B',
-      relation_years: 0
-    };
+    newCustomer = emptyCustomerForm();
   }
 
   function formatCurrency(value: number): string {
-    if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
-    if (value >= 1000) return `${(value / 1000).toFixed(0)}K`;
-    return value.toFixed(0);
+    return formatNumber(value || 0, 0);
   }
 
   $: filteredCustomers = dashboard?.customers?.filter((c: any) => {
@@ -257,7 +250,7 @@
             <option value="C">Grade C</option>
             <option value="D">Grade D</option>
           </select>
-          <Button variant="primary" on:click={() => showCreateModal = true}>+ New Customer</Button>
+          <Button variant="primary" on:click={() => { resetForm(); showCreateModal = true; }}>+ New Customer</Button>
         </div>
       </div>
 
@@ -307,6 +300,7 @@
         <div class="form-group">
           <label for="crm-customer-type">Customer Type</label>
           <select id="crm-customer-type" bind:value={newCustomer.customer_type}>
+            <option value="" disabled>Select type</option>
             <option value="Corporate">Corporate</option>
             <option value="Government">Government</option>
             <option value="SME">SME</option>
@@ -316,6 +310,7 @@
         <div class="form-group">
           <label for="crm-customer-grade">Payment Grade</label>
           <select id="crm-customer-grade" bind:value={newCustomer.payment_grade}>
+            <option value="" disabled>Select grade</option>
             <option value="A">Grade A</option>
             <option value="B">Grade B</option>
             <option value="C">Grade C</option>

@@ -65,3 +65,57 @@ func TestGenerateDeliveryNotePDFKeepsFiveCompactRowsOnOnePage(t *testing.T) {
 	pageMarkers := regexp.MustCompile(`/Type\s*/Page\b`).FindAll(data, -1)
 	require.Len(t, pageMarkers, 1)
 }
+
+func TestGenerateDeliveryNotePDFPaginatesManyRowsBeforeFooter(t *testing.T) {
+	t.Chdir(t.TempDir())
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&DeliveryNote{}, &DeliveryNoteItem{}))
+
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	customerID := seedTestCustomer(t, app.db, "VEOLIA ENERGY GULF WLL")
+	orderID := uuid.New().String()
+
+	order := Order{
+		Base:             Base{ID: orderID, CreatedAt: now, UpdatedAt: now},
+		OrderNumber:      "037PONO2600011",
+		CustomerPONumber: "037PONO2600011",
+		CustomerID:       customerID,
+		CustomerName:     "VEOLIA ENERGY GULF WLL",
+		OrderDate:        time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC),
+		RequiredDate:     now,
+		Status:           "Delivered",
+		Division:         "PH Trading",
+	}
+	require.NoError(t, app.db.Create(&order).Error)
+
+	items := make([]DeliveryNoteItem, 0, 28)
+	for i := 0; i < 28; i++ {
+		items = append(items, DeliveryNoteItem{
+			Base:              Base{ID: uuid.New().String(), CreatedAt: now, UpdatedAt: now},
+			Description:       "Micropilot FMR20B - FMR20B field instrument with calibration certificate",
+			ProductCode:       "FMR20B",
+			QuantityOrdered:   3,
+			QuantityDelivered: 3,
+		})
+	}
+
+	dn := DeliveryNote{
+		Base:            Base{ID: uuid.New().String(), CreatedAt: now, UpdatedAt: now},
+		DNNumber:        "DN-037PONO2600011",
+		OrderID:         orderID,
+		CustomerID:      customerID,
+		DeliveryDate:    now,
+		DeliveryAddress: "Veolia Energy Gulf WLL\nHello hello",
+		Status:          "Delivered",
+		Items:           items,
+	}
+	require.NoError(t, app.db.Create(&dn).Error)
+
+	path, err := app.GenerateDeliveryNotePDF(dn.ID)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	pageMarkers := regexp.MustCompile(`/Type\s*/Page\b`).FindAll(data, -1)
+	require.GreaterOrEqual(t, len(pageMarkers), 2)
+}

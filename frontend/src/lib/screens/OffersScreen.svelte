@@ -11,7 +11,7 @@
    * - Link to parent RFQs
    */
 
-  import { onMount } from 'svelte';
+  import { createEventDispatcher, onMount } from 'svelte';
   import { fade } from 'svelte/transition';
   import { main } from '../../../wailsjs/go/models';
   import {
@@ -21,9 +21,6 @@
     MarkOfferWon,
     MarkOfferLost,
     ListCustomers,
-    AddOfferFollowUp,
-    GetPendingFollowUps,
-    CompleteOfferFollowUp,
     GenerateOfferPDF,
     OpenExportedFile,
     AddOfferNote,
@@ -41,10 +38,12 @@
   import FormGroup from '$lib/components/ui/FormGroup.svelte';
   import { toast } from '$lib/stores/toasts';
   import { escapeHtml } from '$lib/utils/escapeHtml';
+  import { formatBHD, formatBHDValue } from '$lib/utils/formatters';
 
   // Props
-export let embedded = false;
-$: embedded;
+  export let embedded = false;
+  $: embedded;
+  const dispatch = createEventDispatcher();
 
   type OfferStage = 'all' | 'RFQ' | 'Quoted' | 'Won' | 'Lost';
 
@@ -88,6 +87,8 @@ $: embedded;
     quote_type?: string;
     vat_rate?: number;
     terms_and_conditions?: string;
+    subject?: string;
+    body?: string;
     coc_coo?: string;
     test_certificate?: string;
     installation?: string;
@@ -129,69 +130,7 @@ $: embedded;
   let newNoteContent = '';
   let notesLoading = false;
 
-  // Follow-up state
-  let showFollowUpModal = false;
-  let followUpOffer: OfferDisplay | null = null;
-  let followUpDate = '';
-  let followUpNotes = '';
-  let pendingFollowUps: any[] = [];
-  let followUpLoading = false;
   let pdfLoading = false;
-
-  async function openFollowUpModal(offer: OfferDisplay) {
-    followUpOffer = offer;
-    followUpDate = '';
-    followUpNotes = '';
-    showFollowUpModal = true;
-  }
-
-  async function scheduleFollowUp() {
-    if (!followUpOffer || !followUpDate) return;
-
-    // Validate date is in the future
-    const selectedDate = new Date(followUpDate);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (selectedDate < today) {
-      toast.danger('Follow-up date must be in the future');
-      return;
-    }
-
-    followUpLoading = true;
-    try {
-      await AddOfferFollowUp(followUpOffer.id, followUpDate, followUpNotes);
-      showFollowUpModal = false;
-      toast.success('Follow-up scheduled');
-      await loadPendingFollowUps();
-    } catch (e) {
-      const errorMsg = e?.message || String(e);
-      toast.danger(`Failed to schedule follow-up: ${errorMsg}`);
-    } finally {
-      followUpLoading = false;
-    }
-  }
-
-  async function completeFollowUp(id: string) {
-    followUpLoading = true;
-    try {
-      await CompleteOfferFollowUp(id);
-      toast.success('Follow-up completed');
-      await loadPendingFollowUps();
-    } catch (e) {
-      const errorMsg = e?.message || String(e);
-      toast.danger(`Failed to complete follow-up: ${errorMsg}`);
-    } finally {
-      followUpLoading = false;
-    }
-  }
-
-  async function loadPendingFollowUps() {
-    try {
-      pendingFollowUps = await GetPendingFollowUps() || [];
-    } catch {
-      pendingFollowUps = [];
-    }
-  }
 
   // Form state
   let customers: main.CustomerMaster[] = [];
@@ -387,16 +326,6 @@ $: embedded;
                 Re-quote
               </button>
             ` : ''}
-            ${!isLost ? `
-              <button
-                class="action-btn action-btn-followup"
-                data-action="followup"
-                data-id="${row.id}"
-                aria-label="Schedule follow-up"
-              >
-                Follow-Up
-              </button>
-            ` : ''}
           </div>
         `;
       }
@@ -549,9 +478,38 @@ $: embedded;
     // This ensures all offers have proper line items from costing calculations
     toast.info('Opening Costing Sheet to create a new offer with line items');
 
+    dispatch('navigate', { screen: 'opportunities', tab: 'costing', message: 'Create offer from costing sheet' });
     window.dispatchEvent(new CustomEvent('navigateToScreen', {
-      detail: { screen: 'costing', message: 'Create offer from costing sheet' }
+      detail: { screen: 'opportunities', tab: 'costing', message: 'Create offer from costing sheet' }
     }));
+  }
+
+  function defaultExchangeRateForCurrency(currency: string): number {
+    switch ((currency || '').trim().toUpperCase()) {
+      case '':
+      case 'BHD':
+        return 1;
+      case 'EUR':
+        return 0.45;
+      case 'USD':
+        return 0.376;
+      case 'GBP':
+        return 0.52;
+      case 'CHF':
+        return 0.425;
+      case 'SAR':
+        return 0.100;
+      case 'AED':
+        return 0.102;
+      default:
+        return 1;
+    }
+  }
+
+  function offerItemExchangeRate(item: any): number {
+    const rate = Number(item.exchange_rate ?? item.exchangeRate ?? 0);
+    if (rate > 0 && rate <= 2) return rate;
+    return defaultExchangeRateForCurrency(item.currency || 'BHD');
   }
 
   function buildCostingPayloadFromOffer(offer: OfferDisplay) {
@@ -579,6 +537,17 @@ $: embedded;
         marginPercent: Number(item.margin_percent ?? item.marginPercent ?? 0) || 0,
         suggestedPrice: unitPrice,
         totalPrice,
+        exchangeRate: offerItemExchangeRate(item),
+        fobBHD: Number(item.fob_bhd ?? item.fobBHD ?? 0) || 0,
+        freightBHD: Number(item.freight_bhd ?? item.freightBHD ?? 0) || 0,
+        insurance: Number(item.insurance ?? 0) || 0,
+        customsPercent: Number(item.customs_percent ?? item.customsPercent ?? 5) || 0,
+        customsBHD: Number(item.customs_bhd ?? item.customsBHD ?? 0) || 0,
+        handlingPercent: Number(item.handling_percent ?? item.handlingPercent ?? 4) || 0,
+        handlingBHD: Number(item.handling_bhd ?? item.handlingBHD ?? 0) || 0,
+        financePercent: Number(item.finance_percent ?? item.financePercent ?? 1) || 0,
+        financeBHD: Number(item.finance_bhd ?? item.financeBHD ?? 0) || 0,
+        otherCosts: Number(item.other_costs ?? item.otherCosts ?? 0) || 0,
         userPrice: unitPrice,
         userPriceSet: unitPrice > 0,
       };
@@ -600,7 +569,7 @@ $: embedded;
       rfqReference: offer.customer_reference || offer.offer_number || '',
       folderNumber: offer.folder_number || '',
       costingId: offer.costing_id || offer.offer_number || '',
-      subject: offer.project_name ? `Sub: ${offer.project_name}` : `Sub: ${offer.customer_name || ''}`,
+      subject: offer.subject || (offer.project_name ? `Sub: ${offer.project_name}` : `Sub: ${offer.customer_name || ''}`),
       estDelivery: offer.delivery_weeks || '5-7 weeks',
       deliveryTerms: offer.delivery_terms || '',
       paymentTerms: offer.payment_terms || '',
@@ -618,7 +587,7 @@ $: embedded;
       vatRate,
       vat: Math.max(subtotal - discount, 0) * (vatRate / 100),
       grandTotal: Math.max(subtotal - discount, 0) * (1 + vatRate / 100),
-      body: '',
+      body: offer.body || '',
       termsAndConditions: offer.terms_and_conditions || '',
       quoteType: offer.quote_type || 'Quotation',
     };
@@ -628,8 +597,9 @@ $: embedded;
     const payload = buildCostingPayloadFromOffer(offer);
     sessionStorage.setItem('asymmflow.pendingCostingOffer', JSON.stringify(payload));
     toast.info(`Opening ${offer.offer_number || 'offer'} in Costing Sheet`);
+    dispatch('navigate', { screen: 'opportunities', tab: 'costing', offerId: offer.id });
     window.dispatchEvent(new CustomEvent('navigateToScreen', {
-      detail: { screen: 'costing', offerId: offer.id }
+      detail: { screen: 'opportunities', tab: 'costing', offerId: offer.id }
     }));
   }
 
@@ -790,7 +760,11 @@ $: embedded;
         attention_company: formData.attention_company,
         attention_phone: formData.attention_phone,
         attention_address: formData.attention_address,
+        subject: editingOffer.subject || '',
+        body: editingOffer.body || '',
         issued_by: formData.issued_by,
+        quote_type: editingOffer.quote_type || 'Quotation',
+        vat_rate: Number(editingOffer.vat_rate ?? 10),
         discount: 0,
         items: formData.items.map(item => ({
           description: item.description,
@@ -809,6 +783,7 @@ $: embedded;
           total_cost: item.total_cost || 0,
           margin_percent: item.margin_percent || 0,
           total_price: item.total_price || (item.quantity * item.unit_price) || 0,
+          exchange_rate: offerItemExchangeRate(item),
         })),
       } as any);
 
@@ -961,9 +936,6 @@ $: embedded;
       case 'requote':
         handleRequote(offer);
         break;
-      case 'followup':
-        openFollowUpModal(offer);
-        break;
     }
   }
 
@@ -1015,6 +987,8 @@ $: embedded;
       } as any);
       toast.success('Offer details saved');
       await loadOffers();
+      showViewModal = false;
+      viewOffer = null;
     } catch (e) {
       const errorMsg = e?.message || String(e);
       toast.danger(`Failed to save: ${errorMsg}`);
@@ -1113,7 +1087,6 @@ $: embedded;
 
   onMount(() => {
     loadOffers();
-    loadPendingFollowUps();
     loadOffersWithNoItems();
   });
 
@@ -1221,7 +1194,7 @@ $: embedded;
         <div class="stat">
           <div class="stat-label">Total Value</div>
           <div class="stat-value">
-            {companyScopedOffers.reduce((sum, o) => sum + o.total_value_bhd, 0).toFixed(3)} BHD
+            {formatBHD(companyScopedOffers.reduce((sum, o) => sum + (o.total_value_bhd || 0), 0))}
           </div>
         </div>
       </Card>
@@ -1331,7 +1304,7 @@ $: embedded;
               />
               <div class="item-total">
                 <div class="label">Total</div>
-                <div class="value">{(item.quantity * item.unit_price).toFixed(3)}</div>
+                <div class="value">{formatBHDValue(item.quantity * item.unit_price)}</div>
               </div>
               <button
                 type="button"
@@ -1347,7 +1320,7 @@ $: embedded;
 
         <div class="total-section">
           <div class="total-label">Total Value:</div>
-          <div class="total-value">{totalValue.toFixed(3)} BHD</div>
+          <div class="total-value">{formatBHD(totalValue)}</div>
         </div>
       {/if}
     </div>
@@ -1502,7 +1475,7 @@ $: embedded;
                 </div>
                 <div class="form-field">
                   <span class="field-label">Line Total</span>
-                  <div class="calculated-value">{(item.quantity * item.unit_price).toFixed(3)} BHD</div>
+                  <div class="calculated-value">{formatBHD(item.quantity * item.unit_price)}</div>
                 </div>
                 <div></div>
               </div>
@@ -1512,7 +1485,7 @@ $: embedded;
 
         <div class="total-section">
           <div class="total-label">Total Value:</div>
-          <div class="total-value">{totalValue.toFixed(3)} BHD</div>
+          <div class="total-value">{formatBHD(totalValue)}</div>
         </div>
       {/if}
     </div>
@@ -1541,7 +1514,7 @@ $: embedded;
     </FormGroup>
     <div class="modal-value">
       <span class="label">Order Value:</span>
-      <span class="value">{(actionOffer?.total_value_bhd || 0).toFixed(3)} BHD</span>
+      <span class="value">{formatBHD(actionOffer?.total_value_bhd || 0)}</span>
     </div>
   </div>
 
@@ -1595,7 +1568,7 @@ $: embedded;
     </FormGroup>
     <div class="modal-value lost">
       <span class="label">Lost Value:</span>
-      <span class="value">{(actionOffer?.total_value_bhd || 0).toFixed(3)} BHD</span>
+      <span class="value">{formatBHD(actionOffer?.total_value_bhd || 0)}</span>
     </div>
   </div>
 
@@ -1612,54 +1585,6 @@ $: embedded;
     </Button>
   </svelte:fragment>
 </WabiModal>
-
-<!-- Follow-Up Modal -->
-{#if showFollowUpModal}
-  <div
-    class="followup-overlay"
-    role="button"
-    tabindex="0"
-    on:click|self={() => showFollowUpModal = false}
-    on:keydown={(event) => (event.key === "Enter" || event.key === " ") && (showFollowUpModal = false)}
-  >
-    <div class="followup-modal" in:fade={{ duration: 150 }}>
-      <h3>Schedule Follow-Up</h3>
-      <p class="followup-offer">Offer: {followUpOffer?.offer_number || followUpOffer?.id?.slice(0,8)}</p>
-      <div class="followup-form">
-        <div class="form-group">
-          <label for="offer-followup-date">Follow-Up Date</label>
-          <input id="offer-followup-date" type="date" bind:value={followUpDate} min={new Date().toISOString().split('T')[0]} />
-        </div>
-        <div class="form-group">
-          <label for="offer-followup-notes">Notes</label>
-          <textarea id="offer-followup-notes" bind:value={followUpNotes} placeholder="What to follow up on..." rows="3"></textarea>
-        </div>
-        <div class="followup-actions">
-          <button class="btn-cancel" on:click={() => showFollowUpModal = false}>Cancel</button>
-          <button class="btn-confirm" on:click={scheduleFollowUp} disabled={!followUpDate || followUpLoading}>
-            {followUpLoading ? 'Processing...' : 'Schedule'}
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
-{/if}
-
-<!-- Pending Follow-Ups Panel -->
-{#if pendingFollowUps.length > 0}
-  <div class="pending-followups">
-    <h4>Pending Follow-Ups ({pendingFollowUps.length})</h4>
-    {#each pendingFollowUps.slice(0, 5) as fu}
-      <div class="followup-item">
-        <span class="followup-date">{new Date(fu.follow_up_date).toLocaleDateString()}</span>
-        <span class="followup-notes">{fu.notes || 'No notes'}</span>
-        <button class="followup-complete" on:click={() => completeFollowUp(fu.id)} disabled={followUpLoading}>
-          {followUpLoading ? 'Processing...' : 'Done'}
-        </button>
-      </div>
-    {/each}
-  </div>
-{/if}
 
 <!-- View Full Offer Details Modal (Fix #5 - Show ALL costing data) -->
 <WabiModal bind:open={showViewModal} title="Offer Details" size="xl">
@@ -1693,7 +1618,7 @@ $: embedded;
           </div>
           <div class="meta-item">
             <span class="meta-label">Total Value</span>
-            <span class="meta-value meta-value-highlight">{(viewOffer.total_value_bhd || 0).toFixed(3)} BHD</span>
+            <span class="meta-value meta-value-highlight">{formatBHD(viewOffer.total_value_bhd || 0)}</span>
           </div>
           <!-- Row 2: Editable Reference & Terms -->
           <div class="meta-item">
@@ -1775,22 +1700,22 @@ $: embedded;
                     </td>
                     <td class="col-qty">{item.quantity || 0}</td>
                     <td class="col-currency">{item.currency || 'BHD'}</td>
-                    <td class="col-cost">{(item.fob || 0).toFixed(3)}</td>
-                    <td class="col-cost">{(item.freight || 0).toFixed(3)}</td>
-                    <td class="col-cost">{(item.total_cost || 0).toFixed(3)}</td>
+                    <td class="col-cost">{formatBHDValue(item.fob || 0)}</td>
+                    <td class="col-cost">{formatBHDValue(item.freight || 0)}</td>
+                    <td class="col-cost">{formatBHDValue(item.total_cost || 0)}</td>
                     <td class="col-margin">{(item.margin_percent || 0).toFixed(1)}%</td>
-                    <td class="col-price">{(item.unit_price_bhd || item.unit_price || 0).toFixed(3)}</td>
-                    <td class="col-price total-col">{(item.total_price || ((item.quantity || 0) * (item.unit_price_bhd || item.unit_price || 0))).toFixed(3)}</td>
+                    <td class="col-price">{formatBHDValue(item.unit_price_bhd || item.unit_price || 0)}</td>
+                    <td class="col-price total-col">{formatBHDValue(item.total_price || ((item.quantity || 0) * (item.unit_price_bhd || item.unit_price || 0)))}</td>
                   </tr>
                 {/each}
               </tbody>
               <tfoot>
                 <tr class="totals-row">
                   <td colspan="7"></td>
-                  <td class="col-cost subtotal">{viewOffer.items.reduce((s, i) => s + (i.total_cost || 0), 0).toFixed(3)}</td>
+                  <td class="col-cost subtotal">{formatBHDValue(viewOffer.items.reduce((s, i) => s + (i.total_cost || 0), 0))}</td>
                   <td></td>
                   <td></td>
-                  <td class="col-price total-col grand-total">{(viewOffer.total_value_bhd || 0).toFixed(3)} BHD</td>
+                  <td class="col-price total-col grand-total">{formatBHD(viewOffer.total_value_bhd || 0)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -2030,158 +1955,6 @@ $: embedded;
   :global(.action-btn-requote:hover) {
     background: var(--brand-indigo);
     color: white;
-  }
-
-  :global(.action-btn-followup) {
-    background: rgba(0, 0, 0, 0.05);
-    color: var(--onyx, #1D1D1F);
-  }
-
-  :global(.action-btn-followup:hover) {
-    background: var(--onyx, #1D1D1F);
-    color: white;
-  }
-
-  /* Follow-Up Modal */
-  .followup-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.4);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-  }
-
-  .followup-modal {
-    background: var(--surface, #fff);
-    border-radius: 12px;
-    padding: 28px;
-    width: 400px;
-    max-width: 90vw;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.15);
-  }
-
-  .followup-modal h3 {
-    margin: 0 0 4px;
-    font-size: 18px;
-    font-weight: 600;
-  }
-
-  .followup-offer {
-    margin: 0 0 20px;
-    font-size: 13px;
-    color: var(--steel, #86868B);
-  }
-
-  .followup-form .form-group {
-    margin-bottom: 16px;
-  }
-
-  .followup-form label {
-    display: block;
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--steel, #86868B);
-    margin-bottom: 6px;
-    text-transform: uppercase;
-  }
-
-  .followup-form input,
-  .followup-form textarea {
-    width: 100%;
-    padding: 10px 12px;
-    border: 1px solid var(--border, #E5E5E5);
-    border-radius: 8px;
-    font-size: 14px;
-  }
-
-  .followup-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 12px;
-    margin-top: 20px;
-  }
-
-  .btn-cancel {
-    padding: 8px 16px;
-    background: transparent;
-    border: 1px solid var(--border, #E5E5E5);
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 13px;
-  }
-
-  .btn-confirm {
-    padding: 8px 16px;
-    background: var(--carbon, #000);
-    color: #fff;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 13px;
-  }
-
-  .btn-confirm:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  /* Pending Follow-Ups Panel */
-  .pending-followups {
-    margin-top: 24px;
-    padding: 16px;
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #E5E5E5);
-    border-radius: 8px;
-  }
-
-  .pending-followups h4 {
-    margin: 0 0 12px;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--onyx, #1D1D1F);
-  }
-
-  .followup-item {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 8px 0;
-    border-bottom: 1px solid var(--border, #E5E5E5);
-    font-size: 13px;
-  }
-
-  .followup-item:last-child {
-    border-bottom: none;
-  }
-
-  .followup-date {
-    font-weight: 500;
-    min-width: 90px;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .followup-notes {
-    flex: 1;
-    color: var(--steel, #86868B);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .followup-complete {
-    padding: 4px 10px;
-    background: var(--ether, #F5F5F7);
-    border: 1px solid var(--border, #E5E5E5);
-    border-radius: 4px;
-    font-size: 12px;
-    cursor: pointer;
-  }
-
-  .followup-complete:hover {
-    background: var(--carbon, #000);
-    color: #fff;
   }
 
   /* Won/Lost Modal Styles */

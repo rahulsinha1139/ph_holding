@@ -11,7 +11,7 @@
         GetRFQ,
         GetRFQComments,
         GetRFQTraceability,
-        UpdateOpportunityStage,
+        UpdateOpportunityStageWithVersion,
         UpdateRFQStage,
     } from "../../../wailsjs/go/main/App";
     import { devLog } from "$lib/utils/devLog";
@@ -109,14 +109,17 @@
     $: canViewManagementComments = managementRoles.has((currentUserRole || "").toLowerCase());
     $: canDeleteManagementComments = adminRoles.has((currentUserRole || "").toLowerCase());
     $: activePermissions = Array.isArray($permissions) ? $permissions : [];
-    function hasPermission(permission: string): boolean {
-        const permissionList = Array.isArray(activePermissions) ? activePermissions : [];
+    function hasPermission(permission: string, roleValue = currentUserRole, permissionValues = activePermissions): boolean {
+        const role = (roleValue || "").toLowerCase();
+        if (adminRoles.has(role)) return true;
+        if (managementRoles.has(role) && permission !== "comments:delete") return true;
+        const permissionList = Array.isArray(permissionValues) ? permissionValues : [];
         if (permissionList.includes("*") || permissionList.includes(permission)) return true;
         const [resource] = permission.split(":");
         return permissionList.includes(`${resource}:*`);
     }
-    $: canEditOffers = hasPermission("offers:edit");
-    $: canCreateOffers = hasPermission("offers:create");
+    $: canEditOffers = hasPermission("offers:edit", currentUserRole, activePermissions);
+    $: canCreateOffers = hasPermission("offers:create", currentUserRole, activePermissions);
 
     const formatter = new Intl.NumberFormat("en-BH", {
         style: "currency",
@@ -315,16 +318,22 @@
         updatingStage = true;
         try {
             if (isPipelineOpportunity) {
-                await UpdateOpportunityStage(String(opportunity.id), newStage);
+                const updated = await UpdateOpportunityStageWithVersion(String(opportunity.id), newStage, Number(opportunity.version || 0));
+                opportunity = { ...opportunity, ...updated, stage: updated?.stage || newStage, status: updated?.stage || newStage };
             } else {
                 await UpdateRFQStage(Number(opportunity.id), newStage);
+                opportunity = { ...opportunity, stage: newStage, status: newStage };
             }
-            opportunity = { ...opportunity, stage: newStage, status: newStage };
             dispatch("updated");
             toast.success(`Stage updated to ${newStage}`);
         } catch (err) {
             devLog.error("Failed to update stage:", err);
-            toast.danger("Failed to update stage");
+            const message = String(err?.message || err || "Failed to update stage");
+            if (message.toLowerCase().includes("conflict")) {
+                toast.warning("This opportunity changed on another device. The update was flagged for admin review.");
+            } else {
+                toast.danger("Failed to update stage");
+            }
         } finally {
             updatingStage = false;
         }
@@ -333,15 +342,17 @@
     function handleCreateCosting() {
         if (!opportunity?.id) return;
 
-        sessionStorage.setItem("asymmflow.pendingCostingOpportunity", JSON.stringify({
+        const pendingPayload = {
             id: String(opportunity.id),
             customer_name: opportunity.client || opportunity.customer || "",
             folder_number: opportunity.folder_number || opportunity.rfq_number || "",
             title: opportunity.project || opportunity.project_name || opportunity.title || "",
-        }));
+        };
+        sessionStorage.setItem("asymmflow.pendingCostingOpportunity", JSON.stringify(pendingPayload));
 
+        dispatch("createCosting", { opportunity, pendingPayload });
         window.dispatchEvent(new CustomEvent("navigateToScreen", {
-            detail: { screen: "costing" }
+            detail: { screen: "opportunities", tab: "costing" }
         }));
     }
 
@@ -442,6 +453,12 @@
                     <strong>{row.value}</strong>
                 </div>
             {/each}
+            {#if isPipelineOpportunity}
+                <div class="info-card">
+                    <span class="mono">Edit Version</span>
+                    <strong>v{opportunity.version || 1}</strong>
+                </div>
+            {/if}
         </section>
 
         <section class="comments-section">

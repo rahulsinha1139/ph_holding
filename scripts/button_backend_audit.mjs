@@ -6,6 +6,7 @@ import path from "node:path";
 const repoRoot = process.cwd();
 const inventoryPath = path.join(repoRoot, "docs/testing/UI_BUTTON_INVENTORY_2026_04_17.json");
 const outPath = path.join(repoRoot, "docs/testing/UI_BACKEND_ACTION_AUDIT_2026_04_17.md");
+const outJsonPath = path.join(repoRoot, "docs/testing/UI_BACKEND_ACTION_AUDIT_2026_04_17.json");
 
 if (!fs.existsSync(inventoryPath)) {
   console.error("Missing inventory JSON. Run: node scripts/button_inventory.mjs");
@@ -162,6 +163,11 @@ function firstFunctionCalls(click) {
     .replace(/^\([^)]*\)\s*=>\s*/, "")
     .replace(/^[A-Za-z_$][\w$]*\s*=>\s*/, "");
   return calledNames(stripped);
+}
+
+function handlerReferences(click) {
+  const direct = directIdentifier(click);
+  return direct ? [direct] : firstFunctionCalls(click);
 }
 
 function containsBackendCall(text, backendImports) {
@@ -373,7 +379,58 @@ for (const screen of screens) {
 }
 
 fs.writeFileSync(outPath, `${lines.join("\n")}\n`);
+
+function serializeButton(button, index) {
+  const references = handlerReferences(button.click || "");
+  const resolvedHandlers = references.map((name) => {
+    const body = button.screen.sourceInfo.functionBodies.get(name);
+    return {
+      name,
+      line: body?.line || null,
+      resolved: Boolean(body || button.screen.sourceInfo.backendImports.has(name) || button.screen.sourceInfo.knownNames.has(name)),
+    };
+  });
+  return {
+    audit_id: `BTN-${String(index + 1).padStart(3, "0")}`,
+    screen: button.screen.pageLabel,
+    file: button.screen.file,
+    line: button.line,
+    label: button.label,
+    click: button.click,
+    data_action: button.dataAction || "",
+    type: button.type || "",
+    category: button.category,
+    status: button.status,
+    backend_methods: button.backendMethods || [],
+    notes: button.notes,
+    handler_references: references,
+    resolved_handlers: resolvedHandlers,
+  };
+}
+
+const serializableButtons = allButtons.map(serializeButton);
+const auditJson = {
+  generated_at: new Date().toISOString(),
+  summary: {
+    actions_audited: allButtons.length,
+    backend_backed: backendBacked.length,
+    suspicious_unwired: suspicious.length,
+    runtime_manual: needsRuntime.length,
+  },
+  category_counts: Object.fromEntries([...categoryCounts.entries()].sort((a, b) => b[1] - a[1])),
+  status_counts: Object.fromEntries([...statusCounts.entries()].sort((a, b) => b[1] - a[1])),
+  buttons: serializableButtons,
+  runtime_manual_actions: serializableButtons
+    .filter((button) => ["Needs Runtime", "Needs Fix/Review"].includes(button.status))
+    .map((button, index) => ({
+      ...button,
+      runtime_id: `RT-${String(index + 1).padStart(3, "0")}`,
+    })),
+};
+fs.writeFileSync(outJsonPath, `${JSON.stringify(auditJson, null, 2)}\n`);
+
 console.log(`Wrote ${path.relative(repoRoot, outPath)}`);
+console.log(`Wrote ${path.relative(repoRoot, outJsonPath)}`);
 console.log(`Actions audited: ${allButtons.length}`);
 console.log(`Backend-backed: ${backendBacked.length}`);
 console.log(`Suspicious/unwired: ${suspicious.length}`);

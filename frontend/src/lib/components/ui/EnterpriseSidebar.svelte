@@ -419,10 +419,54 @@
         to { transform: rotate(360deg); }
     }
 
-    /* Mobile Hide */
     @media (max-width: 1024px) {
         .sidebar {
-            display: none; /* In production, would be a drawer */
+            right: 0;
+            bottom: auto;
+            width: 100%;
+            height: 72px;
+            flex-direction: row;
+            align-items: center;
+            border-right: 0;
+            border-bottom: 1px solid var(--border);
+            overflow-x: auto;
+            overflow-y: hidden;
+        }
+
+        .sidebar-header {
+            height: 72px;
+            flex: 0 0 auto;
+            padding: 0 12px;
+            border-bottom: 0;
+            border-right: 1px solid var(--border);
+        }
+
+        .brand-name,
+        .sync-status,
+        .sidebar-footer {
+            display: none;
+        }
+
+        .nav-list {
+            min-width: 0;
+            flex: 1;
+            flex-direction: row;
+            align-items: center;
+            padding: 0 8px;
+            gap: 4px;
+            overflow-x: auto;
+            overflow-y: hidden;
+        }
+
+        .nav-link {
+            flex: 0 0 auto;
+            min-height: 42px;
+            padding: 8px 10px;
+            white-space: nowrap;
+        }
+
+        .active-indicator {
+            display: none;
         }
     }
 </style>

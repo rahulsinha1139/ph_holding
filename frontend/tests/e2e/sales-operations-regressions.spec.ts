@@ -37,7 +37,7 @@ test.describe('Sales and operations regression smoke', () => {
     await expect(modal.getByRole('heading', { name: 'Items' })).toBeVisible();
     await expect(modal.getByText('Temperature transmitter')).toBeVisible();
     await expect(modal.getByText('Signal isolator')).toBeVisible();
-    await expect(modal.getByText('6820.000 EUR')).toBeVisible();
-    await expect(modal.getByText('2796.200 BHD')).toBeVisible();
+    await expect(modal.getByText('6,820.000 EUR')).toBeVisible();
+    await expect(modal.getByText('2,796.200 BHD')).toBeVisible();
   });
 });

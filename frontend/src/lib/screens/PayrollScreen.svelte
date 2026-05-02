@@ -3,6 +3,7 @@
   import { GetActiveBankAccounts } from "../../../wailsjs/go/main/App";
   import { EventsOff, EventsOn } from "../../../wailsjs/runtime/runtime";
   import { toast } from "../stores/toasts";
+  import { formatBHD } from "$lib/utils/formatters";
   import { listEmployeeProfiles, type EmployeeProfile } from "$lib/api/collaboration";
   import {
     approvePayrollRun,
@@ -118,7 +119,7 @@
   }
 
   function currency(value: number) {
-    return `${(value || 0).toFixed(3)} BHD`;
+    return formatBHD(value || 0);
   }
 
   function totalCompensation(profile: EmployeeCompensationProfile) {

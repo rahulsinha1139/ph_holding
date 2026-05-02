@@ -10,11 +10,13 @@ import (
 // P1 FIX #1: OFFER EXPIRY HANDLING
 // =============================================================================
 
-// ValidateOfferExpiry validates that ValidUntil/ValidityDate is in the future
+// ValidateOfferExpiry validates that ValidUntil/ValidityDate has not already passed.
 func ValidateOfferExpiry(validityDate time.Time) error {
 	now := time.Now()
-	if validityDate.Before(now) || validityDate.Equal(now) {
-		return fmt.Errorf("offer validity date must be in the future (received: %s, current: %s)",
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	validityDay := time.Date(validityDate.Year(), validityDate.Month(), validityDate.Day(), 0, 0, 0, 0, now.Location())
+	if validityDay.Before(today) {
+		return fmt.Errorf("offer validity date must be today or in the future (received: %s, current: %s)",
 			validityDate.Format("2006-01-02"), now.Format("2006-01-02"))
 	}
 	return nil
@@ -31,10 +33,11 @@ func (a *App) AutoExpireOffers() error {
 	}
 
 	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
-	// Find all active offers (Quoted stage) where ValidityDate has passed
+	// Find all active offers whose validity date ended before today.
 	result := a.db.Model(&Offer{}).
-		Where("stage IN (?, ?) AND validity_date < ?", "Quoted", "RFQ", now).
+		Where("stage IN (?, ?) AND validity_date < ?", "Quoted", "RFQ", today).
 		Update("stage", "Expired")
 
 	if result.Error != nil {
@@ -115,17 +118,17 @@ func (a *App) GetRFQTraceability(orderID string) (*PipelineTraceability, error) 
 }
 
 type PipelineTraceability struct {
-	OrderID      string  `json:"order_id"`
-	OrderNumber  string  `json:"order_number"`
-	RFQID        string  `json:"rfq_id"`
-	RFQFound     bool    `json:"rfq_found"`
-	RFQStatus    string  `json:"rfq_status"`
-	RFQCustomer  string  `json:"rfq_customer"`
-	OfferID      string  `json:"offer_id"`
-	OfferNumber  string  `json:"offer_number"`
-	OfferFound   bool    `json:"offer_found"`
-	OfferStage   string  `json:"offer_stage"`
-	OfferValue   float64 `json:"offer_value"`
+	OrderID     string  `json:"order_id"`
+	OrderNumber string  `json:"order_number"`
+	RFQID       string  `json:"rfq_id"`
+	RFQFound    bool    `json:"rfq_found"`
+	RFQStatus   string  `json:"rfq_status"`
+	RFQCustomer string  `json:"rfq_customer"`
+	OfferID     string  `json:"offer_id"`
+	OfferNumber string  `json:"offer_number"`
+	OfferFound  bool    `json:"offer_found"`
+	OfferStage  string  `json:"offer_stage"`
+	OfferValue  float64 `json:"offer_value"`
 }
 
 // =============================================================================
@@ -145,22 +148,22 @@ func (a *App) CreateCostingSheetVersion(originalID string, updatedBy string) (*D
 
 	// Create new version with incremented version number
 	newVersion := &DBCostingSheet{
-		Base:                 Base{ID: "", Version: original.Version + 1}, // ID auto-generated
-		CostingNumber:        fmt.Sprintf("%s-v%d", original.CostingNumber, original.Version+1),
-		CustomerID:           original.CustomerID,
-		CustomerName:         original.CustomerName,
-		CostingDate:          time.Now(),
-		ValidUntil:           original.ValidUntil,
-		SubtotalBHD:          original.SubtotalBHD,
-		TotalMarginBHD:       original.TotalMarginBHD,
-		ShippingCostBHD:      original.ShippingCostBHD,
-		CustomsDutyBHD:       original.CustomsDutyBHD,
-		ClearanceCostBHD:     original.ClearanceCostBHD,
-		HandlingCostBHD:      original.HandlingCostBHD,
-		AdditionalCostsBHD:   original.AdditionalCostsBHD,
-		GrandTotalBHD:        original.GrandTotalBHD,
-		Status:               "Draft", // New version starts as Draft
-		ConvertedToOfferID:   "",      // Not converted yet
+		Base:               Base{ID: "", Version: original.Version + 1}, // ID auto-generated
+		CostingNumber:      fmt.Sprintf("%s-v%d", original.CostingNumber, original.Version+1),
+		CustomerID:         original.CustomerID,
+		CustomerName:       original.CustomerName,
+		CostingDate:        time.Now(),
+		ValidUntil:         original.ValidUntil,
+		SubtotalBHD:        original.SubtotalBHD,
+		TotalMarginBHD:     original.TotalMarginBHD,
+		ShippingCostBHD:    original.ShippingCostBHD,
+		CustomsDutyBHD:     original.CustomsDutyBHD,
+		ClearanceCostBHD:   original.ClearanceCostBHD,
+		HandlingCostBHD:    original.HandlingCostBHD,
+		AdditionalCostsBHD: original.AdditionalCostsBHD,
+		GrandTotalBHD:      original.GrandTotalBHD,
+		Status:             "Draft", // New version starts as Draft
+		ConvertedToOfferID: "",      // Not converted yet
 	}
 
 	// Clone items
@@ -244,11 +247,11 @@ func (a *App) UpdateCostingSheetWithVersionCheck(sheetID string, updates map[str
 
 // MarginAlert represents a low-margin warning
 type MarginAlert struct {
-	Severity     string  `json:"severity"`      // "warning" or "critical"
-	Message      string  `json:"message"`
-	MarginPercent float64 `json:"margin_percent"`
-	Threshold    float64 `json:"threshold"`
-	Recommendation string `json:"recommendation"`
+	Severity       string  `json:"severity"` // "warning" or "critical"
+	Message        string  `json:"message"`
+	MarginPercent  float64 `json:"margin_percent"`
+	Threshold      float64 `json:"threshold"`
+	Recommendation string  `json:"recommendation"`
 }
 
 // CheckMarginThreshold validates margin and generates alerts
@@ -260,20 +263,20 @@ func CheckMarginThreshold(margin float64, totalValue float64) *MarginAlert {
 
 	if margin < CriticalThreshold {
 		return &MarginAlert{
-			Severity:      "critical",
-			Message:       fmt.Sprintf("CRITICAL: Gross margin %.2f%% is below %.0f%% threshold", margin, CriticalThreshold),
-			MarginPercent: margin,
-			Threshold:     CriticalThreshold,
+			Severity:       "critical",
+			Message:        fmt.Sprintf("CRITICAL: Gross margin %.2f%% is below %.0f%% threshold", margin, CriticalThreshold),
+			MarginPercent:  margin,
+			Threshold:      CriticalThreshold,
 			Recommendation: "This deal will likely result in a loss when accounting for overhead. Consider rejecting or renegotiating terms.",
 		}
 	}
 
 	if margin < WarningThreshold {
 		return &MarginAlert{
-			Severity:      "warning",
-			Message:       fmt.Sprintf("WARNING: Gross margin %.2f%% is below %.0f%% threshold", margin, WarningThreshold),
-			MarginPercent: margin,
-			Threshold:     WarningThreshold,
+			Severity:       "warning",
+			Message:        fmt.Sprintf("WARNING: Gross margin %.2f%% is below %.0f%% threshold", margin, WarningThreshold),
+			MarginPercent:  margin,
+			Threshold:      WarningThreshold,
 			Recommendation: "Low margin deal - requires management review and approval before proceeding.",
 		}
 	}
@@ -296,12 +299,12 @@ func (a *App) LogMarginAlert(entityType string, entityID string, alert *MarginAl
 
 	// Create alert record
 	alertRecord := &Alert{
-		Base:      Base{ID: ""},
-		AlertType: fmt.Sprintf("low_margin_%s", entityType),
-		Severity:  alert.Severity,
-		Title:     fmt.Sprintf("Low Margin %s", entityType),
-		Message:   fmt.Sprintf("%s\n\nEntity: %s\nRecommendation: %s", alert.Message, entityID, alert.Recommendation),
-		IsActive:  true,
+		Base:           Base{ID: ""},
+		AlertType:      fmt.Sprintf("low_margin_%s", entityType),
+		Severity:       alert.Severity,
+		Title:          fmt.Sprintf("Low Margin %s", entityType),
+		Message:        fmt.Sprintf("%s\n\nEntity: %s\nRecommendation: %s", alert.Message, entityID, alert.Recommendation),
+		IsActive:       true,
 		IsAcknowledged: false,
 	}
 

@@ -646,6 +646,9 @@ func (a *App) SendPurchaseOrder(id string) error {
 
 // DeletePurchaseOrder soft-deletes a purchase order
 func (a *App) DeletePurchaseOrder(id string) error {
+	if ok, err := a.guardDeleteOrRequest("po:delete", "purchase_order", id, "Purchase order"); !ok {
+		return err
+	}
 	if err := a.requirePermission("po:delete"); err != nil {
 		return err
 	}

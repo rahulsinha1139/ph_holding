@@ -42,6 +42,7 @@
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
   import { escapeHtml } from '$lib/utils/escapeHtml';
+  import { formatBHD, formatNumber } from '$lib/utils/formatters';
   import { permissions } from '$lib/stores/authContext';
 
   $: permissionList = Array.isArray($permissions) ? $permissions : [];
@@ -268,7 +269,7 @@
       sortable: true,
       width: '140px',
       render: (row: PODisplay) => {
-        return `<span style="font-family: var(--font-mono); font-weight: 500;">${row.subtotal_foreign.toFixed(3)} ${row.currency}</span>`;
+        return `<span style="font-family: var(--font-mono); font-weight: 500;">${formatNumber(row.subtotal_foreign, 3)} ${row.currency}</span>`;
       }
     },
     {
@@ -897,7 +898,7 @@
         <div class="stat">
           <div class="stat-label">Total Value (BHD)</div>
           <div class="stat-value">
-            {purchaseOrders.reduce((sum, p) => sum + p.total_bhd, 0).toFixed(3)}
+            {formatBHD(purchaseOrders.reduce((sum, p) => sum + (p.total_bhd || 0), 0))}
           </div>
         </div>
       </Card>
@@ -1056,7 +1057,7 @@
               />
               <div class="item-total">
                 <div class="label">Total</div>
-                <div class="value">{(item.quantity * item.unit_price_foreign).toFixed(3)} {formData.currency}</div>
+                <div class="value">{formatNumber(item.quantity * item.unit_price_foreign, 3)} {formData.currency}</div>
               </div>
               <button
                 type="button"
@@ -1074,20 +1075,20 @@
         <div class="totals-section">
           <div class="total-row">
             <div class="total-label">Subtotal:</div>
-            <div class="total-value">{totalForeign.toFixed(3)} {formData.currency}</div>
+            <div class="total-value">{formatNumber(totalForeign, 3)} {formData.currency}</div>
           </div>
           <div class="total-row">
             <div class="total-label">VAT (10%):</div>
-            <div class="total-value">{vatAmount.toFixed(3)} {formData.currency}</div>
+            <div class="total-value">{formatNumber(vatAmount, 3)} {formData.currency}</div>
           </div>
           <div class="total-row total-grand">
             <div class="total-label">Total ({formData.currency}):</div>
-            <div class="total-value">{totalWithVAT.toFixed(3)} {formData.currency}</div>
+            <div class="total-value">{formatNumber(totalWithVAT, 3)} {formData.currency}</div>
           </div>
           {#if formData.currency !== 'BHD'}
             <div class="total-row total-bhd">
               <div class="total-label">Total (BHD):</div>
-              <div class="total-value">{totalBHD.toFixed(3)} BHD</div>
+              <div class="total-value">{formatBHD(totalBHD)}</div>
             </div>
           {/if}
         </div>
@@ -1239,7 +1240,7 @@
               />
               <div class="item-total">
                 <div class="label">Total</div>
-                <div class="value">{(item.quantity * item.unit_price_foreign).toFixed(3)} {formData.currency}</div>
+                <div class="value">{formatNumber(item.quantity * item.unit_price_foreign, 3)} {formData.currency}</div>
               </div>
               <button
                 type="button"
@@ -1256,20 +1257,20 @@
         <div class="totals-section">
           <div class="total-row">
             <div class="total-label">Subtotal:</div>
-            <div class="total-value">{totalForeign.toFixed(3)} {formData.currency}</div>
+            <div class="total-value">{formatNumber(totalForeign, 3)} {formData.currency}</div>
           </div>
           <div class="total-row">
             <div class="total-label">VAT (10%):</div>
-            <div class="total-value">{vatAmount.toFixed(3)} {formData.currency}</div>
+            <div class="total-value">{formatNumber(vatAmount, 3)} {formData.currency}</div>
           </div>
           <div class="total-row total-grand">
             <div class="total-label">Total ({formData.currency}):</div>
-            <div class="total-value">{totalWithVAT.toFixed(3)} {formData.currency}</div>
+            <div class="total-value">{formatNumber(totalWithVAT, 3)} {formData.currency}</div>
           </div>
           {#if formData.currency !== 'BHD'}
             <div class="total-row total-bhd">
               <div class="total-label">Total (BHD):</div>
-              <div class="total-value">{totalBHD.toFixed(3)} BHD</div>
+              <div class="total-value">{formatBHD(totalBHD)}</div>
             </div>
           {/if}
         </div>
@@ -1341,8 +1342,8 @@
                 <tr>
                   <td>{item.description}</td>
                   <td class="right mono">{item.quantity}</td>
-                  <td class="right mono">{item.unit_price_foreign.toFixed(3)}</td>
-                  <td class="right mono">{item.total_foreign.toFixed(3)}</td>
+                  <td class="right mono">{formatNumber(item.unit_price_foreign, 3)}</td>
+                  <td class="right mono">{formatNumber(item.total_foreign, 3)}</td>
                 </tr>
               {/each}
             </tbody>
@@ -1354,20 +1355,20 @@
       <div class="view-totals">
         <div class="total-row">
           <div class="label">Net Amount:</div>
-          <div class="value mono">{viewingPO.subtotal_foreign.toFixed(3)} {viewingPO.currency}</div>
+          <div class="value mono">{formatNumber(viewingPO.subtotal_foreign, 3)} {viewingPO.currency}</div>
         </div>
         <div class="total-row">
           <div class="label">VAT:</div>
-          <div class="value mono">{viewingPO.vat_amount.toFixed(3)} {viewingPO.currency}</div>
+          <div class="value mono">{formatNumber(viewingPO.vat_amount, 3)} {viewingPO.currency}</div>
         </div>
         <div class="total-row grand">
           <div class="label">Total incl. VAT ({viewingPO.currency}):</div>
-          <div class="value mono">{viewingPO.total_foreign.toFixed(3)} {viewingPO.currency}</div>
+          <div class="value mono">{formatNumber(viewingPO.total_foreign, 3)} {viewingPO.currency}</div>
         </div>
         {#if viewingPO.currency !== 'BHD'}
           <div class="total-row bhd">
             <div class="label">Total (BHD):</div>
-            <div class="value mono">{viewingPO.total_bhd.toFixed(3)} BHD</div>
+            <div class="value mono">{formatBHD(viewingPO.total_bhd)}</div>
           </div>
         {/if}
       </div>

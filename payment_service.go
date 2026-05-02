@@ -268,6 +268,9 @@ func (a *App) GetAllPayments(limit, offset int) ([]Payment, error) {
 
 // DeletePayment reverses a payment by deleting it and restoring invoice balance
 func (a *App) DeletePayment(id string) error {
+	if ok, err := a.guardDeleteOrRequest("payments:delete", "payment", id, "Customer payment"); !ok {
+		return err
+	}
 	if err := a.requirePermission("payments:delete"); err != nil {
 		return err
 	}

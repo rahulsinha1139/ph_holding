@@ -33,7 +33,7 @@ type syncableModel struct {
 
 // getSyncableModels returns the list of models that should be synced
 func (s *DBSyncService) getSyncableModels() []syncableModel {
-	return []syncableModel{
+	base := []syncableModel{
 		{"customers", &CustomerMaster{}, &[]CustomerMaster{}},
 		{"suppliers", &SupplierMaster{}, &[]SupplierMaster{}},
 		{"invoices", &Invoice{}, &[]Invoice{}},
@@ -45,7 +45,22 @@ func (s *DBSyncService) getSyncableModels() []syncableModel {
 		{"offers", &Offer{}, &[]Offer{}},
 		{"delivery_notes", &DeliveryNote{}, &[]DeliveryNote{}},
 		{"goods_received_notes", &GoodsReceivedNote{}, &[]GoodsReceivedNote{}},
+		{"user_activity_sessions", &UserActivitySession{}, &[]UserActivitySession{}},
+		{"user_activity_events", &UserActivityEvent{}, &[]UserActivityEvent{}},
+		{"user_activity_weekly_summaries", &UserActivityWeeklySummary{}, &[]UserActivityWeeklySummary{}},
+		{"opportunity_edit_conflicts", &OpportunityEditConflict{}, &[]OpportunityEditConflict{}},
 	}
+	enabledTables := map[string]bool{}
+	for _, table := range activeDBSyncTables() {
+		enabledTables[table] = true
+	}
+	models := make([]syncableModel, 0, len(base))
+	for _, model := range base {
+		if enabledTables[model.tableName] {
+			models = append(models, model)
+		}
+	}
+	return models
 }
 
 // newSyncService creates a new sync service instance
@@ -102,6 +117,10 @@ func (a *App) pullChangesInternal(since time.Time) error {
 	totalConflicts := 0
 
 	for _, sm := range models {
+		if isUserActivitySyncTable(sm.tableName) && !a.currentSessionCanAccessActivityMonitoring() {
+			log.Printf("[SYNC] Skipping pull for %s: confidential activity monitoring is restricted to Rahul/Mentor", sm.tableName)
+			continue
+		}
 		pulled, conflicts, err := a.dbSyncService.pullTableChanges(localDB, remoteDB, sm, since)
 		if err != nil {
 			log.Printf("[SYNC] Error pulling %s: %v", sm.tableName, err)
@@ -268,8 +287,17 @@ func (s *DBSyncService) pushTableChanges(localDB, remoteDB *gorm.DB, sm syncable
 		lastSync = time.Time{} // Unix epoch if never synced
 	}
 
+	localColumnTypes, err := syncDBColumnTypes(localDB, sm.tableName)
+	if err != nil {
+		return 0, 0, fmt.Errorf("inspect local columns failed: %w", err)
+	}
+	if !syncColumnExists(localColumnTypes, "updated_at") {
+		log.Printf("[SYNC] Skipping push for %s: local table has no updated_at column", sm.tableName)
+		return 0, 0, nil
+	}
+
 	var localRecords []map[string]interface{}
-	err := localDB.Table(sm.tableName).
+	err = localDB.Table(sm.tableName).
 		Where("updated_at > ?", lastSync).
 		Find(&localRecords).Error
 
@@ -281,6 +309,11 @@ func (s *DBSyncService) pushTableChanges(localDB, remoteDB *gorm.DB, sm syncable
 		return 0, 0, nil
 	}
 
+	remoteColumnTypes, err := syncDBColumnTypes(remoteDB, sm.tableName)
+	if err != nil {
+		return 0, 0, fmt.Errorf("inspect remote columns failed: %w", err)
+	}
+
 	pushed := 0
 	conflicts := 0
 
@@ -289,6 +322,7 @@ func (s *DBSyncService) pushTableChanges(localDB, remoteDB *gorm.DB, sm syncable
 		if !ok {
 			continue
 		}
+		remoteLocalRecord := normalizeRecordForRemoteSyncSchema(localRecord, remoteColumnTypes)
 
 		// Check if record exists remotely
 		var remoteRecord map[string]interface{}
@@ -301,7 +335,7 @@ func (s *DBSyncService) pushTableChanges(localDB, remoteDB *gorm.DB, sm syncable
 
 		if result.RowsAffected == 0 {
 			// Record doesn't exist remotely - insert it
-			if err := remoteDB.Table(sm.tableName).Create(&localRecord).Error; err != nil {
+			if err := syncUpsertRecordByIDOrNaturalKey(remoteDB, sm.tableName, remoteLocalRecord, remoteColumnTypes); err != nil {
 				log.Printf("[SYNC] Error inserting remote record %s: %v", recordID, err)
 				continue
 			}
@@ -337,7 +371,7 @@ func (s *DBSyncService) pushTableChanges(localDB, remoteDB *gorm.DB, sm syncable
 
 			if shouldUpdate {
 				// Update remote record with local data
-				if err := remoteDB.Table(sm.tableName).Where("id = ?", recordID).Updates(localRecord).Error; err != nil {
+				if err := remoteDB.Table(sm.tableName).Where("id = ?", recordID).Updates(syncRecordWithoutID(remoteLocalRecord)).Error; err != nil {
 					log.Printf("[SYNC] Error updating remote record %s: %v", recordID, err)
 					continue
 				}

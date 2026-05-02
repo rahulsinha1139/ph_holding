@@ -215,6 +215,37 @@ func TestCollaborativeTaskFlow_CreatesNotificationsAndSupportsReadLifecycle(t *t
 	require.NotNil(t, updated.ReadAt)
 }
 
+func TestListMyCollaborativeTasks_ResolvesActivatedLicenseByPreferredName(t *testing.T) {
+	app := setupHybridFeatureTestApp(t)
+	adminContext := seedCurrentAdminContext(t, app, "Rahul")
+
+	assignee := createEmployeeForTest(t, app, "Abhie Admin", "Abhie", "Management", "Manager")
+	task, err := app.CreateCollaborativeTask(TaskItem{
+		Title:              "Review mentor dashboard tasks",
+		Description:        "Confirm assigned tasks land on the user's dashboard.",
+		TaskType:           "internal",
+		Priority:           "high",
+		AssigneeEmployeeID: &assignee.ID,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, app.db.Model(&LicenseKey{}).
+		Where("key = ?", adminContext.LicenseKey).
+		Updates(map[string]interface{}{"activated": false, "device_hash": ""}).Error)
+	seedLicenseRecord(t, app, "PH-MGR-ABHIE1", "manager", "Abhie", true, app.getDeviceHash())
+
+	current, err := app.GetCurrentEmployeeContext()
+	require.NoError(t, err)
+	require.Equal(t, assignee.ID, current.EmployeeID)
+	require.Equal(t, "Abhie Admin", current.EmployeeName)
+
+	myTasks, err := app.ListMyCollaborativeTasks(false)
+	require.NoError(t, err)
+	require.Len(t, myTasks, 1)
+	require.Equal(t, task.ID, myTasks[0].ID)
+	require.Equal(t, "Abhie Admin", myTasks[0].AssigneeName)
+}
+
 func TestAddCollaborativeTaskComment_AllowsViewOnlyCollaborator(t *testing.T) {
 	app := setupHybridFeatureTestApp(t)
 	seedCurrentAdminContext(t, app, "Rahul")

@@ -154,7 +154,11 @@ func buildCostingExportDataFromOffer(offer Offer, customer CustomerMaster, custo
 
 	customerName := firstNonEmptyString(strings.TrimSpace(offer.CustomerName), strings.TrimSpace(customer.BusinessName), strings.TrimSpace(offer.AttentionCompany))
 	contactPerson := firstNonEmptyString(strings.TrimSpace(offer.AttentionPerson), strings.TrimSpace(customerContact.ContactName))
-	subject := firstNonEmptyString(strings.TrimSpace(offer.ProjectName), strings.TrimSpace(offer.CustomerReference), strings.TrimSpace(offer.FolderNumber), customerName)
+	subject := firstNonEmptyString(strings.TrimSpace(offer.Subject), strings.TrimSpace(offer.ProjectName), strings.TrimSpace(offer.CustomerReference), strings.TrimSpace(offer.FolderNumber), customerName)
+	body := firstNonEmptyString(
+		strings.TrimSpace(offer.Body),
+		"We thank you for the opportunity and are pleased to submit our techno-commercial offer for your review. Please find our pricing and scope below.",
+	)
 	quoteType := firstNonEmptyString(strings.TrimSpace(offer.QuoteType), "Quotation")
 
 	return CostingExportData{
@@ -181,7 +185,7 @@ func buildCostingExportDataFromOffer(offer Offer, customer CustomerMaster, custo
 		PlaceOfSupply:      "Kingdom of Bahrain",
 		TaxCategory:        "Standard",
 		CustomerTRN:        strings.TrimSpace(customer.TRN),
-		Body:               "We thank you for the opportunity and are pleased to submit our techno-commercial offer for your review. Please find our pricing and scope below.",
+		Body:               body,
 		LineItems:          lineItems,
 		Subtotal:           subtotal,
 		Discount:           discount,

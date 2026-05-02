@@ -1,7 +1,11 @@
 package main
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/xuri/excelize/v2"
 )
 
 // Test vector PDF detection
@@ -85,6 +89,57 @@ func TestOCRResultSimple(t *testing.T) {
 
 	if result.Engine != "pymupdf" && result.Engine != "fly-runtime" {
 		t.Errorf("Unexpected engine: %s", result.Engine)
+	}
+}
+
+func TestSimpleOCRServiceProcessesExcelLocally(t *testing.T) {
+	tmpDir := t.TempDir()
+	workbookPath := filepath.Join(tmpDir, "rfq_fixture.xlsx")
+
+	f := excelize.NewFile()
+	sheet := f.GetSheetName(0)
+	if err := f.SetCellValue(sheet, "A1", "Request for Quotation"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetCellValue(sheet, "A2", "RFQ Number"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetCellValue(sheet, "B2", "RFQ-2026-LOCAL"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetCellValue(sheet, "A3", "Please quote analyzer spares"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SaveAs(workbookPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	service, err := NewSimpleOCRService()
+	if err != nil {
+		t.Fatalf("NewSimpleOCRService() failed: %v", err)
+	}
+
+	result, err := service.ProcessDocument(workbookPath, "rfq")
+	if err != nil {
+		t.Fatalf("ProcessDocument() failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Excel OCR result should be successful")
+	}
+	if result.Engine != "excelize" {
+		t.Fatalf("expected excelize engine, got %s", result.Engine)
+	}
+	if result.DocumentType != "rfq" {
+		t.Fatalf("expected rfq document type, got %s", result.DocumentType)
+	}
+	if !strings.Contains(result.Text, "Request for Quotation") {
+		t.Fatalf("expected extracted workbook text, got %q", result.Text)
+	}
+	if result.ExtractedData["source_type"] != "excel" {
+		t.Fatalf("expected source_type=excel, got %#v", result.ExtractedData["source_type"])
 	}
 }
 

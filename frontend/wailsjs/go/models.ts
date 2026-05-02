@@ -895,6 +895,28 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class BackupPolicy {
+	    auto_backup_enabled: boolean;
+	    frequency_days: number;
+	    last_backup_at: string;
+	    last_backup_path: string;
+	    next_backup_due_at: string;
+	    due_now: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new BackupPolicy(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.auto_backup_enabled = source["auto_backup_enabled"];
+	        this.frequency_days = source["frequency_days"];
+	        this.last_backup_at = source["last_backup_at"];
+	        this.last_backup_path = source["last_backup_path"];
+	        this.next_backup_due_at = source["next_backup_due_at"];
+	        this.due_now = source["due_now"];
+	    }
+	}
 	export class BalanceGap {
 	    from_statement_id: string;
 	    to_statement_id: string;
@@ -3057,8 +3079,12 @@ export namespace main {
 	}
 	export class CostingExportData {
 	    division: string;
+	    source: string;
+	    offerId: string;
+	    offerNumber: string;
 	    date: string;
 	    preparedBy: string;
+	    customerId: string;
 	    customerName: string;
 	    contactPerson: string;
 	    rfqReference: string;
@@ -3102,8 +3128,12 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.division = source["division"];
+	        this.source = source["source"];
+	        this.offerId = source["offerId"];
+	        this.offerNumber = source["offerNumber"];
 	        this.date = source["date"];
 	        this.preparedBy = source["preparedBy"];
+	        this.customerId = source["customerId"];
 	        this.customerName = source["customerName"];
 	        this.contactPerson = source["contactPerson"];
 	        this.rfqReference = source["rfqReference"];
@@ -4952,6 +4982,68 @@ export namespace main {
 	        this.severity = source["severity"];
 	        this.confidence = source["confidence"];
 	        this.timestamp = this.convertValues(source["timestamp"], time.Time);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DeleteApprovalRequest {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    version: number;
+	    created_by: string;
+	    entity_type: string;
+	    entity_id: string;
+	    entity_label: string;
+	    requested_by: string;
+	    requested_by_name: string;
+	    requested_role: string;
+	    reason: string;
+	    status: string;
+	    reviewed_by: string;
+	    reviewed_by_name: string;
+	    reviewed_at?: time.Time;
+	    review_notes: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeleteApprovalRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.version = source["version"];
+	        this.created_by = source["created_by"];
+	        this.entity_type = source["entity_type"];
+	        this.entity_id = source["entity_id"];
+	        this.entity_label = source["entity_label"];
+	        this.requested_by = source["requested_by"];
+	        this.requested_by_name = source["requested_by_name"];
+	        this.requested_role = source["requested_role"];
+	        this.reason = source["reason"];
+	        this.status = source["status"];
+	        this.reviewed_by = source["reviewed_by"];
+	        this.reviewed_by_name = source["reviewed_by_name"];
+	        this.reviewed_at = this.convertValues(source["reviewed_at"], time.Time);
+	        this.review_notes = source["review_notes"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -8457,6 +8549,8 @@ export namespace main {
 	    vat_rate: number;
 	    division: string;
 	    terms_and_conditions: string;
+	    subject: string;
+	    body: string;
 	    coc_coo: string;
 	    test_certificate: string;
 	    installation: string;
@@ -8505,6 +8599,8 @@ export namespace main {
 	        this.vat_rate = source["vat_rate"];
 	        this.division = source["division"];
 	        this.terms_and_conditions = source["terms_and_conditions"];
+	        this.subject = source["subject"];
+	        this.body = source["body"];
 	        this.coc_coo = source["coc_coo"];
 	        this.test_certificate = source["test_certificate"];
 	        this.installation = source["installation"];
@@ -9632,6 +9728,7 @@ export namespace main {
 	    total_cost: number;
 	    margin_percent: number;
 	    total_price: number;
+	    exchange_rate: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new OfferUpdateItem(source);
@@ -9654,6 +9751,7 @@ export namespace main {
 	        this.total_cost = source["total_cost"];
 	        this.margin_percent = source["margin_percent"];
 	        this.total_price = source["total_price"];
+	        this.exchange_rate = source["exchange_rate"];
 	    }
 	}
 	export class OfferUpdateData {
@@ -9675,6 +9773,8 @@ export namespace main {
 	    attention_company: string;
 	    attention_phone: string;
 	    attention_address: string;
+	    subject: string;
+	    body: string;
 	    quote_type: string;
 	    vat_rate: number;
 	    discount: number;
@@ -9705,6 +9805,8 @@ export namespace main {
 	        this.attention_company = source["attention_company"];
 	        this.attention_phone = source["attention_phone"];
 	        this.attention_address = source["attention_address"];
+	        this.subject = source["subject"];
+	        this.body = source["body"];
 	        this.quote_type = source["quote_type"];
 	        this.vat_rate = source["vat_rate"];
 	        this.discount = source["discount"];
@@ -9963,6 +10065,106 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class OpportunityEditConflict {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    version: number;
+	    created_by: string;
+	    opportunity_id: string;
+	    folder_number: string;
+	    operation: string;
+	    status: string;
+	    expected_version: number;
+	    current_version: number;
+	    attempted_by: string;
+	    attempted_role: string;
+	    proposed_changes_json: string;
+	    current_snapshot_json: string;
+	    base_snapshot_json: string;
+	    resolution_action: string;
+	    resolution_note: string;
+	    resolved_by: string;
+	    resolved_at?: time.Time;
+	
+	    static createFrom(source: any = {}) {
+	        return new OpportunityEditConflict(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.version = source["version"];
+	        this.created_by = source["created_by"];
+	        this.opportunity_id = source["opportunity_id"];
+	        this.folder_number = source["folder_number"];
+	        this.operation = source["operation"];
+	        this.status = source["status"];
+	        this.expected_version = source["expected_version"];
+	        this.current_version = source["current_version"];
+	        this.attempted_by = source["attempted_by"];
+	        this.attempted_role = source["attempted_role"];
+	        this.proposed_changes_json = source["proposed_changes_json"];
+	        this.current_snapshot_json = source["current_snapshot_json"];
+	        this.base_snapshot_json = source["base_snapshot_json"];
+	        this.resolution_action = source["resolution_action"];
+	        this.resolution_note = source["resolution_note"];
+	        this.resolved_by = source["resolved_by"];
+	        this.resolved_at = this.convertValues(source["resolved_at"], time.Time);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class OpportunityConflictResolutionResult {
+	    conflict: OpportunityEditConflict;
+	    opportunity: Opportunity;
+	
+	    static createFrom(source: any = {}) {
+	        return new OpportunityConflictResolutionResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conflict = this.convertValues(source["conflict"], OpportunityEditConflict);
+	        this.opportunity = this.convertValues(source["opportunity"], Opportunity);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class OpportunityDueData {
 	    id: string;
 	    folder_number: string;
@@ -10013,6 +10215,7 @@ export namespace main {
 		    return a;
 		}
 	}
+	
 	
 	
 	export class OrderFulfillmentItem {
@@ -13241,6 +13444,310 @@ export namespace main {
 	}
 	
 	
+	export class UserActivityChartRow {
+	    label: string;
+	    active_hours: number;
+	    meaningful_hours: number;
+	    efficiency_score: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new UserActivityChartRow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.label = source["label"];
+	        this.active_hours = source["active_hours"];
+	        this.meaningful_hours = source["meaningful_hours"];
+	        this.efficiency_score = source["efficiency_score"];
+	    }
+	}
+	export class UserActivityEventInput {
+	    session_id: string;
+	    event_time: string;
+	    event_type: string;
+	    category: string;
+	    screen: string;
+	    route: string;
+	    action_label: string;
+	    action_key: string;
+	    resource_type: string;
+	    resource_id: string;
+	    search_text: string;
+	    metadata: Record<string, any>;
+	    active_seconds: number;
+	    meaningful_seconds: number;
+	    idle_seconds: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new UserActivityEventInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.session_id = source["session_id"];
+	        this.event_time = source["event_time"];
+	        this.event_type = source["event_type"];
+	        this.category = source["category"];
+	        this.screen = source["screen"];
+	        this.route = source["route"];
+	        this.action_label = source["action_label"];
+	        this.action_key = source["action_key"];
+	        this.resource_type = source["resource_type"];
+	        this.resource_id = source["resource_id"];
+	        this.search_text = source["search_text"];
+	        this.metadata = source["metadata"];
+	        this.active_seconds = source["active_seconds"];
+	        this.meaningful_seconds = source["meaningful_seconds"];
+	        this.idle_seconds = source["idle_seconds"];
+	    }
+	}
+	export class UserActivityHeartbeatInput {
+	    session_id: string;
+	    screen: string;
+	    active_seconds: number;
+	    meaningful_seconds: number;
+	    idle_seconds: number;
+	    event_count: number;
+	    search_count: number;
+	    create_count: number;
+	    update_count: number;
+	    export_count: number;
+	    navigation_count: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new UserActivityHeartbeatInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.session_id = source["session_id"];
+	        this.screen = source["screen"];
+	        this.active_seconds = source["active_seconds"];
+	        this.meaningful_seconds = source["meaningful_seconds"];
+	        this.idle_seconds = source["idle_seconds"];
+	        this.event_count = source["event_count"];
+	        this.search_count = source["search_count"];
+	        this.create_count = source["create_count"];
+	        this.update_count = source["update_count"];
+	        this.export_count = source["export_count"];
+	        this.navigation_count = source["navigation_count"];
+	    }
+	}
+	export class UserActivityMetric {
+	    key: string;
+	    label: string;
+	    count: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new UserActivityMetric(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.label = source["label"];
+	        this.count = source["count"];
+	    }
+	}
+	export class UserActivitySession {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    version: number;
+	    created_by: string;
+	    session_id: string;
+	    started_at: time.Time;
+	    ended_at?: time.Time;
+	    last_seen_at: time.Time;
+	    user_id: string;
+	    employee_id: string;
+	    employee_name: string;
+	    license_key_hash: string;
+	    license_role: string;
+	    device_hash: string;
+	    source: string;
+	    primary_screen: string;
+	    is_open: boolean;
+	    active_seconds: number;
+	    meaningful_seconds: number;
+	    idle_seconds: number;
+	    event_count: number;
+	    search_count: number;
+	    create_count: number;
+	    update_count: number;
+	    export_count: number;
+	    navigation_count: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new UserActivitySession(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.version = source["version"];
+	        this.created_by = source["created_by"];
+	        this.session_id = source["session_id"];
+	        this.started_at = this.convertValues(source["started_at"], time.Time);
+	        this.ended_at = this.convertValues(source["ended_at"], time.Time);
+	        this.last_seen_at = this.convertValues(source["last_seen_at"], time.Time);
+	        this.user_id = source["user_id"];
+	        this.employee_id = source["employee_id"];
+	        this.employee_name = source["employee_name"];
+	        this.license_key_hash = source["license_key_hash"];
+	        this.license_role = source["license_role"];
+	        this.device_hash = source["device_hash"];
+	        this.source = source["source"];
+	        this.primary_screen = source["primary_screen"];
+	        this.is_open = source["is_open"];
+	        this.active_seconds = source["active_seconds"];
+	        this.meaningful_seconds = source["meaningful_seconds"];
+	        this.idle_seconds = source["idle_seconds"];
+	        this.event_count = source["event_count"];
+	        this.search_count = source["search_count"];
+	        this.create_count = source["create_count"];
+	        this.update_count = source["update_count"];
+	        this.export_count = source["export_count"];
+	        this.navigation_count = source["navigation_count"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class UserActivityUserReport {
+	    user_key: string;
+	    user_id: string;
+	    employee_id: string;
+	    employee_name: string;
+	    license_role: string;
+	    active_hours: number;
+	    meaningful_hours: number;
+	    idle_hours: number;
+	    efficiency_score: number;
+	    event_count: number;
+	    search_count: number;
+	    create_count: number;
+	    update_count: number;
+	    export_count: number;
+	    navigation_count: number;
+	    top_screens: UserActivityMetric[];
+	    top_actions: UserActivityMetric[];
+	    top_searches: UserActivityMetric[];
+	    last_activity_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UserActivityUserReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.user_key = source["user_key"];
+	        this.user_id = source["user_id"];
+	        this.employee_id = source["employee_id"];
+	        this.employee_name = source["employee_name"];
+	        this.license_role = source["license_role"];
+	        this.active_hours = source["active_hours"];
+	        this.meaningful_hours = source["meaningful_hours"];
+	        this.idle_hours = source["idle_hours"];
+	        this.efficiency_score = source["efficiency_score"];
+	        this.event_count = source["event_count"];
+	        this.search_count = source["search_count"];
+	        this.create_count = source["create_count"];
+	        this.update_count = source["update_count"];
+	        this.export_count = source["export_count"];
+	        this.navigation_count = source["navigation_count"];
+	        this.top_screens = this.convertValues(source["top_screens"], UserActivityMetric);
+	        this.top_actions = this.convertValues(source["top_actions"], UserActivityMetric);
+	        this.top_searches = this.convertValues(source["top_searches"], UserActivityMetric);
+	        this.last_activity_at = source["last_activity_at"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class UserActivityWeeklyReport {
+	    week_start: string;
+	    week_end: string;
+	    generated_at: string;
+	    total_active_hours: number;
+	    total_meaningful_hours: number;
+	    average_efficiency: number;
+	    user_count: number;
+	    users: UserActivityUserReport[];
+	    chart_rows: UserActivityChartRow[];
+	    monitoring_principals: string[];
+	    confidentiality_notice: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UserActivityWeeklyReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.week_start = source["week_start"];
+	        this.week_end = source["week_end"];
+	        this.generated_at = source["generated_at"];
+	        this.total_active_hours = source["total_active_hours"];
+	        this.total_meaningful_hours = source["total_meaningful_hours"];
+	        this.average_efficiency = source["average_efficiency"];
+	        this.user_count = source["user_count"];
+	        this.users = this.convertValues(source["users"], UserActivityUserReport);
+	        this.chart_rows = this.convertValues(source["chart_rows"], UserActivityChartRow);
+	        this.monitoring_principals = source["monitoring_principals"];
+	        this.confidentiality_notice = source["confidentiality_notice"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class UserSession {
 	    id: string;
 	    created_at: time.Time;

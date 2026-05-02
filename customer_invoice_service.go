@@ -1122,6 +1122,9 @@ func (a *App) UpdateCustomerInvoice(inv Invoice) (Invoice, error) {
 // Reverses QuantityInvoiced updates on order items
 // SECURITY: Blocks deletion if any payment history exists (audit requirement)
 func (a *App) DeleteCustomerInvoice(id string) error {
+	if ok, err := a.guardDeleteOrRequest("invoices:delete", "customer_invoice", id, "Customer invoice"); !ok {
+		return err
+	}
 	if err := a.requirePermission("invoices:delete"); err != nil {
 		return err
 	}

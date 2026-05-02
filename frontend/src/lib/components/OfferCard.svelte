@@ -7,9 +7,10 @@
      * - Lost reason capture modal
      * - Revision history indicator
      * - Email send action
-     */
+    */
     import { createEventDispatcher } from "svelte";
     import { slide } from "svelte/transition";
+    import { formatNumber } from "$lib/utils/formatters";
 
     export let offer;
     export const compact = false;
@@ -139,7 +140,7 @@
 
     <div class="meta">
         <span class="mono"
-            >Total {offer?.totalValue?.toFixed(2) || "0.00"} BHD</span
+            >Total {formatNumber(offer?.totalValue || 0, 2)} BHD</span
         >
         <span class="mono"
             >Margin {offer?.marginPercent?.toFixed(1) || "0.0"}%</span

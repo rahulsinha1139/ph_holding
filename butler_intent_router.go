@@ -55,7 +55,129 @@ func (a *App) tryButlerIntentClarificationFastPath(intent Intent, message string
 		}, true
 	}
 
+	if shouldAskButlerClarifyingQuestion(intent, q) {
+		msg := "I need one more bit of direction so I do not guess. Pick the closest route and I will continue from there."
+		return msg, buildButlerClarificationActions(hasFinanceAccess), true
+	}
+
 	return "", nil, false
+}
+
+func shouldAskButlerClarifyingQuestion(intent Intent, q string) bool {
+	q = strings.TrimSpace(q)
+	if q == "" || isCapabilitySelectionPrompt(q) || isBroadCapabilitiesQuestion(q) {
+		return false
+	}
+
+	words := strings.Fields(q)
+	if len(words) == 0 {
+		return false
+	}
+
+	exactVaguePrompts := map[string]bool{
+		"help":                true,
+		"please help":         true,
+		"do it":               true,
+		"do this":             true,
+		"do that":             true,
+		"do the needful":      true,
+		"handle this":         true,
+		"make it":             true,
+		"make this":           true,
+		"what about this":     true,
+		"tell me about it":    true,
+		"continue":            true,
+		"proceed":             true,
+		"run it":              true,
+		"check it":            true,
+		"save it":             true,
+		"fix it":              true,
+		"same as above":       true,
+		"same thing":          true,
+		"that one":            true,
+		"this one":            true,
+		"what should i do":    true,
+		"what should we do":   true,
+		"what is going on":    true,
+		"what is happening":   true,
+		"what's happening":    true,
+		"can you do this":     true,
+		"can you handle this": true,
+	}
+	if exactVaguePrompts[q] {
+		return true
+	}
+
+	if hasButlerReferenceToken(q) {
+		return false
+	}
+
+	knownBusinessSignals := []string{
+		"customer", "supplier", "offer", "quote", "quotation", "rfq", "order", "item", "model",
+		"serial", "delivery", "grn", "purchase", "po", "invoice", "payment", "cash", "revenue",
+		"profit", "margin", "task", "email", "follow up", "follow-up", "service", "calibration",
+	}
+	hasKnownSignal := false
+	for _, signal := range knownBusinessSignals {
+		if strings.Contains(q, signal) {
+			hasKnownSignal = true
+			break
+		}
+	}
+
+	vagueSignals := []string{" this", " that", " it", " thing", " needful", " same", " above", " those", " these"}
+	hasVagueSignal := false
+	padded := " " + q + " "
+	for _, signal := range vagueSignals {
+		if strings.Contains(padded, signal+" ") || strings.Contains(padded, signal) {
+			hasVagueSignal = true
+			break
+		}
+	}
+
+	if hasVagueSignal && len(words) <= 10 && !hasKnownSignal {
+		return true
+	}
+	if intent.Confidence < 0.35 && len(words) <= 8 && !hasKnownSignal {
+		return true
+	}
+
+	return false
+}
+
+func hasButlerReferenceToken(q string) bool {
+	for _, word := range strings.Fields(q) {
+		cleaned := strings.Trim(word, ".,:;()[]{}")
+		if len(cleaned) < 4 {
+			continue
+		}
+		hasDigit := false
+		for _, r := range cleaned {
+			if r >= '0' && r <= '9' {
+				hasDigit = true
+				break
+			}
+		}
+		if hasDigit {
+			return true
+		}
+	}
+	return false
+}
+
+func buildButlerClarificationActions(hasFinanceAccess bool) []ButlerAction {
+	actions := []ButlerAction{
+		butlerPromptAction("Find offer/order", "Find an offer or order by number and show status, customer, line items, and next action without financial totals.", "safe_sales_lookup", "offer_order"),
+		butlerPromptAction("Draft customer email", "Draft a customer email for an offer, delivery, follow-up, or clarification request. Ask me for the customer and reference number if missing.", "safe_sales_lookup", "email"),
+		butlerPromptAction("Search item/model", "Search items or products by model, long code, serial number, or offer/order number.", "safe_sales_lookup", "item_search"),
+		butlerPromptAction("Create follow-up", "Create a follow-up task. Ask me for customer, reference, owner, and due date if missing.", "safe_sales_lookup", "follow_up"),
+	}
+	if hasFinanceAccess {
+		actions = append(actions, butlerPromptAction("Manager finance view", "Show the manager finance view with revenue, margin, AR/AP, cash, and pipeline-value context for the current question.", "manager_finance_lookup", "finance"))
+	} else {
+		actions = append(actions, butlerPromptAction("Sales-safe pipeline", "Show sales pipeline by RFQ, offer, order count, status, owner, and next action only. Do not include revenue, profit, margin, cash, AR, AP, or payment amounts.", "safe_sales_lookup", "pipeline_status"))
+	}
+	return actions
 }
 
 func (a *App) tryGroundedARProjectionFastPath(intent Intent, message string, hasFinanceAccess bool) (string, []ButlerAction, bool) {

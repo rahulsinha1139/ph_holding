@@ -962,7 +962,7 @@
                 <td>{formatDate(cn.credit_note_date)}</td>
                 <td class="mono">{cn.invoice_number}</td>
                 <td>{cn.customer_name}</td>
-                <td class="right mono">{(cn.grand_total_bhd || 0).toFixed(3)}</td>
+                <td class="right mono">{formatBHD(cn.grand_total_bhd || 0)}</td>
                 <td>
                   <span class="cn-status" class:cn-draft={cn.status === 'Draft'} class:cn-issued={cn.status === 'Issued'} class:cn-applied={cn.status === 'Applied'}>
                     {cn.status}
@@ -1293,7 +1293,7 @@
               />
             </div>
             <div class="cn-item-total">
-              {(item.quantity * item.rate).toFixed(3)}
+              {formatBHD(item.quantity * item.rate)}
             </div>
             <button
               class="cn-remove-btn"
@@ -1309,7 +1309,7 @@
         <div class="cn-total-row">
           <span>Subtotal:</span>
           <span class="cn-total-value">
-            {cnItems.reduce((s, it) => s + (it.quantity * it.rate), 0).toFixed(3)} BHD
+            {formatBHD(cnItems.reduce((s, it) => s + (it.quantity * it.rate), 0))} BHD
           </span>
         </div>
       </div>
@@ -1454,8 +1454,8 @@
                   {/if}
                 </span>
                 <span class="item-col-qty">{item.quantity || 0}</span>
-                <span class="item-col-rate">{(item.rate || 0).toFixed(3)}</span>
-                <span class="item-col-total">{(item.total_bhd || 0).toFixed(3)}</span>
+                <span class="item-col-rate">{formatBHD(item.rate || 0)}</span>
+                <span class="item-col-total">{formatBHD(item.total_bhd || 0)}</span>
               </div>
             {/each}
             <div class="items-footer">

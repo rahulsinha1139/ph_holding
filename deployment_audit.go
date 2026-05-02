@@ -72,6 +72,10 @@ var criticalDeploymentTableNames = []string{
 	"payroll_run_items",
 	"payroll_components",
 	"payroll_payouts",
+	"user_activity_sessions",
+	"user_activity_events",
+	"user_activity_weekly_summaries",
+	"opportunity_edit_conflicts",
 }
 
 func criticalDeploymentModels() []interface{} {
@@ -104,6 +108,10 @@ func criticalDeploymentModels() []interface{} {
 		&PayrollRunItem{},
 		&PayrollComponent{},
 		&PayrollPayout{},
+		&UserActivitySession{},
+		&UserActivityEvent{},
+		&UserActivityWeeklySummary{},
+		&OpportunityEditConflict{},
 	}
 }
 
@@ -129,6 +137,12 @@ func (a *App) ensureCriticalDeploymentFoundations() error {
 	}
 	if err := a.EnsurePayrollFoundation(); err != nil {
 		failures = append(failures, fmt.Sprintf("payroll foundation: %v", err))
+	}
+	if err := a.EnsureUserActivityMonitoringFoundation(); err != nil {
+		failures = append(failures, fmt.Sprintf("activity monitoring foundation: %v", err))
+	}
+	if err := a.EnsureOpportunityConflictFoundation(); err != nil {
+		failures = append(failures, fmt.Sprintf("opportunity conflict foundation: %v", err))
 	}
 	a.ensureCrossModuleSchemaExtensions()
 	a.migrateInvoiceCheckConstraint()

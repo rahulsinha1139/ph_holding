@@ -2,6 +2,7 @@
     import { createEventDispatcher } from "svelte";
     import { SearchProducts } from "../../../wailsjs/go/main/App";
     import { fade } from "svelte/transition";
+    import { formatNumber } from "$lib/utils/formatters";
 
     export let value = "";
     export let placeholder = "Search products...";
@@ -80,7 +81,7 @@
                     <div class="code">{product.product_code || product.ProductCode}</div>
                     <div class="name">{product.product_name || product.ProductName}</div>
                     <div class="meta">
-                        <span class="price">BHD {(product.standard_cost_bhd || product.StandardCostBHD).toFixed(2)}</span>
+                        <span class="price">BHD {formatNumber(product.standard_cost_bhd || product.StandardCostBHD || 0, 2)}</span>
                         <span class="supplier">{product.supplier_code || product.SupplierCode}</span>
                     </div>
                 </button>

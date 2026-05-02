@@ -3,6 +3,7 @@
     import { fade, scale } from "svelte/transition";
     import { toast } from "$lib/stores/toasts";
     import WabiSpinner from "$lib/components/ui/WabiSpinner.svelte";
+    import { formatNumber } from "$lib/utils/formatters";
     import { AnalyzeDocumentWithButler, CheckDuplicateOpportunity, CheckDuplicateRFQ, GetActiveBankAccounts, ListCustomers, ListSuppliers } from "../../../wailsjs/go/main/App";
 
     export let show = false;
@@ -1572,9 +1573,9 @@
                                     <div class="items-summary">
                                         <span>{lineItems.length} {selectedType === 'bank_statement' ? 'transactions' : 'items'}</span>
                                         {#if selectedType === 'bank_statement'}
-                                            <span class="total">Debits: {editableData.currency} {lineItems.reduce((s, t) => s + (parseFloat(t.debit) || 0), 0).toFixed(3)} | Credits: {editableData.currency} {lineItems.reduce((s, t) => s + (parseFloat(t.credit) || 0), 0).toFixed(3)}</span>
+                                            <span class="total">Debits: {editableData.currency} {formatNumber(lineItems.reduce((s, t) => s + (parseFloat(t.debit) || 0), 0), 3)} | Credits: {editableData.currency} {formatNumber(lineItems.reduce((s, t) => s + (parseFloat(t.credit) || 0), 0), 3)}</span>
                                         {:else}
-                                            <span class="total">Total: {editableData.currency} {calculateTotal().toFixed(3)}</span>
+                                            <span class="total">Total: {editableData.currency} {formatNumber(calculateTotal(), 3)}</span>
                                         {/if}
                                     </div>
                                 {/if}

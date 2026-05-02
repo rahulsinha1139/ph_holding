@@ -43,9 +43,9 @@ test.describe('Pipeline and commercial smoke', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Operations' }).click();
-    await expect(page.getByRole('button', { name: /\+ New Purchase Order/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /\+ New (Supplier|Purchase) Order/ })).toBeVisible();
 
-    await page.getByRole('button', { name: /\+ New Purchase Order/ }).click();
+    await page.getByRole('button', { name: /\+ New (Supplier|Purchase) Order/ }).click();
     await expect(page.getByText('Create Purchase Order')).toBeVisible();
 
     await page.locator('.po-form select.select-input').first().selectOption({ label: 'Endress+Hauser' });
@@ -54,8 +54,8 @@ test.describe('Pipeline and commercial smoke', () => {
     await page.locator('.items-list input[type="number"]').first().fill('3');
     await page.locator('.items-list input[type="number"]').nth(1).fill('850');
 
-    await expect(page.getByText('2550.000 BHD').first()).toBeVisible();
-    await expect(page.getByText('2805.000 BHD').first()).toBeVisible();
+    await expect(page.getByText('2,550.000 BHD').first()).toBeVisible();
+    await expect(page.getByText('2,805.000 BHD').first()).toBeVisible();
     await expect(page.getByRole('button', { name: 'Create PO' })).toBeVisible();
   });
 });

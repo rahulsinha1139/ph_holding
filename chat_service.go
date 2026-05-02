@@ -464,50 +464,66 @@ func isDailyBriefingRequest(message string) bool {
 		strings.Contains(normalized, "give me a briefing")
 }
 
-// requiresFinancePrivilege enforces the finance gate only for truly finance-sensitive asks.
-// Some sales/operations prompts can be misclassified as "financial" due wording like "sold" or "quarter".
+// requiresFinancePrivilege enforces the finance gate for sensitive commercial asks.
+// Sales users can still ask operational questions about RFQs/offers/orders/items, but
+// money, margin, payment, cash, AR/AP, and pipeline-value answers stay manager/admin only.
 func requiresFinancePrivilege(intent Intent, message string) bool {
-	if intent.Domain != "financial" && intent.Domain != "risk" {
-		return false
-	}
-
 	normalized := strings.ToLower(strings.TrimSpace(message))
 	if normalized == "" {
+		return intent.Domain == "financial" || intent.Domain == "risk"
+	}
+
+	sensitiveSignals := []string{
+		" ar ", " a/r", " ap ", " a/p", "accounts receivable", "accounts payable",
+		"aging", "bank", "balance", "bhd", "cash", "cashflow", "cash flow",
+		"collection", "credit", "dso", "expense", "financial", "gross", "income",
+		"invoice amount", "invoice total", "margin", "money", "net", "outstanding",
+		"paid", "payable", "payment", "pipeline value", "profit", "profitability",
+		"receivable", "revenue", "salary", "slow payer", "total sales", "turnover",
+		"unpaid", "value of", "weighted pipeline",
+	}
+	hasSensitiveSignal := containsButlerFinanceSignal(normalized, sensitiveSignals)
+
+	salesSafeSignals := []string{
+		"draft email", "email", "follow up", "follow-up", "item", "items", "model",
+		"order status", "offer", "quotation", "quote", "rfq", "serial", "service due",
+		"delivery status", "product",
+	}
+	hasSalesSafeSignal := containsButlerFinanceSignal(normalized, salesSafeSignals)
+
+	if hasSensitiveSignal {
 		return true
 	}
 
-	opsSignals := []string{
-		"equipment sold",
-		"what was sold",
-		"sold to",
-		"what equipment",
-		"last quarter",
-		"last 2 quarter",
-		"last 2 quarters",
-		"last two quarter",
-		"last two quarters",
-		"opportunity",
-		"opportunities",
-		"pipeline",
-		"rfq",
-		"offer",
-		"quotation",
-		"order status",
-		"deliver",
-		"service due",
-		"invoices this quarter",
-		"invoices this year",
-		"invoice status",
-		"invoice for",
-		"invoices for",
-	}
-	for _, signal := range opsSignals {
-		if strings.Contains(normalized, signal) {
-			return false
-		}
+	if hasSalesSafeSignal {
+		return false
 	}
 
-	return true
+	if intent.Domain == "financial" || intent.Domain == "risk" {
+		return true
+	}
+
+	return false
+}
+
+func containsButlerFinanceSignal(normalized string, signals []string) bool {
+	padded := " " + normalized + " "
+	for _, signal := range signals {
+		signal = strings.ToLower(strings.TrimSpace(signal))
+		if signal == "" {
+			continue
+		}
+		if strings.Contains(signal, " ") || strings.Contains(signal, "/") {
+			if strings.Contains(normalized, signal) {
+				return true
+			}
+			continue
+		}
+		if strings.Contains(padded, " "+signal+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 // prepareButlerConversation ensures the conversation exists and persists the trigger message.
@@ -1575,7 +1591,7 @@ func (a *App) ChatWithButlerPersistent(conversationID, message string) (ChatResp
 	if requiresFinancePrivilege(intent, message) {
 		if !hasFinanceAccess {
 			log.Printf("🔒 Butler financial query blocked (persistent): user role=%s license role=%s lacks finance:view", currentUserRole, licenseRole)
-			errMsg := "Financial data access requires manager or admin privileges.\n\nYou can still ask me about:\n• Customer information\n• Supplier details\n• Order status\n• Operations and pipeline\n\nFor financial reports and metrics, please contact your manager."
+			errMsg := "Financial data access requires manager or admin privileges.\n\nYou can still ask me about:\n• RFQ, offer, and order status by number\n• Item, model, serial, and product lookups\n• Customer emails and follow-ups\n• Sales pipeline status without revenue, profit, margin, cash, AR/AP, or payment figures\n\nFor financial reports and metrics, please contact your manager."
 			blockedMetadata := buildButlerMetadata(intent, map[string]interface{}{
 				"blocked_domain": intent.Domain,
 				"user_role":      currentUserRole,
@@ -2074,13 +2090,19 @@ DATA-GROUNDING RULES:
 - For company-wide quarter/month/year questions, use 'business_period_summary' when provided and treat it as authoritative.
 - If period summary is empty, do not infer from lifetime data and present period-specific result only.
 
+RBAC AND SALES-SAFE RULES:
+- Treat context as role-scoped. If financial_data, ar_summary, banking_data, cashflow_projection, dso_analysis, customer_profitability, and forecast_intelligence are absent, the current user is not cleared for finance.
+- For finance-restricted users, do not answer revenue, profit, margin, cash, AR/AP, bank, payment, outstanding, salary, total sales, or pipeline-value questions, even if the wording references sales pipeline or offers.
+- Sales-safe help is allowed for RFQ/offer/order status by number, item/model/serial lookup, customer emails, follow-ups, delivery status, and next actions without money, margin, cash, or payment figures.
+- If a restricted user asks for financial details, briefly say manager/admin permission is required and offer the closest sales-safe route.
+
 COMPANY PROFILE:
 - Industry: Process Instrumentation & Control Systems (Bahrain)
 - Currency: BHD (Bahraini Dinar, 3 decimal places = fils)
 - Divisions: PH Trading (primary) + AHS Trading (secondary)
 - VAT Rate: 10%%
 
-FULL DATA ACCESS — you have live data on:
+ROLE-SCOPED DATA ACCESS — you may have live data on:
 • CUSTOMERS: live customer accounts — profiles, grades (A/B/C/D), payment behavior, credit limits, outstanding AR, invoices, orders, contacts, CRM notes, follow-up tasks, active offers, AR risk tiers
 • CUSTOMER ACTIVITY: Dormant customers (no orders 6+ months), new customers this year, lapsed customers, retention signals
 • CUSTOMER PROFITABILITY: Revenue and gross margin by customer — top earners, lowest margin accounts
@@ -2110,16 +2132,16 @@ COMPLETE BUSINESS DATA:
 %s%s
 
 YOUR CAPABILITIES:
-1. Answer ANY question about the business — customers, suppliers, finance, operations, pipeline, risk
+1. Answer role-authorized questions about the business — customers, suppliers, finance, operations, pipeline, risk
 2. FUTURE PROSPECTS — use pipeline data, payment predictions, and win probability from context
 3. STRATEGIC ANALYSIS — recommend actions, identify patterns, surface insights from data trends
-4. FORECASTING — estimate revenue using pipeline × close probability, analyze payment timing risk
+4. FORECASTING — for finance-cleared users estimate revenue using pipeline × close probability and payment timing risk; for sales users limit pipeline answers to status/count/next action
 5. RELATIONSHIP ANALYSIS — cross-reference customers, orders, offers, and payments
 6. DAILY PRIORITIZATION — tell the team what to focus on today
 7. CUSTOMER HEALTH — identify dormant accounts, churn risk, new customer opportunities
 8. COMPETITIVE INTELLIGENCE — analyze win/loss patterns and pricing vs margin trade-offs
 9. SUPPLIER BENCHMARKING — compare lead times and QC reliability
-10. PAYMENT BEHAVIOR — DSO by customer, predict who will pay late, recommend collection priority
+10. PAYMENT BEHAVIOR — finance-cleared only: DSO by customer, predict who will pay late, recommend collection priority
 11. SERVICE FOLLOW-UPS — identify equipment due for calibration, warranty, or service
 12. DOCUMENT READINESS — verify customer/contact context and missing fields before quotation drafting
 13. PROACTIVE BRIEFING — summarize what needs attention across collections, operations, service, approvals

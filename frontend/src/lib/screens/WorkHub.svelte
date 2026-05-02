@@ -120,6 +120,8 @@
   let lastLoadError = "";
   let boardRecoveryAttempts = 0;
   let projectContextLoading = false;
+  let projectContextLoadedFor = "";
+  let projectContextFailedFor = "";
   let taskDetailLoading = false;
 
   const boardColumns = [
@@ -281,10 +283,13 @@
       projectTasks = [];
       projectActivity = [];
       projectContextLoading = false;
+      projectContextLoadedFor = "";
+      projectContextFailedFor = "";
       return;
     }
 
     projectContextLoading = true;
+    projectContextFailedFor = "";
     try {
       const [memberRows, taskRows, activityRows] = await Promise.all([
         listProjectMembers(projectID),
@@ -297,8 +302,12 @@
       projectMembers = memberRows;
       projectTasks = taskRows;
       projectActivity = activityRows;
+      projectContextLoadedFor = projectID;
     } catch (err) {
-      toast.danger(`Failed to load project context: ${String(err)}`);
+      if (requestSeq === projectContextRequestSeq) {
+        projectContextFailedFor = projectID;
+        toast.danger(`Failed to load project context: ${String(err)}`);
+      }
     } finally {
       if (requestSeq === projectContextRequestSeq) {
         projectContextLoading = false;
@@ -452,9 +461,25 @@
       projectName = "";
       projectDescription = "";
       projectType = "internal";
+      projects = upsertProjectRow(projects, created);
       selectedProjectId = created.id;
       selectedProjectForTask = created.id;
-      await load();
+      projectContextRequestSeq += 1;
+      projectMembers = [];
+      projectTasks = [];
+      projectActivity = [];
+      memberSelections = [];
+      projectContextLoading = false;
+      projectContextLoadedFor = created.id;
+      projectContextFailedFor = "";
+      if (employees.length === 0) {
+        employees = await listEmployeeProfiles(true).catch((err) => {
+          toast.danger(`Project created, but employee directory could not load: ${String(err)}`);
+          return [];
+        });
+      }
+      saveSnapshot();
+      void load({ refreshRemote: true, silent: true });
       toast.success("Project created");
     } catch (err) {
       toast.danger(`Failed to create project: ${String(err)}`);
@@ -659,6 +684,16 @@
     return [task, ...rows];
   }
 
+  function upsertProjectRow(rows: CollaborativeProject[], project: CollaborativeProject) {
+    const existingIndex = rows.findIndex((row) => row.id === project.id);
+    if (existingIndex >= 0) {
+      const next = [...rows];
+      next[existingIndex] = project;
+      return next;
+    }
+    return [project, ...rows];
+  }
+
   function primeTaskDetail(task: CollaborativeTask) {
     selectedTask = task;
     selectedTaskId = task.id;
@@ -684,6 +719,8 @@
   async function selectProject(projectID: string) {
     selectedProjectId = projectID;
     selectedProjectForTask = projectID;
+    projectContextLoadedFor = "";
+    projectContextFailedFor = "";
     await loadProjectContext(projectID);
   }
 
@@ -814,7 +851,15 @@
     }))
     .sort((a, b) => b.openCount - a.openCount || b.blockedCount - a.blockedCount);
   $: activeWorkload = workload.filter((item) => item.openCount > 0 || item.blockedCount > 0);
-  $: if (activeTab === "projects" && selectedProjectId && !projectMembers.length && !projectTasks.length && !projectActivity.length && !loading) {
+  $: modalTask = selectedTask || [...myTasks, ...teamTasks, ...projectTasks].find((task) => task.id === selectedTaskId) || null;
+  $: if (
+    activeTab === "projects"
+    && selectedProjectId
+    && projectContextLoadedFor !== selectedProjectId
+    && projectContextFailedFor !== selectedProjectId
+    && !projectContextLoading
+    && !loading
+  ) {
     void loadProjectContext(selectedProjectId);
   }
 
@@ -833,7 +878,14 @@
   onMount(() => {
     void hydrateWorkHub();
     EventsOn("tasks:updated", () => void load({ silent: true }));
-    EventsOn("projects:updated", () => void load({ silent: true }));
+    EventsOn("projects:updated", () => {
+      void load({ silent: true });
+      if (selectedProjectId) {
+        projectContextLoadedFor = "";
+        projectContextFailedFor = "";
+        void loadProjectContext(selectedProjectId);
+      }
+    });
     EventsOn("employees:updated", () => void load({ silent: true }));
     window.addEventListener("openCollaborativeTask", handleOpenTaskEvent);
     const pendingTaskID = consumePendingTaskOpenFromStorage();
@@ -1028,6 +1080,7 @@
                 draggable="true"
                 on:dragstart={(event) => startEmployeeDrag(person.id, event)}
                 on:dragend={clearDragState}
+                on:click={() => (teamAssigneeFilter = person.id)}
               >
                 <strong>{person.name}</strong>
                 <span>{person.department || "Team"}</span>
@@ -1279,30 +1332,30 @@
   {/if}
 </div>
 
-<Modal bind:open={taskModalOpen} title={selectedTask ? selectedTask.title : "Task Detail"} size="lg" on:close={closeTaskModal}>
-  {#if taskDetailLoading && !selectedTask}
+<Modal bind:open={taskModalOpen} title={modalTask ? modalTask.title : "Task Detail"} size="lg" on:close={closeTaskModal}>
+  {#if taskDetailLoading && !modalTask}
     <div class="modal-loading-state">
       <WabiSpinner size="lg" tempo="calm" />
       <p>Loading task history...</p>
     </div>
-  {:else if !selectedTask}
+  {:else if !modalTask}
     <div class="empty compact">Choose a task to inspect comments and history.</div>
   {:else}
     <div class="task-modal-body">
       <div class="detail-hero">
         <div>
-          <p class="eyebrow">{(selectedTask.status || "open").replaceAll("_", " ")}</p>
-          <h3>{selectedTask.title}</h3>
-          <p>{selectedTask.description || "No task details provided."}</p>
+          <p class="eyebrow">{(modalTask.status || "open").replaceAll("_", " ")}</p>
+          <h3>{modalTask.title}</h3>
+          <p>{modalTask.description || "No task details provided."}</p>
         </div>
-        <span class="pill {selectedTask.priority || 'medium'}">{selectedTask.priority || "medium"}</span>
+        <span class="pill {modalTask.priority || 'medium'}">{modalTask.priority || "medium"}</span>
       </div>
 
       <div class="task-meta chips">
-        <span>Assignee: {selectedTask.assignee_name || "Unassigned"}</span>
-        <span>Project: {projectNameFor(selectedTask)}</span>
-        <span>{dueLabel(selectedTask)}</span>
-        <span>Created by: {selectedTask.creator_name || "System"}</span>
+        <span>Assignee: {modalTask.assignee_name || "Unassigned"}</span>
+        <span>Project: {projectNameFor(modalTask)}</span>
+        <span>{dueLabel(modalTask)}</span>
+        <span>Created by: {modalTask.creator_name || "System"}</span>
       </div>
 
       <div class="subpanel modal-subpanel">
@@ -1336,7 +1389,7 @@
       <div class="subpanel modal-subpanel">
         <div class="section-head">
           <h3>Blocker</h3>
-          <span class="count">{selectedTask.status === "blocked" ? "Active" : "Optional"}</span>
+          <span class="count">{modalTask.status === "blocked" ? "Active" : "Optional"}</span>
         </div>
         <textarea
           bind:value={selectedTaskBlockerDraft}
@@ -1362,16 +1415,16 @@
       </div>
 
       <div class="task-actions">
-        {#if selectedTask.status === "blocked"}
-          <Button variant="success" size="sm" on:click={() => changeStatus(selectedTask, "open")}>Unblock</Button>
+        {#if modalTask.status === "blocked"}
+          <Button variant="success" size="sm" on:click={() => changeStatus(modalTask, "open")}>Unblock</Button>
         {/if}
-        {#if selectedTask.status !== "in_progress"}
-          <Button variant="secondary" size="sm" on:click={() => changeStatus(selectedTask, "in_progress")}>Start</Button>
+        {#if modalTask.status !== "in_progress"}
+          <Button variant="secondary" size="sm" on:click={() => changeStatus(modalTask, "in_progress")}>Start</Button>
         {/if}
-        {#if selectedTask.status !== "completed"}
-          <Button variant="primary" size="sm" on:click={() => changeStatus(selectedTask, "completed")}>Complete</Button>
+        {#if modalTask.status !== "completed"}
+          <Button variant="primary" size="sm" on:click={() => changeStatus(modalTask, "completed")}>Complete</Button>
         {/if}
-        {#if selectedTask.status !== "blocked"}
+        {#if modalTask.status !== "blocked"}
           <Button variant="warning" size="sm" on:click={handleBlockSelectedTask}>Block</Button>
         {/if}
         <Button variant={confirmDeleteTask ? "danger" : "ghost"} size="sm" on:click={handleDeleteSelectedTask} disabled={deletingTask}>

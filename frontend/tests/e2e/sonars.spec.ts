@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { openGlobalOcrFromDashboard } from './helpers/globalOcr';
 import { installMockWailsBridge } from './helpers/mockWailsBridge';
 
 const BASE_URL = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173';
@@ -24,7 +25,7 @@ test.describe('UI health sonars', () => {
     const start = Date.now();
 
     await page.goto(BASE_URL);
-    await expect(page.getByText('Overview.')).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Good .*Developer/i })).toBeVisible();
 
     const duration = Date.now() - start;
 
@@ -83,7 +84,7 @@ test.describe('UI health sonars', () => {
     const errors = await collectPageErrors(page);
 
     await page.goto(BASE_URL);
-    await page.getByRole('button', { name: 'Browse' }).click();
+    await openGlobalOcrFromDashboard(page);
 
     await expect(page.getByText('Document Capture')).toBeVisible();
     await expect(page.getByText('Document Type')).toBeVisible();

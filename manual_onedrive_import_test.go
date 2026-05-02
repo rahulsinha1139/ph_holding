@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,10 @@ import (
 )
 
 func TestManualImportOneDrive(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("ONEDRIVE_IMPORT_ROOT")) == "" {
+		t.Skip("set ONEDRIVE_IMPORT_ROOT to scan/import a OneDrive folder")
+	}
+
 	rootPath := defaultOneDriveImportRoot()
 	dbPath := resolveOneDriveImportDBPath()
 	importYear := resolveOneDriveImportYear(rootPath)

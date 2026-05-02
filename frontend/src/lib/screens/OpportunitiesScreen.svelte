@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount, tick } from "svelte";
+    import { createEventDispatcher, onMount, tick } from "svelte";
     import OpportunityDetail from "../components/OpportunityDetail.svelte";
     import ContextTaskModal from "../components/ContextTaskModal.svelte";
     import WabiSpinner from "../components/ui/WabiSpinner.svelte";
@@ -16,6 +16,8 @@
     import { toast } from "../stores/toasts";
     import { devLog } from "$lib/utils/devLog";
     import { debounce } from "$lib/utils/debounce";
+
+    const dispatch = createEventDispatcher();
 
     let opportunities: any[] = [];
     let filteredOpportunities: any[] = [];
@@ -375,6 +377,25 @@
         showOpportunityModal = false;
     }
 
+    function handleOpenCostingFromDetail(event: CustomEvent) {
+        const opportunity = event.detail?.opportunity || selected;
+        const pendingPayload = event.detail?.pendingPayload || {
+            id: String(opportunity?.id || ""),
+            customer_name: opportunity?.client || opportunity?.customer || "",
+            folder_number: opportunity?.folder_number || opportunity?.rfq_number || "",
+            title: opportunity?.project || opportunity?.project_name || opportunity?.title || "",
+        };
+        if (pendingPayload?.id) {
+            sessionStorage.setItem("asymmflow.pendingCostingOpportunity", JSON.stringify(pendingPayload));
+        }
+        showTaskModal = false;
+        showOpportunityModal = false;
+        dispatch("navigate", { screen: "opportunities", tab: "costing" });
+        window.dispatchEvent(new CustomEvent("navigateToScreen", {
+            detail: { screen: "opportunities", tab: "costing" }
+        }));
+    }
+
     async function handleCreate() {
         if (!createForm.customer || !createForm.project) {
             toast.warning("Customer and Prospect/Project fields are required");
@@ -621,7 +642,11 @@
                 </div>
             </div>
 
-            <OpportunityDetail opportunity={selected} on:updated={loadOpportunities} />
+            <OpportunityDetail
+                opportunity={selected}
+                on:updated={loadOpportunities}
+                on:createCosting={handleOpenCostingFromDetail}
+            />
         </div>
     </div>
 {/if}

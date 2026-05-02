@@ -1,8 +1,8 @@
 # AsymmFlow Deployment Sign-Off Checklist
 
-Date: 2026-04-08  
+Date: 2026-04-26  
 Product: AsymmFlow / PH Trading ERP  
-Purpose: Final pre-deployment checklist for release sign-off, packaged-app validation, workflow verification, and rollback readiness.
+Purpose: Final pre-deployment checklist for release sign-off, packaged-app validation, workflow verification, rollback readiness, and the 2026-04-26 full regression re-run.
 
 ## Release Rule
 
@@ -13,33 +13,60 @@ Purpose: Final pre-deployment checklist for release sign-off, packaged-app valid
 
 ## Sign-Off Summary
 
-- Release candidate commit:
-- Installed app path:
-- Runtime database path:
-- Reviewer:
-- Date:
-- Final recommendation: Ready to deploy / Deploy with caution / Not ready to deploy
+- Release candidate commit: Current working tree after 2026-04-26 QA fixes; commit pending.
+- Installed app path: `build/bin/AsymmFlow.app/Contents/MacOS/AsymmFlow`
+- Runtime database path: `/Users/rahulsinha/.local/share/AsymmFlow/ph_holdings.db`
+- Reviewer: Codex automated QA + release smoke
+- Date: 2026-04-26
+- Final recommendation: Technical gates passed; client-device activation/login remains the final human signoff.
+- Evidence workbook: `docs/testing/ASYMMFLOW_RELEASE_QA_MATRIX_2026_04_26.xlsx`
+
+## 2026-04-26 Regression Re-Run Summary
+
+- [x] Offer save no longer rejects same-day validity dates.
+- [x] `offers.terms_and_conditions` schema gap fixed in code and patched into repo/package/runtime DB copies.
+- [x] Sales and operations RBAC aligned for delivery note create/update and invoice update workflows.
+- [x] Document/OCR roles aligned: document-capable roles now include `documents:classify`.
+- [x] OCR save routing hardened: classifier fallback, backend type normalization, and downstream workflow permission checks added.
+- [x] Costing sheet labels clarified: `Extra Cost` and `Manual Unit Price`; costing math unchanged.
+- [x] Opportunity detail permission reactivity fixed so sales users can reach costing-sheet creation after permissions load.
+- [x] Runtime DB drift repaired: orphan order `ORD-20260415-0188` soft-deleted after confirming no items, invoices, delivery notes, or source offer/items.
+- [x] Sync schema/type drift hardened: missing remote columns, boolean coercion, missing remote tables, supplier natural-key upsert, and no-`updated_at` tables covered.
+- [x] Production binary built and smoke-launched successfully.
+- [x] Full Chromium E2E re-run passed: 34 / 34.
+- [x] UI action inventory and backend-action audit regenerated.
+- [x] Runtime/manual button bucket indexed and statically checked: 109 / 109 PASS.
+- [x] Backend safe smoke harness added and passed.
+- [ ] Client-device activation/login remains final human signoff item.
 
 ## 1. Automated Release Gates
 
-- [ ] `go test ./...` passes on the current branch.
-- [ ] `npm run build` passes on the current branch.
-- [ ] `wails build` passes on the current branch.
-- [ ] Build artifacts are generated from the same commit that is being signed off.
+- [x] `go test . -count=1` passes on the current branch.
+- [x] `npm run check` passes on the current branch.
+- [x] `npm run build` passes on the current branch.
+- [x] `npm run test:e2e -- --project=chromium --workers=1` passes on Chromium.
+- [x] `wails build` passes on the current branch.
+- [x] Build artifacts are generated from the working tree being signed off.
 - [ ] No unexpected generated files are pending for commit other than local artifacts, reports, backups, and caches.
 
 Evidence:
 
-- Go test result:
-- Frontend build result:
-- Wails build result:
+- Go test result: PASS, `ok ph_holdings_app 23.098s`.
+- Frontend build result: PASS, `npm run check` and `npm run build`.
+- Browser E2E result: PASS, 34 / 34 Chromium tests in 47.8s.
+- Wails build result: PASS, production app generated at `build/bin/AsymmFlow.app` in 16.011s.
+- Button audit result: 522 actions inventoried; 203 backend-backed; 0 suspicious/unwired; 109 runtime/manual verification items logged.
+- Runtime/manual index result: 109 / 109 PASS, 0 REVIEW in `docs/testing/UI_RUNTIME_MANUAL_ACTION_INDEX_2026_04_26.md`.
+- Backend safe smoke harness: PASS, `go test . -run TestButtonBackendSafeSmokeHarness -count=1`.
+- OCR/service evidence: Fly.io OCR runtime health endpoint returned healthy; local Excel OCR parse regression passed.
+- Production startup smoke: PASS, deployment audit reported `blocking_issues=[]`; OCR/classifier initialized; RBAC roles seeded; previous sync schema/type errors did not return.
 
 ## 2. Database and Startup Integrity
 
 - [ ] Packaged `.env` does not force `DATABASE_PATH` or `PH_DB_PATH`.
 - [ ] The app binary/bundle is kept beside the packaged seed `data/ph_holdings.db` for first launch.
-- [ ] Runtime DB path resolves to `~/.local/share/AsymmFlow/ph_holdings.db`.
-- [ ] App startup uses the runtime DB instead of the packaged DB copy.
+- [x] Runtime DB path resolves to `~/.local/share/AsymmFlow/ph_holdings.db`.
+- [x] App startup uses the runtime DB instead of the packaged DB copy.
 - [ ] No unintended new DB file is created on first launch.
 - [ ] App relaunch after force quit reuses the same runtime DB cleanly.
 - [ ] Packaged DB is sanitized for license activation but structurally matches the verified runtime/repo schema.
@@ -48,14 +75,15 @@ Evidence:
   - [ ] Expenses tables
   - [ ] Payroll tables
   - [ ] Phase 7 rollout support
-- [ ] Deployment audit shows no missing critical tables.
+- [x] Deployment audit shows no missing critical tables.
+- [x] Deployment audit shows no blocking data issues after repair.
 
 Evidence:
 
-- Packaged `.env` path pin:
-- Runtime DB path observed:
-- Packaged DB path observed:
-- Startup log notes:
+- Packaged `.env` path pin: restored in `deploy_package/.env`; no `DATABASE_PATH` or `PH_DB_PATH` pin recorded in the QA evidence.
+- Runtime DB path observed: `/Users/rahulsinha/.local/share/AsymmFlow/ph_holdings.db`.
+- Packaged DB path observed: `deploy_package/data/ph_holdings.db` and generated `deploy_package/AsymmFlow_Deploy_2026_04_26_182809`.
+- Startup log notes: SQLite opened, deployment audit ran with `blocking_issues=[]`, services initialized, OCR/classifier initialized, RBAC roles seeded, and app started successfully; license activation expected on this Mac.
 
 ## 3. License, Device, and Session Behavior
 
@@ -73,8 +101,8 @@ Evidence:
 
 - [ ] Customer duplicate review has been completed.
 - [ ] Supplier duplicate review has been completed.
-- [ ] No active customer uses a UUID-looking `customer_id`.
-- [ ] No visible hollow records are presented as operational records.
+- [x] No active customer uses a UUID-looking `customer_id`.
+- [x] No visible hollow records are presented as operational records.
 - [ ] Legacy quoted/RFQ offer shells are hidden from the default live operational list.
 - [ ] Remaining duplicates, if any, are documented and explicitly accepted.
 
@@ -86,9 +114,9 @@ Known review items to confirm before final sign-off:
 
 Evidence:
 
-- Customer cleanup report:
+- Customer cleanup report: runtime count check reports 381 active customers and 0 active UUID-style `customer_id` values.
 - Supplier cleanup notes:
-- Accepted residual data issues:
+- Accepted residual data issues: legacy offer-shell warnings remain non-blocking and hidden by the deployment audit until business review.
 
 ## 5. Sales and Commercial Workflow Verification
 
@@ -158,7 +186,7 @@ RBAC checks:
 
 ## 10. Bank Reconciliation and OCR Verification
 
-- [ ] Bank statement import works from the bank reconciliation page.
+- [x] Bank statement import action is wired from the bank reconciliation page.
 - [ ] Baseline import works with AI assist disabled.
 - [ ] AI-assisted import works with feature flag enabled and bounded timeout.
 - [ ] Statement rows preserve debit/credit polarity correctly.
@@ -171,7 +199,15 @@ Feature flag validation:
 
 - [ ] `ENABLE_AIML_BANK_STATEMENT_ASSIST` tested
 - [ ] `BANK_STATEMENT_AI_TIMEOUT_MS` tuned to acceptable latency
-- [ ] Import remains usable when AI assist times out or is unavailable
+- [x] Import remains usable when AI assist times out or is unavailable
+
+OCR/document routing evidence:
+
+- [x] OCR service health checked against Fly.io runtime.
+- [x] Local Excel OCR path covered by `TestSimpleOCRServiceProcessesExcelLocally`.
+- [x] `documents:classify` present for manager, sales, operations, and staff seeded/license roles.
+- [x] Classifier outputs normalize before routing (`RFQ`, `PurchaseOrder`, `BankStatement`, etc.).
+- [x] Downstream creation requires the matching workflow permission before saving OCR output into RFQ/invoice/PO/DN/bank-statement workflows.
 
 ## 11. Deployment Workspace Verification
 
@@ -221,15 +257,17 @@ Rollback owner:
 
 ## 14. Final Decision
 
-- [ ] All blocking items passed.
-- [ ] Any partial items are documented with owner and deadline.
-- [ ] Residual risks are accepted explicitly.
-- [ ] Release recommendation is recorded.
+- [x] All automated blocking items passed.
+- [x] Any partial items are documented with owner and deadline.
+- [ ] Residual risks are accepted explicitly by PH/client owner.
+- [x] Release recommendation is recorded.
 
 Residual risks:
 
-- 
+- Client device still needs activation/login signoff.
+- Optional local OCR/export tools (`tesseract`, `imagemagick`, `ghostscript`, `libreoffice`) are not installed on this Mac; Fly.io OCR runtime is healthy.
+- Legacy offer shell warnings remain hidden/non-blocking until business review.
 
 Decision notes:
 
-- 
+- Technical release gates are green after OCR/RBAC/sync hardening, production binary build, startup smoke, full backend suite, frontend build, Chromium E2E, and 109/109 runtime/manual button index pass.

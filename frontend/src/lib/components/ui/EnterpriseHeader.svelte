@@ -1,9 +1,16 @@
 <script lang="ts">
     import { currentUser } from "$lib/stores/authContext";
+    import { setTextScalePreset, textScalePreset, type TextScalePreset } from "$lib/stores/textScale";
 
     // Reactive user data
     $: userName = $currentUser?.full_name || "User";
     $: userInitial = userName.charAt(0).toUpperCase();
+
+    const textSizeButtons: Array<{ preset: TextScalePreset; label: string; title: string }> = [
+        { preset: "standard", label: "A", title: "Standard text" },
+        { preset: "comfortable", label: "A+", title: "Comfortable text" },
+        { preset: "large", label: "A++", title: "Large text" },
+    ];
 </script>
 
 <header class="header">
@@ -12,6 +19,21 @@
 
     <!-- Right: Actions -->
     <div class="header-right">
+        <div class="text-size-control" aria-label="Text size">
+            {#each textSizeButtons as option}
+                <button
+                    type="button"
+                    class:active={$textScalePreset === option.preset}
+                    title={option.title}
+                    aria-label={option.title}
+                    aria-pressed={$textScalePreset === option.preset}
+                    on:click={() => setTextScalePreset(option.preset)}
+                >
+                    {option.label}
+                </button>
+            {/each}
+        </div>
+
         <!-- User -->
         <div class="user-menu">
             <div class="avatar">{userInitial}</div>
@@ -35,6 +57,43 @@
         display: flex;
         align-items: center;
         gap: 12px;
+    }
+
+    .text-size-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        padding: 2px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface-elevated);
+    }
+
+    .text-size-control button {
+        min-width: 34px;
+        height: 28px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text-secondary);
+        font-family: var(--font-display);
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+    }
+
+    .text-size-control button:nth-child(2) {
+        font-size: 13px;
+    }
+
+    .text-size-control button:nth-child(3) {
+        font-size: 14px;
+    }
+
+    .text-size-control button:hover,
+    .text-size-control button.active {
+        background: var(--onyx, #1d1d1f);
+        color: #fff;
     }
 
     .user-menu {

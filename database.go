@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -270,6 +271,8 @@ type Offer struct {
 	VatRate            float64 `gorm:"default:10" json:"vat_rate"`                    // VAT percentage (default 10%)
 	Division           string  `gorm:"size:100;default:'PH Trading'" json:"division"`
 	TermsAndConditions string  `gorm:"type:text" json:"terms_and_conditions"`
+	Subject            string  `gorm:"type:varchar(1000)" json:"subject"`
+	Body               string  `gorm:"type:text" json:"body"`
 
 	// Additional costing header fields
 	CocCoo          string `gorm:"size:50" json:"coc_coo"`                    // Certificate of Conformity/Country of Origin
@@ -371,9 +374,9 @@ type Opportunity struct {
 	ProfitBHD  float64 `json:"profit_bhd"`  // Expected profit
 
 	// Status Tracking
-	SPOCStatus string `gorm:"index;size:50" json:"spoc_status"` // Single Point of Contact status
-	WIPStatus  string `gorm:"index;size:50" json:"wip_status"`  // Work In Progress status
-	Stage      string `gorm:"index;size:50" json:"stage"`       // Lead/Qualified/Proposal/Negotiation/Won/Lost/Quoted
+	SPOCStatus string `gorm:"column:spoc_status;index;size:50" json:"spoc_status"` // Single Point of Contact status
+	WIPStatus  string `gorm:"column:wip_status;index;size:50" json:"wip_status"`   // Work In Progress status
+	Stage      string `gorm:"index;size:50" json:"stage"`                          // Lead/Qualified/Proposal/Negotiation/Won/Lost/Quoted
 
 	// Three-Regime Dynamics (Asymmetrica Mathematical Framework)
 	Regime     int     `gorm:"index" json:"regime"` // 1=Exploration(0-30%), 2=Optimization(30-50%), 3=Stabilization(50%+)
@@ -2128,6 +2131,22 @@ func (BankReconciliationAuditLog) TableName() string { return "bank_reconciliati
 
 const maxBackups = 7
 
+const (
+	backupAutoEnabledSetting = "backup_auto_enabled"
+	backupFrequencyDaysKey   = "backup_frequency_days"
+	backupLastAtSetting      = "backup_last_at"
+	backupLastPathSetting    = "backup_last_path"
+)
+
+type BackupPolicy struct {
+	AutoBackupEnabled bool   `json:"auto_backup_enabled"`
+	FrequencyDays     int    `json:"frequency_days"`
+	LastBackupAt      string `json:"last_backup_at"`
+	LastBackupPath    string `json:"last_backup_path"`
+	NextBackupDueAt   string `json:"next_backup_due_at"`
+	DueNow            bool   `json:"due_now"`
+}
+
 // BackupDatabase creates an atomic backup of the SQLite database using VACUUM INTO.
 // Backups are stored in a "backups/" directory next to the database file.
 // Keeps the last 7 backups and deletes older ones.
@@ -2135,6 +2154,10 @@ func (a *App) BackupDatabase() (string, error) {
 	if err := a.requirePermission("settings:update"); err != nil {
 		return "", err
 	}
+	return a.backupDatabaseInternal()
+}
+
+func (a *App) backupDatabaseInternal() (string, error) {
 	if a.db == nil {
 		return "", fmt.Errorf("database not initialized")
 	}
@@ -2181,8 +2204,113 @@ func (a *App) BackupDatabase() (string, error) {
 
 	// Prune old backups (keep last maxBackups)
 	a.pruneOldBackups(backupDir)
+	a.recordBackupCompletion(backupPath, time.Now())
 
 	return backupPath, nil
+}
+
+func (a *App) recordBackupCompletion(path string, at time.Time) {
+	if a == nil || a.db == nil {
+		return
+	}
+	a.saveSetting(backupLastAtSetting, at.UTC().Format(time.RFC3339))
+	a.saveSetting(backupLastPathSetting, path)
+}
+
+func (a *App) getSettingString(key, fallback string) string {
+	if a == nil || a.db == nil {
+		return fallback
+	}
+	var setting Setting
+	if err := a.db.Where("key = ?", key).First(&setting).Error; err != nil {
+		return fallback
+	}
+	if strings.TrimSpace(setting.Value) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(setting.Value)
+}
+
+func (a *App) getBackupPolicyInternal() BackupPolicy {
+	enabledRaw := strings.ToLower(a.getSettingString(backupAutoEnabledSetting, "true"))
+	enabled := enabledRaw != "false" && enabledRaw != "0" && enabledRaw != "no"
+
+	frequencyDays, err := strconv.Atoi(a.getSettingString(backupFrequencyDaysKey, "7"))
+	if err != nil || frequencyDays < 1 {
+		frequencyDays = 7
+	}
+	if frequencyDays > 30 {
+		frequencyDays = 30
+	}
+
+	lastAt := a.getSettingString(backupLastAtSetting, "")
+	lastPath := a.getSettingString(backupLastPathSetting, "")
+	policy := BackupPolicy{
+		AutoBackupEnabled: enabled,
+		FrequencyDays:     frequencyDays,
+		LastBackupAt:      lastAt,
+		LastBackupPath:    lastPath,
+		DueNow:            enabled,
+	}
+
+	if parsed, err := time.Parse(time.RFC3339, lastAt); err == nil {
+		next := parsed.AddDate(0, 0, frequencyDays)
+		policy.NextBackupDueAt = next.UTC().Format(time.RFC3339)
+		policy.DueNow = enabled && !time.Now().Before(next)
+	}
+
+	return policy
+}
+
+func (a *App) GetBackupPolicy() (BackupPolicy, error) {
+	if err := a.requirePermission("settings:view"); err != nil {
+		return BackupPolicy{}, err
+	}
+	return a.getBackupPolicyInternal(), nil
+}
+
+func (a *App) SaveBackupPolicy(autoEnabled bool, frequencyDays int) (BackupPolicy, error) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return BackupPolicy{}, err
+	}
+	if frequencyDays < 1 {
+		frequencyDays = 1
+	}
+	if frequencyDays > 30 {
+		frequencyDays = 30
+	}
+	a.saveSetting(backupAutoEnabledSetting, fmt.Sprintf("%t", autoEnabled))
+	a.saveSetting(backupFrequencyDaysKey, fmt.Sprintf("%d", frequencyDays))
+	return a.getBackupPolicyInternal(), nil
+}
+
+func (a *App) RunScheduledBackupIfDue(reason string) map[string]interface{} {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+	return a.runScheduledBackupIfDueInternal(reason)
+}
+
+func (a *App) runScheduledBackupIfDueInternal(reason string) map[string]interface{} {
+	policy := a.getBackupPolicyInternal()
+	if !policy.AutoBackupEnabled {
+		return map[string]interface{}{"success": true, "skipped": true, "reason": "auto backup disabled", "policy": policy}
+	}
+	if !policy.DueNow {
+		return map[string]interface{}{"success": true, "skipped": true, "reason": "not due", "policy": policy}
+	}
+	path, err := a.backupDatabaseInternal()
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error(), "policy": policy}
+	}
+	log.Printf("Scheduled database backup completed (%s): %s", strings.TrimSpace(reason), path)
+	return map[string]interface{}{
+		"success":     true,
+		"skipped":     false,
+		"backup_path": path,
+		"timestamp":   time.Now().Format(time.RFC3339),
+		"policy":      a.getBackupPolicyInternal(),
+	}
 }
 
 // pruneOldBackups keeps the most recent maxBackups files and deletes older ones.

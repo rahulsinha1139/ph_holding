@@ -1,61 +1,15 @@
 ===============================================================================
                     ASYMMFLOW ERP - LICENSE KEYS
-                    Generated: 2026-04-15
+                    Generated: 2026-05-02
 ===============================================================================
 
-INSTRUCTIONS:
-  1. Copy the deploy_package folder to your PC
-  2. Run AsymmFlow.exe (Windows) or open AsymmFlow.app (Mac)
-  3. Enter YOUR license key when prompted
-  4. Each key works on ONE PC only - do not share keys
+This tracked top-level file is intentionally a placeholder.
 
--------------------------------------------------------------------------------
-ADMIN (Full Access - Dashboard, Finance, Operations, CRM, Intelligence)
--------------------------------------------------------------------------------
+The employee license keys are generated only inside the timestamped deployment
+package produced by TestPrepareDeploymentPackage:
 
-  Admin Test       PH-ADM-8824EF
+  deploy_package/AsymmFlow_Deploy_<stamp>/LICENSE_KEYS.txt
 
--------------------------------------------------------------------------------
-MANAGER (Dashboard, Finance, Operations, CRM, Intelligence)
--------------------------------------------------------------------------------
-
-  Manager Test     PH-MGR-7C2B1C
-
--------------------------------------------------------------------------------
-SALES (Dashboard, Opportunities, CRM, Intelligence)
--------------------------------------------------------------------------------
-
-  Ramya            PH-SLS-618A8C
-  Sales Test       PH-SLS-B3F753
-
--------------------------------------------------------------------------------
-OPERATIONS (Dashboard, Operations Hub, Intelligence)
--------------------------------------------------------------------------------
-
-  Operations Test  PH-OPS-09B429
-
--------------------------------------------------------------------------------
-STAFF (Dashboard, Work, Notifications, Intelligence)
--------------------------------------------------------------------------------
-
-  Staff Test       PH-STF-0C5920
-
-===============================================================================
-                    ROLE ACCESS MATRIX
-===============================================================================
-
-  Screen            Admin   Manager   Sales   Operations   Staff
-  -------           -----   -------   -----   ----------   -----
-  Dashboard           Y       Y         Y        Y           Y
-  Opportunities       Y       Y         Y        -           -
-  Operations          Y       Y         -        Y           -
-  Finance Hub         Y       Y         -        -           -
-  Work                Y       Y         Y        Y           Y
-  Notifications       Y       Y         Y        Y           Y
-  Relationships       Y       Y         Y        -           -
-  Intelligence        Y       Y         Y        Y           Y
-
-===============================================================================
-  SUPPORT: Contact Abhie (SPOC) for key issues or new key requests
-  CLOUD SYNC: Auto-syncs every 10 minutes when online
+Do not commit generated employee keys, packaged .env files, packaged databases,
+or historical deployment package snapshots back to source control.
 ===============================================================================

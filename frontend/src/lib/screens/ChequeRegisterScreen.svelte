@@ -41,6 +41,7 @@
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
   import { escapeHtml } from '$lib/utils/escapeHtml';
+  import { formatNumber } from '$lib/utils/formatters';
 
   // Props
   export let embedded = false;
@@ -221,7 +222,7 @@
 
   // Formatters
   function formatBHD(value: number): string {
-    return value?.toFixed(3) || '0.000';
+    return formatNumber(value || 0, 3);
   }
 
   function formatDate(dateValue: any): string {

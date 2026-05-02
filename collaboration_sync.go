@@ -18,6 +18,8 @@ var collaborativeSyncTables = []string{
 	"task_activity",
 	"notifications",
 	"notification_receipts",
+	"delete_approval_requests",
+	"opportunity_edit_conflicts",
 }
 
 const collaborativeSyncCursorSetting = "collaboration_sync_last_at"
@@ -28,7 +30,7 @@ func (a *App) ensureCollaborativeRemoteSchema() error {
 	}
 
 	remote := a.dbManager.Remote()
-	if remote.Migrator().HasTable("task_items") && remote.Migrator().HasTable("employees") {
+	if remote.Migrator().HasTable("task_items") && remote.Migrator().HasTable("employees") && remote.Migrator().HasTable("opportunity_edit_conflicts") {
 		return nil
 	}
 
@@ -39,9 +41,11 @@ func (a *App) ensureCollaborativeRemoteSchema() error {
 		&ProjectMember{},
 		&Notification{},
 		&NotificationReceipt{},
+		&DeleteApprovalRequest{},
 		&TaskItem{},
 		&TaskComment{},
 		&TaskActivity{},
+		&OpportunityEditConflict{},
 	)
 }
 

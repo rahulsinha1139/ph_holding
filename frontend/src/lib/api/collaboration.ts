@@ -24,6 +24,7 @@ import {
   ListMyCollaborativeTasks,
   ListNotificationFeed,
   MarkNotificationAsRead,
+  ReviewDeleteApprovalRequest,
   ReassignCollaborativeTask,
   ReassignEmployeeManager,
   RefreshCollaborativeWorkspace,
@@ -503,6 +504,14 @@ export async function getUnreadNotificationsCount(): Promise<number> {
 
 export async function markNotificationAsRead(notificationID: string): Promise<void> {
   await MarkNotificationAsRead(notificationID);
+}
+
+export async function reviewDeleteApprovalRequest(
+  requestID: string,
+  decision: "approve" | "reject",
+  notes = "",
+): Promise<main.DeleteApprovalRequest> {
+  return await ReviewDeleteApprovalRequest(requestID, decision, notes);
 }
 
 export async function refreshCollaborativeWorkspace(

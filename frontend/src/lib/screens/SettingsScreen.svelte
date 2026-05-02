@@ -3,6 +3,8 @@
   import { fade } from "svelte/transition";
   import { toast } from "$lib/stores/toasts";
   import { permissions } from "$lib/stores/authContext";
+  import { setTextScale, setTextScalePreset, textScale, textScalePreset, type TextScalePreset } from "$lib/stores/textScale";
+  import { formatNumber } from "$lib/utils/formatters";
   import WabiSpinner from "$lib/components/ui/WabiSpinner.svelte";
   import {
     UpdateSettings,
@@ -32,6 +34,10 @@
     SetExchangeRate,
     GetSupportedCurrencies,
     GetSyncHealth,
+    GetBackupInfo,
+    GetBackupPolicy,
+    SaveBackupPolicy,
+    TriggerBackup,
     TriggerCollaborativeSyncNow,
     ExportPilotSupportBundle,
   } from "../../../wailsjs/go/main/App";
@@ -93,6 +99,12 @@
   let bsReport: any = null;
   let availableYears: number[] = [];
   let syncHealth: any = null;
+  let backupInfo: any = null;
+  let backupPolicy: any = null;
+  let backupRunning = false;
+  let savingBackupPolicy = false;
+  let backupAutoEnabled = true;
+  let backupFrequencyDays = 7;
   let rolloutStatus: any = null;
   let rolloutOps: any[] = [];
   let rolloutOpsFilter = 'active';
@@ -103,6 +115,11 @@
   let pilotOnlyIssues = true;
   let loadingPilotReadiness = false;
   let exportingPilotBundle = false;
+  const textScalePresets: Array<{ id: TextScalePreset; label: string; sample: string }> = [
+    { id: "standard", label: "Standard", sample: "A" },
+    { id: "comfortable", label: "Comfortable", sample: "A+" },
+    { id: "large", label: "Large", sample: "A++" },
+  ];
 
   // Currency state
   let currencyRates: any[] = [];
@@ -296,8 +313,58 @@
 
   async function refreshRolloutData() {
     try { syncHealth = await GetSyncHealth(); } catch { syncHealth = null; }
+    await loadBackupState();
     try { rolloutStatus = await GetPhase7RolloutStatus(); } catch { rolloutStatus = null; }
     await Promise.all([loadRolloutOps(), loadPilotReadiness()]);
+  }
+
+  async function loadBackupState() {
+    try {
+      backupInfo = await GetBackupInfo();
+    } catch {
+      backupInfo = null;
+    }
+    try {
+      backupPolicy = await GetBackupPolicy();
+      backupAutoEnabled = backupPolicy?.auto_backup_enabled ?? true;
+      backupFrequencyDays = backupPolicy?.frequency_days ?? 7;
+    } catch {
+      backupPolicy = null;
+      backupAutoEnabled = true;
+      backupFrequencyDays = 7;
+    }
+  }
+
+  async function runManualBackup() {
+    backupRunning = true;
+    try {
+      const result = await TriggerBackup();
+      if (result?.success) {
+        toast.success('Backup created');
+        await loadBackupState();
+      } else {
+        toast.danger(result?.error || 'Backup failed');
+      }
+    } catch (err) {
+      toast.danger('Backup failed: ' + String(err));
+    } finally {
+      backupRunning = false;
+    }
+  }
+
+  async function saveBackupPolicy() {
+    savingBackupPolicy = true;
+    try {
+      backupPolicy = await SaveBackupPolicy(backupAutoEnabled, Number(backupFrequencyDays) || 7);
+      backupAutoEnabled = backupPolicy?.auto_backup_enabled ?? backupAutoEnabled;
+      backupFrequencyDays = backupPolicy?.frequency_days ?? backupFrequencyDays;
+      toast.success('Backup schedule saved');
+      await loadBackupState();
+    } catch (err) {
+      toast.danger('Backup schedule failed: ' + String(err));
+    } finally {
+      savingBackupPolicy = false;
+    }
   }
 
   async function loadRolloutOps() {
@@ -425,6 +492,11 @@
     } finally {
       saving = false;
     }
+  }
+
+  function handleTextScaleSlider(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    setTextScale(Number(input.value) / 100);
   }
 
   async function browse(field) {
@@ -570,6 +642,39 @@
               </button>
             </div>
           {/if}
+          <div class="readability-card">
+            <div class="readability-copy">
+              <h4>Text Size</h4>
+              <p>Applies immediately across cards, forms, tables, modals, and workflow screens on this computer.</p>
+            </div>
+            <div class="readability-controls">
+              <div class="text-preset-buttons" aria-label="Text size preset">
+                {#each textScalePresets as preset}
+                  <button
+                    type="button"
+                    class:active={$textScalePreset === preset.id}
+                    aria-pressed={$textScalePreset === preset.id}
+                    on:click={() => setTextScalePreset(preset.id)}
+                  >
+                    <span>{preset.sample}</span>
+                    {preset.label}
+                  </button>
+                {/each}
+              </div>
+              <label class="text-scale-slider" for="settings-text-scale">
+                <span>{Math.round($textScale * 100)}%</span>
+                <input
+                  id="settings-text-scale"
+                  type="range"
+                  min="100"
+                  max="125"
+                  step="1"
+                  value={Math.round($textScale * 100)}
+                  on:input={handleTextScaleSlider}
+                />
+              </label>
+            </div>
+          </div>
           <div class="form-group">
             <label for="settings-company-name">Company Name</label>
             <input
@@ -962,26 +1067,26 @@
               <div class="report-section">
                 <div class="report-line">
                   <span class="label">Sales Revenue</span>
-                  <span class="value">{plReport.sales_revenue.toFixed(3)} {plReport.currency}</span>
+                  <span class="value">{formatNumber(plReport.sales_revenue, 3)} {plReport.currency}</span>
                 </div>
                 <div class="report-line">
                   <span class="label">Other Income</span>
-                  <span class="value">{plReport.other_income.toFixed(3)} {plReport.currency}</span>
+                  <span class="value">{formatNumber(plReport.other_income, 3)} {plReport.currency}</span>
                 </div>
                 <div class="report-line total">
                   <span class="label">Total Revenue</span>
-                  <span class="value">{plReport.total_revenue.toFixed(3)} {plReport.currency}</span>
+                  <span class="value">{formatNumber(plReport.total_revenue, 3)} {plReport.currency}</span>
                 </div>
               </div>
 
               <div class="report-section">
                 <div class="report-line">
                   <span class="label">Cost of Goods Sold</span>
-                  <span class="value">{plReport.cost_of_goods_sold.toFixed(3)} {plReport.currency}</span>
+                  <span class="value">{formatNumber(plReport.cost_of_goods_sold, 3)} {plReport.currency}</span>
                 </div>
                 <div class="report-line total">
                   <span class="label">Gross Profit</span>
-                  <span class="value">{plReport.gross_profit.toFixed(3)} {plReport.currency}</span>
+                  <span class="value">{formatNumber(plReport.gross_profit, 3)} {plReport.currency}</span>
                 </div>
                 <div class="report-line">
                   <span class="label">Gross Profit Margin</span>
@@ -992,14 +1097,14 @@
               <div class="report-section">
                 <div class="report-line">
                   <span class="label">Operating Expenses</span>
-                  <span class="value">{plReport.operating_expenses.toFixed(3)} {plReport.currency}</span>
+                  <span class="value">{formatNumber(plReport.operating_expenses, 3)} {plReport.currency}</span>
                 </div>
               </div>
 
               <div class="report-section final">
                 <div class="report-line total">
                   <span class="label">Net Profit</span>
-                  <span class="value net-profit">{plReport.net_profit.toFixed(3)} {plReport.currency}</span>
+                  <span class="value net-profit">{formatNumber(plReport.net_profit, 3)} {plReport.currency}</span>
                 </div>
                 <div class="report-line">
                   <span class="label">Net Profit Margin</span>
@@ -1022,23 +1127,23 @@
                 <h5>ASSETS</h5>
                 <div class="report-line">
                   <span class="label">Cash</span>
-                  <span class="value">{bsReport.cash.toFixed(3)} {bsReport.currency}</span>
+                  <span class="value">{formatNumber(bsReport.cash, 3)} {bsReport.currency}</span>
                 </div>
                 <div class="report-line">
                   <span class="label">Accounts Receivable</span>
-                  <span class="value">{bsReport.accounts_receivable.toFixed(3)} {bsReport.currency}</span>
+                  <span class="value">{formatNumber(bsReport.accounts_receivable, 3)} {bsReport.currency}</span>
                 </div>
                 <div class="report-line">
                   <span class="label">Inventory</span>
-                  <span class="value">{bsReport.inventory.toFixed(3)} {bsReport.currency}</span>
+                  <span class="value">{formatNumber(bsReport.inventory, 3)} {bsReport.currency}</span>
                 </div>
                 <div class="report-line total">
                   <span class="label">Total Current Assets</span>
-                  <span class="value">{bsReport.total_current_assets.toFixed(3)} {bsReport.currency}</span>
+                  <span class="value">{formatNumber(bsReport.total_current_assets, 3)} {bsReport.currency}</span>
                 </div>
                 <div class="report-line total">
                   <span class="label">Total Assets</span>
-                  <span class="value">{bsReport.total_assets.toFixed(3)} {bsReport.currency}</span>
+                  <span class="value">{formatNumber(bsReport.total_assets, 3)} {bsReport.currency}</span>
                 </div>
               </div>
 
@@ -1046,15 +1151,15 @@
                 <h5>LIABILITIES</h5>
                 <div class="report-line">
                   <span class="label">Accounts Payable</span>
-                  <span class="value">{bsReport.accounts_payable.toFixed(3)} {bsReport.currency}</span>
+                  <span class="value">{formatNumber(bsReport.accounts_payable, 3)} {bsReport.currency}</span>
                 </div>
                 <div class="report-line total">
                   <span class="label">Total Current Liabilities</span>
-                  <span class="value">{bsReport.total_current_liabilities.toFixed(3)} {bsReport.currency}</span>
+                  <span class="value">{formatNumber(bsReport.total_current_liabilities, 3)} {bsReport.currency}</span>
                 </div>
                 <div class="report-line total">
                   <span class="label">Total Liabilities</span>
-                  <span class="value">{bsReport.total_liabilities.toFixed(3)} {bsReport.currency}</span>
+                  <span class="value">{formatNumber(bsReport.total_liabilities, 3)} {bsReport.currency}</span>
                 </div>
               </div>
 
@@ -1062,11 +1167,11 @@
                 <h5>EQUITY</h5>
                 <div class="report-line">
                   <span class="label">Retained Earnings</span>
-                  <span class="value">{bsReport.retained_earnings.toFixed(3)} {bsReport.currency}</span>
+                  <span class="value">{formatNumber(bsReport.retained_earnings, 3)} {bsReport.currency}</span>
                 </div>
                 <div class="report-line total">
                   <span class="label">Total Equity</span>
-                  <span class="value">{bsReport.total_equity.toFixed(3)} {bsReport.currency}</span>
+                  <span class="value">{formatNumber(bsReport.total_equity, 3)} {bsReport.currency}</span>
                 </div>
               </div>
 
@@ -1128,6 +1233,32 @@
             <span>Tables In Sync: {syncHealth?.tables_in_sync ?? 0}</span>
             <span>Last Sync: {syncHealth?.last_sync_at ? new Date(syncHealth.last_sync_at).toLocaleString() : 'Never'}</span>
             <span>Backups: {syncHealth?.backup_count ?? 0}</span>
+          </div>
+
+          <h3>Database Backups</h3>
+          <div class="backup-panel">
+            <div class="result-stats">
+              <span>Stored Backups: {backupInfo?.count ?? 0}</span>
+              <span>Last Backup: {backupPolicy?.last_backup_at ? new Date(backupPolicy.last_backup_at).toLocaleString() : (backupInfo?.last_backup || 'Never')}</span>
+              <span>Next Due: {backupPolicy?.next_backup_due_at ? new Date(backupPolicy.next_backup_due_at).toLocaleString() : 'Next startup'}</span>
+              <span>Folder: {backupInfo?.backup_dir || 'App data backups'}</span>
+            </div>
+            <div class="row backup-controls">
+              <label class="toggle-inline" for="backup-auto-enabled">
+                <input id="backup-auto-enabled" type="checkbox" bind:checked={backupAutoEnabled} />
+                Auto Backup
+              </label>
+              <div class="form-group compact">
+                <label for="backup-frequency-days">Frequency</label>
+                <input id="backup-frequency-days" type="number" min="1" max="30" bind:value={backupFrequencyDays} class="input-clean" />
+              </div>
+              <button class="btn-secondary" on:click={saveBackupPolicy} disabled={savingBackupPolicy}>
+                {savingBackupPolicy ? 'Saving...' : 'Save Schedule'}
+              </button>
+              <button class="btn-primary" on:click={runManualBackup} disabled={backupRunning}>
+                {backupRunning ? 'Backing up...' : 'Backup Now'}
+              </button>
+            </div>
           </div>
 
           <h3>Phase 7 Rollout</h3>
@@ -1627,6 +1758,23 @@
     font-size: 13px;
     color: var(--steel, #86868B);
   }
+  .backup-panel {
+    display: grid;
+    gap: 14px;
+    padding: 16px;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 8px;
+    background: var(--surface-elevated, #FAFAFA);
+    margin-bottom: 20px;
+  }
+  .backup-controls {
+    align-items: flex-end;
+    flex-wrap: wrap;
+  }
+  .form-group.compact {
+    width: 130px;
+    margin-bottom: 0;
+  }
   .deployment-card {
     display: flex;
     align-items: center;
@@ -1648,6 +1796,84 @@
     font-size: 13px;
     line-height: 1.5;
     color: var(--steel, #86868B);
+  }
+  .readability-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+    gap: 16px;
+    padding: 18px 20px;
+    margin: 16px 0 22px;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 14px;
+    background: var(--surface, #FFFFFF);
+  }
+  .readability-copy h4 {
+    margin: 0 0 6px;
+    color: var(--onyx, #1D1D1F);
+    font-size: 15px;
+  }
+  .readability-copy p {
+    margin: 0;
+    color: var(--steel, #86868B);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .readability-controls {
+    display: grid;
+    gap: 12px;
+    align-content: center;
+  }
+  .text-preset-buttons {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .text-preset-buttons button {
+    display: grid;
+    gap: 2px;
+    justify-items: center;
+    min-height: 52px;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 8px;
+    background: var(--surface-elevated, #FAFAFA);
+    color: var(--text-primary, #1D1D1F);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .text-preset-buttons button span {
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-weight: 800;
+  }
+  .text-preset-buttons button:nth-child(2) span {
+    font-size: 18px;
+  }
+  .text-preset-buttons button:nth-child(3) span {
+    font-size: 21px;
+  }
+  .text-preset-buttons button:hover,
+  .text-preset-buttons button.active {
+    background: var(--onyx, #1D1D1F);
+    border-color: var(--onyx, #1D1D1F);
+    color: #fff;
+  }
+  .text-scale-slider {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text-secondary, #86868B);
+  }
+  .text-scale-slider span {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-primary, #1D1D1F);
+  }
+  .text-scale-slider input {
+    width: 100%;
+    accent-color: var(--onyx, #1D1D1F);
   }
   .deployment-note {
     margin-top: 16px;
@@ -1900,6 +2126,9 @@
     .deployment-card {
       flex-direction: column;
       align-items: flex-start;
+    }
+    .readability-card {
+      grid-template-columns: 1fr;
     }
   }
 </style>

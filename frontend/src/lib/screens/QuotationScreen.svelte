@@ -3,6 +3,7 @@
     import { fade } from "svelte/transition";
     import { toast } from "../stores/toasts";
     import { devLog } from "$lib/utils/devLog";
+    import { formatNumber } from "$lib/utils/formatters";
     import { RUNTIME_URL, API_ENDPOINTS } from "$lib/config";
 
     // State
@@ -144,7 +145,7 @@
     }
 
     function formatCurrency(val, curr = "BHD") {
-        return `${curr} ${val?.toFixed(3) || "0.000"}`;
+        return `${curr} ${formatNumber(val || 0, 3)}`;
     }
 
     function getRegimeColor(regime) {

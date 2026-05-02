@@ -127,6 +127,9 @@ func (a *App) UpdateBankStatement(id string, updates map[string]interface{}) err
 
 // DeleteBankStatement soft-deletes a statement
 func (a *App) DeleteBankStatement(id string) error {
+	if ok, err := a.guardDeleteOrRequest("finance:delete", "bank_statement", id, "Bank statement"); !ok {
+		return err
+	}
 	if err := a.requirePermission("finance:delete"); err != nil {
 		return err
 	}
@@ -320,6 +323,9 @@ func (a *App) CreateBankStatementLine(statementID string, line map[string]interf
 // DeleteBankStatementLine soft-deletes a statement line
 // SECURITY: Audit log before deletion (financial transaction)
 func (a *App) DeleteBankStatementLine(lineID string) error {
+	if ok, err := a.guardDeleteOrRequest("finance:delete", "bank_statement_line", lineID, "Bank statement line"); !ok {
+		return err
+	}
 	if err := a.requirePermission("finance:delete"); err != nil {
 		return err
 	}

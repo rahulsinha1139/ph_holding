@@ -58,6 +58,12 @@
 
     // Global OCR Modal
     import QuickCaptureModal from "./lib/components/QuickCaptureModal.svelte";
+    import {
+        recordActivityNavigation,
+        startActivityMonitor,
+        stopActivityMonitor,
+    } from "./lib/telemetry/activityMonitor";
+    import { initTextScale } from "./lib/stores/textScale";
 
     // Global OCR State - Works on ANY screen
     let showGlobalOCRModal = false;
@@ -124,6 +130,12 @@
         currentScreen = screen;
         currentParams = params;
         screenParamsById = { ...screenParamsById, [screen]: params };
+        recordActivityNavigation(screen, params);
+    }
+
+    function startMonitoringIfReady() {
+        if (DESIGN_MODE || deviceStatus !== "approved") return;
+        void startActivityMonitor(() => currentScreen);
     }
 
     async function ensureScreenComponent(screen: string) {
@@ -462,6 +474,7 @@
     // SINGLE UNIFIED onMount - Consolidates all initialization
     onMount(() => {
         let cleanup: (() => void) | undefined;
+        initTextScale();
 
         void (async () => {
 
@@ -525,6 +538,7 @@
 
                     // Register file drop handler now that license is valid
                     registerFileDropHandler();
+                    startMonitoringIfReady();
                 } else {
                     // No valid license - show activation screen
                     devLog.info("No valid license found - showing activation screen");
@@ -597,6 +611,7 @@
             if (!DESIGN_MODE) {
                 EventsOff("butler:event");
                 OnFileDropOff(); // CRITICAL: Removes drag/drop listeners
+                void stopActivityMonitor();
             }
         };
 
@@ -699,6 +714,7 @@
         deviceStatus = "approved";
         await initAuthContext();
         toast.success("Administrator account created successfully!");
+        startMonitoringIfReady();
     }
 
     // Handle device approval (from pending screen)
@@ -728,6 +744,7 @@
         deviceStatus = "approved";
         await initAuthContext();
         toast.success(`Welcome, ${result.user_name}!`);
+        startMonitoringIfReady();
     }
 
     // Handle blocked device
@@ -766,6 +783,7 @@
 
         // Register file drop handler now that license is valid
         registerFileDropHandler();
+        startMonitoringIfReady();
     }
 
     // Register file drop handler - only after license is validated
@@ -957,7 +975,10 @@
                                     >
                                         <svelte:component
                                             this={loadedScreenComponents[screenID]}
-                                            params={screenParamsById[screenID] || {}}
+                                            params={{
+                                                ...(screenParamsById[screenID] || {}),
+                                                __active: screenID === currentScreen,
+                                            }}
                                             on:navigate={(e) => navigate(e.detail)}
                                         />
                                     </div>
@@ -1103,6 +1124,17 @@
 
     .screen-hidden {
         display: none;
+    }
+
+    @media (max-width: 1024px) {
+        .app-layout {
+            flex-direction: column;
+        }
+
+        .main-content-wrapper {
+            margin-left: 0;
+            padding-top: 72px;
+        }
     }
 
     .loading-spinner {

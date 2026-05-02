@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-04-17T13:40:42.670Z",
+  "generatedAt": "2026-04-28T10:10:36.817Z",
   "screenCount": 58,
-  "screenLevelButtonCount": 515,
+  "screenLevelButtonCount": 529,
   "screensWithButtons": 53,
-  "screensWithBackend": 47,
-  "reusableComponentButtonSectionCount": 40,
+  "screensWithBackend": 48,
+  "reusableComponentButtonSectionCount": 41,
   "screens": [
     {
       "pageLabel": "Finance > Dashboard (AHS Trading)",
@@ -32,7 +32,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 304,
+          "line": 459,
           "label": "+ New Entry",
           "click": "() => (showVoucherModal = true)",
           "dataAction": "",
@@ -44,7 +44,7 @@
         },
         {
           "kind": "button",
-          "line": 310,
+          "line": 465,
           "label": "+ New Account",
           "click": "openAddAccount",
           "dataAction": "",
@@ -56,7 +56,7 @@
         },
         {
           "kind": "button",
-          "line": 321,
+          "line": 476,
           "label": "{v.icon} {v.label}",
           "click": "() => (currentView = v.id)",
           "dataAction": "",
@@ -68,7 +68,7 @@
         },
         {
           "kind": "button",
-          "line": 411,
+          "line": 566,
           "label": "Edit",
           "click": "() => openEditAccount(acc)",
           "dataAction": "",
@@ -80,7 +80,7 @@
         },
         {
           "kind": "button",
-          "line": 417,
+          "line": 572,
           "label": "Delete",
           "click": "() => deleteAccount(acc.code)",
           "dataAction": "",
@@ -92,43 +92,43 @@
         },
         {
           "kind": "button",
-          "line": 462,
-          "label": "Generate",
-          "click": "",
+          "line": 627,
+          "label": "{reportLoading === \"pl\" ? \"Generating...\" : \"Generate\"}",
+          "click": "() => generateAccountingReport(\"pl\")",
           "dataAction": "",
           "type": "",
           "title": "",
           "aria": "",
-          "disabled": false,
+          "disabled": true,
           "loading": false
         },
         {
           "kind": "button",
-          "line": 467,
-          "label": "Generate",
-          "click": "",
+          "line": 636,
+          "label": "{reportLoading === \"balance\" ? \"Generating...\" : \"Generate\"}",
+          "click": "() => generateAccountingReport(\"balance\")",
           "dataAction": "",
           "type": "",
           "title": "",
           "aria": "",
-          "disabled": false,
+          "disabled": true,
           "loading": false
         },
         {
           "kind": "button",
-          "line": 472,
-          "label": "Generate",
-          "click": "",
+          "line": 645,
+          "label": "{reportLoading === \"vat\" ? \"Exporting...\" : \"Generate\"}",
+          "click": "() => generateAccountingReport(\"vat\")",
           "dataAction": "",
           "type": "",
           "title": "",
           "aria": "",
-          "disabled": false,
+          "disabled": true,
           "loading": false
         },
         {
           "kind": "button",
-          "line": 533,
+          "line": 710,
           "label": "+ Add Line",
           "click": "addVoucherLine",
           "dataAction": "",
@@ -140,7 +140,7 @@
         },
         {
           "kind": "button",
-          "line": 571,
+          "line": 748,
           "label": "×",
           "click": "() => removeVoucherLine(i)",
           "dataAction": "",
@@ -152,7 +152,7 @@
         },
         {
           "kind": "button",
-          "line": 598,
+          "line": 775,
           "label": "Cancel",
           "click": "() => (showVoucherModal = false)",
           "dataAction": "",
@@ -164,7 +164,7 @@
         },
         {
           "kind": "button",
-          "line": 602,
+          "line": 779,
           "label": "Create Entry",
           "click": "createVoucher",
           "dataAction": "",
@@ -176,7 +176,7 @@
         },
         {
           "kind": "button",
-          "line": 669,
+          "line": 846,
           "label": "Cancel",
           "click": "() => (showAccountModal = false)",
           "dataAction": "",
@@ -188,7 +188,7 @@
         },
         {
           "kind": "button",
-          "line": 673,
+          "line": 850,
           "label": "{editingAccount ? \"Update\" : \"Add Account\"}",
           "click": "saveAccount",
           "dataAction": "",
@@ -200,8 +200,50 @@
         }
       ],
       "tabs": [],
-      "backendImports": [],
-      "backendCalls": []
+      "backendImports": [
+        "CreateAccount",
+        "CreateJournalEntry",
+        "ExportVATReturnData",
+        "GenerateBalanceSheet",
+        "GenerateProfitAndLoss",
+        "GetChartOfAccounts",
+        "GetJournalEntries",
+        "UpdateAccount"
+      ],
+      "backendCalls": [
+        {
+          "fn": "CreateJournalEntry",
+          "line": 112
+        },
+        {
+          "fn": "UpdateAccount",
+          "line": 226
+        },
+        {
+          "fn": "CreateAccount",
+          "line": 239
+        },
+        {
+          "fn": "GenerateProfitAndLoss",
+          "line": 272
+        },
+        {
+          "fn": "GenerateBalanceSheet",
+          "line": 275
+        },
+        {
+          "fn": "ExportVATReturnData",
+          "line": 279
+        },
+        {
+          "fn": "GetChartOfAccounts",
+          "line": 414
+        },
+        {
+          "fn": "GetJournalEntries",
+          "line": 415
+        }
+      ]
     },
     {
       "pageLabel": "Intelligence > Archaeologist",
@@ -367,7 +409,7 @@
       "buttons": [
         {
           "kind": "Button",
-          "line": 976,
+          "line": 1137,
           "label": "Manage Accounts",
           "click": "openManageAccountsModal",
           "dataAction": "",
@@ -379,7 +421,7 @@
         },
         {
           "kind": "Button",
-          "line": 979,
+          "line": 1140,
           "label": "Import Statement",
           "click": "() => showImportModal = true",
           "dataAction": "",
@@ -391,7 +433,7 @@
         },
         {
           "kind": "Button",
-          "line": 983,
+          "line": 1144,
           "label": "Edit Statement",
           "click": "openEditStatementModal",
           "dataAction": "",
@@ -403,7 +445,7 @@
         },
         {
           "kind": "Button",
-          "line": 986,
+          "line": 1147,
           "label": "Delete Statement",
           "click": "handleDeleteStatement",
           "dataAction": "",
@@ -415,7 +457,7 @@
         },
         {
           "kind": "Button",
-          "line": 989,
+          "line": 1150,
           "label": "Auto-Match",
           "click": "handleAutoMatch",
           "dataAction": "",
@@ -427,7 +469,7 @@
         },
         {
           "kind": "Button",
-          "line": 992,
+          "line": 1153,
           "label": "Finalize",
           "click": "handleFinalize",
           "dataAction": "",
@@ -439,7 +481,7 @@
         },
         {
           "kind": "Button",
-          "line": 1030,
+          "line": 1191,
           "label": "Add Transaction",
           "click": "openAddLineModal",
           "dataAction": "",
@@ -451,7 +493,7 @@
         },
         {
           "kind": "Button",
-          "line": 1083,
+          "line": 1244,
           "label": "Cancel",
           "click": "() => showImportModal = false",
           "dataAction": "",
@@ -463,7 +505,7 @@
         },
         {
           "kind": "Button",
-          "line": 1084,
+          "line": 1245,
           "label": "Import",
           "click": "handleImport",
           "dataAction": "",
@@ -475,7 +517,7 @@
         },
         {
           "kind": "Button",
-          "line": 1123,
+          "line": 1284,
           "label": "Unmatch",
           "click": "() => matchingLine && handleUnmatch(matchingLine)",
           "dataAction": "",
@@ -487,7 +529,7 @@
         },
         {
           "kind": "Button",
-          "line": 1133,
+          "line": 1294,
           "label": "Fix Debit/Credit",
           "click": "() => matchingLine && openOCRReviewModal(matchingLine)",
           "dataAction": "",
@@ -498,9 +540,33 @@
           "loading": false
         },
         {
+          "kind": "button",
+          "line": 1354,
+          "label": "Remove",
+          "click": "() => removeMatchAllocation(allocation.key)",
+          "dataAction": "",
+          "type": "button",
+          "title": "",
+          "aria": "",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 1371,
+          "label": "{isCandidateAllocated(candidate) ? 'Added' : 'Add'}",
+          "click": "() => addMatchAllocation(candidate)",
+          "dataAction": "",
+          "type": "button",
+          "title": "",
+          "aria": "",
+          "disabled": true,
+          "loading": false
+        },
+        {
           "kind": "Button",
-          "line": 1178,
-          "label": "Match Selected",
+          "line": 1393,
+          "label": "{matchAllocations.length > 0 ? 'Match Allocations' : 'Match Selected'}",
           "click": "handleManualMatch",
           "dataAction": "",
           "type": "component default",
@@ -511,7 +577,7 @@
         },
         {
           "kind": "Button",
-          "line": 1182,
+          "line": 1402,
           "label": "Close",
           "click": "() => showMatchModal = false",
           "dataAction": "",
@@ -523,7 +589,7 @@
         },
         {
           "kind": "Button",
-          "line": 1222,
+          "line": 1442,
           "label": "Cancel",
           "click": "() => showEditStatementModal = false",
           "dataAction": "",
@@ -535,7 +601,7 @@
         },
         {
           "kind": "Button",
-          "line": 1223,
+          "line": 1443,
           "label": "Save Changes",
           "click": "handleSaveStatement",
           "dataAction": "",
@@ -547,7 +613,7 @@
         },
         {
           "kind": "Button",
-          "line": 1256,
+          "line": 1476,
           "label": "Flip Debit / Credit",
           "click": "flipLineDebitCredit",
           "dataAction": "",
@@ -559,7 +625,7 @@
         },
         {
           "kind": "Button",
-          "line": 1270,
+          "line": 1490,
           "label": "Delete Transaction",
           "click": "handleDeleteLine",
           "dataAction": "",
@@ -571,7 +637,7 @@
         },
         {
           "kind": "Button",
-          "line": 1274,
+          "line": 1494,
           "label": "Cancel",
           "click": "() => showEditLineModal = false",
           "dataAction": "",
@@ -583,7 +649,7 @@
         },
         {
           "kind": "Button",
-          "line": 1275,
+          "line": 1495,
           "label": "Save Changes",
           "click": "handleSaveLine",
           "dataAction": "",
@@ -595,7 +661,7 @@
         },
         {
           "kind": "Button",
-          "line": 1312,
+          "line": 1532,
           "label": "Cancel",
           "click": "() => showAddLineModal = false",
           "dataAction": "",
@@ -607,7 +673,7 @@
         },
         {
           "kind": "Button",
-          "line": 1313,
+          "line": 1533,
           "label": "Add Transaction",
           "click": "handleSaveLine",
           "dataAction": "",
@@ -619,7 +685,7 @@
         },
         {
           "kind": "button",
-          "line": 1350,
+          "line": 1570,
           "label": "✏️",
           "click": "() => editAccount(account)",
           "dataAction": "",
@@ -631,7 +697,7 @@
         },
         {
           "kind": "button",
-          "line": 1354,
+          "line": 1574,
           "label": "🗑️",
           "click": "() => handleDeleteAccount(account)",
           "dataAction": "",
@@ -643,7 +709,7 @@
         },
         {
           "kind": "Button",
-          "line": 1420,
+          "line": 1640,
           "label": "Cancel Edit",
           "click": "resetAccountForm",
           "dataAction": "",
@@ -655,7 +721,7 @@
         },
         {
           "kind": "Button",
-          "line": 1422,
+          "line": 1642,
           "label": "{editingAccount ? 'Update Account' : 'Add Account'}",
           "click": "handleSaveAccount",
           "dataAction": "",
@@ -667,7 +733,7 @@
         },
         {
           "kind": "Button",
-          "line": 1429,
+          "line": 1649,
           "label": "Import from Statement",
           "click": "handleImportFromStatement",
           "dataAction": "",
@@ -679,7 +745,7 @@
         },
         {
           "kind": "Button",
-          "line": 1436,
+          "line": 1656,
           "label": "Close",
           "click": "() => { showManageAccountsModal = false; resetAccountForm(); }",
           "dataAction": "",
@@ -695,6 +761,7 @@
         "AutoMatchBankLines",
         "CreateBankAccount",
         "CreateBankStatementLine",
+        "CreateSplitAllocation",
         "DeleteBankAccount",
         "DeleteBankStatement",
         "DeleteBankStatementLine",
@@ -710,6 +777,7 @@
         "ImportBankStatementCSV",
         "ImportBankStatementWithDialog",
         "ListCustomerInvoices",
+        "ListExpenseEntries",
         "ListUnreconciledPayrollPayouts",
         "ManualMatchLine",
         "UnmatchLine",
@@ -720,99 +788,107 @@
       "backendCalls": [
         {
           "fn": "GetActiveBankAccounts",
-          "line": 365
+          "line": 392
         },
         {
           "fn": "GetCashPosition",
-          "line": 379
+          "line": 406
         },
         {
           "fn": "GetBankStatements",
-          "line": 397
+          "line": 424
         },
         {
           "fn": "GetBankStatementLines",
-          "line": 411
+          "line": 438
         },
         {
           "fn": "AutoMatchBankLines",
-          "line": 425
+          "line": 452
         },
         {
           "fn": "FinalizeReconciliation",
-          "line": 441
+          "line": 468
         },
         {
           "fn": "ListCustomerInvoices",
-          "line": 463
+          "line": 497
         },
         {
           "fn": "GetSupplierInvoices",
-          "line": 464
+          "line": 498
         },
         {
           "fn": "GetAllSupplierPayments",
-          "line": 465
+          "line": 499
+        },
+        {
+          "fn": "ListExpenseEntries",
+          "line": 500
         },
         {
           "fn": "ListUnreconciledPayrollPayouts",
-          "line": 478
+          "line": 521
+        },
+        {
+          "fn": "CreateSplitAllocation",
+          "line": 674
         },
         {
           "fn": "ManualMatchLine",
-          "line": 534
+          "line": 685
         },
         {
           "fn": "UnmatchLine",
-          "line": 550
+          "line": 703
         },
         {
           "fn": "UnmatchLine",
-          "line": 551
+          "line": 704
         },
         {
           "fn": "ImportBankStatementWithDialog",
-          "line": 571
+          "line": 724
         },
         {
           "fn": "GetCashPosition",
-          "line": 581
+          "line": 734
         },
         {
           "fn": "GetAllBankAccounts",
-          "line": 614
+          "line": 767
         },
         {
           "fn": "UpdateBankAccount",
-          "line": 667
+          "line": 820
         },
         {
           "fn": "CreateBankAccount",
-          "line": 671
+          "line": 824
         },
         {
           "fn": "DeleteBankAccount",
-          "line": 693
+          "line": 846
         },
         {
           "fn": "DeleteBankStatement",
-          "line": 717
+          "line": 870
         },
         {
           "fn": "UpdateBankStatement",
-          "line": 762
+          "line": 915
         },
         {
           "fn": "UpdateBankStatementLine",
-          "line": 858
+          "line": 1011
         },
         {
           "fn": "CreateBankStatementLine",
-          "line": 869
+          "line": 1022
         },
         {
           "fn": "DeleteBankStatementLine",
-          "line": 895
+          "line": 1048
         }
       ]
     },
@@ -822,7 +898,7 @@
       "buttons": [
         {
           "kind": "Button",
-          "line": 363,
+          "line": 364,
           "label": "New Reconciliation",
           "click": "openNewModal",
           "dataAction": "",
@@ -834,7 +910,7 @@
         },
         {
           "kind": "Button",
-          "line": 478,
+          "line": 479,
           "label": "Edit Adjustments",
           "click": "() => selectedRecon && openEditModal(selectedRecon)",
           "dataAction": "",
@@ -846,7 +922,7 @@
         },
         {
           "kind": "Button",
-          "line": 481,
+          "line": 482,
           "label": "Finalize",
           "click": "() => selectedRecon && handleFinalize(selectedRecon)",
           "dataAction": "",
@@ -858,7 +934,7 @@
         },
         {
           "kind": "Button",
-          "line": 533,
+          "line": 534,
           "label": "Cancel",
           "click": "() => showNewModal = false",
           "dataAction": "",
@@ -870,7 +946,7 @@
         },
         {
           "kind": "Button",
-          "line": 534,
+          "line": 535,
           "label": "Create",
           "click": "handleCreate",
           "dataAction": "",
@@ -882,7 +958,7 @@
         },
         {
           "kind": "Button",
-          "line": 565,
+          "line": 566,
           "label": "Cancel",
           "click": "() => showEditModal = false",
           "dataAction": "",
@@ -894,7 +970,7 @@
         },
         {
           "kind": "Button",
-          "line": 566,
+          "line": 567,
           "label": "Update",
           "click": "handleUpdate",
           "dataAction": "",
@@ -920,31 +996,31 @@
       "backendCalls": [
         {
           "fn": "GetActiveBankAccounts",
-          "line": 176
+          "line": 177
         },
         {
           "fn": "GetBookBankReconciliations",
-          "line": 196
+          "line": 197
         },
         {
           "fn": "GetReconciliationVariances",
-          "line": 206
+          "line": 207
         },
         {
           "fn": "CreateBookBankReconciliation",
-          "line": 235
+          "line": 236
         },
         {
           "fn": "UpdateBookBankReconciliation",
-          "line": 244
+          "line": 245
         },
         {
           "fn": "UpdateBookBankReconciliation",
-          "line": 290
+          "line": 291
         },
         {
           "fn": "FinalizeBookBankReconciliation",
-          "line": 332
+          "line": 333
         }
       ]
     },
@@ -954,7 +1030,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 2264,
+          "line": 2317,
           "label": "+ New Chat",
           "click": "() => startNewConversation()",
           "dataAction": "",
@@ -966,7 +1042,7 @@
         },
         {
           "kind": "button",
-          "line": 2265,
+          "line": 2318,
           "label": "{pendingClearAll ? \"Click again to confirm\" : \"Clear All Chats\"}",
           "click": "armClearAll",
           "dataAction": "",
@@ -978,7 +1054,7 @@
         },
         {
           "kind": "button",
-          "line": 2271,
+          "line": 2324,
           "label": "Create offer draft",
           "click": "() => runWorkflowAction(\"create_offer_draft\")",
           "dataAction": "",
@@ -990,7 +1066,7 @@
         },
         {
           "kind": "button",
-          "line": 2274,
+          "line": 2327,
           "label": "Daily briefing",
           "click": "() => runWorkflowAction(\"daily_briefing\")",
           "dataAction": "",
@@ -1002,7 +1078,7 @@
         },
         {
           "kind": "div role=button",
-          "line": 2281,
+          "line": 2334,
           "label": "{convTitle(conv)} armDelete(conv)} title={pendingDeleteKey === convKey(conv) ? \"Click again to delete\" : \"Delete conversation\"} >{pendingDeleteKey === convKey(conv) ? \"?\" : \"\\u00d7\"}",
           "click": "() => selectConversation(conv)",
           "dataAction": "",
@@ -1014,7 +1090,7 @@
         },
         {
           "kind": "button",
-          "line": 2290,
+          "line": 2343,
           "label": "{pendingDeleteKey === convKey(conv) ? \"?\" : \"\\u00d7\"}",
           "click": "() => armDelete(conv)",
           "dataAction": "",
@@ -1026,8 +1102,8 @@
         },
         {
           "kind": "button",
-          "line": 2331,
-          "label": "&rarr; &bull; + {actionLabelOrFallback(action, typeof action.data === \"string\" ? action.data : (action.target || \"Action\"))} {actionArmed ? \"Confirm\" : actionChipStatusLabel(state.status)}",
+          "line": 2385,
+          "label": "&rarr; &rarr; &bull; + {actionLabelOrFallback(action, typeof action.data === \"string\" ? action.data : (action.target || \"Action\"))} {actionArmed ? \"Confirm\" : actionType === \"clarify\" ? \"Choose\" : actionChipStatusLabel(state.status)}",
           "click": "() => handleAction(action)",
           "dataAction": "",
           "type": "",
@@ -1038,7 +1114,7 @@
         },
         {
           "kind": "button",
-          "line": 2378,
+          "line": 2435,
           "label": "(icon/dynamic label)",
           "click": "send",
           "dataAction": "",
@@ -1063,39 +1139,39 @@
       "backendCalls": [
         {
           "fn": "ListCustomers",
-          "line": 552
+          "line": 593
         },
         {
           "fn": "GetCustomer",
-          "line": 577
+          "line": 618
         },
         {
           "fn": "ChatWithButlerPersistent",
-          "line": 1987
+          "line": 2028
         },
         {
           "fn": "ChatWithButlerPersistent",
-          "line": 2003
+          "line": 2044
         },
         {
           "fn": "ChatWithButler",
-          "line": 2014
+          "line": 2055
         },
         {
           "fn": "ListConversations",
-          "line": 2034
+          "line": 2075
         },
         {
           "fn": "GetConversationMessages",
-          "line": 2049
+          "line": 2090
         },
         {
           "fn": "DeleteConversation",
-          "line": 2119
+          "line": 2160
         },
         {
           "fn": "PurgeAllConversations",
-          "line": 2147
+          "line": 2188
         }
       ]
     },
@@ -1105,7 +1181,7 @@
       "buttons": [
         {
           "kind": "div role=button",
-          "line": 173,
+          "line": 167,
           "label": "{i + 1} {customer.business_name} 0 ? (customer.total_revenue / dashboard.total_revenue * 100) : 0}%\" >",
           "click": "() => selectCustomer(customer.id)",
           "dataAction": "",
@@ -1117,9 +1193,9 @@
         },
         {
           "kind": "Button",
-          "line": 259,
+          "line": 253,
           "label": "+ New Customer",
-          "click": "() => showCreateModal = true",
+          "click": "() => { resetForm(); showCreateModal = true; }",
           "dataAction": "",
           "type": "component default",
           "title": "",
@@ -1129,7 +1205,7 @@
         },
         {
           "kind": "div role=button",
-          "line": 265,
+          "line": 259,
           "label": "{customer.business_name} {customer.payment_grade}",
           "click": "() => selectCustomer(customer.id)",
           "dataAction": "",
@@ -1141,7 +1217,7 @@
         },
         {
           "kind": "Button",
-          "line": 346,
+          "line": 342,
           "label": "Cancel",
           "click": "() => showCreateModal = false",
           "dataAction": "",
@@ -1153,7 +1229,7 @@
         },
         {
           "kind": "Button",
-          "line": 347,
+          "line": 343,
           "label": "Create Customer",
           "click": "saveCustomer",
           "dataAction": "",
@@ -1173,15 +1249,15 @@
       "backendCalls": [
         {
           "fn": "GetCRMCustomerDashboard",
-          "line": 37
+          "line": 43
         },
         {
           "fn": "GetCRMCustomerDashboardByYear",
-          "line": 39
+          "line": 45
         },
         {
           "fn": "CreateCustomer",
-          "line": 71
+          "line": 77
         }
       ]
     },
@@ -1233,7 +1309,7 @@
       "buttons": [
         {
           "kind": "div role=button",
-          "line": 177,
+          "line": 173,
           "label": "{i + 1} {supplier.supplier_name} {renderRating(supplier.rating)}",
           "click": "() => selectSupplier(supplier.id)",
           "dataAction": "",
@@ -1245,9 +1321,9 @@
         },
         {
           "kind": "Button",
-          "line": 216,
+          "line": 212,
           "label": "+ New Supplier",
-          "click": "() => showCreateModal = true",
+          "click": "() => { resetForm(); showCreateModal = true; }",
           "dataAction": "",
           "type": "component default",
           "title": "",
@@ -1257,7 +1333,7 @@
         },
         {
           "kind": "div role=button",
-          "line": 222,
+          "line": 218,
           "label": "{supplier.supplier_name} {renderRating(supplier.rating)}",
           "click": "() => selectSupplier(supplier.id)",
           "dataAction": "",
@@ -1269,7 +1345,7 @@
         },
         {
           "kind": "Button",
-          "line": 329,
+          "line": 328,
           "label": "Cancel",
           "click": "() => showCreateModal = false",
           "dataAction": "",
@@ -1281,7 +1357,7 @@
         },
         {
           "kind": "Button",
-          "line": 330,
+          "line": 329,
           "label": "Create Supplier",
           "click": "saveSupplier",
           "dataAction": "",
@@ -1301,15 +1377,15 @@
       "backendCalls": [
         {
           "fn": "GetCRMSupplierDashboard",
-          "line": 37
+          "line": 43
         },
         {
           "fn": "GetCRMSupplierDashboardByYear",
-          "line": 39
+          "line": 45
         },
         {
           "fn": "CreateSupplier",
-          "line": 71
+          "line": 77
         }
       ]
     },
@@ -1328,19 +1404,19 @@
       "backendCalls": [
         {
           "fn": "GetActiveBankAccounts",
-          "line": 77
-        },
-        {
-          "fn": "GetCashPosition",
           "line": 78
         },
         {
+          "fn": "GetCashPosition",
+          "line": 79
+        },
+        {
           "fn": "GetOutstandingCheques",
-          "line": 95
+          "line": 96
         },
         {
           "fn": "GetDepositsInTransit",
-          "line": 96
+          "line": 97
         }
       ]
     },
@@ -1350,7 +1426,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 425,
+          "line": 426,
           "label": "Outstanding ({cheques.length})",
           "click": "() => activeTab = 'outstanding'",
           "dataAction": "",
@@ -1362,7 +1438,7 @@
         },
         {
           "kind": "button",
-          "line": 428,
+          "line": 429,
           "label": "Registers ({registers.length})",
           "click": "() => activeTab = 'registers'",
           "dataAction": "",
@@ -1374,7 +1450,7 @@
         },
         {
           "kind": "button",
-          "line": 431,
+          "line": 432,
           "label": "Stale ({staleCheques.length})",
           "click": "() => activeTab = 'stale'",
           "dataAction": "",
@@ -1386,7 +1462,7 @@
         },
         {
           "kind": "Button",
-          "line": 437,
+          "line": 438,
           "label": "New Cheque Book",
           "click": "() => showRegisterModal = true",
           "dataAction": "",
@@ -1398,7 +1474,7 @@
         },
         {
           "kind": "Button",
-          "line": 440,
+          "line": 441,
           "label": "Issue Cheque",
           "click": "() => showIssueModal = true",
           "dataAction": "",
@@ -1410,7 +1486,7 @@
         },
         {
           "kind": "Button",
-          "line": 483,
+          "line": 484,
           "label": "Cancel",
           "click": "() => showRegisterModal = false",
           "dataAction": "",
@@ -1422,7 +1498,7 @@
         },
         {
           "kind": "Button",
-          "line": 484,
+          "line": 485,
           "label": "Register",
           "click": "handleCreateRegister",
           "dataAction": "",
@@ -1434,7 +1510,7 @@
         },
         {
           "kind": "Button",
-          "line": 515,
+          "line": 516,
           "label": "Cancel",
           "click": "() => showIssueModal = false",
           "dataAction": "",
@@ -1446,7 +1522,7 @@
         },
         {
           "kind": "Button",
-          "line": 516,
+          "line": 517,
           "label": "Issue Cheque",
           "click": "handleIssueCheque",
           "dataAction": "",
@@ -1473,39 +1549,39 @@
       "backendCalls": [
         {
           "fn": "GetActiveBankAccounts",
-          "line": 252
+          "line": 253
         },
         {
           "fn": "GetChequeRegisters",
-          "line": 273
-        },
-        {
-          "fn": "GetOutstandingCheques",
           "line": 274
         },
         {
-          "fn": "GetStaleCheques",
+          "fn": "GetOutstandingCheques",
           "line": 275
         },
         {
+          "fn": "GetStaleCheques",
+          "line": 276
+        },
+        {
           "fn": "GetNextChequeNumber",
-          "line": 286
+          "line": 287
         },
         {
           "fn": "CreateChequeRegister",
-          "line": 304
+          "line": 305
         },
         {
           "fn": "IssueCheque",
-          "line": 332
+          "line": 333
         },
         {
           "fn": "MarkChequeStale",
-          "line": 356
+          "line": 357
         },
         {
           "fn": "CancelCheque",
-          "line": 367
+          "line": 368
         }
       ]
     },
@@ -1515,7 +1591,7 @@
       "buttons": [
         {
           "kind": "Button",
-          "line": 1171,
+          "line": 1503,
           "label": "Refresh",
           "click": "loadData",
           "dataAction": "",
@@ -1527,19 +1603,7 @@
         },
         {
           "kind": "Button",
-          "line": 1173,
-          "label": "{deletingCosting ? 'Deleting...' : 'Delete'}",
-          "click": "handleDeleteCosting",
-          "dataAction": "",
-          "type": "component default",
-          "title": "",
-          "aria": "",
-          "disabled": true,
-          "loading": false
-        },
-        {
-          "kind": "Button",
-          "line": 1176,
+          "line": 1505,
           "label": "{exporting ? 'Exporting...' : 'Export Excel'}",
           "click": "handleExportExcel",
           "dataAction": "",
@@ -1551,7 +1615,7 @@
         },
         {
           "kind": "Button",
-          "line": 1179,
+          "line": 1508,
           "label": "{exporting ? 'Exporting...' : 'Export PDF'}",
           "click": "handleExportPDF",
           "dataAction": "",
@@ -1563,7 +1627,7 @@
         },
         {
           "kind": "Button",
-          "line": 1182,
+          "line": 1511,
           "label": "{savingOffer ? 'Saving...' : 'Save as Offer'}",
           "click": "handleSaveAsOffer",
           "dataAction": "",
@@ -1575,7 +1639,31 @@
         },
         {
           "kind": "Button",
-          "line": 1217,
+          "line": 1538,
+          "label": "Resume Draft",
+          "click": "resumeStoredCostingDraft",
+          "dataAction": "",
+          "type": "component default",
+          "title": "",
+          "aria": "",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "Button",
+          "line": 1541,
+          "label": "Discard",
+          "click": "discardStoredCostingDraft",
+          "dataAction": "",
+          "type": "component default",
+          "title": "",
+          "aria": "",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "Button",
+          "line": 1562,
           "label": "Start Blank Costing",
           "click": "startNewCosting",
           "dataAction": "",
@@ -1587,7 +1675,7 @@
         },
         {
           "kind": "button",
-          "line": 1227,
+          "line": 1572,
           "label": "{opp.client || opp.customer || 'Unknown'} {opp.status || 'New'} {getOpportunityDisplayReference(opp)} {opp.project || opp.project_name || 'New Requirements'} {formatOpportunityValue(opp)} {opp.created_at ? new Date(opp.created_at).toLocaleDateString() : ''}",
           "click": "() => { selectedOpportunityId = String(opp.id); handleOpportunitySelect(); }",
           "dataAction": "",
@@ -1599,9 +1687,9 @@
         },
         {
           "kind": "Button",
-          "line": 1257,
-          "label": "Back to Opportunities",
-          "click": "() => { if (isDirty && !confirm('You have unsaved changes. Leave anyway?')) return; showCostingForm = false; selectedOpportunityId = ''; selectedOpportunity = null; isDirty = false; }",
+          "line": 1602,
+          "label": "Back to Costing List",
+          "click": "handleBackToOpportunities",
           "dataAction": "",
           "type": "component default",
           "title": "",
@@ -1611,7 +1699,7 @@
         },
         {
           "kind": "div role=button",
-          "line": 1284,
+          "line": 1626,
           "label": "Rev {rev.revision_number} Current {rev.status}",
           "click": "() => selectRevision(rev)",
           "dataAction": "",
@@ -1623,7 +1711,7 @@
         },
         {
           "kind": "Button",
-          "line": 1310,
+          "line": 1652,
           "label": "+ New Revision",
           "click": "handleCreateNewRevision",
           "dataAction": "",
@@ -1635,7 +1723,7 @@
         },
         {
           "kind": "Button",
-          "line": 1320,
+          "line": 1662,
           "label": "Make Current",
           "click": "() => handleSetActiveRevision(selectedRevision.id)",
           "dataAction": "",
@@ -1647,7 +1735,7 @@
         },
         {
           "kind": "button",
-          "line": 1432,
+          "line": 1774,
           "label": "{showAdvancedHeader ? '▾' : '▸'} Compliance, Certificates & VAT",
           "click": "() => showAdvancedHeader = !showAdvancedHeader",
           "dataAction": "",
@@ -1659,7 +1747,7 @@
         },
         {
           "kind": "button",
-          "line": 1536,
+          "line": 1878,
           "label": "×",
           "click": "() => removeLineItem(i)",
           "dataAction": "",
@@ -1671,7 +1759,7 @@
         },
         {
           "kind": "button",
-          "line": 1628,
+          "line": 1970,
           "label": "Copy to All",
           "click": "copyFirstItemCostsToAll",
           "dataAction": "",
@@ -1683,7 +1771,7 @@
         },
         {
           "kind": "Button",
-          "line": 1649,
+          "line": 1991,
           "label": "+ Add Line Item",
           "click": "addLineItem",
           "dataAction": "",
@@ -1698,7 +1786,6 @@
       "backendImports": [
         "CloneCostingAsNewRevision",
         "CreateCostingSheet",
-        "DeleteCostingSheet",
         "ExportCostingToExcel",
         "ExportCostingToPDF",
         "GetCostingSheets",
@@ -1717,83 +1804,79 @@
       "backendCalls": [
         {
           "fn": "ListCustomers",
-          "line": 529
+          "line": 734
         },
         {
           "fn": "GetCostingSheets",
-          "line": 530
+          "line": 735
         },
         {
           "fn": "GetRFQs",
-          "line": 531
+          "line": 736
         },
         {
           "fn": "GetPipelineOpportunities",
-          "line": 532
+          "line": 737
         },
         {
           "fn": "GetSettings",
-          "line": 533
+          "line": 738
         },
         {
           "fn": "ListSuppliers",
-          "line": 583
+          "line": 788
         },
         {
           "fn": "GetOpportunityLineItems",
-          "line": 677
+          "line": 904
         },
         {
           "fn": "GetCostingsByRFQ",
-          "line": 706
+          "line": 936
         },
         {
           "fn": "CloneCostingAsNewRevision",
-          "line": 758
+          "line": 988
         },
         {
           "fn": "CreateCostingSheet",
-          "line": 762
+          "line": 992
         },
         {
           "fn": "SetActiveCostingRevision",
-          "line": 778
+          "line": 1008
         },
         {
           "fn": "ExportCostingToPDF",
-          "line": 1022
+          "line": 1378
         },
         {
           "fn": "OpenExportedFile",
-          "line": 1025
+          "line": 1381
         },
         {
           "fn": "ExportCostingToExcel",
-          "line": 1045
+          "line": 1401
         },
         {
           "fn": "OpenExportedFile",
-          "line": 1048
-        },
-        {
-          "fn": "DeleteCostingSheet",
-          "line": 1078
+          "line": 1404
         },
         {
           "fn": "UpdateCostingSheet",
-          "line": 1118
+          "line": 1435
         },
         {
           "fn": "CreateCostingSheet",
-          "line": 1124
+          "line": 1441
         },
         {
           "fn": "SaveCostingAsOffer",
-          "line": 1135
+          "line": 1452
         },
         {
           "fn": "GetCostingSheets",
-          "line": 1140
+          "line": 1458
         }
       ]
     },
@@ -1872,7 +1955,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 163,
+          "line": 164,
           "label": "Back to Customers",
           "click": "goBack",
           "dataAction": "",
@@ -1884,7 +1967,7 @@
         },
         {
           "kind": "Button",
-          "line": 171,
+          "line": 172,
           "label": "Create Task",
           "click": "() => showTaskModal = true",
           "dataAction": "",
@@ -1896,7 +1979,7 @@
         },
         {
           "kind": "Button",
-          "line": 172,
+          "line": 173,
           "label": "Edit",
           "click": "startEdit",
           "dataAction": "",
@@ -1908,7 +1991,7 @@
         },
         {
           "kind": "Button",
-          "line": 174,
+          "line": 175,
           "label": "Delete",
           "click": "() => showDeleteConfirm = true",
           "dataAction": "",
@@ -1920,7 +2003,7 @@
         },
         {
           "kind": "Button",
-          "line": 187,
+          "line": 188,
           "label": "Retry",
           "click": "loadProfile",
           "dataAction": "",
@@ -1932,7 +2015,7 @@
         },
         {
           "kind": "button",
-          "line": 194,
+          "line": 195,
           "label": "+ Add",
           "click": "() => showContactModal = true",
           "dataAction": "",
@@ -1944,7 +2027,7 @@
         },
         {
           "kind": "button",
-          "line": 278,
+          "line": 279,
           "label": "{tab.label}",
           "click": "() => activeTab = tab.id",
           "dataAction": "",
@@ -1956,7 +2039,7 @@
         },
         {
           "kind": "Button",
-          "line": 328,
+          "line": 329,
           "label": "Cancel",
           "click": "cancelEdit",
           "dataAction": "",
@@ -1968,7 +2051,7 @@
         },
         {
           "kind": "Button",
-          "line": 329,
+          "line": 330,
           "label": "{saveLoading ? 'Saving...' : 'Save Changes'}",
           "click": "saveEdit",
           "dataAction": "",
@@ -1980,7 +2063,7 @@
         },
         {
           "kind": "Button",
-          "line": 469,
+          "line": 470,
           "label": "+ Add Note",
           "click": "() => showNoteModal = true",
           "dataAction": "",
@@ -1992,7 +2075,7 @@
         },
         {
           "kind": "Button",
-          "line": 503,
+          "line": 504,
           "label": "Cancel",
           "click": "() => showDeleteConfirm = false",
           "dataAction": "",
@@ -2004,7 +2087,7 @@
         },
         {
           "kind": "Button",
-          "line": 504,
+          "line": 505,
           "label": "{deleteLoading ? 'Deleting...' : 'Delete'}",
           "click": "handleDeleteCustomer",
           "dataAction": "",
@@ -2016,7 +2099,7 @@
         },
         {
           "kind": "Button",
-          "line": 533,
+          "line": 534,
           "label": "Cancel",
           "click": "() => showNoteModal = false",
           "dataAction": "",
@@ -2028,7 +2111,7 @@
         },
         {
           "kind": "Button",
-          "line": 534,
+          "line": 535,
           "label": "Save Note",
           "click": "saveNote",
           "dataAction": "",
@@ -2040,7 +2123,7 @@
         },
         {
           "kind": "Button",
-          "line": 570,
+          "line": 571,
           "label": "Cancel",
           "click": "() => showContactModal = false",
           "dataAction": "",
@@ -2052,7 +2135,7 @@
         },
         {
           "kind": "Button",
-          "line": 571,
+          "line": 572,
           "label": "Save Contact",
           "click": "saveContact",
           "dataAction": "",
@@ -2095,23 +2178,23 @@
       "backendCalls": [
         {
           "fn": "DeleteCustomer",
-          "line": 44
+          "line": 45
         },
         {
           "fn": "UpdateCustomer",
-          "line": 71
+          "line": 72
         },
         {
           "fn": "GetCustomerFullProfile",
-          "line": 94
+          "line": 95
         },
         {
           "fn": "AddCustomerNote",
-          "line": 110
+          "line": 111
         },
         {
           "fn": "AddCustomerContact",
-          "line": 124
+          "line": 125
         }
       ]
     },
@@ -2121,9 +2204,9 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 250,
+          "line": 242,
           "label": "+ New Customer",
-          "click": "() => (showCreate = true)",
+          "click": "() => { newCustomer = emptyCustomerForm(); showCreate = true; }",
           "dataAction": "",
           "type": "",
           "title": "",
@@ -2133,7 +2216,7 @@
         },
         {
           "kind": "button",
-          "line": 269,
+          "line": 261,
           "label": "All Types",
           "click": "() => (filters.type = \"All\")",
           "dataAction": "",
@@ -2145,7 +2228,7 @@
         },
         {
           "kind": "button",
-          "line": 277,
+          "line": 269,
           "label": "{t.label}",
           "click": "() => (filters.type = t.code)",
           "dataAction": "",
@@ -2157,8 +2240,8 @@
         },
         {
           "kind": "div role=button",
-          "line": 299,
-          "label": "{c.business_name} Grade {c.payment_grade || \"B\"}",
+          "line": 291,
+          "label": "{c.business_name} Grade {c.payment_grade || \"B\"} handleDeleteCustomer(c, event)} > Delete",
           "click": "() => navigate(c.id)",
           "dataAction": "",
           "type": "",
@@ -2169,7 +2252,19 @@
         },
         {
           "kind": "button",
-          "line": 602,
+          "line": 308,
+          "label": "Delete",
+          "click": "(event) => handleDeleteCustomer(c, event)",
+          "dataAction": "",
+          "type": "button",
+          "title": "",
+          "aria": "Delete customer",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 608,
           "label": "Cancel",
           "click": "() => (showCreate = false)",
           "dataAction": "",
@@ -2181,7 +2276,7 @@
         },
         {
           "kind": "button",
-          "line": 605,
+          "line": 611,
           "label": "{creating ? \"Creating...\" : \"Create Customer\"}",
           "click": "handleCreate",
           "dataAction": "",
@@ -2195,16 +2290,21 @@
       "tabs": [],
       "backendImports": [
         "CreateCustomer",
+        "DeleteCustomer",
         "ListCustomers"
       ],
       "backendCalls": [
         {
           "fn": "ListCustomers",
-          "line": 103
+          "line": 108
         },
         {
           "fn": "CreateCustomer",
-          "line": 188
+          "line": 193
+        },
+        {
+          "fn": "DeleteCustomer",
+          "line": 214
         }
       ]
     },
@@ -2214,52 +2314,54 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 344,
-          "label": "Browse",
-          "click": "handleBrowseFile",
+          "line": 530,
+          "label": "{item.action}",
+          "click": "() => handleDashboardAction(item.actionId)",
           "dataAction": "",
-          "type": "",
+          "type": "button",
           "title": "",
-          "aria": "",
-          "disabled": true,
+          "aria": "{`${item.action}",
+          "disabled": false,
           "loading": false
         },
         {
           "kind": "button",
-          "line": 375,
-          "label": "{item.icon} {item.title} {item.count} items >",
-          "click": "() => navigateToScreen(item.screen)",
+          "line": 586,
+          "label": "New Task",
+          "click": "openTaskModal",
           "dataAction": "",
-          "type": "",
+          "type": "button",
           "title": "",
-          "aria": "{item.title}: {item.count} items",
+          "aria": "",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 602,
+          "label": "No active tasks. Create one.",
+          "click": "openTaskModal",
+          "dataAction": "",
+          "type": "button",
+          "title": "",
+          "aria": "",
           "disabled": false,
           "loading": false
         }
       ],
       "tabs": [],
       "backendImports": [
-        "CompleteFollowUp",
         "GetDashboardStats",
-        "ListFollowUps",
-        "PickFile"
+        "ListFollowUps"
       ],
       "backendCalls": [
         {
           "fn": "GetDashboardStats",
-          "line": 67
+          "line": 255
         },
         {
           "fn": "ListFollowUps",
-          "line": 83
-        },
-        {
-          "fn": "CompleteFollowUp",
-          "line": 143
-        },
-        {
-          "fn": "PickFile",
-          "line": 194
+          "line": 304
         }
       ]
     },
@@ -2269,7 +2371,7 @@
       "buttons": [
         {
           "kind": "div role=button",
-          "line": 779,
+          "line": 950,
           "label": "{note.dn_number} {note.customer_name || ''} Order: {note.order_reference || 'N/A'}",
           "click": "() => handleRowClick(note)",
           "dataAction": "",
@@ -2281,7 +2383,7 @@
         },
         {
           "kind": "div role=button",
-          "line": 811,
+          "line": 982,
           "label": "{note.dn_number} {note.customer_name || ''} Order: {note.order_reference || 'N/A'}",
           "click": "() => handleRowClick(note)",
           "dataAction": "",
@@ -2293,7 +2395,7 @@
         },
         {
           "kind": "Button",
-          "line": 851,
+          "line": 1022,
           "label": "+ New Delivery Note",
           "click": "openCreateModal",
           "dataAction": "",
@@ -2305,7 +2407,7 @@
         },
         {
           "kind": "button",
-          "line": 859,
+          "line": 1030,
           "label": "All ({deliveryNotes.length})",
           "click": "() => activeFilter = 'All'",
           "dataAction": "",
@@ -2317,7 +2419,7 @@
         },
         {
           "kind": "button",
-          "line": 867,
+          "line": 1038,
           "label": "{status.label} ({deliveryNotes.filter(dn => dn.status === status.key).length})",
           "click": "() => activeFilter = status.key",
           "dataAction": "",
@@ -2329,7 +2431,7 @@
         },
         {
           "kind": "Button",
-          "line": 1145,
+          "line": 1316,
           "label": "Cancel",
           "click": "() => showModal = false",
           "dataAction": "",
@@ -2341,7 +2443,7 @@
         },
         {
           "kind": "Button",
-          "line": 1148,
+          "line": 1319,
           "label": "{saving ? 'Saving...' : modalMode === 'edit' ? 'Update Delivery Note' : 'Create Delivery Note'}",
           "click": "",
           "dataAction": "",
@@ -2353,7 +2455,7 @@
         },
         {
           "kind": "Button",
-          "line": 1265,
+          "line": 1441,
           "label": "{pdfGenerating ? 'Generating PDF...' : 'Download PDF'}",
           "click": "() => handleGeneratePDF(selectedNote)",
           "dataAction": "",
@@ -2365,7 +2467,7 @@
         },
         {
           "kind": "Button",
-          "line": 1269,
+          "line": 1445,
           "label": "Dispatch",
           "click": "() => handleDispatch(selectedNote)",
           "dataAction": "",
@@ -2377,7 +2479,7 @@
         },
         {
           "kind": "Button",
-          "line": 1274,
+          "line": 1450,
           "label": "Confirm Delivery",
           "click": "() => handleConfirmDelivery(selectedNote)",
           "dataAction": "",
@@ -2389,7 +2491,7 @@
         },
         {
           "kind": "Button",
-          "line": 1278,
+          "line": 1454,
           "label": "Edit",
           "click": "() => openEditModal(selectedNote)",
           "dataAction": "",
@@ -2401,7 +2503,7 @@
         },
         {
           "kind": "Button",
-          "line": 1282,
+          "line": 1458,
           "label": "Delete",
           "click": "() => handleDelete(selectedNote)",
           "dataAction": "",
@@ -2434,80 +2536,96 @@
       ],
       "backendCalls": [
         {
-          "fn": "GetDeliveryNotes",
-          "line": 202
-        },
-        {
-          "fn": "ListOrders",
-          "line": 203
-        },
-        {
-          "fn": "ListCustomers",
-          "line": 204
-        },
-        {
-          "fn": "GenerateDNNumber",
-          "line": 285
-        },
-        {
-          "fn": "CreateDNWithSerials",
-          "line": 433
-        },
-        {
-          "fn": "UpdateDeliveryNote",
-          "line": 435
-        },
-        {
-          "fn": "CreateDeliveryNote",
-          "line": 448
-        },
-        {
-          "fn": "CreateDeliveryNote",
-          "line": 479
-        },
-        {
-          "fn": "UpdateDeliveryNote",
-          "line": 482
-        },
-        {
-          "fn": "GetDeliveryNoteByID",
-          "line": 504
-        },
-        {
-          "fn": "DispatchDeliveryNote",
-          "line": 523
-        },
-        {
-          "fn": "ConfirmDeliveryNote",
-          "line": 534
-        },
-        {
-          "fn": "DeleteDeliveryNote",
-          "line": 549
-        },
-        {
-          "fn": "GenerateDeliveryNotePDF",
-          "line": 563
-        },
-        {
-          "fn": "OpenExportedFile",
-          "line": 566
+          "fn": "GetOrder",
+          "line": 238
         },
         {
           "fn": "GetOrderFulfillmentDetail",
-          "line": 609
+          "line": 267
         },
         {
-          "fn": "GetAvailableSerials",
-          "line": 634
+          "fn": "GetDeliveryNotes",
+          "line": 352
+        },
+        {
+          "fn": "ListOrders",
+          "line": 353
+        },
+        {
+          "fn": "ListCustomers",
+          "line": 354
+        },
+        {
+          "fn": "GenerateDNNumber",
+          "line": 423
+        },
+        {
+          "fn": "CreateDNWithSerials",
+          "line": 572
+        },
+        {
+          "fn": "UpdateDeliveryNote",
+          "line": 574
+        },
+        {
+          "fn": "CreateDeliveryNote",
+          "line": 587
+        },
+        {
+          "fn": "CreateDeliveryNote",
+          "line": 618
+        },
+        {
+          "fn": "UpdateDeliveryNote",
+          "line": 621
+        },
+        {
+          "fn": "GetDeliveryNoteByID",
+          "line": 645
+        },
+        {
+          "fn": "DispatchDeliveryNote",
+          "line": 665
+        },
+        {
+          "fn": "ConfirmDeliveryNote",
+          "line": 676
+        },
+        {
+          "fn": "DeleteDeliveryNote",
+          "line": 691
+        },
+        {
+          "fn": "GenerateDeliveryNotePDF",
+          "line": 705
+        },
+        {
+          "fn": "OpenExportedFile",
+          "line": 708
         },
         {
           "fn": "GetOrder",
-          "line": 650
+          "line": 745
+        },
+        {
+          "fn": "GetOrder",
+          "line": 751
+        },
+        {
+          "fn": "GetOrderFulfillmentDetail",
+          "line": 766
+        },
+        {
+          "fn": "GetAvailableSerials",
+          "line": 791
+        },
+        {
+          "fn": "GetOrder",
+          "line": 821
         },
         {
           "fn": "GetDeliveryNotesByOrder",
-          "line": 684
+          "line": 856
         }
       ]
     },
@@ -3053,7 +3171,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 545,
+          "line": 546,
           "label": "Add Category",
           "click": "handleCreateCategory",
           "dataAction": "",
@@ -3065,7 +3183,7 @@
         },
         {
           "kind": "button",
-          "line": 549,
+          "line": 550,
           "label": "Add Vendor",
           "click": "handleCreateVendor",
           "dataAction": "",
@@ -3077,7 +3195,7 @@
         },
         {
           "kind": "button",
-          "line": 568,
+          "line": 569,
           "label": "{deletingCategoryID === category.id ? \"Deleting...\" : confirmDeleteCategoryID === category.id ? \"Confirm Delete\" : \"Delete\"}",
           "click": "() => handleDeleteCategory(category)",
           "dataAction": "",
@@ -3089,7 +3207,7 @@
         },
         {
           "kind": "button",
-          "line": 598,
+          "line": 599,
           "label": "{deletingVendorID === vendor.id ? \"Deleting...\" : confirmDeleteVendorID === vendor.id ? \"Confirm Delete\" : \"Delete\"}",
           "click": "() => handleDeleteVendor(vendor)",
           "dataAction": "",
@@ -3101,7 +3219,7 @@
         },
         {
           "kind": "button",
-          "line": 641,
+          "line": 642,
           "label": "Create Draft",
           "click": "handleCreateExpense",
           "dataAction": "",
@@ -3113,7 +3231,7 @@
         },
         {
           "kind": "button",
-          "line": 664,
+          "line": 665,
           "label": "Import",
           "click": "() => importBankCandidate(candidate)",
           "dataAction": "",
@@ -3125,7 +3243,7 @@
         },
         {
           "kind": "button",
-          "line": 703,
+          "line": 704,
           "label": "Submit",
           "click": "() => runEntryAction(\"submit\", entry.id)",
           "dataAction": "",
@@ -3137,7 +3255,7 @@
         },
         {
           "kind": "button",
-          "line": 705,
+          "line": 706,
           "label": "Post",
           "click": "() => runEntryAction(\"post\", entry.id)",
           "dataAction": "",
@@ -3149,7 +3267,7 @@
         },
         {
           "kind": "button",
-          "line": 707,
+          "line": 708,
           "label": "Record Payment",
           "click": "() => openPaymentModal(entry)",
           "dataAction": "",
@@ -3161,7 +3279,7 @@
         },
         {
           "kind": "button",
-          "line": 710,
+          "line": 711,
           "label": "{deletingEntryID === entry.id ? \"Deleting...\" : confirmDeleteEntryID === entry.id ? \"Confirm Delete\" : \"Delete\"}",
           "click": "() => handleDeleteEntry(entry)",
           "dataAction": "",
@@ -3173,7 +3291,7 @@
         },
         {
           "kind": "button",
-          "line": 768,
+          "line": 769,
           "label": "Create Schedule",
           "click": "handleCreateRecurring",
           "dataAction": "",
@@ -3185,7 +3303,7 @@
         },
         {
           "kind": "button",
-          "line": 769,
+          "line": 770,
           "label": "Generate Due Items",
           "click": "handleGenerateRecurring",
           "dataAction": "",
@@ -3197,7 +3315,7 @@
         },
         {
           "kind": "button",
-          "line": 796,
+          "line": 797,
           "label": "{deletingRecurringID === item.id ? \"Deleting...\" : confirmDeleteRecurringID === item.id ? \"Confirm Delete\" : \"Delete Schedule\"}",
           "click": "() => handleDeleteRecurring(item)",
           "dataAction": "",
@@ -3209,7 +3327,7 @@
         },
         {
           "kind": "button",
-          "line": 839,
+          "line": 840,
           "label": "Approve",
           "click": "() => runEntryAction(\"approve\", entry.id)",
           "dataAction": "",
@@ -3221,7 +3339,7 @@
         },
         {
           "kind": "button",
-          "line": 840,
+          "line": 841,
           "label": "Reject",
           "click": "() => runEntryAction(\"reject\", entry.id)",
           "dataAction": "",
@@ -3233,7 +3351,7 @@
         },
         {
           "kind": "button",
-          "line": 842,
+          "line": 843,
           "label": "Post",
           "click": "() => runEntryAction(\"post\", entry.id)",
           "dataAction": "",
@@ -3245,7 +3363,7 @@
         },
         {
           "kind": "button",
-          "line": 844,
+          "line": 845,
           "label": "Record Payment",
           "click": "() => openPaymentModal(entry)",
           "dataAction": "",
@@ -3257,7 +3375,7 @@
         },
         {
           "kind": "button",
-          "line": 892,
+          "line": 893,
           "label": "Cancel",
           "click": "() => { showPaymentModal = false; paymentEntry = null; }",
           "dataAction": "",
@@ -3269,7 +3387,7 @@
         },
         {
           "kind": "button",
-          "line": 893,
+          "line": 894,
           "label": "{payingExpense ? \"Saving...\" : \"Mark Paid\"}",
           "click": "submitExpensePayment",
           "dataAction": "",
@@ -3287,7 +3405,7 @@
       "backendCalls": [
         {
           "fn": "GetActiveBankAccounts",
-          "line": 155
+          "line": 156
         }
       ]
     },
@@ -3297,7 +3415,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 429,
+          "line": 430,
           "label": "Exposure",
           "click": "() => activeTab = 'exposure'",
           "dataAction": "",
@@ -3309,7 +3427,7 @@
         },
         {
           "kind": "button",
-          "line": 432,
+          "line": 433,
           "label": "Revaluations",
           "click": "() => activeTab = 'revaluations'",
           "dataAction": "",
@@ -3321,7 +3439,7 @@
         },
         {
           "kind": "Button",
-          "line": 445,
+          "line": 446,
           "label": "Update Rate",
           "click": "() => showRateModal = true",
           "dataAction": "",
@@ -3333,7 +3451,7 @@
         },
         {
           "kind": "Button",
-          "line": 448,
+          "line": 449,
           "label": "Revalue All",
           "click": "handleBatchRevalue",
           "dataAction": "",
@@ -3345,7 +3463,7 @@
         },
         {
           "kind": "Button",
-          "line": 463,
+          "line": 464,
           "label": "Calculate for Selected Account",
           "click": "handleRevalue",
           "dataAction": "",
@@ -3357,7 +3475,7 @@
         },
         {
           "kind": "Button",
-          "line": 499,
+          "line": 500,
           "label": "Cancel",
           "click": "() => showRateModal = false",
           "dataAction": "",
@@ -3369,7 +3487,7 @@
         },
         {
           "kind": "Button",
-          "line": 500,
+          "line": 501,
           "label": "Save Rate",
           "click": "handleAddRate",
           "dataAction": "",
@@ -3395,35 +3513,35 @@
       "backendCalls": [
         {
           "fn": "GetActiveBankAccounts",
-          "line": 261
+          "line": 262
         },
         {
           "fn": "GetFXExposureReport",
-          "line": 284
+          "line": 285
         },
         {
           "fn": "GetFXRevaluations",
-          "line": 296
+          "line": 297
         },
         {
           "fn": "GetFXGainLossSummary",
-          "line": 306
+          "line": 307
         },
         {
           "fn": "CreateFXRate",
-          "line": 325
+          "line": 326
         },
         {
           "fn": "CalculateFXRevaluation",
-          "line": 343
+          "line": 344
         },
         {
           "fn": "RevalueAllForeignAccounts",
-          "line": 358
+          "line": 359
         },
         {
           "fn": "PostFXRevaluation",
-          "line": 373
+          "line": 374
         }
       ]
     },
@@ -3522,15 +3640,15 @@
       "backendCalls": [
         {
           "fn": "GetFinancialReportYears",
-          "line": 46
+          "line": 76
         },
         {
           "fn": "GetFinancialDashboardForYear",
-          "line": 69
+          "line": 99
         },
         {
           "fn": "GetCashPosition",
-          "line": 144
+          "line": 176
         }
       ]
     },
@@ -3833,7 +3951,7 @@
       "buttons": [
         {
           "kind": "Button",
-          "line": 777,
+          "line": 775,
           "label": "Refresh",
           "click": "loadInvoices",
           "dataAction": "",
@@ -3845,7 +3963,7 @@
         },
         {
           "kind": "Button",
-          "line": 778,
+          "line": 776,
           "label": "Open Bank Recon",
           "click": "openBankReconciliation",
           "dataAction": "",
@@ -3857,7 +3975,7 @@
         },
         {
           "kind": "Button",
-          "line": 780,
+          "line": 778,
           "label": "+ Create Invoice",
           "click": "openCreateModal",
           "dataAction": "",
@@ -3868,68 +3986,8 @@
           "loading": false
         },
         {
-          "kind": "Button",
-          "line": 783,
-          "label": "Refresh",
-          "click": "loadCreditNotes",
-          "dataAction": "",
-          "type": "component default",
-          "title": "",
-          "aria": "",
-          "disabled": false,
-          "loading": false
-        },
-        {
-          "kind": "Button",
-          "line": 784,
-          "label": "Open Bank Recon",
-          "click": "openBankReconciliation",
-          "dataAction": "",
-          "type": "component default",
-          "title": "",
-          "aria": "",
-          "disabled": false,
-          "loading": false
-        },
-        {
-          "kind": "Button",
-          "line": 785,
-          "label": "+ Issue Credit Note",
-          "click": "() => openCNModal()",
-          "dataAction": "",
-          "type": "component default",
-          "title": "",
-          "aria": "",
-          "disabled": false,
-          "loading": false
-        },
-        {
           "kind": "button",
-          "line": 792,
-          "label": "Invoices {invoices.length}",
-          "click": "() => mainView = 'invoices'",
-          "dataAction": "",
-          "type": "",
-          "title": "",
-          "aria": "",
-          "disabled": false,
-          "loading": false
-        },
-        {
-          "kind": "button",
-          "line": 795,
-          "label": "Credit Notes {creditNotes.length}",
-          "click": "() => mainView = 'credit-notes'",
-          "dataAction": "",
-          "type": "",
-          "title": "",
-          "aria": "",
-          "disabled": false,
-          "loading": false
-        },
-        {
-          "kind": "button",
-          "line": 841,
+          "line": 824,
           "label": "{tab.label} {tab.count}",
           "click": "() => (selectedFilter = tab.value)",
           "dataAction": "",
@@ -3941,7 +3999,7 @@
         },
         {
           "kind": "button",
-          "line": 885,
+          "line": 868,
           "label": "Edit",
           "click": "() => openEditModal(row)",
           "dataAction": "",
@@ -3953,7 +4011,7 @@
         },
         {
           "kind": "button",
-          "line": 892,
+          "line": 875,
           "label": "{pdfLoadingMap[row.id] ? '...' : 'PDF'}",
           "click": "() => downloadPDF(row)",
           "dataAction": "",
@@ -3965,7 +4023,7 @@
         },
         {
           "kind": "button",
-          "line": 901,
+          "line": 884,
           "label": "{sendingInvoiceId === row.id ? '...' : 'Send'}",
           "click": "() => handleSendInvoice(row)",
           "dataAction": "",
@@ -3977,7 +4035,7 @@
         },
         {
           "kind": "button",
-          "line": 911,
+          "line": 894,
           "label": "Delete",
           "click": "() => openDeleteModal(row)",
           "dataAction": "",
@@ -3989,7 +4047,7 @@
         },
         {
           "kind": "button",
-          "line": 929,
+          "line": 912,
           "label": "Loading more... Load More ({totalLoaded} loaded)",
           "click": "loadMore",
           "dataAction": "",
@@ -4001,7 +4059,7 @@
         },
         {
           "kind": "Button",
-          "line": 960,
+          "line": 943,
           "label": "+ Issue Credit Note",
           "click": "() => openCNModal()",
           "dataAction": "",
@@ -4013,7 +4071,7 @@
         },
         {
           "kind": "button",
-          "line": 990,
+          "line": 973,
           "label": "PDF",
           "click": "() => handleCNPDF(cn.id)",
           "dataAction": "",
@@ -4025,7 +4083,7 @@
         },
         {
           "kind": "button",
-          "line": 992,
+          "line": 975,
           "label": "Apply",
           "click": "() => handleApplyCN(cn.id)",
           "dataAction": "",
@@ -4037,7 +4095,7 @@
         },
         {
           "kind": "Button",
-          "line": 1138,
+          "line": 1121,
           "label": "Cancel",
           "click": "() => { showCreateModal = false; resetFieldVisibility(); }",
           "dataAction": "",
@@ -4049,7 +4107,7 @@
         },
         {
           "kind": "Button",
-          "line": 1141,
+          "line": 1124,
           "label": "{createLoading ? 'Creating...' : selectedDeliveryNoteId ? 'Create Invoice + Link DN' : 'Create Invoice'}",
           "click": "handleCreateInvoice",
           "dataAction": "",
@@ -4061,7 +4119,7 @@
         },
         {
           "kind": "Button",
-          "line": 1166,
+          "line": 1149,
           "label": "Cancel",
           "click": "() => (showDeleteModal = false)",
           "dataAction": "",
@@ -4073,7 +4131,7 @@
         },
         {
           "kind": "Button",
-          "line": 1169,
+          "line": 1152,
           "label": "{deleteLoading ? 'Deleting...' : 'Delete Invoice'}",
           "click": "handleDeleteInvoice",
           "dataAction": "",
@@ -4085,7 +4143,7 @@
         },
         {
           "kind": "Button",
-          "line": 1233,
+          "line": 1216,
           "label": "Cancel",
           "click": "() => { showEditModal = false; editInvoice = null; }",
           "dataAction": "",
@@ -4097,7 +4155,7 @@
         },
         {
           "kind": "Button",
-          "line": 1236,
+          "line": 1219,
           "label": "{editLoading ? 'Saving...' : 'Save Changes'}",
           "click": "saveInvoiceEdit",
           "dataAction": "",
@@ -4109,7 +4167,7 @@
         },
         {
           "kind": "button",
-          "line": 1276,
+          "line": 1259,
           "label": "+ Add Item",
           "click": "addCNItem",
           "dataAction": "",
@@ -4121,7 +4179,7 @@
         },
         {
           "kind": "button",
-          "line": 1315,
+          "line": 1298,
           "label": "&times;",
           "click": "() => removeCNItem(i)",
           "dataAction": "",
@@ -4133,7 +4191,7 @@
         },
         {
           "kind": "Button",
-          "line": 1336,
+          "line": 1319,
           "label": "Cancel",
           "click": "() => showCNModal = false",
           "dataAction": "",
@@ -4145,7 +4203,7 @@
         },
         {
           "kind": "Button",
-          "line": 1339,
+          "line": 1322,
           "label": "{cnSaving ? 'Creating...' : 'Issue Credit Note'}",
           "click": "handleCreateCN",
           "dataAction": "",
@@ -4157,7 +4215,7 @@
         },
         {
           "kind": "Button",
-          "line": 1492,
+          "line": 1475,
           "label": "Close",
           "click": "() => { showDetailModal = false; selectedInvoice = null; }",
           "dataAction": "",
@@ -4169,7 +4227,7 @@
         },
         {
           "kind": "Button",
-          "line": 1495,
+          "line": 1478,
           "label": "{pdfLoadingMap[selectedInvoice?.id || ''] ? 'Generating...' : 'Download PDF'}",
           "click": "() => downloadPDF(selectedInvoice)",
           "dataAction": "",
@@ -4181,7 +4239,7 @@
         },
         {
           "kind": "Button",
-          "line": 1498,
+          "line": 1481,
           "label": "Edit Invoice",
           "click": "() => { showDetailModal = false; openEditModal(selectedInvoice); }",
           "dataAction": "",
@@ -4211,59 +4269,59 @@
       "backendCalls": [
         {
           "fn": "ListCreditNotes",
-          "line": 179
+          "line": 180
         },
         {
           "fn": "CreateCreditNote",
-          "line": 213
+          "line": 214
         },
         {
           "fn": "ApplyCreditNote",
-          "line": 226
+          "line": 227
         },
         {
           "fn": "GenerateCreditNotePDF",
-          "line": 236
+          "line": 237
         },
         {
           "fn": "GetCustomerInvoiceByID",
-          "line": 287
+          "line": 288
         },
         {
           "fn": "UpdateCustomerInvoice",
-          "line": 326
+          "line": 327
         },
         {
           "fn": "GenerateInvoicePDF",
-          "line": 344
+          "line": 345
         },
         {
           "fn": "ListCustomerInvoices",
-          "line": 568
+          "line": 569
         },
         {
           "fn": "ListCustomerInvoices",
-          "line": 594
+          "line": 595
         },
         {
           "fn": "ListOrders",
-          "line": 616
+          "line": 617
         },
         {
           "fn": "GetAvailableDeliveryNotesForOrder",
-          "line": 654
+          "line": 655
         },
         {
           "fn": "CreateInvoiceWithOptions",
-          "line": 691
+          "line": 692
         },
         {
           "fn": "SendCustomerInvoice",
-          "line": 727
+          "line": 728
         },
         {
           "fn": "DeleteCustomerInvoice",
-          "line": 750
+          "line": 751
         }
       ]
     },
@@ -4343,7 +4401,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 266,
+          "line": 319,
           "label": "Open task",
           "click": "() => openNotification(notification)",
           "dataAction": "",
@@ -4355,7 +4413,31 @@
         },
         {
           "kind": "button",
-          "line": 269,
+          "line": 322,
+          "label": "Approve Delete",
+          "click": "() => reviewDelete(notification, \"approve\")",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": true,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 329,
+          "label": "Reject",
+          "click": "() => reviewDelete(notification, \"reject\")",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": true,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 337,
           "label": "Mark read",
           "click": "() => markRead(notification.id)",
           "dataAction": "",
@@ -4376,7 +4458,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 332,
+          "line": 274,
           "label": "View",
           "click": "",
           "dataAction": "view",
@@ -4388,7 +4470,7 @@
         },
         {
           "kind": "button",
-          "line": 341,
+          "line": 283,
           "label": "Edit",
           "click": "",
           "dataAction": "edit",
@@ -4400,7 +4482,7 @@
         },
         {
           "kind": "button",
-          "line": 349,
+          "line": 291,
           "label": "PDF",
           "click": "",
           "dataAction": "pdf",
@@ -4412,7 +4494,7 @@
         },
         {
           "kind": "button",
-          "line": 359,
+          "line": 301,
           "label": "Won",
           "click": "",
           "dataAction": "won",
@@ -4424,7 +4506,7 @@
         },
         {
           "kind": "button",
-          "line": 367,
+          "line": 309,
           "label": "Lost",
           "click": "",
           "dataAction": "lost",
@@ -4436,7 +4518,7 @@
         },
         {
           "kind": "button",
-          "line": 377,
+          "line": 319,
           "label": "Re-quote",
           "click": "",
           "dataAction": "requote",
@@ -4447,20 +4529,8 @@
           "loading": false
         },
         {
-          "kind": "button",
-          "line": 387,
-          "label": "Follow-Up",
-          "click": "",
-          "dataAction": "followup",
-          "type": "",
-          "title": "",
-          "aria": "Schedule follow-up",
-          "disabled": false,
-          "loading": false
-        },
-        {
           "kind": "Button",
-          "line": 1094,
+          "line": 1103,
           "label": "+ New Offer (via Costing)",
           "click": "openCreateModal",
           "dataAction": "",
@@ -4472,7 +4542,7 @@
         },
         {
           "kind": "button",
-          "line": 1130,
+          "line": 1139,
           "label": "{company}",
           "click": "() => handleCompanySelect(company)",
           "dataAction": "",
@@ -4484,7 +4554,7 @@
         },
         {
           "kind": "button",
-          "line": 1143,
+          "line": 1152,
           "label": "{tab.label} {tab.count}",
           "click": "() => selectedStage = tab.value",
           "dataAction": "",
@@ -4496,7 +4566,7 @@
         },
         {
           "kind": "Button",
-          "line": 1259,
+          "line": 1268,
           "label": "+ Add Item",
           "click": "addLineItem",
           "dataAction": "",
@@ -4508,7 +4578,7 @@
         },
         {
           "kind": "button",
-          "line": 1297,
+          "line": 1306,
           "label": "×",
           "click": "() => removeLineItem(index)",
           "dataAction": "",
@@ -4520,7 +4590,7 @@
         },
         {
           "kind": "Button",
-          "line": 1318,
+          "line": 1327,
           "label": "Cancel",
           "click": "() => showCreateModal = false",
           "dataAction": "",
@@ -4532,7 +4602,7 @@
         },
         {
           "kind": "Button",
-          "line": 1321,
+          "line": 1330,
           "label": "Create Offer",
           "click": "handleCreateOffer",
           "dataAction": "",
@@ -4544,7 +4614,7 @@
         },
         {
           "kind": "Button",
-          "line": 1387,
+          "line": 1396,
           "label": "+ Add Item",
           "click": "addLineItem",
           "dataAction": "",
@@ -4556,7 +4626,7 @@
         },
         {
           "kind": "button",
-          "line": 1398,
+          "line": 1407,
           "label": "×",
           "click": "() => removeLineItem(index)",
           "dataAction": "",
@@ -4568,7 +4638,7 @@
         },
         {
           "kind": "Button",
-          "line": 1483,
+          "line": 1492,
           "label": "Cancel",
           "click": "() => showEditModal = false",
           "dataAction": "",
@@ -4580,7 +4650,7 @@
         },
         {
           "kind": "Button",
-          "line": 1484,
+          "line": 1493,
           "label": "Save Changes",
           "click": "handleEditOffer",
           "dataAction": "",
@@ -4592,7 +4662,7 @@
         },
         {
           "kind": "Button",
-          "line": 1510,
+          "line": 1519,
           "label": "Cancel",
           "click": "() => { showWonModal = false; actionOffer = null; }",
           "dataAction": "",
@@ -4604,7 +4674,7 @@
         },
         {
           "kind": "Button",
-          "line": 1513,
+          "line": 1522,
           "label": "Confirm Won",
           "click": "handleMarkWon",
           "dataAction": "",
@@ -4616,7 +4686,7 @@
         },
         {
           "kind": "Button",
-          "line": 1564,
+          "line": 1573,
           "label": "Cancel",
           "click": "() => { showLostModal = false; actionOffer = null; }",
           "dataAction": "",
@@ -4628,7 +4698,7 @@
         },
         {
           "kind": "Button",
-          "line": 1567,
+          "line": 1576,
           "label": "Confirm Lost",
           "click": "handleMarkLost",
           "dataAction": "",
@@ -4640,43 +4710,7 @@
         },
         {
           "kind": "button",
-          "line": 1599,
-          "label": "Cancel",
-          "click": "() => showFollowUpModal = false",
-          "dataAction": "",
-          "type": "",
-          "title": "",
-          "aria": "",
-          "disabled": false,
-          "loading": false
-        },
-        {
-          "kind": "button",
-          "line": 1600,
-          "label": "{followUpLoading ? 'Processing...' : 'Schedule'}",
-          "click": "scheduleFollowUp",
-          "dataAction": "",
-          "type": "",
-          "title": "",
-          "aria": "",
-          "disabled": true,
-          "loading": false
-        },
-        {
-          "kind": "button",
-          "line": 1617,
-          "label": "{followUpLoading ? 'Processing...' : 'Done'}",
-          "click": "() => completeFollowUp(fu.id)",
-          "dataAction": "",
-          "type": "",
-          "title": "",
-          "aria": "",
-          "disabled": true,
-          "loading": false
-        },
-        {
-          "kind": "button",
-          "line": 1774,
+          "line": 1735,
           "label": "{notesLoading ? 'Adding...' : 'Add Note'}",
           "click": "handleAddNote",
           "dataAction": "",
@@ -4688,7 +4722,7 @@
         },
         {
           "kind": "button",
-          "line": 1785,
+          "line": 1746,
           "label": "&times;",
           "click": "() => handleDeleteNote(note.id)",
           "dataAction": "",
@@ -4700,7 +4734,7 @@
         },
         {
           "kind": "Button",
-          "line": 1799,
+          "line": 1760,
           "label": "Close",
           "click": "() => { showViewModal = false; viewOffer = null; }",
           "dataAction": "",
@@ -4712,7 +4746,7 @@
         },
         {
           "kind": "Button",
-          "line": 1802,
+          "line": 1763,
           "label": "Download PDF",
           "click": "() => viewOffer && handleDownloadPDF(viewOffer)",
           "dataAction": "",
@@ -4724,7 +4758,7 @@
         },
         {
           "kind": "Button",
-          "line": 1805,
+          "line": 1766,
           "label": "Save Changes",
           "click": "handleSaveViewOffer",
           "dataAction": "",
@@ -4737,15 +4771,12 @@
       ],
       "tabs": [],
       "backendImports": [
-        "AddOfferFollowUp",
         "AddOfferNote",
-        "CompleteOfferFollowUp",
         "DeleteOfferNote",
         "GenerateOfferPDF",
         "GetAllOffers",
         "GetOfferNotes",
         "GetOffersWithNoItems",
-        "GetPendingFollowUps",
         "ListCustomers",
         "MarkOfferLost",
         "MarkOfferWon",
@@ -4755,68 +4786,56 @@
       ],
       "backendCalls": [
         {
-          "fn": "AddOfferFollowUp",
-          "line": 158
-        },
-        {
-          "fn": "CompleteOfferFollowUp",
-          "line": 173
-        },
-        {
-          "fn": "GetPendingFollowUps",
-          "line": 186
-        },
-        {
           "fn": "GetAllOffers",
-          "line": 438
+          "line": 370
         },
         {
           "fn": "ListCustomers",
-          "line": 439
+          "line": 371
         },
         {
           "fn": "SaveCostingAsOffer",
-          "line": 688
+          "line": 694
         },
         {
           "fn": "UpdateOfferFull",
-          "line": 737
+          "line": 743
         },
         {
           "fn": "MarkOfferWon",
-          "line": 797
+          "line": 808
         },
         {
           "fn": "MarkOfferLost",
-          "line": 823
+          "line": 834
         },
         {
           "fn": "GenerateOfferPDF",
-          "line": 936
+          "line": 944
         },
         {
           "fn": "OpenExportedFile",
-          "line": 939
+          "line": 947
         },
         {
           "fn": "UpdateOfferFull",
-          "line": 954
+          "line": 962
         },
         {
           "fn": "GetOfferNotes",
-          "line": 991
+          "line": 1001
         },
         {
           "fn": "AddOfferNote",
-          "line": 1003
+          "line": 1013
         },
         {
           "fn": "DeleteOfferNote",
-          "line": 1019
+          "line": 1029
         },
         {
           "fn": "GetOffersWithNoItems",
-          "line": 1083
+          "line": 1092
         }
       ]
     },
@@ -5009,8 +5028,8 @@
       "buttons": [
         {
           "kind": "Button",
-          "line": 111,
-          "label": "+ New Purchase Order",
+          "line": 110,
+          "label": "+ New Supplier Order",
           "click": "handleNewPO",
           "dataAction": "",
           "type": "component default",
@@ -5021,9 +5040,9 @@
         },
         {
           "kind": "Button",
-          "line": 115,
+          "line": 114,
           "label": "+ New Supplier Invoice",
-          "click": "handleNewInvoice",
+          "click": "handleNewSupplierInvoice",
           "dataAction": "",
           "type": "component default",
           "title": "",
@@ -5033,7 +5052,7 @@
         },
         {
           "kind": "Button",
-          "line": 119,
+          "line": 118,
           "label": "+ New Delivery Note",
           "click": "handleNewDN",
           "dataAction": "",
@@ -5047,7 +5066,7 @@
       "tabs": [
         {
           "id": "pos",
-          "label": "Supplier POs"
+          "label": "Supplier Orders"
         },
         {
           "id": "supplier-invoices",
@@ -5084,7 +5103,7 @@
       "buttons": [
         {
           "kind": "Button",
-          "line": 469,
+          "line": 490,
           "label": "+ New Opportunity",
           "click": "() => (showCreateForm = true)",
           "dataAction": "",
@@ -5096,7 +5115,7 @@
         },
         {
           "kind": "button",
-          "line": 475,
+          "line": 496,
           "label": "{status}",
           "click": "() => (activeFilter = status)",
           "dataAction": "",
@@ -5108,7 +5127,7 @@
         },
         {
           "kind": "button",
-          "line": 498,
+          "line": 519,
           "label": "{sortDirection === \"asc\" ? \"(asc)\" : \"(desc)\"}",
           "click": "() => (sortDirection = sortDirection === \"asc\" ? \"desc\" : \"asc\")",
           "dataAction": "",
@@ -5120,7 +5139,7 @@
         },
         {
           "kind": "div role=button",
-          "line": 538,
+          "line": 559,
           "label": "{opp.folder_number || opp.rfq_number || \"Manual\"} {getOpportunityYear(opp)} {opp._source === \"rfq\" ? \"RFQ\" : \"Pipeline\"}",
           "click": "() => selectOpportunity(opp)",
           "dataAction": "",
@@ -5132,7 +5151,7 @@
         },
         {
           "kind": "button",
-          "line": 579,
+          "line": 600,
           "label": "Delete",
           "click": "(event) => confirmDelete(opp, event)",
           "dataAction": "",
@@ -5144,7 +5163,7 @@
         },
         {
           "kind": "button",
-          "line": 613,
+          "line": 640,
           "label": "Create Task",
           "click": "() => showTaskModal = true",
           "dataAction": "",
@@ -5156,7 +5175,7 @@
         },
         {
           "kind": "button",
-          "line": 614,
+          "line": 641,
           "label": "Close",
           "click": "closeOpportunityModal",
           "dataAction": "",
@@ -5168,7 +5187,7 @@
         },
         {
           "kind": "Button",
-          "line": 692,
+          "line": 729,
           "label": "Cancel",
           "click": "() => (showCreateForm = false)",
           "dataAction": "",
@@ -5180,7 +5199,7 @@
         },
         {
           "kind": "Button",
-          "line": 693,
+          "line": 730,
           "label": "{creating ? \"Creating...\" : \"Create\"}",
           "click": "",
           "dataAction": "",
@@ -5192,7 +5211,7 @@
         },
         {
           "kind": "Button",
-          "line": 735,
+          "line": 778,
           "label": "Cancel",
           "click": "() => (showDeleteConfirm = false)",
           "dataAction": "",
@@ -5204,7 +5223,7 @@
         },
         {
           "kind": "Button",
-          "line": 738,
+          "line": 781,
           "label": "{deleting ? \"Deleting...\" : \"Delete\"}",
           "click": "() => handleDelete(false)",
           "dataAction": "",
@@ -5216,7 +5235,7 @@
         },
         {
           "kind": "Button",
-          "line": 741,
+          "line": 784,
           "label": "{deleting ? \"...\" : \"Delete All\"}",
           "click": "() => handleDelete(true)",
           "dataAction": "",
@@ -5239,27 +5258,27 @@
       "backendCalls": [
         {
           "fn": "GetRFQs",
-          "line": 204
-        },
-        {
-          "fn": "GetPipelineOpportunities",
-          "line": 205
-        },
-        {
-          "fn": "ListCustomers",
           "line": 206
         },
         {
+          "fn": "GetPipelineOpportunities",
+          "line": 207
+        },
+        {
+          "fn": "ListCustomers",
+          "line": 208
+        },
+        {
           "fn": "CreateRFQ",
-          "line": 386
+          "line": 407
         },
         {
           "fn": "DeleteRFQWithCascade",
-          "line": 424
+          "line": 445
         },
         {
           "fn": "DeleteRFQ",
-          "line": 426
+          "line": 447
         }
       ]
     },
@@ -5269,7 +5288,7 @@
       "buttons": [
         {
           "kind": "div role=button",
-          "line": 906,
+          "line": 963,
           "label": "{order.order_number} {order.customer_name} Ref: {order.customer_po_number}",
           "click": "() => handleRowClick(order)",
           "dataAction": "",
@@ -5281,7 +5300,7 @@
         },
         {
           "kind": "div role=button",
-          "line": 936,
+          "line": 993,
           "label": "{order.order_number} {order.customer_name}",
           "click": "() => handleRowClick(order)",
           "dataAction": "",
@@ -5293,7 +5312,7 @@
         },
         {
           "kind": "Button",
-          "line": 966,
+          "line": 1023,
           "label": "+ New Order",
           "click": "openCreateModal",
           "dataAction": "",
@@ -5305,7 +5324,7 @@
         },
         {
           "kind": "button",
-          "line": 1005,
+          "line": 1062,
           "label": "All ({orders.length})",
           "click": "() => activeFilter = 'All'",
           "dataAction": "",
@@ -5317,8 +5336,8 @@
         },
         {
           "kind": "button",
-          "line": 1013,
-          "label": "{status.label} ({orders.filter(o => o.status === status.key).length})",
+          "line": 1070,
+          "label": "{status.label} ({orders.filter(o => orderMatchesStatus(o, status.key)).length})",
           "click": "() => activeFilter = status.key",
           "dataAction": "",
           "type": "",
@@ -5329,7 +5348,7 @@
         },
         {
           "kind": "Button",
-          "line": 1185,
+          "line": 1242,
           "label": "+ Add Line",
           "click": "addFormItem",
           "dataAction": "",
@@ -5341,7 +5360,7 @@
         },
         {
           "kind": "button",
-          "line": 1240,
+          "line": 1262,
           "label": "Remove",
           "click": "() => removeFormItem(index)",
           "dataAction": "",
@@ -5353,7 +5372,7 @@
         },
         {
           "kind": "Button",
-          "line": 1256,
+          "line": 1328,
           "label": "Cancel",
           "click": "() => showModal = false",
           "dataAction": "",
@@ -5365,7 +5384,7 @@
         },
         {
           "kind": "Button",
-          "line": 1259,
+          "line": 1331,
           "label": "{saving ? 'Saving...' : modalMode === 'edit' ? 'Update Order' : 'Create Order'}",
           "click": "",
           "dataAction": "",
@@ -5377,19 +5396,7 @@
         },
         {
           "kind": "Button",
-          "line": 1386,
-          "label": "Create PO",
-          "click": "() => handleCreatePO(selectedOrder)",
-          "dataAction": "",
-          "type": "component default",
-          "title": "",
-          "aria": "",
-          "disabled": true,
-          "loading": false
-        },
-        {
-          "kind": "Button",
-          "line": 1391,
+          "line": 1458,
           "label": "Create Delivery Note",
           "click": "() => handleCreateDeliveryNote(selectedOrder)",
           "dataAction": "",
@@ -5401,7 +5408,19 @@
         },
         {
           "kind": "Button",
-          "line": 1396,
+          "line": 1461,
+          "label": "Create Supplier Order",
+          "click": "() => handleCreatePurchaseOrder(selectedOrder)",
+          "dataAction": "",
+          "type": "component default",
+          "title": "",
+          "aria": "",
+          "disabled": true,
+          "loading": false
+        },
+        {
+          "kind": "Button",
+          "line": 1466,
           "label": "Mark as Delivered",
           "click": "handleQuickMarkDelivered",
           "dataAction": "",
@@ -5413,7 +5432,7 @@
         },
         {
           "kind": "Button",
-          "line": 1401,
+          "line": 1471,
           "label": "Create Invoice",
           "click": "() => handleCreateInvoice(selectedOrder)",
           "dataAction": "",
@@ -5425,7 +5444,7 @@
         },
         {
           "kind": "Button",
-          "line": 1404,
+          "line": 1474,
           "label": "Proforma",
           "click": "() => handleCreateProforma(selectedOrder)",
           "dataAction": "",
@@ -5437,7 +5456,7 @@
         },
         {
           "kind": "Button",
-          "line": 1408,
+          "line": 1478,
           "label": "Create Task",
           "click": "() => showTaskModal = true",
           "dataAction": "",
@@ -5449,7 +5468,7 @@
         },
         {
           "kind": "Button",
-          "line": 1411,
+          "line": 1481,
           "label": "Edit Order",
           "click": "() => void openEditModal(selectedOrder)",
           "dataAction": "",
@@ -5461,7 +5480,7 @@
         },
         {
           "kind": "Button",
-          "line": 1414,
+          "line": 1484,
           "label": "Delete Order",
           "click": "() => handleDeleteOrder(selectedOrder)",
           "dataAction": "",
@@ -5473,7 +5492,7 @@
         },
         {
           "kind": "Button",
-          "line": 1432,
+          "line": 1502,
           "label": "Cancel",
           "click": "() => resolveActionConfirmation(false)",
           "dataAction": "",
@@ -5485,7 +5504,7 @@
         },
         {
           "kind": "Button",
-          "line": 1435,
+          "line": 1505,
           "label": "{confirmDialogConfirmLabel}",
           "click": "() => resolveActionConfirmation(true)",
           "dataAction": "",
@@ -5516,59 +5535,63 @@
       "backendCalls": [
         {
           "fn": "ListOrders",
-          "line": 359
+          "line": 386
         },
         {
           "fn": "ListCustomers",
-          "line": 360
+          "line": 387
         },
         {
           "fn": "GetOrderDeliveryStatus",
-          "line": 370
+          "line": 397
         },
         {
           "fn": "GetOrder",
-          "line": 480
+          "line": 507
         },
         {
           "fn": "CreateOrder",
-          "line": 571
+          "line": 597
         },
         {
           "fn": "UpdateOrder",
-          "line": 599
+          "line": 625
+        },
+        {
+          "fn": "UpdateOrder",
+          "line": 647
         },
         {
           "fn": "GetOrder",
-          "line": 619
+          "line": 667
         },
         {
           "fn": "GetOrderFulfillmentStatus",
-          "line": 620
+          "line": 668
         },
         {
           "fn": "CreateInvoiceFromOrder",
-          "line": 679
-        },
-        {
-          "fn": "CreateProformaInvoice",
-          "line": 711
+          "line": 727
         },
         {
           "fn": "CreatePOFromOrder",
-          "line": 739
+          "line": 764
+        },
+        {
+          "fn": "CreateProformaInvoice",
+          "line": 792
         },
         {
           "fn": "QuickMarkOrderDelivered",
-          "line": 768
+          "line": 825
         },
         {
           "fn": "DeleteOrder",
-          "line": 794
+          "line": 851
         },
         {
           "fn": "GetOrdersWithNoItems",
-          "line": 846
+          "line": 903
         }
       ]
     },
@@ -5578,7 +5601,7 @@
       "buttons": [
         {
           "kind": "Button",
-          "line": 616,
+          "line": 617,
           "label": "Refresh",
           "click": "loadData",
           "dataAction": "",
@@ -5590,7 +5613,7 @@
         },
         {
           "kind": "Button",
-          "line": 619,
+          "line": 620,
           "label": "Open Bank Recon",
           "click": "openBankReconciliation",
           "dataAction": "",
@@ -5602,7 +5625,7 @@
         },
         {
           "kind": "Button",
-          "line": 622,
+          "line": 623,
           "label": "+ Record Payment",
           "click": "openRecordModal",
           "dataAction": "",
@@ -5614,7 +5637,7 @@
         },
         {
           "kind": "button",
-          "line": 661,
+          "line": 662,
           "label": "{tab.label} {tab.count}",
           "click": "() => selectedFilter = tab.value",
           "dataAction": "",
@@ -5626,7 +5649,7 @@
         },
         {
           "kind": "Button",
-          "line": 686,
+          "line": 687,
           "label": "Edit",
           "click": "openEditModal",
           "dataAction": "",
@@ -5638,7 +5661,7 @@
         },
         {
           "kind": "Button",
-          "line": 691,
+          "line": 692,
           "label": "{deleteConfirmPaymentId === selectedPayment.id ? 'Confirm Delete' : 'Delete'}",
           "click": "handleDeleteSelectedPayment",
           "dataAction": "",
@@ -5650,7 +5673,7 @@
         },
         {
           "kind": "button",
-          "line": 722,
+          "line": 723,
           "label": "Loading more... Load More ({totalLoaded} loaded)",
           "click": "loadMore",
           "dataAction": "",
@@ -5662,7 +5685,7 @@
         },
         {
           "kind": "button",
-          "line": 816,
+          "line": 817,
           "label": "Pay Full Outstanding",
           "click": "selectFullOutstanding",
           "dataAction": "",
@@ -5674,7 +5697,7 @@
         },
         {
           "kind": "Button",
-          "line": 880,
+          "line": 881,
           "label": "Cancel",
           "click": "() => { showRecordModal = false; paymentModalMode = 'create'; editingPaymentId = ''; }",
           "dataAction": "",
@@ -5686,7 +5709,7 @@
         },
         {
           "kind": "Button",
-          "line": 887,
+          "line": 888,
           "label": "{paymentModalMode === 'create' ? 'Recording...' : 'Saving...'} {paymentModalMode === 'create' ? 'Record Payment' : 'Save Changes'}",
           "click": "handleRecordPayment",
           "dataAction": "",
@@ -5709,35 +5732,35 @@
       "backendCalls": [
         {
           "fn": "GetAllPayments",
-          "line": 357
-        },
-        {
-          "fn": "ListCustomerInvoices",
           "line": 358
         },
         {
+          "fn": "ListCustomerInvoices",
+          "line": 359
+        },
+        {
           "fn": "GetAllPayments",
-          "line": 397
+          "line": 398
         },
         {
           "fn": "GetPayment",
-          "line": 462
+          "line": 463
         },
         {
           "fn": "DeletePayment",
-          "line": 500
+          "line": 501
         },
         {
           "fn": "RecordPayment",
-          "line": 551
+          "line": 552
         },
         {
           "fn": "GetPayment",
-          "line": 560
+          "line": 561
         },
         {
           "fn": "UpdatePayment",
-          "line": 569
+          "line": 570
         }
       ]
     },
@@ -5747,7 +5770,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 428,
+          "line": 429,
           "label": "New Profile",
           "click": "resetProfileForm",
           "dataAction": "",
@@ -5759,7 +5782,7 @@
         },
         {
           "kind": "button",
-          "line": 514,
+          "line": 515,
           "label": "{editingProfileID ? \"Update Profile\" : \"Save Profile\"}",
           "click": "handleSaveProfile",
           "dataAction": "",
@@ -5771,7 +5794,7 @@
         },
         {
           "kind": "button",
-          "line": 584,
+          "line": 585,
           "label": "Create Period",
           "click": "handleCreatePeriod",
           "dataAction": "",
@@ -5783,7 +5806,7 @@
         },
         {
           "kind": "button",
-          "line": 591,
+          "line": 592,
           "label": "Generate Run",
           "click": "handleGenerateRun",
           "dataAction": "",
@@ -5795,7 +5818,7 @@
         },
         {
           "kind": "button",
-          "line": 595,
+          "line": 596,
           "label": "{period.name} {period.period_start?.slice(0, 10)} to {period.period_end?.slice(0, 10)} {period.notes}",
           "click": "() => selectedPeriodID = period.id",
           "dataAction": "",
@@ -5807,7 +5830,7 @@
         },
         {
           "kind": "button",
-          "line": 612,
+          "line": 613,
           "label": "{run.run_number} {run.status} · {currency(run.net_total)} net",
           "click": "() => selectRun(run.id)",
           "dataAction": "",
@@ -5819,7 +5842,7 @@
         },
         {
           "kind": "button",
-          "line": 629,
+          "line": 630,
           "label": "Approve",
           "click": "() => handleRunAction(\"approve\")",
           "dataAction": "",
@@ -5831,7 +5854,7 @@
         },
         {
           "kind": "button",
-          "line": 630,
+          "line": 631,
           "label": "Post",
           "click": "() => handleRunAction(\"post\")",
           "dataAction": "",
@@ -5843,7 +5866,7 @@
         },
         {
           "kind": "button",
-          "line": 631,
+          "line": 632,
           "label": "Mark Paid",
           "click": "() => handleRunAction(\"pay\")",
           "dataAction": "",
@@ -5861,7 +5884,7 @@
       "backendCalls": [
         {
           "fn": "GetActiveBankAccounts",
-          "line": 141
+          "line": 142
         }
       ]
     },
@@ -6074,7 +6097,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 295,
+          "line": 298,
           "label": "View",
           "click": "",
           "dataAction": "view",
@@ -6086,7 +6109,7 @@
         },
         {
           "kind": "button",
-          "line": 303,
+          "line": 306,
           "label": "Edit",
           "click": "",
           "dataAction": "edit",
@@ -6098,7 +6121,7 @@
         },
         {
           "kind": "button",
-          "line": 311,
+          "line": 314,
           "label": "PDF",
           "click": "",
           "dataAction": "pdf",
@@ -6110,7 +6133,7 @@
         },
         {
           "kind": "button",
-          "line": 320,
+          "line": 323,
           "label": "GRN",
           "click": "",
           "dataAction": "grn",
@@ -6122,7 +6145,7 @@
         },
         {
           "kind": "Button",
-          "line": 845,
+          "line": 849,
           "label": "+ New PO",
           "click": "openCreateModal",
           "dataAction": "",
@@ -6134,7 +6157,7 @@
         },
         {
           "kind": "button",
-          "line": 855,
+          "line": 859,
           "label": "{tab.label} {tab.count}",
           "click": "() => selectedStatus = tab.value",
           "dataAction": "",
@@ -6146,7 +6169,7 @@
         },
         {
           "kind": "Button",
-          "line": 1020,
+          "line": 1024,
           "label": "+ Add Item",
           "click": "addLineItem",
           "dataAction": "",
@@ -6158,7 +6181,7 @@
         },
         {
           "kind": "button",
-          "line": 1058,
+          "line": 1062,
           "label": "×",
           "click": "() => removeLineItem(index)",
           "dataAction": "",
@@ -6170,7 +6193,7 @@
         },
         {
           "kind": "Button",
-          "line": 1096,
+          "line": 1100,
           "label": "Cancel",
           "click": "() => showCreateModal = false",
           "dataAction": "",
@@ -6182,7 +6205,7 @@
         },
         {
           "kind": "Button",
-          "line": 1099,
+          "line": 1103,
           "label": "Create PO",
           "click": "handleCreatePO",
           "dataAction": "",
@@ -6194,7 +6217,7 @@
         },
         {
           "kind": "Button",
-          "line": 1203,
+          "line": 1207,
           "label": "+ Add Item",
           "click": "addLineItem",
           "dataAction": "",
@@ -6206,7 +6229,7 @@
         },
         {
           "kind": "button",
-          "line": 1241,
+          "line": 1245,
           "label": "×",
           "click": "() => removeLineItem(index)",
           "dataAction": "",
@@ -6218,7 +6241,7 @@
         },
         {
           "kind": "Button",
-          "line": 1278,
+          "line": 1282,
           "label": "Cancel",
           "click": "() => showEditModal = false",
           "dataAction": "",
@@ -6230,7 +6253,7 @@
         },
         {
           "kind": "Button",
-          "line": 1281,
+          "line": 1285,
           "label": "Save Changes",
           "click": "handleEditPO",
           "dataAction": "",
@@ -6242,7 +6265,7 @@
         },
         {
           "kind": "Button",
-          "line": 1377,
+          "line": 1381,
           "label": "{status}",
           "click": "() => handleStatusChange(viewingPO.id, status)",
           "dataAction": "",
@@ -6254,7 +6277,19 @@
         },
         {
           "kind": "Button",
-          "line": 1391,
+          "line": 1395,
+          "label": "Download PDF",
+          "click": "() => handleGeneratePDF(viewingPO.id)",
+          "dataAction": "",
+          "type": "component default",
+          "title": "",
+          "aria": "",
+          "disabled": false,
+          "loading": true
+        },
+        {
+          "kind": "Button",
+          "line": 1402,
           "label": "Edit PO",
           "click": "() => openEditModal(viewingPO.id)",
           "dataAction": "",
@@ -6266,7 +6301,7 @@
         },
         {
           "kind": "Button",
-          "line": 1394,
+          "line": 1405,
           "label": "Close",
           "click": "() => showViewModal = false",
           "dataAction": "",
@@ -6292,39 +6327,39 @@
       "backendCalls": [
         {
           "fn": "GetPurchaseOrders",
-          "line": 371
+          "line": 374
         },
         {
           "fn": "ListOrders",
-          "line": 372
+          "line": 375
         },
         {
           "fn": "ListSuppliers",
-          "line": 373
+          "line": 376
         },
         {
           "fn": "GetPurchaseOrderByID",
-          "line": 445
+          "line": 448
         },
         {
           "fn": "GetPurchaseOrderByID",
-          "line": 475
+          "line": 478
         },
         {
           "fn": "CreatePurchaseOrder",
-          "line": 569
+          "line": 572
         },
         {
           "fn": "UpdatePurchaseOrder",
-          "line": 664
+          "line": 667
         },
         {
           "fn": "UpdatePOStatus",
-          "line": 688
+          "line": 691
         },
         {
           "fn": "GeneratePurchaseOrderPDF",
-          "line": 712
+          "line": 715
         }
       ]
     },
@@ -6334,7 +6369,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 182,
+          "line": 183,
           "label": "Browse",
           "click": "selectExcelFile",
           "dataAction": "",
@@ -6346,7 +6381,7 @@
         },
         {
           "kind": "button",
-          "line": 187,
+          "line": 188,
           "label": "Preview",
           "click": "previewQuotation",
           "dataAction": "",
@@ -6358,7 +6393,7 @@
         },
         {
           "kind": "button",
-          "line": 192,
+          "line": 193,
           "label": "{loading ? \"Processing...\" : \"Generate PDF\"}",
           "click": "generatePdf",
           "dataAction": "",
@@ -6370,7 +6405,7 @@
         },
         {
           "kind": "button",
-          "line": 276,
+          "line": 277,
           "label": "Open PDF",
           "click": "openPdf",
           "dataAction": "",
@@ -6683,7 +6718,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 527,
+          "line": 600,
           "label": "{saving ? \"Saving...\" : \"Save Changes\"}",
           "click": "save",
           "dataAction": "",
@@ -6695,7 +6730,7 @@
         },
         {
           "kind": "button",
-          "line": 538,
+          "line": 611,
           "label": "{sec.label}",
           "click": "() => (activeSection = sec.id)",
           "dataAction": "",
@@ -6707,7 +6742,7 @@
         },
         {
           "kind": "button",
-          "line": 567,
+          "line": 640,
           "label": "Open Deployment Workspace",
           "click": "openDeploymentWorkspace",
           "dataAction": "",
@@ -6719,7 +6754,19 @@
         },
         {
           "kind": "button",
-          "line": 640,
+          "line": 653,
+          "label": "{preset.sample} {preset.label}",
+          "click": "() => setTextScalePreset(preset.id)",
+          "dataAction": "",
+          "type": "button",
+          "title": "",
+          "aria": "",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 746,
           "label": "Browse",
           "click": "() => browse(key)",
           "dataAction": "",
@@ -6731,7 +6778,7 @@
         },
         {
           "kind": "button",
-          "line": 673,
+          "line": 779,
           "label": "{showKeyInput ? 'Hide' : 'Show'}",
           "click": "() => (showKeyInput = !showKeyInput)",
           "dataAction": "",
@@ -6743,7 +6790,7 @@
         },
         {
           "kind": "button",
-          "line": 713,
+          "line": 819,
           "label": "{showMistralKey ? 'Hide' : 'Show'}",
           "click": "() => (showMistralKey = !showMistralKey)",
           "dataAction": "",
@@ -6755,7 +6802,7 @@
         },
         {
           "kind": "button",
-          "line": 721,
+          "line": 827,
           "label": "Test AIML Connectivity",
           "click": "testAI",
           "dataAction": "",
@@ -6767,7 +6814,7 @@
         },
         {
           "kind": "button",
-          "line": 722,
+          "line": 828,
           "label": "{testingMistral ? 'Testing...' : 'Test Mistral Connection'}",
           "click": "testMistral",
           "dataAction": "",
@@ -6779,7 +6826,7 @@
         },
         {
           "kind": "button",
-          "line": 812,
+          "line": 918,
           "label": "Update",
           "click": "() => { editingCurrency = currency.code; newRate = rate?.rate || 0; rateNotes = ''; }",
           "dataAction": "",
@@ -6791,7 +6838,7 @@
         },
         {
           "kind": "button",
-          "line": 856,
+          "line": 962,
           "label": "{savingRate ? 'Saving...' : 'Save Rate'}",
           "click": "handleSaveRate",
           "dataAction": "",
@@ -6803,7 +6850,7 @@
         },
         {
           "kind": "button",
-          "line": 859,
+          "line": 965,
           "label": "Cancel",
           "click": "() => { editingCurrency = ''; newRate = 0; }",
           "dataAction": "",
@@ -6815,7 +6862,7 @@
         },
         {
           "kind": "button",
-          "line": 888,
+          "line": 994,
           "label": "{importing ? 'Importing...' : 'Import Invoices'}",
           "click": "importInvoices",
           "dataAction": "",
@@ -6827,7 +6874,7 @@
         },
         {
           "kind": "button",
-          "line": 891,
+          "line": 997,
           "label": "{importing ? 'Importing...' : 'Import Purchases'}",
           "click": "importPurchases",
           "dataAction": "",
@@ -6839,7 +6886,7 @@
         },
         {
           "kind": "button",
-          "line": 894,
+          "line": 1000,
           "label": "{importing ? 'Importing...' : 'Import AR Defaulters'}",
           "click": "importARDefaulters",
           "dataAction": "",
@@ -6851,7 +6898,7 @@
         },
         {
           "kind": "button",
-          "line": 897,
+          "line": 1003,
           "label": "{importing ? 'Importing...' : 'Import Supplier Payments'}",
           "click": "importSupplierPayments",
           "dataAction": "",
@@ -6863,7 +6910,7 @@
         },
         {
           "kind": "button",
-          "line": 904,
+          "line": 1010,
           "label": "{importing ? 'Running Full Import...' : 'Import All Tally Data'}",
           "click": "importTallyAll",
           "dataAction": "",
@@ -6875,7 +6922,7 @@
         },
         {
           "kind": "button",
-          "line": 950,
+          "line": 1056,
           "label": "{generatingReport ? 'Generating...' : 'Generate P&L Statement'}",
           "click": "generatePL",
           "dataAction": "",
@@ -6887,7 +6934,7 @@
         },
         {
           "kind": "button",
-          "line": 953,
+          "line": 1059,
           "label": "{generatingReport ? 'Generating...' : 'Generate Balance Sheet'}",
           "click": "generateBS",
           "dataAction": "",
@@ -6899,7 +6946,7 @@
         },
         {
           "kind": "button",
-          "line": 1119,
+          "line": 1225,
           "label": "{testingConnection ? 'Testing...' : 'Test Connection'}",
           "click": "testSupabase",
           "dataAction": "",
@@ -6911,7 +6958,31 @@
         },
         {
           "kind": "button",
-          "line": 1159,
+          "line": 1255,
+          "label": "{savingBackupPolicy ? 'Saving...' : 'Save Schedule'}",
+          "click": "saveBackupPolicy",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": true,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 1258,
+          "label": "{backupRunning ? 'Backing up...' : 'Backup Now'}",
+          "click": "runManualBackup",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": true,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 1291,
           "label": "{loadingPilotReadiness ? 'Refreshing...' : 'Refresh Readiness'}",
           "click": "loadPilotReadiness",
           "dataAction": "",
@@ -6923,7 +6994,7 @@
         },
         {
           "kind": "button",
-          "line": 1162,
+          "line": 1294,
           "label": "{exportingPilotBundle ? 'Exporting...' : 'Export Support Bundle'}",
           "click": "handleExportPilotBundle",
           "dataAction": "",
@@ -6935,7 +7006,7 @@
         },
         {
           "kind": "button",
-          "line": 1238,
+          "line": 1370,
           "label": "{rolloutActionRunning ? 'Working...' : 'Run Collaborative Sync'}",
           "click": "handleTriggerCollaborativeSync",
           "dataAction": "",
@@ -6947,7 +7018,7 @@
         },
         {
           "kind": "button",
-          "line": 1241,
+          "line": 1373,
           "label": "Retry Failed Ops",
           "click": "() => handleRetryQueue('failed')",
           "dataAction": "",
@@ -6959,7 +7030,7 @@
         },
         {
           "kind": "button",
-          "line": 1244,
+          "line": 1376,
           "label": "Revive Dead Letters",
           "click": "() => handleRetryQueue('dead_letter')",
           "dataAction": "",
@@ -6971,7 +7042,7 @@
         },
         {
           "kind": "button",
-          "line": 1247,
+          "line": 1379,
           "label": "Re-run Legacy Backfill",
           "click": "handleRerunBackfill",
           "dataAction": "",
@@ -6983,7 +7054,7 @@
         },
         {
           "kind": "button",
-          "line": 1262,
+          "line": 1394,
           "label": "{loadingRolloutOps ? 'Refreshing...' : 'Refresh Queue'}",
           "click": "loadRolloutOps",
           "dataAction": "",
@@ -6995,7 +7066,7 @@
         },
         {
           "kind": "button",
-          "line": 1289,
+          "line": 1421,
           "label": "Retry",
           "click": "() => handleRetrySingle(op.id)",
           "dataAction": "",
@@ -7007,7 +7078,7 @@
         },
         {
           "kind": "button",
-          "line": 1314,
+          "line": 1446,
           "label": "Open Deployment Workspace",
           "click": "openDeploymentWorkspace",
           "dataAction": "",
@@ -7026,6 +7097,8 @@
         "GenerateBalanceSheet",
         "GenerateProfitAndLoss",
         "GetActiveCurrencyRates",
+        "GetBackupInfo",
+        "GetBackupPolicy",
         "GetCurrentUserRole",
         "GetFinancialReportYears",
         "GetPhase7RolloutStatus",
@@ -7043,129 +7116,147 @@
         "RerunPhase7FollowUpBackfill",
         "RetryCollaborativePendingOperation",
         "RetryCollaborativePendingOperations",
+        "SaveBackupPolicy",
         "SetExchangeRate",
         "TestAIConnection",
         "TestMistralConnection",
         "TestSupabaseConnection",
+        "TriggerBackup",
         "TriggerCollaborativeSyncNow",
         "UpdateSettings"
       ],
       "backendCalls": [
         {
           "fn": "ImportAllTallyData",
-          "line": 148
+          "line": 166
         },
         {
           "fn": "ImportTallyInvoices",
-          "line": 165
+          "line": 183
         },
         {
           "fn": "ImportTallyPurchases",
-          "line": 182
+          "line": 200
         },
         {
           "fn": "ImportARDefaulters",
-          "line": 195
+          "line": 213
         },
         {
           "fn": "ImportSupplierPaymentsFromFile",
-          "line": 208
+          "line": 226
         },
         {
           "fn": "GetActiveCurrencyRates",
-          "line": 220
+          "line": 238
         },
         {
           "fn": "GetSupportedCurrencies",
-          "line": 221
+          "line": 239
         },
         {
           "fn": "SetExchangeRate",
-          "line": 234
+          "line": 252
         },
         {
           "fn": "TestSupabaseConnection",
-          "line": 259
+          "line": 277
         },
         {
           "fn": "GetSettings",
-          "line": 282
+          "line": 300
         },
         {
           "fn": "GetCurrentUserRole",
-          "line": 284
+          "line": 302
         },
         {
           "fn": "GetFinancialReportYears",
-          "line": 285
+          "line": 303
         },
         {
           "fn": "GetSyncHealth",
-          "line": 297
+          "line": 315
         },
         {
           "fn": "GetPhase7RolloutStatus",
-          "line": 298
+          "line": 317
         },
         {
-          "fn": "ListCollaborativePendingOperations",
-          "line": 305
+          "fn": "GetBackupInfo",
+          "line": 323
         },
         {
-          "fn": "GetPilotReadinessSummary",
-          "line": 316
+          "fn": "GetBackupPolicy",
+          "line": 328
         },
         {
-          "fn": "ListPilotReadinessRows",
-          "line": 321
+          "fn": "TriggerBackup",
+          "line": 341
         },
         {
-          "fn": "RetryCollaborativePendingOperations",
-          "line": 332
-        },
-        {
-          "fn": "RetryCollaborativePendingOperation",
-          "line": 345
-        },
-        {
-          "fn": "RerunPhase7FollowUpBackfill",
+          "fn": "SaveBackupPolicy",
           "line": 358
         },
         {
-          "fn": "TriggerCollaborativeSyncNow",
-          "line": 371
+          "fn": "ListCollaborativePendingOperations",
+          "line": 373
         },
         {
-          "fn": "ExportPilotSupportBundle",
+          "fn": "GetPilotReadinessSummary",
           "line": 384
         },
         {
+          "fn": "ListPilotReadinessRows",
+          "line": 389
+        },
+        {
+          "fn": "RetryCollaborativePendingOperations",
+          "line": 400
+        },
+        {
+          "fn": "RetryCollaborativePendingOperation",
+          "line": 413
+        },
+        {
+          "fn": "RerunPhase7FollowUpBackfill",
+          "line": 426
+        },
+        {
+          "fn": "TriggerCollaborativeSyncNow",
+          "line": 439
+        },
+        {
+          "fn": "ExportPilotSupportBundle",
+          "line": 452
+        },
+        {
           "fn": "DetectGPU",
-          "line": 409
+          "line": 477
         },
         {
           "fn": "UpdateSettings",
-          "line": 420
-        },
-        {
-          "fn": "BrowseFolder",
-          "line": 431
-        },
-        {
-          "fn": "TestAIConnection",
-          "line": 446
-        },
-        {
-          "fn": "TestMistralConnection",
-          "line": 467
-        },
-        {
-          "fn": "GenerateProfitAndLoss",
           "line": 488
         },
         {
+          "fn": "BrowseFolder",
+          "line": 504
+        },
+        {
+          "fn": "TestAIConnection",
+          "line": 519
+        },
+        {
+          "fn": "TestMistralConnection",
+          "line": 540
+        },
+        {
+          "fn": "GenerateProfitAndLoss",
+          "line": 561
+        },
+        {
           "fn": "GenerateBalanceSheet",
-          "line": 505
+          "line": 578
         }
       ]
     },
@@ -7319,7 +7410,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 36,
+          "line": 37,
           "label": "Toggle Dark Mode",
           "click": "toggleTheme",
           "dataAction": "",
@@ -7331,21 +7422,9 @@
         },
         {
           "kind": "Button",
-          "line": 162,
-          "label": "Primary Button",
-          "click": "",
-          "dataAction": "",
-          "type": "component default",
-          "title": "",
-          "aria": "",
-          "disabled": false,
-          "loading": false
-        },
-        {
-          "kind": "Button",
           "line": 163,
-          "label": "Secondary Button",
-          "click": "",
+          "label": "Primary Button",
+          "click": "() => (demoButtonState = 'Primary demo action')",
           "dataAction": "",
           "type": "component default",
           "title": "",
@@ -7356,8 +7435,8 @@
         {
           "kind": "Button",
           "line": 164,
-          "label": "Ghost Button",
-          "click": "",
+          "label": "Secondary Button",
+          "click": "() => (demoButtonState = 'Secondary demo action')",
           "dataAction": "",
           "type": "component default",
           "title": "",
@@ -7367,9 +7446,9 @@
         },
         {
           "kind": "Button",
-          "line": 167,
-          "label": "Disabled Primary",
-          "click": "",
+          "line": 165,
+          "label": "Ghost Button",
+          "click": "() => (demoButtonState = 'Ghost demo action')",
           "dataAction": "",
           "type": "component default",
           "title": "",
@@ -7380,13 +7459,25 @@
         {
           "kind": "Button",
           "line": 168,
-          "label": "Disabled Secondary",
-          "click": "",
+          "label": "Disabled Primary",
+          "click": "() => (demoButtonState = 'Disabled primary demo action')",
           "dataAction": "",
           "type": "component default",
           "title": "",
           "aria": "",
-          "disabled": false,
+          "disabled": true,
+          "loading": false
+        },
+        {
+          "kind": "Button",
+          "line": 169,
+          "label": "Disabled Secondary",
+          "click": "() => (demoButtonState = 'Disabled secondary demo action')",
+          "dataAction": "",
+          "type": "component default",
+          "title": "",
+          "aria": "",
+          "disabled": true,
           "loading": false
         }
       ],
@@ -7413,7 +7504,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 204,
+          "line": 205,
           "label": "Back to Suppliers",
           "click": "goBack",
           "dataAction": "",
@@ -7425,7 +7516,7 @@
         },
         {
           "kind": "Button",
-          "line": 216,
+          "line": 217,
           "label": "Edit",
           "click": "startEdit",
           "dataAction": "",
@@ -7437,7 +7528,7 @@
         },
         {
           "kind": "Button",
-          "line": 228,
+          "line": 229,
           "label": "Retry",
           "click": "loadProfile",
           "dataAction": "",
@@ -7449,7 +7540,7 @@
         },
         {
           "kind": "button",
-          "line": 235,
+          "line": 236,
           "label": "+ Add",
           "click": "() => showContactModal = true",
           "dataAction": "",
@@ -7461,7 +7552,7 @@
         },
         {
           "kind": "button",
-          "line": 359,
+          "line": 360,
           "label": "{tab.label}",
           "click": "() => activeTab = tab.id",
           "dataAction": "",
@@ -7473,7 +7564,7 @@
         },
         {
           "kind": "Button",
-          "line": 402,
+          "line": 403,
           "label": "Cancel",
           "click": "cancelEdit",
           "dataAction": "",
@@ -7485,7 +7576,7 @@
         },
         {
           "kind": "Button",
-          "line": 403,
+          "line": 404,
           "label": "{saveLoading ? 'Saving...' : 'Save Changes'}",
           "click": "saveEdit",
           "dataAction": "",
@@ -7497,7 +7588,7 @@
         },
         {
           "kind": "Button",
-          "line": 503,
+          "line": 504,
           "label": "+ Report Issue",
           "click": "() => showIssueModal = true",
           "dataAction": "",
@@ -7509,7 +7600,7 @@
         },
         {
           "kind": "Button",
-          "line": 528,
+          "line": 529,
           "label": "Mark Resolved",
           "click": "() => resolveIssue(issue.id)",
           "dataAction": "",
@@ -7521,7 +7612,7 @@
         },
         {
           "kind": "Button",
-          "line": 544,
+          "line": 545,
           "label": "+ Add Note",
           "click": "() => showNoteModal = true",
           "dataAction": "",
@@ -7533,7 +7624,7 @@
         },
         {
           "kind": "Button",
-          "line": 589,
+          "line": 590,
           "label": "Cancel",
           "click": "() => showNoteModal = false",
           "dataAction": "",
@@ -7545,7 +7636,7 @@
         },
         {
           "kind": "Button",
-          "line": 590,
+          "line": 591,
           "label": "Save Note",
           "click": "saveNote",
           "dataAction": "",
@@ -7557,7 +7648,7 @@
         },
         {
           "kind": "Button",
-          "line": 615,
+          "line": 616,
           "label": "Cancel",
           "click": "() => showIssueModal = false",
           "dataAction": "",
@@ -7569,7 +7660,7 @@
         },
         {
           "kind": "Button",
-          "line": 616,
+          "line": 617,
           "label": "Report Issue",
           "click": "saveIssue",
           "dataAction": "",
@@ -7581,7 +7672,7 @@
         },
         {
           "kind": "Button",
-          "line": 652,
+          "line": 653,
           "label": "Cancel",
           "click": "() => showContactModal = false",
           "dataAction": "",
@@ -7593,7 +7684,7 @@
         },
         {
           "kind": "Button",
-          "line": 653,
+          "line": 654,
           "label": "Save Contact",
           "click": "saveContact",
           "dataAction": "",
@@ -7638,31 +7729,31 @@
       "backendCalls": [
         {
           "fn": "UpdateSupplier",
-          "line": 72
+          "line": 73
         },
         {
           "fn": "GetSupplierFullProfile",
-          "line": 96
+          "line": 97
         },
         {
           "fn": "ListSupplierContacts",
-          "line": 110
+          "line": 111
         },
         {
           "fn": "AddSupplierContact",
-          "line": 117
+          "line": 118
         },
         {
           "fn": "AddSupplierNote",
-          "line": 133
+          "line": 134
         },
         {
           "fn": "AddSupplierIssue",
-          "line": 150
+          "line": 151
         },
         {
           "fn": "ResolveSupplierIssue",
-          "line": 168
+          "line": 169
         }
       ]
     },
@@ -7672,7 +7763,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 276,
+          "line": 277,
           "label": "View",
           "click": "",
           "dataAction": "view",
@@ -7684,7 +7775,7 @@
         },
         {
           "kind": "button",
-          "line": 285,
+          "line": 286,
           "label": "Edit",
           "click": "",
           "dataAction": "edit",
@@ -7696,7 +7787,7 @@
         },
         {
           "kind": "button",
-          "line": 295,
+          "line": 296,
           "label": "Match",
           "click": "",
           "dataAction": "match",
@@ -7708,7 +7799,7 @@
         },
         {
           "kind": "button",
-          "line": 306,
+          "line": 307,
           "label": "Approve",
           "click": "",
           "dataAction": "approve",
@@ -7720,13 +7811,25 @@
         },
         {
           "kind": "button",
-          "line": 317,
+          "line": 318,
           "label": "Pay",
           "click": "",
           "dataAction": "pay",
           "type": "",
           "title": "Mark Paid",
           "aria": "Mark as paid",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "Button",
+          "line": 940,
+          "label": "+ New Supplier Invoice",
+          "click": "openCreateModal",
+          "dataAction": "",
+          "type": "component default",
+          "title": "",
+          "aria": "",
           "disabled": false,
           "loading": false
         },
@@ -7744,8 +7847,8 @@
         },
         {
           "kind": "Button",
-          "line": 946,
-          "label": "+ New Invoice",
+          "line": 967,
+          "label": "+ New Supplier Invoice",
           "click": "openCreateModal",
           "dataAction": "",
           "type": "component default",
@@ -7767,20 +7870,8 @@
           "loading": false
         },
         {
-          "kind": "Button",
-          "line": 973,
-          "label": "+ New Supplier Invoice",
-          "click": "openCreateModal",
-          "dataAction": "",
-          "type": "component default",
-          "title": "",
-          "aria": "",
-          "disabled": false,
-          "loading": false
-        },
-        {
           "kind": "button",
-          "line": 1004,
+          "line": 1001,
           "label": "{tab.label} {tab.count}",
           "click": "() => selectedFilter = tab.value",
           "dataAction": "",
@@ -7792,7 +7883,7 @@
         },
         {
           "kind": "button",
-          "line": 1171,
+          "line": 1168,
           "label": "+ Add Item",
           "click": "addLineItem",
           "dataAction": "",
@@ -7804,7 +7895,7 @@
         },
         {
           "kind": "button",
-          "line": 1208,
+          "line": 1205,
           "label": "x",
           "click": "() => removeLineItem(i)",
           "dataAction": "",
@@ -7816,7 +7907,7 @@
         },
         {
           "kind": "Button",
-          "line": 1243,
+          "line": 1240,
           "label": "Cancel",
           "click": "() => showCreateModal = false",
           "dataAction": "",
@@ -7828,7 +7919,7 @@
         },
         {
           "kind": "Button",
-          "line": 1246,
+          "line": 1243,
           "label": "Create Invoice",
           "click": "handleCreateInvoice",
           "dataAction": "",
@@ -7840,7 +7931,7 @@
         },
         {
           "kind": "Button",
-          "line": 1377,
+          "line": 1374,
           "label": "Close",
           "click": "() => showDetailModal = false",
           "dataAction": "",
@@ -7852,7 +7943,7 @@
         },
         {
           "kind": "Button",
-          "line": 1416,
+          "line": 1413,
           "label": "Cancel",
           "click": "() => showPaymentModal = false",
           "dataAction": "",
@@ -7864,7 +7955,7 @@
         },
         {
           "kind": "Button",
-          "line": 1419,
+          "line": 1416,
           "label": "Confirm Payment",
           "click": "submitPayment",
           "dataAction": "",
@@ -7876,7 +7967,7 @@
         },
         {
           "kind": "Button",
-          "line": 1509,
+          "line": 1506,
           "label": "Cancel",
           "click": "() => { showEditModal = false; editingInvoice = null; createPaymentEntry = false; existingPaymentCount = 0; existingPaymentTotalBhd = 0; }",
           "dataAction": "",
@@ -7888,7 +7979,7 @@
         },
         {
           "kind": "Button",
-          "line": 1510,
+          "line": 1507,
           "label": "Save Changes",
           "click": "saveEditInvoice",
           "dataAction": "",
@@ -7920,51 +8011,51 @@
       "backendCalls": [
         {
           "fn": "ListSuppliers",
-          "line": 502
+          "line": 503
         },
         {
           "fn": "ListOrders",
-          "line": 511
+          "line": 512
         },
         {
           "fn": "GetSupportedCurrencies",
-          "line": 520
+          "line": 521
         },
         {
           "fn": "GetSupplierInvoices",
-          "line": 532
+          "line": 533
         },
         {
           "fn": "GetSupplierInvoiceByID",
-          "line": 583
+          "line": 584
         },
         {
           "fn": "CreateSupplierInvoice",
-          "line": 691
+          "line": 696
         },
         {
           "fn": "PerformThreeWayMatch",
-          "line": 713
+          "line": 718
         },
         {
           "fn": "ApproveSupplierInvoice",
-          "line": 740
+          "line": 745
         },
         {
           "fn": "MarkSupplierInvoicePaid",
-          "line": 770
+          "line": 775
         },
         {
           "fn": "GetSupplierPaymentsByInvoice",
-          "line": 846
+          "line": 851
         },
         {
           "fn": "UpdateSupplierInvoiceWithPayment",
-          "line": 896
+          "line": 901
         },
         {
           "fn": "UpdateSupplierInvoice",
-          "line": 898
+          "line": 903
         }
       ]
     },
@@ -7974,7 +8065,7 @@
       "buttons": [
         {
           "kind": "Button",
-          "line": 384,
+          "line": 392,
           "label": "Open Bank Recon",
           "click": "openBankReconciliation",
           "dataAction": "",
@@ -7986,7 +8077,7 @@
         },
         {
           "kind": "Button",
-          "line": 385,
+          "line": 393,
           "label": "Record Payment",
           "click": "openPaymentModal",
           "dataAction": "",
@@ -7998,7 +8089,7 @@
         },
         {
           "kind": "Button",
-          "line": 390,
+          "line": 398,
           "label": "Open Bank Recon",
           "click": "openBankReconciliation",
           "dataAction": "",
@@ -8010,7 +8101,7 @@
         },
         {
           "kind": "Button",
-          "line": 391,
+          "line": 399,
           "label": "Record Payment",
           "click": "openPaymentModal",
           "dataAction": "",
@@ -8022,7 +8113,7 @@
         },
         {
           "kind": "Button",
-          "line": 426,
+          "line": 434,
           "label": "Edit",
           "click": "openEditPaymentModal",
           "dataAction": "",
@@ -8034,7 +8125,7 @@
         },
         {
           "kind": "Button",
-          "line": 429,
+          "line": 437,
           "label": "{deleteConfirmPaymentId === selectedPayment.id ? 'Confirm Delete' : 'Delete'}",
           "click": "handleDeleteSelectedPayment",
           "dataAction": "",
@@ -8046,7 +8137,7 @@
         },
         {
           "kind": "Button",
-          "line": 513,
+          "line": 535,
           "label": "Cancel",
           "click": "() => { showPaymentModal = false; paymentModalMode = 'create'; editingPaymentId = ''; }",
           "dataAction": "",
@@ -8058,7 +8149,7 @@
         },
         {
           "kind": "Button",
-          "line": 518,
+          "line": 540,
           "label": "{paymentSaving ? (paymentModalMode === 'create' ? 'Recording...' : 'Saving...') : (paymentModalMode === 'create' ? 'Record Payment' : 'Save Changes')}",
           "click": "recordPayment",
           "dataAction": "",
@@ -8081,35 +8172,35 @@
       "backendCalls": [
         {
           "fn": "GetAllSupplierPayments",
-          "line": 161
+          "line": 163
         },
         {
           "fn": "GetSupplierInvoices",
-          "line": 162
+          "line": 164
         },
         {
           "fn": "GetSupplierInvoices",
-          "line": 233
+          "line": 235
         },
         {
           "fn": "GetSupplierPayment",
-          "line": 271
+          "line": 274
         },
         {
           "fn": "DeleteSupplierPayment",
-          "line": 303
+          "line": 307
         },
         {
           "fn": "RecordSupplierPayment",
-          "line": 330
+          "line": 334
         },
         {
           "fn": "GetSupplierPayment",
-          "line": 340
+          "line": 344
         },
         {
           "fn": "UpdateSupplierPayment",
-          "line": 345
+          "line": 353
         }
       ]
     },
@@ -8119,7 +8210,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 159,
+          "line": 167,
           "label": "View",
           "click": "",
           "dataAction": "view",
@@ -8130,10 +8221,22 @@
           "loading": false
         },
         {
+          "kind": "button",
+          "line": 175,
+          "label": "Delete",
+          "click": "",
+          "dataAction": "delete",
+          "type": "",
+          "title": "",
+          "aria": "Delete supplier",
+          "disabled": false,
+          "loading": false
+        },
+        {
           "kind": "Button",
-          "line": 286,
+          "line": 324,
           "label": "+ New Supplier",
-          "click": "() => showCreateModal = true",
+          "click": "() => { newSupplier = emptySupplierForm(); showCreateModal = true; }",
           "dataAction": "",
           "type": "component default",
           "title": "",
@@ -8143,7 +8246,7 @@
         },
         {
           "kind": "Button",
-          "line": 289,
+          "line": 327,
           "label": "Refresh",
           "click": "loadSuppliers",
           "dataAction": "",
@@ -8155,7 +8258,7 @@
         },
         {
           "kind": "button",
-          "line": 311,
+          "line": 349,
           "label": "{tab.label} {tab.count}",
           "click": "() => selectedStatus = tab.value",
           "dataAction": "",
@@ -8167,7 +8270,19 @@
         },
         {
           "kind": "Button",
-          "line": 502,
+          "line": 540,
+          "label": "{deletingSupplierId === (selectedSupplier?.id || selectedSupplier?.supplier_id) ? 'Deleting...' : 'Delete Supplier'}",
+          "click": "() => handleDeleteSupplier(selectedSupplier)",
+          "dataAction": "",
+          "type": "component default",
+          "title": "",
+          "aria": "",
+          "disabled": true,
+          "loading": false
+        },
+        {
+          "kind": "Button",
+          "line": 547,
           "label": "Close",
           "click": "() => showDetailModal = false",
           "dataAction": "",
@@ -8179,7 +8294,7 @@
         },
         {
           "kind": "Button",
-          "line": 562,
+          "line": 608,
           "label": "Cancel",
           "click": "() => showCreateModal = false",
           "dataAction": "",
@@ -8191,7 +8306,7 @@
         },
         {
           "kind": "Button",
-          "line": 563,
+          "line": 609,
           "label": "{creating ? 'Creating...' : 'Create Supplier'}",
           "click": "handleCreateSupplier",
           "dataAction": "",
@@ -8205,6 +8320,7 @@
       "tabs": [],
       "backendImports": [
         "CreateSupplier",
+        "DeleteSupplier",
         "GetPurchaseOrdersBySupplier",
         "GetSupplierInvoicesBySupplier",
         "ListSuppliers"
@@ -8212,19 +8328,23 @@
       "backendCalls": [
         {
           "fn": "CreateSupplier",
-          "line": 67
+          "line": 79
         },
         {
           "fn": "ListSuppliers",
-          "line": 212
+          "line": 228
         },
         {
           "fn": "GetPurchaseOrdersBySupplier",
-          "line": 235
+          "line": 251
         },
         {
           "fn": "GetSupplierInvoicesBySupplier",
-          "line": 236
+          "line": 252
+        },
+        {
+          "fn": "DeleteSupplier",
+          "line": 296
         }
       ]
     },
@@ -8234,9 +8354,9 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 113,
+          "line": 370,
           "label": "+ Add User",
-          "click": "",
+          "click": "openCreateUser",
           "dataAction": "",
           "type": "",
           "title": "",
@@ -8246,7 +8366,7 @@
         },
         {
           "kind": "button",
-          "line": 118,
+          "line": 375,
           "label": "Users",
           "click": "() => (activeTab = \"users\")",
           "dataAction": "",
@@ -8258,7 +8378,7 @@
         },
         {
           "kind": "button",
-          "line": 123,
+          "line": 380,
           "label": "Roles",
           "click": "() => (activeTab = \"roles\")",
           "dataAction": "",
@@ -8270,7 +8390,7 @@
         },
         {
           "kind": "button",
-          "line": 128,
+          "line": 385,
           "label": "Audit Logs",
           "click": "() => { activeTab = \"audit\"; fetchAudit(); }",
           "dataAction": "",
@@ -8282,9 +8402,9 @@
         },
         {
           "kind": "button",
-          "line": 186,
-          "label": "Edit",
-          "click": "",
+          "line": 394,
+          "label": "Efficiency",
+          "click": "() => { activeTab = \"activity\"; fetchActivityReport(); }",
           "dataAction": "",
           "type": "",
           "title": "",
@@ -8294,9 +8414,129 @@
         },
         {
           "kind": "button",
-          "line": 199,
+          "line": 404,
+          "label": "Conflicts",
+          "click": "() => { activeTab = \"conflicts\"; fetchOpportunityConflicts(); }",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 463,
+          "label": "Edit",
+          "click": "() => openEditUser(u)",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 476,
           "label": "View Permissions",
-          "click": "",
+          "click": "() => openRolePermissions(r)",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 517,
+          "label": "Refresh",
+          "click": "() => fetchActivityReport(true)",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": true,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 594,
+          "label": "Refresh",
+          "click": "() => fetchOpportunityConflicts(true)",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": true,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 618,
+          "label": "Apply",
+          "click": "() => resolveOpportunityConflict(conflict, \"apply\")",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 619,
+          "label": "Reject",
+          "click": "() => resolveOpportunityConflict(conflict, \"reject\")",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 643,
+          "label": "Close",
+          "click": "() => (showUserModal = false)",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 684,
+          "label": "Cancel",
+          "click": "() => (showUserModal = false)",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": false,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 685,
+          "label": "{savingUser ? \"Saving...\" : \"Save User\"}",
+          "click": "saveUser",
+          "dataAction": "",
+          "type": "",
+          "title": "",
+          "aria": "",
+          "disabled": true,
+          "loading": false
+        },
+        {
+          "kind": "button",
+          "line": 699,
+          "label": "Close",
+          "click": "() => (permissionRole = null)",
           "dataAction": "",
           "type": "",
           "title": "",
@@ -8307,23 +8547,62 @@
       ],
       "tabs": [],
       "backendImports": [
+        "CanResolveOpportunityConflicts",
+        "CanViewUserActivityMonitoring",
         "CreateUser",
         "GetAuditLogs",
+        "GetRolePermissionsList",
+        "GetWeeklyUserActivityReport",
+        "ListOpportunityEditConflicts",
         "ListRoles",
-        "ListUsers"
+        "ListUsers",
+        "ResolveOpportunityEditConflict",
+        "UpdateUser"
       ],
       "backendCalls": [
         {
           "fn": "ListUsers",
-          "line": 71
+          "line": 103
         },
         {
           "fn": "ListRoles",
-          "line": 72
+          "line": 104
+        },
+        {
+          "fn": "CanViewUserActivityMonitoring",
+          "line": 109
+        },
+        {
+          "fn": "CanResolveOpportunityConflicts",
+          "line": 110
         },
         {
           "fn": "GetAuditLogs",
-          "line": 89
+          "line": 127
+        },
+        {
+          "fn": "GetWeeklyUserActivityReport",
+          "line": 150
+        },
+        {
+          "fn": "ListOpportunityEditConflicts",
+          "line": 174
+        },
+        {
+          "fn": "ResolveOpportunityEditConflict",
+          "line": 188
+        },
+        {
+          "fn": "UpdateUser",
+          "line": 279
+        },
+        {
+          "fn": "CreateUser",
+          "line": 290
+        },
+        {
+          "fn": "GetRolePermissionsList",
+          "line": 336
         }
       ]
     },
@@ -8333,7 +8612,7 @@
       "buttons": [
         {
           "kind": "button",
-          "line": 857,
+          "line": 919,
           "label": "My Work",
           "click": "() => activeTab = \"my_work\"",
           "dataAction": "",
@@ -8345,7 +8624,7 @@
         },
         {
           "kind": "button",
-          "line": 858,
+          "line": 920,
           "label": "Team Board",
           "click": "() => activeTab = \"team_board\"",
           "dataAction": "",
@@ -8357,7 +8636,7 @@
         },
         {
           "kind": "button",
-          "line": 859,
+          "line": 921,
           "label": "Projects",
           "click": "() => activeTab = \"projects\"",
           "dataAction": "",
@@ -8369,7 +8648,7 @@
         },
         {
           "kind": "button",
-          "line": 894,
+          "line": 956,
           "label": "Create Task",
           "click": "handleCreateTask",
           "dataAction": "",
@@ -8381,7 +8660,7 @@
         },
         {
           "kind": "button",
-          "line": 915,
+          "line": 977,
           "label": "{(task.status || \"open\").replaceAll(\"_\", \" \")} {task.priority || \"medium\"} {task.title} {task.description || \"No task details provided.\"} Blocked because: {task.blocked_reason} {projectNameFor(task)} {dueLabel(task)} {task.assignee_name || \"Unassigned\"}",
           "click": "() => selectTask(task.id)",
           "dataAction": "",
@@ -8393,9 +8672,9 @@
         },
         {
           "kind": "button",
-          "line": 1015,
+          "line": 1077,
           "label": "{person.name} {person.department || \"Team\"} {person.openCount} active • {person.blockedCount} blocked",
-          "click": "",
+          "click": "() => (teamAssigneeFilter = person.id)",
           "dataAction": "",
           "type": "",
           "title": "",
@@ -8405,7 +8684,7 @@
         },
         {
           "kind": "button",
-          "line": 1062,
+          "line": 1125,
           "label": "{column.label} {task.priority || \"medium\"} {task.title} {task.description || \"No task details provided.\"} Blocked because: {task.blocked_reason} {task.assignee_name || \"Unassigned\"} {projectNameFor(task)} {dueLabel(task)}",
           "click": "() => selectTask(task.id)",
           "dataAction": "",
@@ -8417,7 +8696,7 @@
         },
         {
           "kind": "button",
-          "line": 1118,
+          "line": 1181,
           "label": "Create Project",
           "click": "handleCreateProject",
           "dataAction": "",
@@ -8429,7 +8708,7 @@
         },
         {
           "kind": "button",
-          "line": 1124,
+          "line": 1187,
           "label": "{project.name} {project.project_type || \"internal\"} • {project.status || \"active\"} {projectTasks.filter((task) => task.project_id === project.id).length}",
           "click": "() => selectProject(project.id)",
           "dataAction": "",
@@ -8441,7 +8720,7 @@
         },
         {
           "kind": "button",
-          "line": 1179,
+          "line": 1242,
           "label": "{memberSelections.length > 0 ? `Add ${memberSelections.length} Member${memberSelections.length === 1 ? \"\" : \"s\"}` : \"Add Members\"}",
           "click": "handleAddProjectMembers",
           "dataAction": "",
@@ -8453,7 +8732,7 @@
         },
         {
           "kind": "button",
-          "line": 1191,
+          "line": 1254,
           "label": "{employee.full_name} {employee.department || employee.job_title || \"Team member\"}",
           "click": "() => toggleProjectMemberSelection(employee.id)",
           "dataAction": "",
@@ -8465,7 +8744,7 @@
         },
         {
           "kind": "button",
-          "line": 1232,
+          "line": 1295,
           "label": "{task.title} {task.assignee_name || \"Unassigned\"} • {task.status || \"open\"}",
           "click": "() => selectTask(task.id)",
           "dataAction": "",
@@ -8477,7 +8756,7 @@
         },
         {
           "kind": "Button",
-          "line": 1301,
+          "line": 1364,
           "label": "{savingTaskDetails ? \"Saving...\" : \"Save Details\"}",
           "click": "handleSaveTaskDetails",
           "dataAction": "",
@@ -8489,7 +8768,7 @@
         },
         {
           "kind": "Button",
-          "line": 1345,
+          "line": 1408,
           "label": "{savingAssignment ? \"Saving...\" : \"Save Assignee\"}",
           "click": "handleReassignSelectedTask",
           "dataAction": "",
@@ -8501,7 +8780,7 @@
         },
         {
           "kind": "Button",
-          "line": 1349,
+          "line": 1412,
           "label": "{savingDueDate ? \"Saving...\" : \"Save Due Date\"}",
           "click": "handleUpdateDueDate",
           "dataAction": "",
@@ -8513,9 +8792,9 @@
         },
         {
           "kind": "Button",
-          "line": 1356,
+          "line": 1419,
           "label": "Unblock",
-          "click": "() => changeStatus(selectedTask, \"open\")",
+          "click": "() => changeStatus(modalTask, \"open\")",
           "dataAction": "",
           "type": "component default",
           "title": "",
@@ -8525,9 +8804,9 @@
         },
         {
           "kind": "Button",
-          "line": 1359,
+          "line": 1422,
           "label": "Start",
-          "click": "() => changeStatus(selectedTask, \"in_progress\")",
+          "click": "() => changeStatus(modalTask, \"in_progress\")",
           "dataAction": "",
           "type": "component default",
           "title": "",
@@ -8537,9 +8816,9 @@
         },
         {
           "kind": "Button",
-          "line": 1362,
+          "line": 1425,
           "label": "Complete",
-          "click": "() => changeStatus(selectedTask, \"completed\")",
+          "click": "() => changeStatus(modalTask, \"completed\")",
           "dataAction": "",
           "type": "component default",
           "title": "",
@@ -8549,7 +8828,7 @@
         },
         {
           "kind": "Button",
-          "line": 1365,
+          "line": 1428,
           "label": "Block",
           "click": "handleBlockSelectedTask",
           "dataAction": "",
@@ -8561,7 +8840,7 @@
         },
         {
           "kind": "Button",
-          "line": 1367,
+          "line": 1430,
           "label": "{deletingTask ? \"Deleting...\" : confirmDeleteTask ? \"Confirm Delete\" : \"Delete\"}",
           "click": "handleDeleteSelectedTask",
           "dataAction": "",
@@ -8573,7 +8852,7 @@
         },
         {
           "kind": "Button",
-          "line": 1398,
+          "line": 1461,
           "label": "Comment",
           "click": "handleAddComment",
           "dataAction": "",

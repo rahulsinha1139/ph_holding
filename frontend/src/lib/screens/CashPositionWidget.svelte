@@ -26,6 +26,7 @@
 
   import Card from '$lib/components/ui/Card.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
+  import { formatNumber } from '$lib/utils/formatters';
 
   // Props
   export let compact = false;
@@ -57,12 +58,12 @@
 
   // Formatters
   function formatBHD(value: number): string {
-    return value?.toFixed(3) || '0.000';
+    return formatNumber(value || 0, 3);
   }
 
   function formatCurrency(value: number, currency: string): string {
     const decimals = currency === 'BHD' ? 3 : 2;
-    return value?.toFixed(decimals) || '0.00';
+    return formatNumber(value || 0, decimals);
   }
 
   function formatTime(date: Date): string {

@@ -802,12 +802,13 @@ func TestUpdateOfferFull_PersistsMetadataAndClearsHeaderFields(t *testing.T) {
 	}
 	require.NoError(t, app.db.Create(&opportunity).Error)
 
+	validityDate := time.Now().AddDate(0, 0, 30).Format("2006-01-02")
 	updated, err := app.UpdateOfferFull(offer.ID, OfferUpdateData{
 		CustomerName:      offer.CustomerName,
 		ProjectName:       "Supply of E+H TEMP. TRANSMITTER",
 		FolderNumber:      "64-26",
 		QuotationDate:     "2026-03-30",
-		ValidityDate:      "2026-04-29",
+		ValidityDate:      validityDate,
 		PaymentTerms:      "",
 		DeliveryTerms:     "",
 		DeliveryWeeks:     "",
@@ -870,13 +871,14 @@ func TestUpdateOfferFull_HeaderOnlySavePreservesExistingItems(t *testing.T) {
 	app := setupTestApp(t)
 	migrateWorkflowRegressionTables(t, app)
 
+	validityDate := time.Now().AddDate(0, 0, 30)
 	offer := Offer{
 		Base:            Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
 		OfferNumber:     "43-26-R1",
 		RevisionNumber:  1,
 		CustomerName:    "Awal Dairy Company W.L.L.",
 		QuotationDate:   time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC),
-		ValidityDate:    time.Date(2026, 4, 29, 0, 0, 0, 0, time.UTC),
+		ValidityDate:    validityDate,
 		Stage:           "Quoted",
 		PaymentTerms:    "Net 30",
 		DeliveryTerms:   "DAP Bahrain",
@@ -910,7 +912,7 @@ func TestUpdateOfferFull_HeaderOnlySavePreservesExistingItems(t *testing.T) {
 	updated, err := app.UpdateOfferFull(offer.ID, OfferUpdateData{
 		CustomerName:    offer.CustomerName,
 		QuotationDate:   "2026-03-30",
-		ValidityDate:    "2026-04-29",
+		ValidityDate:    validityDate.Format("2006-01-02"),
 		PaymentTerms:    "Net 45",
 		DeliveryTerms:   "CIF Bahrain",
 		AttentionPerson: "Updated contact",
@@ -927,6 +929,215 @@ func TestUpdateOfferFull_HeaderOnlySavePreservesExistingItems(t *testing.T) {
 	require.Len(t, stored.Items, 2)
 	require.Equal(t, 420.0, stored.Items[0].TotalPrice)
 	require.Equal(t, 424.8, stored.Items[1].TotalPrice)
+}
+
+func TestUpdateOfferFull_AllowsSameDayValidityOnHeaderSave(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	offer := Offer{
+		Base:           Base{ID: uuid.New().String(), CreatedAt: now, UpdatedAt: now},
+		OfferNumber:    "44-26-R1",
+		RevisionNumber: 1,
+		CustomerName:   "Sulb Company B.S.C Closed",
+		QuotationDate:  today.AddDate(0, 0, -30),
+		ValidityDate:   today,
+		Stage:          "Quoted",
+		PaymentTerms:   "Net 30",
+		DeliveryTerms:  "DAP Bahrain",
+		TotalValueBHD:  6500,
+	}
+	require.NoError(t, app.db.Create(&offer).Error)
+
+	updated, err := app.UpdateOfferFull(offer.ID, OfferUpdateData{
+		CustomerName:  offer.CustomerName,
+		QuotationDate: offer.QuotationDate.Format("2006-01-02"),
+		ValidityDate:  today.Format("2006-01-02"),
+		PaymentTerms:  "30 days from Date of Delivery",
+		Items:         []OfferUpdateItem{},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "30 days from Date of Delivery", updated.PaymentTerms)
+}
+
+func TestOfferPDFExportUsesSavedSubjectAndBody(t *testing.T) {
+	offer := Offer{
+		OfferNumber:        "44-26",
+		CustomerName:       "Awal Dairy Company W.L.L.",
+		QuotationDate:      time.Date(2026, 4, 27, 0, 0, 0, 0, time.UTC),
+		VatRate:            10,
+		Subject:            "Sub: Revised pump package",
+		Body:               "Custom commercial opening body for this quote.",
+		PaymentTerms:       "Net 30",
+		DeliveryTerms:      "DAP Bahrain",
+		TermsAndConditions: "Custom terms",
+		Items: []OfferItem{
+			{
+				LineNumber: 1,
+				Equipment:  "Flowmeter",
+				Model:      "FMR20B",
+				Quantity:   2,
+				UnitPrice:  3250,
+				TotalPrice: 6500,
+			},
+		},
+	}
+
+	exportData := buildCostingExportDataFromOffer(offer, CustomerMaster{BusinessName: offer.CustomerName}, CustomerContact{})
+
+	require.Equal(t, "Sub: Revised pump package", exportData.Subject)
+	require.Equal(t, "Custom commercial opening body for this quote.", exportData.Body)
+	require.Equal(t, 7150.0, exportData.GrandTotal)
+}
+
+func TestSaveCostingAsOfferUpdatesExistingOfferFromCostingSheet(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	customer := CustomerMaster{
+		Base:         Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		BusinessName: "Awal Dairy Company W.L.L.",
+	}
+	require.NoError(t, app.db.Create(&customer).Error)
+
+	offer := Offer{
+		Base:           Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferNumber:    "43-26",
+		RevisionNumber: 1,
+		CustomerID:     customer.ID,
+		CustomerName:   customer.BusinessName,
+		QuotationDate:  time.Date(2026, 4, 27, 0, 0, 0, 0, time.UTC),
+		ValidityDate:   time.Date(2026, 5, 27, 0, 0, 0, 0, time.UTC),
+		Stage:          "Quoted",
+		TotalValueBHD:  495,
+		Subject:        "Sub: Old subject",
+		Body:           "Old body",
+		VatRate:        10,
+		Division:       "PH Trading",
+	}
+	require.NoError(t, app.db.Create(&offer).Error)
+	require.NoError(t, app.db.Create(&OfferItem{
+		Base:       Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferID:    offer.ID,
+		LineNumber: 1,
+		Equipment:  "Legacy",
+		Quantity:   1,
+		UnitPrice:  450,
+		TotalPrice: 450,
+	}).Error)
+
+	updated, err := app.SaveCostingAsOffer(CostingExportData{
+		OfferID:       offer.ID,
+		OfferNumber:   offer.OfferNumber,
+		Division:      "PH Trading",
+		Date:          "2026-04-27",
+		CustomerID:    customer.ID,
+		CustomerName:  customer.BusinessName,
+		Subject:       "Sub: Revised subject",
+		Body:          "Revised customer-facing body",
+		QuoteType:     "Quotation",
+		VatRate:       10,
+		Subtotal:      1990,
+		NetAmount:     1990,
+		VAT:           199,
+		GrandTotal:    2189,
+		TotalCost:     1000,
+		Profit:        990,
+		ProfitPercent: 49.7487437186,
+		LineItems: []CostingExportLineItem{
+			{
+				SlNo:           1,
+				Equipment:      "FlowMeter",
+				Model:          "9Xm1-s1982",
+				Currency:       "EUR",
+				Quantity:       5,
+				SuggestedPrice: 195,
+				TotalPrice:     975,
+				ExchangeRate:   0.45,
+				TotalCost:      353.9025,
+			},
+			{
+				SlNo:           2,
+				Equipment:      "Oilwellgas",
+				Model:          "NY1230as-0",
+				Currency:       "BHD",
+				Quantity:       7,
+				SuggestedPrice: 145,
+				TotalPrice:     1015,
+				ExchangeRate:   1,
+				TotalCost:      120.1725,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "Sub: Revised subject", updated.Subject)
+	require.Equal(t, "Revised customer-facing body", updated.Body)
+	require.Equal(t, 2189.0, updated.TotalValueBHD)
+	require.Equal(t, 2, updated.RevisionNumber)
+
+	var stored Offer
+	require.NoError(t, app.db.Preload("Items").First(&stored, "id = ?", offer.ID).Error)
+	require.Len(t, stored.Items, 2)
+	require.Equal(t, 195.0, stored.Items[0].UnitPrice)
+	require.Equal(t, 975.0, stored.Items[0].TotalPrice)
+	require.Equal(t, 0.45, stored.Items[0].ExchangeRate)
+}
+
+func TestRepairImportedCommercialDocumentsRestoresFXMultipliedOfferItems(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	offer := Offer{
+		Base:           Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferNumber:    "SA-06-26",
+		RevisionNumber: 1,
+		CustomerName:   "Sedres",
+		QuotationDate:  time.Date(2026, 4, 27, 0, 0, 0, 0, time.UTC),
+		ValidityDate:   time.Date(2026, 5, 27, 0, 0, 0, 0, time.UTC),
+		Stage:          "Quoted",
+		TotalValueBHD:  9360.945,
+		VatRate:        10,
+	}
+	require.NoError(t, app.db.Create(&offer).Error)
+
+	rawItem := OfferItem{
+		Base:         Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferID:      offer.ID,
+		LineNumber:   1,
+		Equipment:    "LOT",
+		Currency:     "",
+		Quantity:     1,
+		UnitPrice:    18911,
+		TotalPrice:   18911,
+		ExchangeRate: 0,
+		TotalCost:    15759.765,
+	}
+	require.NoError(t, app.db.Create(&rawItem).Error)
+	require.NoError(t, app.db.Delete(&rawItem).Error)
+
+	require.NoError(t, app.db.Create(&OfferItem{
+		Base:         Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferID:      offer.ID,
+		LineNumber:   1,
+		Equipment:    "LOT",
+		Currency:     "EUR",
+		Quantity:     1,
+		UnitPrice:    8509.95,
+		TotalPrice:   8509.95,
+		ExchangeRate: 0.45,
+		TotalCost:    7176.67066116,
+	}).Error)
+
+	require.NoError(t, repairImportedCommercialDocuments(app.db))
+
+	var stored Offer
+	require.NoError(t, app.db.Preload("Items").First(&stored, "id = ?", offer.ID).Error)
+	require.Len(t, stored.Items, 1)
+	require.Equal(t, 18911.0, stored.Items[0].UnitPrice)
+	require.Equal(t, 18911.0, stored.Items[0].TotalPrice)
+	require.Equal(t, 20802.1, stored.TotalValueBHD)
 }
 
 func TestUpdateOrder_SkipsSyntheticSummaryRowsAndRecomputesTotals(t *testing.T) {

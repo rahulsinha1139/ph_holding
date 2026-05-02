@@ -360,6 +360,78 @@ func deploymentProfileScore(profile deploymentDatabaseProfile) int64 {
 		profile.Opportunities
 }
 
+func deploymentDatabaseReseedStamp() string {
+	return strings.TrimSpace(os.Getenv("ASYMMFLOW_DB_RESEED_STAMP"))
+}
+
+func appDataDatabaseHasReseedStamp(path, stamp string) bool {
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(stamp) == "" || !isSQLiteDatabaseFile(path) {
+		return false
+	}
+	db, err := sql.Open("sqlite3", sqliteReadonlyDSN(path))
+	if err != nil {
+		return false
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'settings'`).Scan(&count); err != nil || count == 0 {
+		return false
+	}
+
+	var value string
+	if err := db.QueryRow(`SELECT value FROM settings WHERE key = ? AND deleted_at IS NULL`, "deployment_database_reseed_stamp").Scan(&value); err != nil {
+		return false
+	}
+	return strings.TrimSpace(value) == stamp
+}
+
+func shouldForceDeploymentDatabaseReseed(appDataPath string) bool {
+	stamp := deploymentDatabaseReseedStamp()
+	return stamp != "" && !appDataDatabaseHasReseedStamp(appDataPath, stamp)
+}
+
+func markDeploymentDatabaseReseedStamp(path string) {
+	stamp := deploymentDatabaseReseedStamp()
+	if strings.TrimSpace(path) == "" || stamp == "" || !isSQLiteDatabaseFile(path) {
+		return
+	}
+	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_busy_timeout=5000", filepath.ToSlash(filepath.Clean(path))))
+	if err != nil {
+		log.Printf("⚠️ Could not open AppData database to mark deployment reseed stamp: %v", err)
+		return
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'settings'`).Scan(&count); err != nil || count == 0 {
+		return
+	}
+
+	id := "deployment-database-reseed-stamp"
+	_, err = db.Exec(`
+		INSERT INTO settings (
+			id, key, value, category, description, is_encrypted,
+			created_at, updated_at, version, created_by, deleted_at
+		)
+		VALUES (
+			?, 'deployment_database_reseed_stamp', ?, 'deployment',
+			'Last deployment stamp that replaced the local AppData database from the packaged seed',
+			0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, 'startup-reseed', NULL
+		)
+		ON CONFLICT(key) DO UPDATE SET
+			value = excluded.value,
+			category = excluded.category,
+			description = excluded.description,
+			is_encrypted = 0,
+			updated_at = CURRENT_TIMESTAMP,
+			deleted_at = NULL
+	`, id, stamp)
+	if err != nil {
+		log.Printf("⚠️ Could not mark deployment reseed stamp: %v", err)
+	}
+}
+
 func loadPreservedLicenseActivations(path string) []preservedLicenseActivation {
 	if strings.TrimSpace(path) == "" || !isSQLiteDatabaseFile(path) {
 		return nil
@@ -481,6 +553,7 @@ func seedAppDataDatabaseFromPackaged(appDataPath, packagedPath string) bool {
 	if strings.TrimSpace(appDataPath) == "" || strings.TrimSpace(packagedPath) == "" {
 		return false
 	}
+	appendStartupDiagnostic("DB RESEED: evaluating appData=%s packaged=%s stamp=%s", appDataPath, packagedPath, deploymentDatabaseReseedStamp())
 	var preservedActivations []preservedLicenseActivation
 	preserveActivations := preserveLicenseActivationsOnReseed()
 	if _, err := os.Stat(appDataPath); err == nil {
@@ -489,21 +562,26 @@ func seedAppDataDatabaseFromPackaged(appDataPath, packagedPath string) bool {
 		} else {
 			existingProfile := readDeploymentDatabaseProfile(appDataPath)
 			packagedProfile := readDeploymentDatabaseProfile(packagedPath)
-			if !shouldReplaceAppDataDatabase(existingProfile, packagedProfile) {
+			forceReseed := shouldForceDeploymentDatabaseReseed(appDataPath)
+			if !forceReseed && !shouldReplaceAppDataDatabase(existingProfile, packagedProfile) {
 				log.Printf("📂 Database path (AppData existing): %s", appDataPath)
 				return true
 			}
-			log.Printf(
-				"⚠️ Existing AppData database appears incomplete (customers=%d orders=%d invoices=%d opportunities=%d); reseeding from packaged database (customers=%d orders=%d invoices=%d opportunities=%d)",
-				existingProfile.Customers,
-				existingProfile.Orders,
-				existingProfile.Invoices,
-				existingProfile.Opportunities,
-				packagedProfile.Customers,
-				packagedProfile.Orders,
-				packagedProfile.Invoices,
-				packagedProfile.Opportunities,
-			)
+			if forceReseed {
+				log.Printf("⚠️ Deployment database reseed requested for stamp %s; replacing AppData database from packaged seed", deploymentDatabaseReseedStamp())
+			} else {
+				log.Printf(
+					"⚠️ Existing AppData database appears incomplete (customers=%d orders=%d invoices=%d opportunities=%d); reseeding from packaged database (customers=%d orders=%d invoices=%d opportunities=%d)",
+					existingProfile.Customers,
+					existingProfile.Orders,
+					existingProfile.Invoices,
+					existingProfile.Opportunities,
+					packagedProfile.Customers,
+					packagedProfile.Orders,
+					packagedProfile.Invoices,
+					packagedProfile.Opportunities,
+				)
+			}
 			if preserveActivations {
 				preservedActivations = loadPreservedLicenseActivations(appDataPath)
 			} else {
@@ -522,12 +600,15 @@ func seedAppDataDatabaseFromPackaged(appDataPath, packagedPath string) bool {
 	}
 
 	if err := copySQLiteSeedAtomically(packagedPath, appDataPath); err != nil {
+		appendStartupDiagnostic("DB RESEED: copy failed: %v", err)
 		log.Printf("⚠️ Could not seed AppData database from packaged seed %s: %v", packagedPath, err)
 		return false
 	}
+	markDeploymentDatabaseReseedStamp(appDataPath)
 	if preserveActivations {
 		restorePreservedLicenseActivations(appDataPath, preservedActivations)
 	}
+	appendStartupDiagnostic("DB RESEED: success appData=%s", appDataPath)
 	log.Printf("📂 Database path (seeded AppData from packaged database): %s", appDataPath)
 	return true
 }
@@ -590,6 +671,10 @@ func copySQLiteSeedAtomically(src, dst string) error {
 	}
 	_ = os.Remove(dst + "-wal")
 	_ = os.Remove(dst + "-shm")
+	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("remove existing AppData database before reseed: %w", err)
+	}
 	if err := os.Rename(tmpPath, dst); err != nil {
 		_ = os.Remove(tmpPath)
 		return err

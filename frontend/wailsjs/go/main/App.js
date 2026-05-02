@@ -218,6 +218,14 @@ export function CalculateSupplierLeadTime(arg1) {
   return window['go']['main']['App']['CalculateSupplierLeadTime'](arg1);
 }
 
+export function CanResolveOpportunityConflicts() {
+  return window['go']['main']['App']['CanResolveOpportunityConflicts']();
+}
+
+export function CanViewUserActivityMonitoring() {
+  return window['go']['main']['App']['CanViewUserActivityMonitoring']();
+}
+
 export function CancelCheque(arg1, arg2) {
   return window['go']['main']['App']['CancelCheque'](arg1, arg2);
 }
@@ -746,6 +754,10 @@ export function DownloadReport(arg1) {
   return window['go']['main']['App']['DownloadReport'](arg1);
 }
 
+export function EndUserActivitySession(arg1) {
+  return window['go']['main']['App']['EndUserActivitySession'](arg1);
+}
+
 export function EnsureAssetsTable() {
   return window['go']['main']['App']['EnsureAssetsTable']();
 }
@@ -762,12 +774,20 @@ export function EnsureLicenseTableExists() {
   return window['go']['main']['App']['EnsureLicenseTableExists']();
 }
 
+export function EnsureOpportunityConflictFoundation() {
+  return window['go']['main']['App']['EnsureOpportunityConflictFoundation']();
+}
+
 export function EnsurePayrollFoundation() {
   return window['go']['main']['App']['EnsurePayrollFoundation']();
 }
 
 export function EnsurePhase7Rollout() {
   return window['go']['main']['App']['EnsurePhase7Rollout']();
+}
+
+export function EnsureUserActivityMonitoringFoundation() {
+  return window['go']['main']['App']['EnsureUserActivityMonitoringFoundation']();
 }
 
 export function ExhaustChequeRegister(arg1) {
@@ -1084,6 +1104,10 @@ export function GetAvailableSerials(arg1) {
 
 export function GetBackupInfo() {
   return window['go']['main']['App']['GetBackupInfo']();
+}
+
+export function GetBackupPolicy() {
+  return window['go']['main']['App']['GetBackupPolicy']();
 }
 
 export function GetBalanceContinuityReport(arg1) {
@@ -2042,6 +2066,10 @@ export function GetWatcherStatus() {
   return window['go']['main']['App']['GetWatcherStatus']();
 }
 
+export function GetWeeklyUserActivityReport(arg1) {
+  return window['go']['main']['App']['GetWeeklyUserActivityReport'](arg1);
+}
+
 export function GetWilliamsMetrics(arg1) {
   return window['go']['main']['App']['GetWilliamsMetrics'](arg1);
 }
@@ -2292,6 +2320,10 @@ export function ListNotificationFeed(arg1, arg2) {
 
 export function ListOffersPaginated(arg1, arg2, arg3) {
   return window['go']['main']['App']['ListOffersPaginated'](arg1, arg2, arg3);
+}
+
+export function ListOpportunityEditConflicts(arg1, arg2) {
+  return window['go']['main']['App']['ListOpportunityEditConflicts'](arg1, arg2);
 }
 
 export function ListOrders(arg1, arg2) {
@@ -2662,6 +2694,14 @@ export function RecordSupplierPayment(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['RecordSupplierPayment'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function RecordUserActivityBatch(arg1) {
+  return window['go']['main']['App']['RecordUserActivityBatch'](arg1);
+}
+
+export function RecordUserActivityHeartbeat(arg1) {
+  return window['go']['main']['App']['RecordUserActivityHeartbeat'](arg1);
+}
+
 export function RefreshAuth() {
   return window['go']['main']['App']['RefreshAuth']();
 }
@@ -2706,6 +2746,10 @@ export function ReopenReconciliation(arg1, arg2, arg3) {
   return window['go']['main']['App']['ReopenReconciliation'](arg1, arg2, arg3);
 }
 
+export function RequestDeleteApproval(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['RequestDeleteApproval'](arg1, arg2, arg3, arg4);
+}
+
 export function RerunPhase7FollowUpBackfill() {
   return window['go']['main']['App']['RerunPhase7FollowUpBackfill']();
 }
@@ -2716,6 +2760,10 @@ export function ResetUserPassword(arg1, arg2) {
 
 export function ResolveGRNDiscrepancy(arg1, arg2) {
   return window['go']['main']['App']['ResolveGRNDiscrepancy'](arg1, arg2);
+}
+
+export function ResolveOpportunityEditConflict(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ResolveOpportunityEditConflict'](arg1, arg2, arg3);
 }
 
 export function ResolveSupplierIssue(arg1, arg2) {
@@ -2758,6 +2806,10 @@ export function ReverseRevaluation(arg1, arg2, arg3) {
   return window['go']['main']['App']['ReverseRevaluation'](arg1, arg2, arg3);
 }
 
+export function ReviewDeleteApprovalRequest(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ReviewDeleteApprovalRequest'](arg1, arg2, arg3);
+}
+
 export function RevokeLicense(arg1) {
   return window['go']['main']['App']['RevokeLicense'](arg1);
 }
@@ -2784,6 +2836,14 @@ export function RunInitialScan() {
 
 export function RunIntegrityCheck() {
   return window['go']['main']['App']['RunIntegrityCheck']();
+}
+
+export function RunScheduledBackupIfDue(arg1) {
+  return window['go']['main']['App']['RunScheduledBackupIfDue'](arg1);
+}
+
+export function SaveBackupPolicy(arg1, arg2) {
+  return window['go']['main']['App']['SaveBackupPolicy'](arg1, arg2);
 }
 
 export function SaveCostingAsOffer(arg1) {
@@ -2948,6 +3008,10 @@ export function StartLogin() {
 
 export function StartPeriodicSync(arg1) {
   return window['go']['main']['App']['StartPeriodicSync'](arg1);
+}
+
+export function StartUserActivitySession(arg1) {
+  return window['go']['main']['App']['StartUserActivitySession'](arg1);
 }
 
 export function StopBackgroundDBSync() {
@@ -3122,8 +3186,16 @@ export function UpdateOpportunityDetails(arg1, arg2, arg3) {
   return window['go']['main']['App']['UpdateOpportunityDetails'](arg1, arg2, arg3);
 }
 
+export function UpdateOpportunityDetailsWithVersion(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['UpdateOpportunityDetailsWithVersion'](arg1, arg2, arg3, arg4);
+}
+
 export function UpdateOpportunityStage(arg1, arg2) {
   return window['go']['main']['App']['UpdateOpportunityStage'](arg1, arg2);
+}
+
+export function UpdateOpportunityStageWithVersion(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpdateOpportunityStageWithVersion'](arg1, arg2, arg3);
 }
 
 export function UpdateOrder(arg1, arg2) {

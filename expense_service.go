@@ -258,6 +258,9 @@ func (a *App) CreateExpenseCategory(category ExpenseCategory) (ExpenseCategory, 
 }
 
 func (a *App) DeleteExpenseCategory(categoryID string) error {
+	if ok, err := a.guardDeleteOrRequest("expenses:update", "expense_category", categoryID, "Expense category"); !ok {
+		return err
+	}
 	if err := a.requireExpenseUpdate(); err != nil {
 		return err
 	}
@@ -352,6 +355,9 @@ func (a *App) CreateExpenseVendor(vendor ExpenseVendor) (ExpenseVendor, error) {
 }
 
 func (a *App) DeleteExpenseVendor(vendorID string) error {
+	if ok, err := a.guardDeleteOrRequest("expenses:update", "expense_vendor", vendorID, "Expense vendor"); !ok {
+		return err
+	}
 	if err := a.requireExpenseUpdate(); err != nil {
 		return err
 	}
@@ -428,6 +434,9 @@ func (a *App) CreateExpenseEntry(entry ExpenseEntry) (ExpenseEntry, error) {
 }
 
 func (a *App) DeleteExpenseEntry(entryID string) error {
+	if ok, err := a.guardDeleteOrRequest("expenses:update", "expense_entry", entryID, "Expense entry"); !ok {
+		return err
+	}
 	if err := a.requireExpenseUpdate(); err != nil {
 		return err
 	}
@@ -741,6 +750,9 @@ func (a *App) CreateRecurringExpense(item RecurringExpense) (RecurringExpense, e
 }
 
 func (a *App) DeleteRecurringExpense(recurringID string) error {
+	if ok, err := a.guardDeleteOrRequest("expenses:update", "recurring_expense", recurringID, "Recurring expense"); !ok {
+		return err
+	}
 	if err := a.requireExpenseUpdate(); err != nil {
 		return err
 	}

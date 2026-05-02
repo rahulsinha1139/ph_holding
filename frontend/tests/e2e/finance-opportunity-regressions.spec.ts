@@ -20,17 +20,15 @@ test.describe('Opportunity and finance regression coverage', () => {
     await expect(page.getByText('Gas analyzer transmitter')).toBeVisible();
     await expect(page.getByText('Sample conditioning panel')).toBeVisible();
 
-    const notesBox = page.getByPlaceholder('Add notes for this opportunity...');
+    const notesBox = page.getByPlaceholder('Add a comment...');
     await expect(notesBox).toBeEditable({ timeout: 10000 });
     await notesBox.fill('Updated regression note for deployment readiness.');
-    await page.getByRole('button', { name: 'Save Notes' }).click();
-    await expect(page.getByText('Notes updated')).toBeVisible();
+    await page.getByRole('button', { name: 'Post' }).click();
+    await expect(page.getByText('Comment added')).toBeVisible();
 
     await page.getByRole('button', { name: /Close/ }).click();
     await page.getByRole('button', { name: /ACTIUM PG/i }).first().click();
-    await expect(page.getByPlaceholder('Add notes for this opportunity...')).toHaveValue(
-      'Updated regression note for deployment readiness.',
-    );
+    await expect(page.getByText('Initial technical scope captured from OCR.')).toBeVisible();
   });
 
   test('supplier invoice edit flow can mark an invoice paid and request payment entry creation', async ({ page }) => {
@@ -54,7 +52,7 @@ test.describe('Opportunity and finance regression coverage', () => {
     await expect(page.getByText('Paid').first()).toBeVisible();
   });
 
-  test('opportunity detail can jump into a prefilled costing sheet with the new pricing controls', async ({ page }) => {
+  test('opportunity detail can jump into costing while folder and subject stay user-entered', async ({ page }) => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Opportunities' }).click();
@@ -64,8 +62,10 @@ test.describe('Opportunity and finance regression coverage', () => {
     await expect(page.getByText('Linked Opportunity:')).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('2026-311')).toBeVisible();
     await page.getByRole('button', { name: /Compliance, Certificates & VAT/i }).click();
-    await expect(page.locator('input[placeholder="Subject line for customer PDF"]')).toHaveValue('Sub: Gas Analyzer Package');
-    await expect(page.getByText('Quote Price').first()).toBeVisible();
+    await expect(page.locator('input[placeholder="Enter folder no."]')).toHaveValue('');
+    await expect(page.locator('input[placeholder="Enter costing ID"]')).toHaveValue('');
+    await expect(page.locator('input[placeholder="Subject line for customer PDF"]')).toHaveValue('');
+    await expect(page.getByText('Manual Unit Price').first()).toBeVisible();
     await expect(page.getByText('Exch. Rate').first()).toBeVisible();
     await expect(page.getByText('Freight %').first()).toBeVisible();
   });
@@ -85,7 +85,6 @@ test.describe('Opportunity and finance regression coverage', () => {
     await page.getByRole('button', { name: 'Save Changes' }).click();
 
     await expect(page.getByText('Offer details saved')).toBeVisible();
-    await page.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Offer Details' })).not.toBeVisible();
     await page.getByLabel('View full details').first().click();
 

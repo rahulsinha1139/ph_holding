@@ -289,6 +289,9 @@ func (a *App) UpdateGRN(grn GoodsReceivedNote) (GoodsReceivedNote, error) {
 
 // DeleteGRN deletes a GRN by ID
 func (a *App) DeleteGRN(id string) error {
+	if ok, err := a.guardDeleteOrRequest("grn:delete", "grn", id, "GRN"); !ok {
+		return err
+	}
 	if err := a.requirePermission("grn:delete"); err != nil {
 		return err
 	}
@@ -719,19 +722,19 @@ func (a *App) ReceiveAgainstPOWithSerials(poID string, items []GRNItemWithSerial
 
 // GRNDiscrepancy tracks quality/quantity issues for supplier follow-up
 type GRNDiscrepancy struct {
-	ID          string    `json:"id"`
-	GRNID       string    `json:"grn_id"`
-	GRNItemID   string    `json:"grn_item_id"`
-	ProductCode string    `json:"product_code"`
-	DiscrepancyType string `json:"discrepancy_type"` // "quantity_short", "quality_issue", "damaged", "wrong_item"
-	Reason      string    `json:"reason"`
-	RejectedQty float64   `json:"rejected_qty"`
-	RaisedBy    string    `json:"raised_by"`
-	RaisedAt    time.Time `json:"raised_at"`
-	Status      string    `json:"status"` // "open", "supplier_contacted", "resolved", "credited"
-	Resolution  string    `json:"resolution"`
-	ResolvedAt  *time.Time `json:"resolved_at"`
-	CostImpactBHD float64 `json:"cost_impact_bhd"`
+	ID              string     `json:"id"`
+	GRNID           string     `json:"grn_id"`
+	GRNItemID       string     `json:"grn_item_id"`
+	ProductCode     string     `json:"product_code"`
+	DiscrepancyType string     `json:"discrepancy_type"` // "quantity_short", "quality_issue", "damaged", "wrong_item"
+	Reason          string     `json:"reason"`
+	RejectedQty     float64    `json:"rejected_qty"`
+	RaisedBy        string     `json:"raised_by"`
+	RaisedAt        time.Time  `json:"raised_at"`
+	Status          string     `json:"status"` // "open", "supplier_contacted", "resolved", "credited"
+	Resolution      string     `json:"resolution"`
+	ResolvedAt      *time.Time `json:"resolved_at"`
+	CostImpactBHD   float64    `json:"cost_impact_bhd"`
 }
 
 // RaiseGRNDiscrepancy creates a discrepancy record for supplier follow-up

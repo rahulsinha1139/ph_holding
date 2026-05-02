@@ -1,10 +1,11 @@
 <script lang="ts">
     import { onMount, createEventDispatcher } from "svelte";
     import { fade } from "svelte/transition";
-    import {
-        ListCustomers,
-        CreateCustomer,
-    } from "../../../wailsjs/go/main/App";
+	import {
+	    ListCustomers,
+	    CreateCustomer,
+	    DeleteCustomer,
+	} from "../../../wailsjs/go/main/App";
     import { toast } from "$lib/stores/toasts";
     import WabiSpinner from "../components/ui/WabiSpinner.svelte";
     import CursorFollower from "../components/CursorFollower.svelte";
@@ -55,19 +56,20 @@
     // Customer status options
     const statusOptions = ["Active", "Inactive", "Blacklisted"];
 
-    let newCustomer = {
-        // Identity Section
-        customer_id: "",
-        business_name: "",
+	function emptyCustomerForm() {
+	    return {
+	    // Identity Section
+	    customer_id: "",
+	    business_name: "",
         trading_name: "",
         cr_number: "",
         trn: "",
         short_code: "",
 
-        // Classification Section
-        customer_type: "EC",
-        payment_grade: "B",
-        status: "Active",
+	    // Classification Section
+	    customer_type: "",
+	    payment_grade: "",
+	    status: "",
 
         // Contact Section
         primary_phone: "",
@@ -75,27 +77,30 @@
         primary_email: "",
         website: "",
 
-        // Address Section (Bahrain format)
-        building_flat: "",
-        road_street: "",
-        block: "",
-        area: "",
-        city: "Manama",
-        country: "Bahrain",
-        address_line1: "", // Combined for backend
+	    // Address Section (Bahrain format)
+	    building_flat: "",
+	    road_street: "",
+	    block: "",
+	    area: "",
+	    city: "",
+	    country: "",
+	    address_line1: "", // Combined for backend
 
-        // Financial Section
-        payment_terms: "net30",
-        payment_terms_days: 30,
-        credit_limit: 0,
+	    // Financial Section
+	    payment_terms: "",
+	    payment_terms_days: 0,
+	    credit_limit: "",
 
         // Business Details
         industry: "",
         relation_years: 0,
 
-        // Contacts (nested)
-        contacts: [],
-    };
+	    // Contacts (nested)
+	    contacts: [],
+	    };
+	}
+
+	let newCustomer = emptyCustomerForm();
 
     async function loadCustomers() {
         loading = true;
@@ -132,15 +137,15 @@
             newCustomer.address_line1 = addressParts.join(", ");
 
             // Map payment terms to days
-            const termsMap = {
-                cash: 0,
-                pdc: 7,
-                net30: 30,
-                net60: 60,
-                net90: 90,
-            };
-            newCustomer.payment_terms_days =
-                termsMap[newCustomer.payment_terms] || 30;
+	            const termsMap = {
+	                cash: 0,
+	                pdc: 7,
+	                net30: 30,
+	                net60: 60,
+	                net90: 90,
+	            };
+	            newCustomer.payment_terms_days =
+	                termsMap[newCustomer.payment_terms] || 0;
 
             // Create proper CustomerMaster object
             const customerData = main.CustomerMaster.createFrom({
@@ -156,7 +161,7 @@
                 short_code: newCustomer.short_code || "",
                 trading_name: newCustomer.trading_name || "",
                 cr_number: newCustomer.cr_number || "",
-                status: newCustomer.status || "Active",
+	                status: newCustomer.status || "Active",
                 primary_phone: newCustomer.primary_phone || "",
                 primary_email: newCustomer.primary_email || "",
                 website: newCustomer.website || "",
@@ -167,9 +172,9 @@
                 mobile_number: newCustomer.mobile_number || "",
                 industry: newCustomer.industry || "",
                 relation_years: newCustomer.relation_years || 0,
-                payment_grade: newCustomer.payment_grade,
-                customer_grade: newCustomer.payment_grade, // Same as payment grade initially
-                payment_terms_days: newCustomer.payment_terms_days,
+	                payment_grade: newCustomer.payment_grade || "C",
+	                customer_grade: newCustomer.payment_grade || "C",
+	                payment_terms_days: newCustomer.payment_terms_days,
                 avg_payment_days: 0,
                 dispute_count: 0,
                 total_orders_value: 0,
@@ -178,7 +183,7 @@
                 ar_risk_tier: "low",
                 outstanding_bhd: 0,
                 overdue_days: 0,
-                credit_limit_bhd: newCustomer.credit_limit || 50000,
+	                credit_limit_bhd: Number(newCustomer.credit_limit) || 0,
                 is_credit_blocked: false,
                 requires_prepayment: false,
                 has_abb_competition: false,
@@ -189,43 +194,30 @@
             toast.success("Customer created");
             showCreate = false;
 
-            // Reset form to defaults
-            newCustomer = {
-                customer_id: "",
-                business_name: "",
-                trading_name: "",
-                cr_number: "",
-                trn: "",
-                short_code: "",
-                customer_type: "EC",
-                payment_grade: "B",
-                status: "Active",
-                primary_phone: "",
-                mobile_number: "",
-                primary_email: "",
-                website: "",
-                building_flat: "",
-                road_street: "",
-                block: "",
-                area: "",
-                city: "Manama",
-                country: "Bahrain",
-                address_line1: "",
-                payment_terms: "net30",
-                payment_terms_days: 30,
-                credit_limit: 0,
-                industry: "",
-                relation_years: 0,
-                contacts: [],
-            };
-            await loadCustomers();
+	            newCustomer = emptyCustomerForm();
+	            await loadCustomers();
         } catch (e) {
             console.error(e);
             toast.danger("Create failed: " + String(e));
-        } finally {
-            creating = false;
-        }
-    }
+	        } finally {
+	            creating = false;
+	        }
+	    }
+
+	    async function handleDeleteCustomer(customer, event) {
+	        event?.stopPropagation();
+	        const name = customer?.business_name || 'this customer';
+	        if (!customer?.id || !confirm(`Delete ${name}?`)) {
+	            return;
+	        }
+	        try {
+	            await DeleteCustomer(customer.id);
+	            toast.success(`Deleted customer: ${name}`);
+	            await loadCustomers();
+	        } catch (err) {
+	            toast.danger(`Delete failed: ${String(err)}`);
+	        }
+	    }
 
     $: filteredCustomers = customers.filter((c) => {
         const matchSearch =
@@ -247,7 +239,7 @@
             <h1>Customers.</h1>
             <p class="subtitle">Directory & Relationships</p>
         </div>
-        <button class="btn-primary" on:click={() => (showCreate = true)}>
+        <button class="btn-primary" on:click={() => { newCustomer = emptyCustomerForm(); showCreate = true; }}>
             + New Customer
         </button>
     </header>
@@ -305,14 +297,24 @@
                                 (event.key === "Enter" || event.key === " ") &&
                                 navigate(c.id)}
                         >
-                            <div class="card-head">
-                                <span class="customer-name"
-                                    >{c.business_name}</span
-                                >
-                                <span class="grade-badge {c.payment_grade}"
-                                    >Grade {c.payment_grade || "B"}</span
-                                >
-                            </div>
+	                            <div class="card-head">
+	                                <span class="customer-name"
+	                                    >{c.business_name}</span
+	                                >
+	                                <div class="card-actions">
+	                                    <span class="grade-badge {c.payment_grade}"
+	                                        >Grade {c.payment_grade || "B"}</span
+	                                    >
+	                                    <button
+	                                        class="delete-link"
+	                                        type="button"
+	                                        aria-label="Delete customer"
+	                                        on:click|stopPropagation={(event) => handleDeleteCustomer(c, event)}
+	                                    >
+	                                        Delete
+	                                    </button>
+	                                </div>
+	                            </div>
                             <div class="card-meta">
                                 <span class="type-tag">{c.customer_type}</span>
                                 {#if c.city}
@@ -418,9 +420,10 @@
                             id="customer-type"
                             bind:value={newCustomer.customer_type}
                             class="input-clean"
-                        >
-                            {#each customerTypes as t}
-                                <option value={t.code}>{t.label}</option>
+	                        >
+	                            <option value="" disabled>Select type</option>
+	                            {#each customerTypes as t}
+	                                <option value={t.code}>{t.label}</option>
                             {/each}
                         </select>
                     </div>
@@ -430,8 +433,9 @@
                             id="customer-grade"
                             bind:value={newCustomer.payment_grade}
                             class="input-clean"
-                        >
-                            <option>A</option><option>B</option><option
+	                        >
+	                            <option value="" disabled>Select grade</option>
+	                            <option>A</option><option>B</option><option
                                 >C</option
                             ><option>D</option>
                         </select>
@@ -442,8 +446,9 @@
                             id="customer-status"
                             bind:value={newCustomer.status}
                             class="input-clean"
-                        >
-                            {#each statusOptions as s}
+	                        >
+	                            <option value="" disabled>Select status</option>
+	                            {#each statusOptions as s}
                                 <option>{s}</option>
                             {/each}
                         </select>
@@ -579,8 +584,9 @@
                             id="customer-payment-terms"
                             bind:value={newCustomer.payment_terms}
                             class="input-clean"
-                        >
-                            {#each paymentTermsOptions as pt}
+	                        >
+	                            <option value="" disabled>Select terms</option>
+	                            {#each paymentTermsOptions as pt}
                                 <option value={pt.value}>{pt.label}</option>
                             {/each}
                         </select>
@@ -752,17 +758,38 @@
         border-color: var(--border-medium);
     }
 
-    .card-head {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-    }
-    .customer-name {
-        font-weight: 500;
-        font-size: 16px;
-    }
+	    .card-head {
+	        display: flex;
+	        justify-content: space-between;
+	        align-items: flex-start;
+	        gap: 8px;
+	    }
+	    .card-actions {
+	        display: flex;
+	        align-items: center;
+	        gap: 8px;
+	        flex-shrink: 0;
+	    }
+	    .customer-name {
+	        font-weight: 500;
+	        font-size: 16px;
+	    }
+	    .delete-link {
+	        border: 1px solid rgba(185, 28, 28, 0.24);
+	        background: rgba(254, 242, 242, 0.88);
+	        color: #991b1b;
+	        border-radius: 6px;
+	        padding: 4px 8px;
+	        font-size: 11px;
+	        font-weight: 700;
+	        cursor: pointer;
+	    }
+	    .delete-link:hover {
+	        background: #fee2e2;
+	        border-color: rgba(185, 28, 28, 0.42);
+	    }
 
-    .grade-badge {
+	    .grade-badge {
         font-size: 10px;
         padding: 2px 6px;
         border-radius: 4px;

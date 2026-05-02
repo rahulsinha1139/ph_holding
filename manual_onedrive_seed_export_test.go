@@ -13,39 +13,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nguyenthenguyen/docx"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
 type oneDriveSeedOpportunityRow struct {
-	FolderName            string
-	FolderPath            string
-	RawFolderNumber       string
-	FolderPrefix          string
-	SequenceToken         string
-	Year                  int
-	DerivedPipelineKey    string
-	Title                 string
-	InstrumentType        string
-	Stage                 string
-	CustomerMatchName     string
-	CustomerMatchID       string
-	CustomerMatchScore    float64
-	CustomerMatchReason   string
-	FileCount             int
-	CostingFileCount      int
-	PDFCount              int
-	PrimaryCostingPath    string
-	PrimaryRevision       int
-	PrimaryOptionLabel    string
-	PrimaryLineItemCount  int
-	PrimarySubtotalBHD    float64
-	PrimaryVATBHD         float64
-	PrimaryGrandTotalBHD  float64
-	PONumber              string
-	InvoiceNumber         string
-	ScanWarnings          string
+	FolderName           string
+	FolderPath           string
+	RawFolderNumber      string
+	FolderPrefix         string
+	SequenceToken        string
+	Year                 int
+	DerivedPipelineKey   string
+	Title                string
+	InstrumentType       string
+	Stage                string
+	CustomerMatchName    string
+	CustomerMatchID      string
+	CustomerMatchScore   float64
+	CustomerMatchReason  string
+	FileCount            int
+	CostingFileCount     int
+	PDFCount             int
+	PrimaryCostingPath   string
+	PrimaryRevision      int
+	PrimaryOptionLabel   string
+	PrimaryLineItemCount int
+	PrimarySubtotalBHD   float64
+	PrimaryVATBHD        float64
+	PrimaryGrandTotalBHD float64
+	PONumber             string
+	InvoiceNumber        string
+	ScanWarnings         string
 }
 
 type oneDriveSeedCostingRow struct {
@@ -92,20 +93,51 @@ type oneDriveSeedLineItemRow struct {
 	LineTotalBHD        float64
 }
 
+type oneDriveSupplierDocumentRow struct {
+	FolderName         string
+	RawFolderNumber    string
+	DerivedPipelineKey string
+	FilePath           string
+	RelativePath       string
+	FileName           string
+	Extension          string
+	DocumentType       string
+	SupplierName       string
+	InvoiceNumber      string
+	InvoiceDate        string
+	SalesOrderNumber   string
+	SalesOrderDate     string
+	CustomerReference  string
+	OrderNumber        string
+	DeliveryNote       string
+	Currency           string
+	Subtotal           float64
+	Freight            float64
+	VATRate            float64
+	VATAmount          float64
+	GrandTotal         float64
+	PaymentTerms       string
+	DeliveryTerms      string
+	LineItemCount      int
+	FirstItemCode      string
+	FirstItemDesc      string
+	Warnings           string
+}
+
 type oneDriveSeedAuditRow struct {
-	FolderName             string
-	RawFolderNumber        string
-	DerivedPipelineKey     string
-	CustomerMatchName      string
-	Title                  string
-	MatchedDBByFolderName  int
-	MatchedDBByRawKey      int
-	MatchedDBByDerivedKey  int
-	DBFolderNumbers        string
-	DBSources              string
-	DBStages               string
-	DBCustomerNames        string
-	AuditStatus            string
+	FolderName            string
+	RawFolderNumber       string
+	DerivedPipelineKey    string
+	CustomerMatchName     string
+	Title                 string
+	MatchedDBByFolderName int
+	MatchedDBByRawKey     int
+	MatchedDBByDerivedKey int
+	DBFolderNumbers       string
+	DBSources             string
+	DBStages              string
+	DBCustomerNames       string
+	AuditStatus           string
 }
 
 type oneDriveSeedDBOpportunity struct {
@@ -129,6 +161,8 @@ type oneDriveSeedSummary struct {
 	DealsWithCostings         int       `json:"deals_with_costings"`
 	CostingFilesParsed        int       `json:"costing_files_parsed"`
 	LineItemsExtracted        int       `json:"line_items_extracted"`
+	SupplierDocumentsScanned  int       `json:"supplier_documents_scanned"`
+	SupplierDocumentsParsed   int       `json:"supplier_documents_parsed"`
 	UnresolvedCustomerMatches int       `json:"unresolved_customer_matches"`
 	CurrentDBOpportunityRows  int       `json:"current_db_opportunity_rows"`
 	CurrentDBOneDriveRows     int       `json:"current_db_onedrive_rows"`
@@ -147,6 +181,10 @@ type oneDriveFolderIdentity struct {
 }
 
 func TestManualExportOneDriveSeed(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("ONEDRIVE_IMPORT_ROOT")) == "" {
+		t.Skip("set ONEDRIVE_IMPORT_ROOT to stage a OneDrive folder")
+	}
+
 	rootPath := defaultOneDriveImportRoot()
 	dbPath := resolveOneDriveImportDBPath()
 	importYear := resolveOneDriveImportYear(rootPath)
@@ -199,11 +237,14 @@ func TestManualExportOneDriveSeed(t *testing.T) {
 	var oppRows []oneDriveSeedOpportunityRow
 	var costingRows []oneDriveSeedCostingRow
 	var lineItemRows []oneDriveSeedLineItemRow
+	var supplierDocumentRows []oneDriveSupplierDocumentRow
 	var auditRows []oneDriveSeedAuditRow
 
 	dealsWithCostings := 0
 	totalParsedCostings := 0
 	totalLineItems := 0
+	totalSupplierDocuments := 0
+	totalParsedSupplierDocuments := 0
 	unresolvedMatches := 0
 	missingInDB := 0
 	multipleDBMatches := 0
@@ -237,6 +278,14 @@ func TestManualExportOneDriveSeed(t *testing.T) {
 			}
 			if f.FileType == "costing_sheet" {
 				costingFiles = append(costingFiles, f)
+			}
+			if isSupplierDocumentCandidate(f) {
+				totalSupplierDocuments++
+				row := parseOneDriveSupplierDocument(deal.FolderPath, deal.FolderName, identity, f)
+				if strings.TrimSpace(row.Warnings) == "" {
+					totalParsedSupplierDocuments++
+				}
+				supplierDocumentRows = append(supplierDocumentRows, row)
 			}
 		}
 		if len(costingFiles) > 0 {
@@ -452,6 +501,47 @@ func TestManualExportOneDriveSeed(t *testing.T) {
 		t.Fatalf("failed to write line items csv: %v", err)
 	}
 
+	if err := writeSeedCSV(filepath.Join(outputDir, "supplier_documents.csv"), supplierDocumentRows, []string{
+		"folder_name", "raw_folder_number", "derived_pipeline_key", "file_path", "relative_path", "file_name",
+		"extension", "document_type", "supplier_name", "invoice_number", "invoice_date", "sales_order_number",
+		"sales_order_date", "customer_reference", "order_number", "delivery_note", "currency", "subtotal",
+		"freight", "vat_rate", "vat_amount", "grand_total", "payment_terms", "delivery_terms", "line_item_count",
+		"first_item_code", "first_item_description", "warnings",
+	}, func(row oneDriveSupplierDocumentRow) []string {
+		return []string{
+			row.FolderName,
+			row.RawFolderNumber,
+			row.DerivedPipelineKey,
+			row.FilePath,
+			row.RelativePath,
+			row.FileName,
+			row.Extension,
+			row.DocumentType,
+			row.SupplierName,
+			row.InvoiceNumber,
+			row.InvoiceDate,
+			row.SalesOrderNumber,
+			row.SalesOrderDate,
+			row.CustomerReference,
+			row.OrderNumber,
+			row.DeliveryNote,
+			row.Currency,
+			floatString(row.Subtotal),
+			floatString(row.Freight),
+			floatString(row.VATRate),
+			floatString(row.VATAmount),
+			floatString(row.GrandTotal),
+			row.PaymentTerms,
+			row.DeliveryTerms,
+			intString(row.LineItemCount),
+			row.FirstItemCode,
+			row.FirstItemDesc,
+			row.Warnings,
+		}
+	}); err != nil {
+		t.Fatalf("failed to write supplier documents csv: %v", err)
+	}
+
 	if err := writeSeedCSV(filepath.Join(outputDir, "db_audit.csv"), auditRows, []string{
 		"folder_name", "raw_folder_number", "derived_pipeline_key", "customer_match_name", "title",
 		"matched_db_by_folder_name", "matched_db_by_raw_key", "matched_db_by_derived_key", "db_folder_numbers",
@@ -486,6 +576,8 @@ func TestManualExportOneDriveSeed(t *testing.T) {
 		DealsWithCostings:         dealsWithCostings,
 		CostingFilesParsed:        totalParsedCostings,
 		LineItemsExtracted:        totalLineItems,
+		SupplierDocumentsScanned:  totalSupplierDocuments,
+		SupplierDocumentsParsed:   totalParsedSupplierDocuments,
 		UnresolvedCustomerMatches: unresolvedMatches,
 		CurrentDBOpportunityRows:  len(dbRows),
 		CurrentDBOneDriveRows:     countDBRowsBySource(dbRows, importSource),
@@ -497,8 +589,149 @@ func TestManualExportOneDriveSeed(t *testing.T) {
 		t.Fatalf("failed to write summary json: %v", err)
 	}
 
-	t.Logf("seed_export output_dir=%s deals=%d costings=%d line_items=%d missing_in_db=%d multiple_db_matches=%d unresolved_matches=%d",
-		outputDir, len(scan.Deals), totalParsedCostings, totalLineItems, missingInDB, multipleDBMatches, unresolvedMatches)
+	t.Logf("seed_export output_dir=%s deals=%d costings=%d line_items=%d supplier_docs=%d supplier_docs_parsed=%d missing_in_db=%d multiple_db_matches=%d unresolved_matches=%d",
+		outputDir, len(scan.Deals), totalParsedCostings, totalLineItems, totalSupplierDocuments, totalParsedSupplierDocuments, missingInDB, multipleDBMatches, unresolvedMatches)
+}
+
+func isSupplierDocumentCandidate(file DiscoveredFile) bool {
+	ext := strings.ToLower(strings.TrimSpace(file.Extension))
+	if ext != ".pdf" && ext != ".rtf" && ext != ".docx" {
+		return false
+	}
+	haystack := strings.ToLower(file.FilePath + " " + file.FileName + " " + file.FileType)
+	signals := []string{
+		"supplier", "invoice", "inv", "quote", "quotation", "sales order", "execution", "endress",
+	}
+	for _, signal := range signals {
+		if strings.Contains(haystack, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseOneDriveSupplierDocument(folderPath, folderName string, identity oneDriveFolderIdentity, file DiscoveredFile) oneDriveSupplierDocumentRow {
+	relative := strings.TrimPrefix(file.FilePath, folderPath)
+	relative = strings.TrimPrefix(relative, string(filepath.Separator))
+	row := oneDriveSupplierDocumentRow{
+		FolderName:         folderName,
+		RawFolderNumber:    identity.RawFolderNumber,
+		DerivedPipelineKey: identity.DerivedPipelineKey,
+		FilePath:           file.FilePath,
+		RelativePath:       relative,
+		FileName:           filepath.Base(file.FilePath),
+		Extension:          strings.ToLower(file.Extension),
+	}
+
+	text, err := extractSupplierDocumentText(file.FilePath, row.Extension)
+	if err != nil {
+		row.Warnings = err.Error()
+		return row
+	}
+	text = normalizeSeedSpace(text)
+	if text == "" {
+		row.Warnings = "no extractable text"
+		return row
+	}
+
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(lower, "sales order") || strings.Contains(lower, "quotation") || strings.Contains(lower, "quote"):
+		row.DocumentType = "SupplierQuote"
+	case strings.Contains(lower, "invoice"):
+		row.DocumentType = "SupplierInvoice"
+	default:
+		row.DocumentType = "SupplierDocument"
+	}
+
+	row.SupplierName = firstSupplierRegex(text,
+		`(?i)(Endress\s*\+?\s*Hauser[^\n\r,]*)`,
+		`(?i)(Servomex[^\n\r,]*)`,
+		`(?i)(Yokogawa[^\n\r,]*)`,
+	)
+	row.InvoiceNumber = firstSupplierRegex(text, `(?i)(?:invoice\s*(?:no\.?|number|#)?|inv\.?\s*no\.?)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\/-]{3,})`)
+	row.InvoiceDate = firstSupplierRegex(text, `(?i)(?:invoice\s*date|date)\s*[:#-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})`)
+	row.SalesOrderNumber = firstSupplierRegex(text, `(?i)sales\s*order\s*(?:no\.?|number|#)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9\/-]{3,})`)
+	row.SalesOrderDate = firstSupplierRegex(text, `(?i)sales\s*order\s*date\s*[:#-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})`)
+	row.CustomerReference = firstSupplierRegex(text, `(?i)customer\s*(?:reference|ref\.?)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\/-]{2,})`)
+	row.OrderNumber = firstSupplierRegex(text, `(?i)(?:your\s*)?order\s*(?:no\.?|number|#)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9\/-]{3,})`)
+	row.DeliveryNote = firstSupplierRegex(text, `(?i)delivery\s*note\s*(?:no\.?|number|#)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9\/-]{3,})`)
+	row.Currency = firstSupplierRegex(text, `\b(EUR|BHD|USD|GBP|AED|SAR)\b`)
+	row.Subtotal = firstSupplierAmount(text, `(?i)(?:subtotal|sub\s*total|net\s*amount|total\s*net)\D{0,30}([0-9][0-9,]*\.?[0-9]*)`)
+	row.Freight = firstSupplierAmount(text, `(?i)(?:freight|shipping|transport)\D{0,30}([0-9][0-9,]*\.?[0-9]*)`)
+	row.VATRate = firstSupplierAmount(text, `(?i)(?:vat|tax)\D{0,15}([0-9]{1,2}(?:\.[0-9]+)?)\s*%`)
+	row.VATAmount = firstSupplierAmount(text, `(?i)(?:vat|tax)\D{0,30}([0-9][0-9,]*\.?[0-9]*)`)
+	row.GrandTotal = firstSupplierAmount(text, `(?i)(?:grand\s*total|total\s*amount|amount\s*due|invoice\s*total)\D{0,40}([0-9][0-9,]*\.?[0-9]*)`)
+	row.PaymentTerms = firstSupplierRegex(text, `(?i)payment\s*terms?\s*[:#-]?\s*([^.;]{3,80})`)
+	row.DeliveryTerms = firstSupplierRegex(text, `(?i)delivery\s*terms?\s*[:#-]?\s*([^.;]{3,80})`)
+	row.LineItemCount = countSupplierLineItems(text)
+	row.FirstItemCode, row.FirstItemDesc = firstSupplierItem(text)
+
+	var warnings []string
+	if row.DocumentType == "SupplierInvoice" && row.InvoiceNumber == "" {
+		warnings = append(warnings, "invoice number not found")
+	}
+	if row.GrandTotal == 0 {
+		warnings = append(warnings, "grand total not found")
+	}
+	if row.LineItemCount == 0 {
+		warnings = append(warnings, "line items not confidently detected")
+	}
+	row.Warnings = strings.Join(warnings, " | ")
+	return row
+}
+
+func extractSupplierDocumentText(path, ext string) (string, error) {
+	switch ext {
+	case ".pdf":
+		return extractVectorPDF(path)
+	case ".rtf":
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		return extractTextFromRTF(string(raw)), nil
+	case ".docx":
+		reader, err := docx.ReadDocxFile(path)
+		if err != nil {
+			return "", err
+		}
+		defer reader.Close()
+		return reader.Editable().GetContent(), nil
+	default:
+		return "", fmt.Errorf("unsupported supplier document type %s", ext)
+	}
+}
+
+func firstSupplierRegex(text string, patterns ...string) string {
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		if match := re.FindStringSubmatch(text); len(match) > 1 {
+			return normalizeSeedSpace(match[1])
+		}
+	}
+	return ""
+}
+
+func firstSupplierAmount(text, pattern string) float64 {
+	raw := firstSupplierRegex(text, pattern)
+	raw = strings.ReplaceAll(raw, ",", "")
+	value, _ := strconv.ParseFloat(raw, 64)
+	return value
+}
+
+func countSupplierLineItems(text string) int {
+	re := regexp.MustCompile(`(?m)(?:^|\s)(?:\d{1,3}|[A-Z]{1,5}\d{3,})\s+[A-Z0-9][A-Z0-9/-]*\s+.{8,}?`)
+	matches := re.FindAllString(text, -1)
+	return len(matches)
+}
+
+func firstSupplierItem(text string) (string, string) {
+	re := regexp.MustCompile(`(?m)(?:^|\s)(?:\d{1,3}\s+)?([A-Z]{1,8}[A-Z0-9/-]{3,})\s+([^0-9]{8,120})`)
+	if match := re.FindStringSubmatch(text); len(match) > 2 {
+		return normalizeSeedSpace(match[1]), normalizeSeedSpace(match[2])
+	}
+	return "", ""
 }
 
 type parsedCostingBundle struct {

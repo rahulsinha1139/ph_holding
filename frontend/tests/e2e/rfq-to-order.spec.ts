@@ -32,7 +32,7 @@ test.describe('Commercial pipeline transitions', () => {
     await page.getByRole('button', { name: new RegExp(opportunityTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) }).first().click();
 
     await expect(page.locator('#opportunity-modal-title')).toHaveText(opportunityTitle);
-    await expect(page.getByPlaceholder('Add notes for this opportunity...')).toHaveValue('Carry this into costing for the sales team.');
+    await expect(page.getByText('Carry this into costing for the sales team.')).toBeVisible();
     await expect(page.getByText('REFERENCE').first()).toBeVisible();
   });
 });

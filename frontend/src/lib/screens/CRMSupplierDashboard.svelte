@@ -5,6 +5,7 @@
   import Button from '$lib/components/ui/Button.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
+  import { formatNumber } from '$lib/utils/formatters';
 
   const dispatch = createEventDispatcher();
 
@@ -16,19 +17,24 @@
   let selectedYear = currentYear;
   const availableYears = [0, ...Array.from({ length: Math.max(currentYear - earliestDashboardYear + 1, 1) }, (_, index) => currentYear - index)];
   let showCreateModal = false;
-  let newSupplier = {
-    supplier_name: '',
-    supplier_code: '',
-    supplier_type: 'Manufacturer',
-    country: 'United Arab Emirates',
-    primary_contact: '',
-    email: '',
-    phone: '',
-    address: '',
-    lead_time_days: 30,
-    payment_terms: 'Net 30',
-    rating: 3
-  };
+
+  function emptySupplierForm() {
+    return {
+      supplier_name: '',
+      supplier_code: '',
+      supplier_type: '',
+      country: '',
+      primary_contact: '',
+      email: '',
+      phone: '',
+      address: '',
+      lead_time_days: '',
+      payment_terms: '',
+      rating: ''
+    };
+  }
+
+  let newSupplier = emptySupplierForm();
 
   async function loadDashboard() {
     loading = true;
@@ -68,7 +74,11 @@
       return;
     }
     try {
-      await CreateSupplier(newSupplier as any);
+      await CreateSupplier({
+        ...newSupplier,
+        lead_time_days: Number(newSupplier.lead_time_days) || 0,
+        rating: Number(newSupplier.rating) || 0
+      } as any);
       toast.success('Supplier created successfully');
       showCreateModal = false;
       resetForm();
@@ -80,25 +90,11 @@
   }
 
   function resetForm() {
-    newSupplier = {
-      supplier_name: '',
-      supplier_code: '',
-      supplier_type: 'Manufacturer',
-      country: 'United Arab Emirates',
-      primary_contact: '',
-      email: '',
-      phone: '',
-      address: '',
-      lead_time_days: 30,
-      payment_terms: 'Net 30',
-      rating: 3
-    };
+    newSupplier = emptySupplierForm();
   }
 
   function formatCurrency(value: number): string {
-    if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
-    if (value >= 1000) return `${(value / 1000).toFixed(0)}K`;
-    return value.toFixed(0);
+    return formatNumber(value || 0, 0);
   }
 
   function renderRating(rating: number): string {
@@ -213,7 +209,7 @@
             bind:value={searchQuery}
             class="search-input"
           />
-          <Button variant="primary" on:click={() => showCreateModal = true}>+ New Supplier</Button>
+          <Button variant="primary" on:click={() => { resetForm(); showCreateModal = true; }}>+ New Supplier</Button>
         </div>
       </div>
 
@@ -272,6 +268,7 @@
         <div class="form-group">
           <label for="crm-supplier-type">Supplier Type</label>
           <select id="crm-supplier-type" bind:value={newSupplier.supplier_type}>
+            <option value="" disabled>Select type</option>
             <option value="Manufacturer">Manufacturer</option>
             <option value="Distributor">Distributor</option>
             <option value="Agent">Agent</option>
@@ -288,6 +285,7 @@
         <div class="form-group">
           <label for="crm-supplier-payment-terms">Payment Terms <span class="required">*</span></label>
           <select id="crm-supplier-payment-terms" bind:value={newSupplier.payment_terms}>
+            <option value="" disabled>Select terms</option>
             <option value="Net 30">Net 30</option>
             <option value="Net 60">Net 60</option>
             <option value="Net 90">Net 90</option>
@@ -301,6 +299,7 @@
         <div class="form-group">
           <label for="crm-supplier-rating">Rating</label>
           <select id="crm-supplier-rating" bind:value={newSupplier.rating}>
+            <option value="" disabled>Select rating</option>
             <option value={1}>1 Star</option>
             <option value={2}>2 Stars</option>
             <option value={3}>3 Stars</option>
