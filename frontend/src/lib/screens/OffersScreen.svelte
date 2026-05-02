@@ -57,6 +57,7 @@
     status: string;
     stage?: string;
     offer_number?: string;
+    revision_number?: number;
     quotation_date?: string;
     validity_date?: string;
     total_value_bhd?: number;
@@ -154,6 +155,7 @@
 
   let formData = {
     division: 'PH Trading',
+    offer_number: '',
     customer_id: '',
     customer_name: '',
     project_name: '',
@@ -398,6 +400,7 @@
       status: offer.stage || 'Quoted',
       stage: offer.stage || 'Quoted',
       offer_number: offer.offer_number || `OFR-${(offer.id || '').toString().slice(0, 8)}`,
+      revision_number: Number(offer.revision_number ?? 0),
       quotation_date: offer.quotation_date || offer.created_at,
       validity_date: offer.validity_date,
       total_value_bhd: offer.total_value_bhd || 0,
@@ -660,9 +663,9 @@
         preparedBy: '',
         customerName: customer?.business_name || formData.customer_name,
         contactPerson: '',
-        rfqReference: '',
-        folderNumber: '',
-        costingId: '',
+        rfqReference: formData.customer_reference || '',
+        folderNumber: formData.folder_number || '',
+        costingId: formData.offer_number || formData.folder_number || formData.customer_reference || '',
         estDelivery: '5-7 weeks',
         deliveryTerms: 'DAP Bahrain',
         paymentTerms: 'Net 30',
@@ -744,6 +747,7 @@
     formLoading = true;
     try {
       await UpdateOfferFull(editingOffer.id, {
+        offer_number: formData.offer_number || editingOffer.offer_number || '',
         customer_id: formData.customer_id,
         customer_name: formData.customer_name,
         project_name: formData.project_name,
@@ -856,6 +860,7 @@
       const resolvedCustomer = resolveCustomerFromOffer((offer as any).customer_id || '', offer.customer_name || '');
       formData = {
         division: offer.division || selectedCompany,
+        offer_number: '',
         customer_id: resolvedCustomer.customer_id,
         customer_name: resolvedCustomer.customer_name,
         project_name: offer.project_name || '',
@@ -963,6 +968,7 @@
     viewSaving = true;
     try {
       await UpdateOfferFull(viewOffer.id, {
+        offer_number: viewOffer.offer_number || '',
         customer_id: '',
         customer_name: viewOffer.customer_name || '',
         division: viewOffer.division || 'PH Trading',

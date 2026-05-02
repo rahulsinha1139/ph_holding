@@ -42,6 +42,146 @@ func migrateWorkflowRegressionTables(t *testing.T, app *App) {
 	))
 }
 
+func TestCreateRFQWithReferenceUsesUserReference(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	rfq, err := app.CreateRFQWithReference("BAPCO", "Analyzer skid", "EH-REF-2026-001", 1250, "Urgent enquiry")
+	require.NoError(t, err)
+	require.Equal(t, "EH-REF-2026-001", rfq.RFQNumber)
+	require.Equal(t, "EH-REF-2026-001", rfq.RFQRef)
+
+	var stored RFQData
+	require.NoError(t, app.db.First(&stored, "id = ?", rfq.ID).Error)
+	require.Equal(t, "EH-REF-2026-001", stored.RFQNumber)
+	require.Equal(t, "EH-REF-2026-001", stored.RFQRef)
+}
+
+func TestSaveCostingAsOfferPropagatesReferenceToLinkedOpportunity(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	opportunity := Opportunity{
+		Base:         Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		FolderNumber: "2-26",
+		CustomerName: "BAPCO",
+		Title:        "Analyzer skid",
+		Stage:        "Qualified",
+	}
+	require.NoError(t, app.db.Create(&opportunity).Error)
+
+	offer, err := app.SaveCostingAsOffer(CostingExportData{
+		Date:                "2026-05-02",
+		PreparedBy:          "Peri",
+		CustomerName:        "BAPCO",
+		RfqReference:        "EH-REF-2026-777",
+		FolderNumber:        "2-26",
+		CostingId:           "CS-EH-REF-2026-777",
+		Subject:             "Analyzer skid",
+		ProjectName:         "Analyzer skid",
+		OpportunityRecordID: opportunity.ID,
+		QuoteType:           "Quotation",
+		VatRate:             10,
+		Subtotal:            100,
+		NetAmount:           100,
+		VAT:                 10,
+		GrandTotal:          110,
+		TotalCost:           80,
+		Profit:              30,
+		LineItems: []CostingExportLineItem{
+			{
+				SlNo:           1,
+				Equipment:      "Analyzer",
+				Quantity:       1,
+				Currency:       "BHD",
+				SuggestedPrice: 100,
+				TotalPrice:     100,
+				TotalCost:      80,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "EH-REF-2026-777", offer.CustomerReference)
+
+	var storedOffer Offer
+	require.NoError(t, app.db.First(&storedOffer, "id = ?", offer.ID).Error)
+	require.Equal(t, "EH-REF-2026-777", storedOffer.CustomerReference)
+
+	var linked Opportunity
+	require.NoError(t, app.db.First(&linked, "id = ?", opportunity.ID).Error)
+	require.Equal(t, offer.ID, linked.OfferID)
+	require.Equal(t, "Quoted", linked.Stage)
+	require.Equal(t, "EH-REF-2026-777", linked.EHRef)
+	require.Equal(t, "Analyzer skid", linked.Title)
+}
+
+func TestSaveCostingAsOfferUsesFolderNumberAsOfferNumber(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	offer, err := app.SaveCostingAsOffer(CostingExportData{
+		Date:         "2026-05-02",
+		PreparedBy:   "Peri",
+		CustomerName: "BAPCO",
+		RfqReference: "EH-REF-2026-888",
+		FolderNumber: "26-26",
+		CostingId:    "CS-EH-REF-2026-888",
+		Subject:      "Analyzer skid",
+		QuoteType:    "Quotation",
+		VatRate:      10,
+		Subtotal:     100,
+		NetAmount:    100,
+		VAT:          10,
+		GrandTotal:   110,
+		TotalCost:    80,
+		Profit:       30,
+		LineItems: []CostingExportLineItem{
+			{
+				SlNo:           1,
+				Equipment:      "Analyzer",
+				Quantity:       1,
+				Currency:       "BHD",
+				SuggestedPrice: 100,
+				TotalPrice:     100,
+				TotalCost:      80,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "26-26", offer.OfferNumber)
+	require.Equal(t, 0, offer.RevisionNumber)
+}
+
+func TestUpdateOfferFullSavesEditableOfferNumberAndRevisionOne(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	now := time.Now()
+	offer := Offer{
+		Base:           Base{ID: uuid.New().String(), CreatedAt: now, UpdatedAt: now},
+		OfferNumber:    "TEMP-26",
+		RevisionNumber: 0,
+		CustomerName:   "BAPCO",
+		QuotationDate:  now.AddDate(0, 0, -1),
+		ValidityDate:   now.AddDate(0, 0, 30),
+		Stage:          "Quoted",
+		TotalValueBHD:  100,
+	}
+	require.NoError(t, app.db.Create(&offer).Error)
+
+	updated, err := app.UpdateOfferFull(offer.ID, OfferUpdateData{
+		OfferNumber:   "26-26",
+		CustomerName:  offer.CustomerName,
+		QuotationDate: offer.QuotationDate.Format("2006-01-02"),
+		ValidityDate:  offer.ValidityDate.Format("2006-01-02"),
+		PaymentTerms:  "Net 30",
+		Items:         []OfferUpdateItem{},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "26-26", updated.OfferNumber)
+	require.Equal(t, 1, updated.RevisionNumber)
+}
+
 func TestGetOpportunityLineItems_FallsBackToProductDetails(t *testing.T) {
 	app := setupTestApp(t)
 	migrateWorkflowRegressionTables(t, app)
@@ -965,6 +1105,7 @@ func TestUpdateOfferFull_AllowsSameDayValidityOnHeaderSave(t *testing.T) {
 func TestOfferPDFExportUsesSavedSubjectAndBody(t *testing.T) {
 	offer := Offer{
 		OfferNumber:        "44-26",
+		RevisionNumber:     1,
 		CustomerName:       "Awal Dairy Company W.L.L.",
 		QuotationDate:      time.Date(2026, 4, 27, 0, 0, 0, 0, time.UTC),
 		VatRate:            10,
@@ -989,6 +1130,7 @@ func TestOfferPDFExportUsesSavedSubjectAndBody(t *testing.T) {
 
 	require.Equal(t, "Sub: Revised pump package", exportData.Subject)
 	require.Equal(t, "Custom commercial opening body for this quote.", exportData.Body)
+	require.Equal(t, "44-26-R1", exportData.CostingId)
 	require.Equal(t, 7150.0, exportData.GrandTotal)
 }
 

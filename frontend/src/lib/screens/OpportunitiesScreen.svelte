@@ -8,7 +8,7 @@
     import {
         GetRFQs,
         GetPipelineOpportunities,
-        CreateRFQ,
+        CreateRFQWithReference,
         DeleteRFQ,
         DeleteRFQWithCascade,
         ListCustomers,
@@ -151,25 +151,26 @@
     }
 
     function normalizePipelineOpportunity(opp: any) {
-        const folderReference = opp.folder_number || opp.eh_ref || "";
+        const visibleReference = opp.eh_ref || opp.folder_number || "";
         const stage = normalizeStage(opp.stage);
         return {
             ...opp,
             client: opp.customer_name,
             customer: opp.customer_name,
-            project: buildOpportunityTitle(opp.customer_name, folderReference, opp.title || opp.folder_name || opp.folder_number),
-            project_name: buildOpportunityTitle(opp.customer_name, folderReference, opp.title || opp.folder_name || opp.folder_number),
+            project: buildOpportunityTitle(opp.customer_name, visibleReference, opp.title || opp.folder_name || opp.folder_number),
+            project_name: buildOpportunityTitle(opp.customer_name, visibleReference, opp.title || opp.folder_name || opp.folder_number),
             value: Number(opp.revenue_bhd) || 0,
             status: stage,
             stage,
-            rfq_number: opp.folder_number,
+            rfq_number: visibleReference,
+            rfq_ref: opp.eh_ref || "",
             year: parseYear(opp.year),
             _source: "pipeline",
         };
     }
 
     function normalizeRFQ(rfq: any) {
-        const reference = rfq.rfq_number || rfq.rfq_ref || "";
+        const reference = rfq.rfq_ref || rfq.rfq_number || "";
         const fallbackTitle = rfq.project || rfq.project_name || "Untitled";
         const stage = normalizeStage(rfq.stage || rfq.status);
         return {
@@ -383,6 +384,7 @@
             id: String(opportunity?.id || ""),
             customer_name: opportunity?.client || opportunity?.customer || "",
             folder_number: opportunity?.folder_number || opportunity?.rfq_number || "",
+            rfq_ref: opportunity?.rfq_ref || opportunity?.eh_ref || "",
             title: opportunity?.project || opportunity?.project_name || opportunity?.title || "",
         };
         if (pendingPayload?.id) {
@@ -404,9 +406,10 @@
 
         creating = true;
         try {
-            await CreateRFQ(
+            await CreateRFQWithReference(
                 createForm.customer,
                 createForm.project,
+                createForm.rfq_ref,
                 parseFloat(createForm.value) || 0,
                 createForm.notes,
             );
@@ -697,6 +700,11 @@
                 <div class="form-group">
                     <label class="label" for="create-opportunity-project">Project</label>
                     <input id="create-opportunity-project" type="text" bind:value={createForm.project} class="input" placeholder="Project name" required />
+                </div>
+
+                <div class="form-group">
+                    <label class="label" for="create-opportunity-reference">Reference ID</label>
+                    <input id="create-opportunity-reference" type="text" bind:value={createForm.rfq_ref} class="input" placeholder="Customer RFQ / enquiry ref" />
                 </div>
 
                 <div class="form-grid">

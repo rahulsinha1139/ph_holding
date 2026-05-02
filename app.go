@@ -1491,6 +1491,11 @@ func (a *App) ensureCrossModuleSchemaExtensions() {
 	// Keep division-aware finance/schema extensions consistent across startup,
 	// deployment audits, and test harnesses so note fields and company routing
 	// remain backed by real SQLite columns.
+	for _, rfqTable := range []string{"rfq_data", "rfq_datas"} {
+		if a.db.Migrator().HasTable(rfqTable) {
+			a.addColumnIfNotExists(rfqTable, "rfq_ref", "TEXT")
+		}
+	}
 	a.addColumnIfNotExists("opportunities", "product_details", "TEXT")
 	a.addColumnIfNotExists("opportunities", "division", "TEXT DEFAULT 'PH Trading'")
 	if a.hasColumn("opportunities", "division") {
@@ -4016,6 +4021,7 @@ func (a *App) ResolveSupplierIssue(issueID string, resolution string) error {
 type RFQData struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
 	RFQNumber string    `json:"rfq_number" gorm:"uniqueIndex;size:50"` // Business-friendly number like "1-26"
+	RFQRef    string    `json:"rfq_ref" gorm:"size:100"`               // Customer/supplier reference entered by the sales team
 	Client    string    `json:"client"`
 	Project   string    `json:"project"`
 	Value     float64   `json:"value"`
@@ -4057,6 +4063,7 @@ func (OpportunityComment) TableName() string { return "opportunity_comments" }
 type RFQUpdateRequest struct {
 	Client         string  `json:"client"`
 	Project        string  `json:"project"`
+	RFQRef         string  `json:"rfq_ref"`
 	Value          float64 `json:"value"`
 	Notes          string  `json:"notes"`
 	Status         string  `json:"status"`
@@ -4068,6 +4075,15 @@ type RFQUpdateRequest struct {
 
 // CreateRFQ creates a new RFQ from frontend form
 func (a *App) CreateRFQ(client, project string, value float64, notes string) (*RFQData, error) {
+	return a.createRFQ(client, project, "", value, notes)
+}
+
+// CreateRFQWithReference creates a new RFQ/opportunity while preserving the user-entered reference.
+func (a *App) CreateRFQWithReference(client, project, reference string, value float64, notes string) (*RFQData, error) {
+	return a.createRFQ(client, project, reference, value, notes)
+}
+
+func (a *App) createRFQ(client, project, reference string, value float64, notes string) (*RFQData, error) {
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
@@ -4078,8 +4094,15 @@ func (a *App) CreateRFQ(client, project string, value float64, notes string) (*R
 		return nil, err
 	}
 
+	userReference := limitReferenceRunes(reference, 100)
+	rfqNumber := a.generateRFQNumber()
+	if userReference != "" {
+		rfqNumber = limitReferenceRunes(userReference, 50)
+	}
+
 	rfq := &RFQData{
-		RFQNumber: a.generateRFQNumber(),
+		RFQNumber: rfqNumber,
+		RFQRef:    userReference,
 		Client:    client,
 		Project:   project,
 		Value:     value,
@@ -4096,6 +4119,18 @@ func (a *App) CreateRFQ(client, project string, value float64, notes string) (*R
 
 	log.Printf("✅ Created RFQ #%d: %s - %s (%.2f BHD)", rfq.ID, client, project, value)
 	return rfq, nil
+}
+
+func limitReferenceRunes(value string, maxRunes int) string {
+	trimmed := strings.TrimSpace(value)
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(trimmed)
+	if len(runes) <= maxRunes {
+		return trimmed
+	}
+	return string(runes[:maxRunes])
 }
 
 // GetRFQs retrieves all RFQs with optional pagination
@@ -5412,6 +5447,11 @@ func (a *App) UpdateRFQ(id uint, updates RFQUpdateRequest) (*RFQData, error) {
 			updates.Project = updates.Project[:500]
 		}
 		rfq.Project = updates.Project
+	}
+	if strings.TrimSpace(updates.RFQRef) != "" {
+		ref := limitReferenceRunes(updates.RFQRef, 100)
+		rfq.RFQRef = ref
+		rfq.RFQNumber = limitReferenceRunes(ref, 50)
 	}
 	if updates.Value > 0 {
 		rfq.Value = updates.Value
@@ -6743,6 +6783,7 @@ type OfferUpdateItem struct {
 
 // OfferUpdateData represents data for creating or updating an offer
 type OfferUpdateData struct {
+	OfferNumber       string            `json:"offer_number"`
 	CustomerID        string            `json:"customer_id"`
 	CustomerName      string            `json:"customer_name"`
 	Division          string            `json:"division"`
@@ -6819,6 +6860,46 @@ func commercialLineTotal(quantity, unitPrice, totalPrice float64) float64 {
 		return quantity * unitPrice
 	}
 	return 0
+}
+
+func cleanOfferNumber(value string) string {
+	return limitReferenceRunes(value, 50)
+}
+
+func desiredOfferNumberFromCosting(data CostingExportData, fallback string) string {
+	return cleanOfferNumber(firstNonEmptyString(data.FolderNumber, data.CostingId, data.RfqReference, data.OfferNumber, fallback))
+}
+
+func offerNumberWithRevision(offerNumber string, revisionNumber int) string {
+	base := strings.TrimSpace(offerNumber)
+	if base == "" || revisionNumber <= 0 {
+		return base
+	}
+	hasRevisionSuffix := regexp.MustCompile(`(?i)(?:[-_\s]*(?:rev\.?|r)\s*\d+)$`).MatchString(base)
+	if hasRevisionSuffix {
+		return base
+	}
+	return fmt.Sprintf("%s-R%d", base, revisionNumber)
+}
+
+func (a *App) ensureOfferNumberAvailable(tx *gorm.DB, offerNumber, excludeOfferID string) error {
+	if strings.TrimSpace(offerNumber) == "" {
+		return fmt.Errorf("offer number is required")
+	}
+
+	query := tx.Model(&Offer{}).Where("offer_number = ?", strings.TrimSpace(offerNumber))
+	if strings.TrimSpace(excludeOfferID) != "" {
+		query = query.Where("id <> ?", strings.TrimSpace(excludeOfferID))
+	}
+
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("offer number %q already exists; use the correct unique folder/reference number", offerNumber)
+	}
+	return nil
 }
 
 func shouldConvertForeignCommercialSubtotal(rawSubtotal, convertedSubtotal, totalCost float64) bool {
@@ -6958,10 +7039,6 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 		}
 	}
 
-	// Generate offer number: XX-YY format (matching OneDrive folder convention)
-	// Example: 50-25, 51-25, etc.
-	offerNumber := a.generateOfferNumber()
-
 	// Parse dates
 	quotationDate := time.Now()
 	if data.Date != "" {
@@ -7004,11 +7081,16 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 	if data.OpportunityId > 0 {
 		rfqIDStr = fmt.Sprintf("%d", data.OpportunityId)
 	}
+	customerReference := costingUserReference(data)
+	offerNumber := desiredOfferNumberFromCosting(data, "")
+	if offerNumber == "" {
+		offerNumber = a.generateOfferNumber()
+	}
 
 	offer := &Offer{
 		Base:            Base{ID: uuid.New().String()},
 		OfferNumber:     offerNumber,
-		RevisionNumber:  1,
+		RevisionNumber:  0,
 		RFQID:           rfqIDStr, // Link to RFQ (P0 Fix: string type)
 		CustomerID:      customerID,
 		CustomerName:    data.CustomerName,
@@ -7024,7 +7106,7 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 		DeliveryWeeks:      data.EstDelivery,
 		CountryOfOrigin:    data.CountryOfOrigin,
 		IssuedBy:           data.PreparedBy,
-		CustomerReference:  data.RfqReference,
+		CustomerReference:  customerReference,
 		AttentionPerson:    data.ContactPerson,
 		AttentionCompany:   data.CustomerName,
 		TermsAndConditions: data.TermsAndConditions,
@@ -7062,7 +7144,16 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 				return fmt.Errorf("an active offer already exists for this RFQ (RFQ #%d)", data.OpportunityId)
 			}
 		}
-		return tx.Create(offer).Error
+		if err := a.ensureOfferNumberAvailable(tx, offer.OfferNumber, ""); err != nil {
+			return err
+		}
+		if err := tx.Create(offer).Error; err != nil {
+			return err
+		}
+		if err := a.syncRFQReferenceFromCosting(tx, data.OpportunityId, customerReference); err != nil {
+			log.Printf("⚠️ Warning: Failed to sync RFQ #%d reference from costing: %v", data.OpportunityId, err)
+		}
+		return nil
 	}); err != nil {
 		log.Printf("❌ Failed to save offer: %v", err)
 		return nil, fmt.Errorf("failed to save offer: %v", err)
@@ -7088,10 +7179,36 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 	}
 
 	// Link the opportunity record to this offer (removes it from pipeline view)
-	a.linkOfferToOpportunity(offer, data.FolderNumber, data.CustomerName, "Quoted")
+	a.linkOfferToOpportunity(offer, data.OpportunityRecordID, data.FolderNumber, customerReference, data.CustomerName, data.ProjectName, "Quoted")
 
 	log.Printf("✅ Created Offer %s for %s (%.3f BHD, %d items)", offerNumber, data.CustomerName, data.GrandTotal, len(data.LineItems))
 	return offer, nil
+}
+
+func (a *App) syncRFQReferenceFromCosting(tx *gorm.DB, rfqID uint, reference string) error {
+	if rfqID == 0 || strings.TrimSpace(reference) == "" {
+		return nil
+	}
+
+	ref := limitReferenceRunes(reference, 100)
+	updates := map[string]interface{}{
+		"rfq_ref": ref,
+	}
+
+	rfqNumber := limitReferenceRunes(ref, 50)
+	if rfqNumber != "" {
+		var duplicateCount int64
+		if err := tx.Model(&RFQData{}).
+			Where("rfq_number = ? AND id <> ?", rfqNumber, rfqID).
+			Count(&duplicateCount).Error; err != nil {
+			return err
+		}
+		if duplicateCount == 0 {
+			updates["rfq_number"] = rfqNumber
+		}
+	}
+
+	return tx.Model(&RFQData{}).Where("id = ?", rfqID).Updates(updates).Error
 }
 
 func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error) {
@@ -7164,6 +7281,10 @@ func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error)
 	if totalCost <= 0 {
 		totalCost = sumOfferItemCost(items)
 	}
+	customerReference := costingUserReference(data)
+	if desiredOfferNumber := desiredOfferNumberFromCosting(data, offer.OfferNumber); desiredOfferNumber != "" {
+		offer.OfferNumber = desiredOfferNumber
+	}
 	margin := 0.0
 	if netAmount > 0 {
 		margin = ((netAmount - totalCost) / netAmount) * 100
@@ -7184,7 +7305,7 @@ func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error)
 	offer.DeliveryWeeks = strings.TrimSpace(data.EstDelivery)
 	offer.CountryOfOrigin = strings.TrimSpace(data.CountryOfOrigin)
 	offer.IssuedBy = strings.TrimSpace(data.PreparedBy)
-	offer.CustomerReference = strings.TrimSpace(data.RfqReference)
+	offer.CustomerReference = customerReference
 	offer.AttentionPerson = strings.TrimSpace(data.ContactPerson)
 	offer.AttentionCompany = strings.TrimSpace(data.CustomerName)
 	offer.TermsAndConditions = strings.TrimSpace(data.TermsAndConditions)
@@ -7209,7 +7330,12 @@ func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error)
 	offer.RevisionNumber++
 
 	opportunityUpdates := map[string]interface{}{}
-	opportunityUpdates["folder_number"] = strings.TrimSpace(data.FolderNumber)
+	if strings.TrimSpace(data.FolderNumber) != "" {
+		opportunityUpdates["folder_number"] = strings.TrimSpace(data.FolderNumber)
+	}
+	if customerReference != "" {
+		opportunityUpdates["eh_ref"] = customerReference
+	}
 	if strings.TrimSpace(data.ProjectName) != "" {
 		opportunityUpdates["title"] = strings.TrimSpace(data.ProjectName)
 	} else if strings.TrimSpace(data.Subject) != "" {
@@ -7226,11 +7352,19 @@ func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error)
 		if err := tx.Create(&items).Error; err != nil {
 			return fmt.Errorf("failed to save offer items: %w", err)
 		}
+		if err := a.ensureOfferNumberAvailable(tx, offer.OfferNumber, offer.ID); err != nil {
+			return fmt.Errorf("failed to update offer: %w", err)
+		}
 		if err := tx.Save(&offer).Error; err != nil {
 			return fmt.Errorf("failed to update offer: %w", err)
 		}
-		if err := tx.Model(&Opportunity{}).Where("offer_id = ?", offer.ID).Updates(opportunityUpdates).Error; err != nil {
-			log.Printf("⚠️ Failed to sync linked opportunity metadata for offer %s: %v", offer.OfferNumber, err)
+		if err := a.syncRFQReferenceFromCosting(tx, data.OpportunityId, customerReference); err != nil {
+			log.Printf("⚠️ Warning: Failed to sync RFQ #%d reference from costing update: %v", data.OpportunityId, err)
+		}
+		if len(opportunityUpdates) > 0 {
+			if err := tx.Model(&Opportunity{}).Where("offer_id = ?", offer.ID).Updates(opportunityUpdates).Error; err != nil {
+				log.Printf("⚠️ Failed to sync linked opportunity metadata for offer %s: %v", offer.OfferNumber, err)
+			}
 		}
 		return nil
 	}); err != nil {
@@ -7242,41 +7376,73 @@ func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error)
 	return &offer, nil
 }
 
-// linkOfferToOpportunity finds the matching opportunity record and updates its offer_id and stage.
+// linkOfferToOpportunity finds the matching opportunity record and updates its offer_id, stage, and visible reference.
 // This removes the opportunity from the active pipeline view once an offer has been created.
-func (a *App) linkOfferToOpportunity(offer *Offer, folderNumber, customerName, newStage string) {
+func (a *App) linkOfferToOpportunity(offer *Offer, opportunityRecordID, folderNumber, reference, customerName, projectName, newStage string) {
 	if offer == nil || a.db == nil {
 		return
 	}
 
-	// Strategy 1: Match by folder_number (most precise — from costing sheet context)
-	if strings.TrimSpace(folderNumber) != "" {
+	cleanFolder := strings.TrimSpace(folderNumber)
+	cleanReference := strings.TrimSpace(reference)
+	cleanCustomer := strings.TrimSpace(customerName)
+	cleanProject := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(projectName), "Sub:"))
+	buildUpdates := func(includeFolder bool) map[string]interface{} {
+		updates := map[string]interface{}{
+			"offer_id": offer.ID,
+			"stage":    newStage,
+		}
+		if includeFolder && cleanFolder != "" {
+			updates["folder_number"] = cleanFolder
+		}
+		if cleanReference != "" {
+			updates["eh_ref"] = cleanReference
+		}
+		if cleanCustomer != "" {
+			updates["customer_name"] = cleanCustomer
+		}
+		if cleanProject != "" {
+			updates["title"] = cleanProject
+		}
+		return updates
+	}
+
+	// Strategy 0: Match by canonical opportunity UUID from the costing sheet launch.
+	if opportunityID := strings.TrimSpace(opportunityRecordID); opportunityID != "" {
 		result := a.db.Model(&Opportunity{}).
-			Where("folder_number = ? AND (offer_id IS NULL OR offer_id = '')", strings.TrimSpace(folderNumber)).
-			Updates(map[string]interface{}{
-				"offer_id": offer.ID,
-				"stage":    newStage,
-			})
+			Where("id = ? AND (offer_id IS NULL OR offer_id = '' OR offer_id = ?)", opportunityID, offer.ID).
+			Updates(buildUpdates(cleanFolder != ""))
+		if result.Error != nil {
+			log.Printf("⚠️ Failed to link offer %s to opportunity id=%s: %v", offer.OfferNumber, opportunityID, result.Error)
+		}
 		if result.RowsAffected > 0 {
-			log.Printf("✅ Linked offer %s to opportunity (folder_number=%s, stage→%s)", offer.OfferNumber, folderNumber, newStage)
+			log.Printf("✅ Linked offer %s to opportunity (id=%s, stage→%s)", offer.OfferNumber, opportunityID, newStage)
+			return
+		}
+	}
+
+	// Strategy 1: Match by folder_number (most precise — from costing sheet context)
+	if cleanFolder != "" {
+		result := a.db.Model(&Opportunity{}).
+			Where("folder_number = ? AND (offer_id IS NULL OR offer_id = '')", cleanFolder).
+			Updates(buildUpdates(false))
+		if result.RowsAffected > 0 {
+			log.Printf("✅ Linked offer %s to opportunity (folder_number=%s, stage→%s)", offer.OfferNumber, cleanFolder, newStage)
 			return
 		}
 	}
 
 	// Strategy 2: Match by customer_name + no existing offer (least precise, single match only)
-	if strings.TrimSpace(customerName) != "" {
+	if cleanCustomer != "" {
 		var count int64
 		a.db.Model(&Opportunity{}).
-			Where("customer_name LIKE ? ESCAPE '\\' AND (offer_id IS NULL OR offer_id = '')", "%"+escapeLikeWildcards(customerName)+"%").
+			Where("customer_name LIKE ? ESCAPE '\\' AND (offer_id IS NULL OR offer_id = '')", "%"+escapeLikeWildcards(cleanCustomer)+"%").
 			Count(&count)
 		if count == 1 {
 			a.db.Model(&Opportunity{}).
-				Where("customer_name LIKE ? ESCAPE '\\' AND (offer_id IS NULL OR offer_id = '')", "%"+escapeLikeWildcards(customerName)+"%").
-				Updates(map[string]interface{}{
-					"offer_id": offer.ID,
-					"stage":    newStage,
-				})
-			log.Printf("✅ Linked offer %s to opportunity (customer_name=%s, stage→%s)", offer.OfferNumber, customerName, newStage)
+				Where("customer_name LIKE ? ESCAPE '\\' AND (offer_id IS NULL OR offer_id = '')", "%"+escapeLikeWildcards(cleanCustomer)+"%").
+				Updates(buildUpdates(false))
+			log.Printf("✅ Linked offer %s to opportunity (customer_name=%s, stage→%s)", offer.OfferNumber, cleanCustomer, newStage)
 		}
 	}
 }
@@ -7333,9 +7499,12 @@ func (a *App) GetAllOffers() ([]Offer, error) {
 
 	for i := range offers {
 		var opp Opportunity
-		if err := a.db.Select("folder_number, title").Where("offer_id = ?", offers[i].ID).First(&opp).Error; err == nil {
+		if err := a.db.Select("folder_number, title, eh_ref").Where("offer_id = ?", offers[i].ID).First(&opp).Error; err == nil {
 			offers[i].FolderNumber = opp.FolderNumber
 			offers[i].ProjectName = opp.Title
+			if strings.TrimSpace(offers[i].CustomerReference) == "" {
+				offers[i].CustomerReference = opp.EHRef
+			}
 		}
 	}
 
@@ -7626,6 +7795,9 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 	}
 
 	// Update header fields
+	if strings.TrimSpace(data.OfferNumber) != "" {
+		offer.OfferNumber = cleanOfferNumber(data.OfferNumber)
+	}
 	if data.CustomerName != "" {
 		offer.CustomerName = data.CustomerName
 	}
@@ -7686,6 +7858,9 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 	opportunityUpdates := map[string]interface{}{}
 	if strings.TrimSpace(data.FolderNumber) != "" {
 		opportunityUpdates["folder_number"] = strings.TrimSpace(data.FolderNumber)
+	}
+	if strings.TrimSpace(data.CustomerReference) != "" {
+		opportunityUpdates["eh_ref"] = strings.TrimSpace(data.CustomerReference)
 	}
 	if strings.TrimSpace(data.ProjectName) != "" {
 		opportunityUpdates["title"] = strings.TrimSpace(data.ProjectName)
@@ -7749,6 +7924,9 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 			}
 		}
 
+		if err := a.ensureOfferNumberAvailable(tx, offer.OfferNumber, offer.ID); err != nil {
+			return fmt.Errorf("failed to update offer: %w", err)
+		}
 		if err := tx.Save(&offer).Error; err != nil {
 			return fmt.Errorf("failed to update offer: %w", err)
 		}
@@ -17069,8 +17247,9 @@ type CostingExportData struct {
 	ProfitPercent float64 `json:"profitPercent"`
 
 	// Linked Opportunity
-	OpportunityId uint   `json:"opportunityId"`
-	ProjectName   string `json:"projectName"`
+	OpportunityId       uint   `json:"opportunityId"`
+	OpportunityRecordID string `json:"opportunityRecordId"`
+	ProjectName         string `json:"projectName"`
 
 	// Terms and Conditions (printed on separate page)
 	TermsAndConditions string `json:"termsAndConditions"`
@@ -17363,6 +17542,10 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
+func costingUserReference(data CostingExportData) string {
+	return limitReferenceRunes(firstNonEmptyString(data.RfqReference, data.FolderNumber, data.CostingId), 100)
+}
+
 func roundTo3(value float64) float64 {
 	return math.Round(value*1000) / 1000
 }
@@ -17546,10 +17729,11 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 	}
 
 	infoRows := [][4]string{
-		{"Company", data.CustomerName, "Division", division},
-		{"Attention", data.ContactPerson, "Delivery", strings.TrimSpace(data.DeliveryTerms)},
+		{"Company", data.CustomerName, "Prepared By", strings.TrimSpace(data.PreparedBy)},
+		{"Attention", data.ContactPerson, "Division", division},
 		{"Subject", subjectLine, "Payment", strings.TrimSpace(data.PaymentTerms)},
-		{"RFQ Ref", data.RfqReference, "Est. Delivery", strings.TrimSpace(data.EstDelivery)},
+		{"RFQ Ref", data.RfqReference, "Delivery", strings.TrimSpace(data.DeliveryTerms)},
+		{"Folder No", data.FolderNumber, "Est. Delivery", strings.TrimSpace(data.EstDelivery)},
 	}
 	infoY := currentY
 	for _, row := range infoRows {
@@ -17755,15 +17939,18 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 	// T&C must immediately follow the commercial line items; annexure stays last.
 	if data.TermsAndConditions != "" {
 		pdf.AddPage()
-		// Add letterhead to T&C page
-		if letterheadPath != "" {
-			if _, err := os.Stat(letterheadPath); err == nil {
-				pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
-			}
-		}
+		drawCostingLetterhead()
 
 		// T&C Title
 		tcY := 90.0
+		ensureTermsSpace := func(required float64) {
+			if tcY+required <= 760 {
+				return
+			}
+			pdf.AddPage()
+			drawCostingLetterhead()
+			tcY = 90.0
+		}
 		if hasBold {
 			pdf.SetFont("mainBold", "", 14)
 		} else {
@@ -17786,24 +17973,15 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 		for _, para := range paragraphs {
 			para = strings.TrimSpace(para)
 			if para == "" {
+				ensureTermsSpace(6)
 				tcY += 6 // Extra space for blank lines between sections
 				continue
-			}
-
-			// Check for new page
-			if tcY > 760 {
-				pdf.AddPage()
-				if letterheadPath != "" {
-					if _, err := os.Stat(letterheadPath); err == nil {
-						pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
-					}
-				}
-				tcY = 90.0
 			}
 
 			// Check if this is a numbered point header (e.g., "1. QUOTATION VALIDITY")
 			isHeader := len(para) > 2 && para[0] >= '1' && para[0] <= '9' && para[1] == '.'
 			if isHeader {
+				ensureTermsSpace(20)
 				tcY += 8 // Extra space before numbered sections
 				if hasBold {
 					pdf.SetFont("mainBold", "", 9)
@@ -17815,15 +17993,7 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 			// Wrap long paragraphs to fit page width
 			wrappedLines := wrapText(para, 95)
 			for _, line := range wrappedLines {
-				if tcY > 760 {
-					pdf.AddPage()
-					if letterheadPath != "" {
-						if _, err := os.Stat(letterheadPath); err == nil {
-							pdf.Image(letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
-						}
-					}
-					tcY = 90.0
-				}
+				ensureTermsSpace(12)
 				pdf.SetXY(leftMargin, tcY)
 				pdf.Cell(nil, line)
 				tcY += 12
@@ -17833,6 +18003,22 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 			if isHeader {
 				pdf.SetFont("main", "", 9)
 			}
+		}
+
+		preparedBy := strings.TrimSpace(data.PreparedBy)
+		if preparedBy != "" {
+			ensureTermsSpace(62)
+			tcY += 20
+			pdf.SetFont("main", "", 9)
+			pdf.SetXY(leftMargin, tcY)
+			pdf.Cell(nil, "For "+division)
+			tcY += 24
+			pdf.SetLineWidth(0.4)
+			pdf.Line(leftMargin, tcY, leftMargin+190, tcY)
+			pdf.SetXY(leftMargin, tcY+8)
+			pdf.Cell(nil, "Prepared by: "+preparedBy)
+			pdf.SetXY(leftMargin+260, tcY+8)
+			pdf.Cell(nil, "Signature")
 		}
 	}
 

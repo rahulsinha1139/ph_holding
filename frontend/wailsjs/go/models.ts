@@ -3118,6 +3118,7 @@ export namespace main {
 	    profit: number;
 	    profitPercent: number;
 	    opportunityId: number;
+	    opportunityRecordId: string;
 	    projectName: string;
 	    termsAndConditions: string;
 	
@@ -3167,6 +3168,7 @@ export namespace main {
 	        this.profit = source["profit"];
 	        this.profitPercent = source["profitPercent"];
 	        this.opportunityId = source["opportunityId"];
+	        this.opportunityRecordId = source["opportunityRecordId"];
 	        this.projectName = source["projectName"];
 	        this.termsAndConditions = source["termsAndConditions"];
 	    }
@@ -9755,6 +9757,7 @@ export namespace main {
 	    }
 	}
 	export class OfferUpdateData {
+	    offer_number: string;
 	    customer_id: string;
 	    customer_name: string;
 	    division: string;
@@ -9787,6 +9790,7 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.offer_number = source["offer_number"];
 	        this.customer_id = source["customer_id"];
 	        this.customer_name = source["customer_name"];
 	        this.division = source["division"];
@@ -11609,6 +11613,7 @@ export namespace main {
 	export class RFQData {
 	    id: number;
 	    rfq_number: string;
+	    rfq_ref: string;
 	    client: string;
 	    project: string;
 	    value: number;
@@ -11630,6 +11635,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.rfq_number = source["rfq_number"];
+	        this.rfq_ref = source["rfq_ref"];
 	        this.client = source["client"];
 	        this.project = source["project"];
 	        this.value = source["value"];
@@ -11665,6 +11671,7 @@ export namespace main {
 	export class RFQUpdateRequest {
 	    client: string;
 	    project: string;
+	    rfq_ref: string;
 	    value: number;
 	    notes: string;
 	    status: string;
@@ -11681,6 +11688,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.client = source["client"];
 	        this.project = source["project"];
+	        this.rfq_ref = source["rfq_ref"];
 	        this.value = source["value"];
 	        this.notes = source["notes"];
 	        this.status = source["status"];

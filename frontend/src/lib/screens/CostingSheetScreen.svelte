@@ -178,7 +178,19 @@
     }
 
     function getOpportunityDisplayReference(opp: any): string {
-        return opp?.folder_number || opp?.rfq_number || opp?.eh_ref || "Manual";
+        return opp?.rfq_ref || opp?.eh_ref || opp?.folder_number || opp?.rfq_number || "Manual";
+    }
+
+    function getOpportunityUserReference(opp: any): string {
+        return String(opp?.rfq_ref || opp?.eh_ref || opp?.customer_reference || opp?.rfqReference || opp?.folder_number || opp?.rfq_number || '').trim();
+    }
+
+    function getOpportunityFolderReference(opp: any): string {
+        return String(opp?.folder_number || (opp?._source === 'rfq' ? opp?.rfq_number : '') || '').trim();
+    }
+
+    function getSelectedOpportunityRecordId(): string {
+        return selectedOpportunity?._source === 'pipeline' ? String(selectedOpportunity.id || '') : '';
     }
 
     function getOpportunityValue(opp: any): number {
@@ -866,10 +878,13 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                 currentCostingId = null;
             }
 
-            // Pre-fill only customer/division context from opportunity data.
-            // Folder, RFQ reference, costing ID, and subject stay blank/user-entered.
+            // Pre-fill the commercial header from the selected opportunity, including
+            // the user-facing reference so it survives the costing -> offer flow.
             const customerName = selectedOpportunity.client || selectedOpportunity.customer || '';
             const projectName = selectedOpportunity.project || selectedOpportunity.project_name || '';
+            const opportunityReference = getOpportunityUserReference(selectedOpportunity);
+            const opportunityFolder = getOpportunityFolderReference(selectedOpportunity);
+            const opportunitySubject = selectedOpportunity.title || selectedOpportunity.project_name || selectedOpportunity.project || '';
 
             // Find matching customer in customers list
             const matchedCustomer = findMatchingCustomerByName(customerName);
@@ -881,10 +896,10 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     customerName: matchedCustomer?.business_name || customerName,
                     customerId: matchedCustomer?.id || '',
                     contactPerson: matchedCustomer?.contact_person || matchedCustomer?.primary_contact || '',
-                    rfqReference: '',
-                    folderNumber: '',
-                    costingId: '',
-                    subject: '',
+                    rfqReference: opportunityReference,
+                    folderNumber: opportunityFolder,
+                    costingId: opportunityReference || opportunityFolder,
+                    subject: opportunitySubject,
                     division: nextDivision,
                     deliveryTerms: normaliseDeliveryTermsForDivision(header.deliveryTerms, nextDivision),
                 };
@@ -1069,11 +1084,11 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
 
     function findOpportunityFromPendingLaunch(pending: any) {
         const pendingId = String(pending?.id || '').trim();
-        const pendingReference = String(pending?.folder_number || pending?.rfq_number || pending?.eh_ref || '').trim();
+        const pendingReference = String(pending?.rfq_ref || pending?.eh_ref || pending?.folder_number || pending?.rfq_number || '').trim();
         const pendingCustomer = String(pending?.customer_name || pending?.client || pending?.customer || '').trim();
         return opportunities.find((opp: any) => {
             const oppId = String(opp?.id || '').trim();
-            const oppReference = String(opp?.folder_number || opp?.rfq_number || opp?.eh_ref || '').trim();
+            const oppReference = getOpportunityUserReference(opp);
             if (pendingId && oppId === pendingId) return true;
             if (pendingReference && oppReference && oppReference === pendingReference) return true;
             return Boolean(pendingCustomer && namesRepresentSameParty(opp?.client || opp?.customer || opp?.customer_name || '', pendingCustomer));
@@ -1286,6 +1301,10 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     // ========================================
     function buildExportData() {
         recalculateLineItems();
+        const opportunityReference = getOpportunityUserReference(selectedOpportunity);
+        const rfqReference = header.rfqReference || opportunityReference;
+        const folderNumber = header.folderNumber || getOpportunityFolderReference(selectedOpportunity);
+        const costingId = header.costingId || rfqReference || folderNumber;
 
         return {
             division: header.division,
@@ -1297,9 +1316,9 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             customerId: header.customerId,
             customerName: header.customerName,
             contactPerson: header.contactPerson,
-            rfqReference: header.rfqReference,
-            folderNumber: header.folderNumber,
-            costingId: header.costingId,
+            rfqReference,
+            folderNumber,
+            costingId,
             subject: header.subject,
             estDelivery: header.estDelivery,
             deliveryTerms: normaliseDeliveryTermsForDivision(header.deliveryTerms, header.division),
@@ -1363,7 +1382,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             profit: toFiniteNumber(profit),
             profitPercent: toFiniteNumber(profitPercent),
             opportunityId: getSelectedRFQId(),
-            projectName: selectedOpportunity?.project || selectedOpportunity?.project_name || '',
+            opportunityRecordId: getSelectedOpportunityRecordId(),
+            projectName: selectedOpportunity?.title || selectedOpportunity?.project_name || selectedOpportunity?.project || '',
             body: quotationBody,
             termsAndConditions: termsAndConditions,
             quoteType: header.quoteType || 'Quotation',

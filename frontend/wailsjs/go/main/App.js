@@ -542,6 +542,10 @@ export function CreateRFQ(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CreateRFQ'](arg1, arg2, arg3, arg4);
 }
 
+export function CreateRFQWithReference(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['CreateRFQWithReference'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function CreateRecurringExpense(arg1) {
   return window['go']['main']['App']['CreateRecurringExpense'](arg1);
 }

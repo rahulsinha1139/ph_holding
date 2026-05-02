@@ -277,6 +277,8 @@ export function CreateQuickCapture(arg1:string,arg2:string,arg3:string,arg4:stri
 
 export function CreateRFQ(arg1:string,arg2:string,arg3:number,arg4:string):Promise<main.RFQData>;
 
+export function CreateRFQWithReference(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string):Promise<main.RFQData>;
+
 export function CreateRecurringExpense(arg1:main.RecurringExpense):Promise<main.RecurringExpense>;
 
 export function CreateReportDraft(arg1:string,arg2:string,arg3:Record<string, any>):Promise<string>;

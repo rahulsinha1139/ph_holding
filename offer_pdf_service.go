@@ -62,9 +62,12 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	}
 
 	var linkedOpportunity Opportunity
-	if err := a.db.Select("folder_number, title").Where("offer_id = ?", offer.ID).First(&linkedOpportunity).Error; err == nil {
+	if err := a.db.Select("folder_number, title, eh_ref").Where("offer_id = ?", offer.ID).First(&linkedOpportunity).Error; err == nil {
 		offer.FolderNumber = linkedOpportunity.FolderNumber
 		offer.ProjectName = linkedOpportunity.Title
+		if strings.TrimSpace(offer.CustomerReference) == "" {
+			offer.CustomerReference = linkedOpportunity.EHRef
+		}
 	}
 
 	exportData := buildCostingExportDataFromOffer(offer, customer, customerContact)
@@ -169,7 +172,7 @@ func buildCostingExportDataFromOffer(offer Offer, customer CustomerMaster, custo
 		ContactPerson:      contactPerson,
 		RfqReference:       strings.TrimSpace(offer.CustomerReference),
 		FolderNumber:       strings.TrimSpace(offer.FolderNumber),
-		CostingId:          strings.TrimSpace(offer.OfferNumber),
+		CostingId:          offerNumberWithRevision(offer.OfferNumber, offer.RevisionNumber),
 		Subject:            subject,
 		EstDelivery:        strings.TrimSpace(offer.DeliveryWeeks),
 		DeliveryTerms:      strings.TrimSpace(offer.DeliveryTerms),
