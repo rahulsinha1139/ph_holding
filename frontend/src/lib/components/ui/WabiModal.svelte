@@ -87,10 +87,11 @@
     position: fixed;
     inset: 0;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
-    padding: clamp(14px, 2vw, 24px);
-    z-index: 1000;
+    padding: calc(var(--header-height, 56px) + 24px) clamp(14px, 2vw, 24px) 24px;
+    overflow-y: auto;
+    z-index: 10000;
   }
 
   .modal-backdrop {
@@ -115,7 +116,8 @@
     border: 1px solid rgba(0, 0, 0, 0.08);
     border-radius: 18px;
     width: 100%;
-    max-height: calc(100vh - 48px);
+    max-height: calc(100vh - var(--header-height, 56px) - 48px);
+    margin: 0 auto;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -189,5 +191,16 @@
   :global(.modal-container .card:hover) {
     transform: none !important;
     box-shadow: var(--shadow-sm) !important;
+  }
+
+  @media (max-width: 720px) {
+    .modal-overlay {
+      align-items: center;
+      padding: 16px;
+    }
+
+    .modal-container {
+      max-height: calc(100vh - 32px);
+    }
   }
 </style>

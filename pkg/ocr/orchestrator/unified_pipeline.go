@@ -92,13 +92,10 @@ func DefaultUnifiedPipelineConfig() *UnifiedPipelineConfig {
 		BlueInkBoost:    true,
 		RedInkBoost:     true,
 
-		// Asymmetrica Runtime OCR (PRIMARY — VPS asymm-engine, formerly Fly.io).
-		// Default URL points at the Caddy-proxied asymm-engine on the VPS.
-		// Override via ASYMM_ENGINE_URL (or legacy FLY_OCR_URL) env var.
-		// Auth token from ASYMM_SERVICE_TOKEN env var — REQUIRED in production.
+		// Fly.io OCR (PRIMARY)
 		EnableFlyOCR: true,
-		FlyAPIURL:    "https://api.asymmetrica.ai/engine",
-		FlyAPIKey:    "", // picked up from ASYMM_SERVICE_TOKEN in NewFlyOCRProcessor
+		FlyAPIURL:    "https://asymmetrica-runtime.fly.dev",
+		FlyAPIKey:    "", // Optional - set via env var
 		FlyTimeout:   60 * time.Second,
 
 		// Florence-2 (FALLBACK)

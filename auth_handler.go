@@ -464,9 +464,7 @@ func (am *AuthManager) startCallbackServer() error {
 // stopCallbackServer shuts down the callback server
 func (am *AuthManager) stopCallbackServer() {
 	if am.httpServer != nil {
-		if err := am.httpServer.Close(); err != nil {
-			log.Printf("WARNING: failed to close callback server: %v", err)
-		}
+		am.httpServer.Close()
 		am.httpServer = nil
 		log.Println("🛑 Callback server stopped")
 	}
@@ -914,6 +912,7 @@ func openBrowser(url string) {
 	default: // Linux and others
 		cmd = exec.Command("xdg-open", url)
 	}
+	suppressCommandWindow(cmd)
 
 	if err := cmd.Start(); err != nil {
 		log.Printf("⚠️ Failed to open browser: %v", err)

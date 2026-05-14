@@ -128,6 +128,7 @@ func (a *App) RecordSupplierPayment(invoiceID string, amount float64, currency, 
 		Reference:         reference,
 		SupplierName:      invoice.SupplierName,  // Populate for UI display
 		InvoiceNumber:     invoice.InvoiceNumber, // Populate for UI display
+		Division:          a.resolveSupplierInvoiceDivision(invoice),
 	}
 
 	if err := tx.Create(&payment).Error; err != nil {
@@ -347,6 +348,7 @@ func (a *App) UpdateSupplierPayment(id string, payment SupplierPayment) (*Suppli
 
 	// The max allowed is invoice total minus what others have paid
 	maxAllowedAmount := invoice.TotalBHD - totalPaidExcludingCurrent + FloatingPointTolerance
+	payment.Division = a.resolveSupplierInvoiceDivision(invoice)
 	if payment.AmountBHD > maxAllowedAmount {
 		return nil, newError("INVALID_AMOUNT",
 			fmt.Sprintf("Payment amount %.3f BHD exceeds available balance %.3f BHD (invoice total %.3f - other payments %.3f)",
@@ -402,6 +404,9 @@ func (a *App) UpdateSupplierPayment(id string, payment SupplierPayment) (*Suppli
 // DeleteSupplierPayment deletes a supplier payment by ID
 // P3 FIX: Added missing CRUD operation for consistency
 func (a *App) DeleteSupplierPayment(id string) error {
+	if ok, err := a.guardDeleteOrRequest("supplier_payments:delete", "supplier_payment", id, "Supplier payment"); !ok {
+		return err
+	}
 	if err := a.requirePermission("supplier_payments:delete"); err != nil {
 		return err
 	}

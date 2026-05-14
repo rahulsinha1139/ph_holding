@@ -30,6 +30,10 @@
     async function checkSyncStatus() {
         try {
             const status = await GetDBSyncStatus() as Record<string, any>;
+            if (status.error) {
+                console.warn("Sync status unavailable:", status.error);
+                return;
+            }
             syncStatus = {
                 configured: status.configured ?? false,
                 online: status.online ?? false,
@@ -51,7 +55,7 @@
 
     // Manual sync trigger with progress UI
     async function triggerSync() {
-        if (syncLoading || !syncStatus.configured) return;
+        if (syncLoading || !syncStatus.configured || !syncStatus.sync_enabled || !canManualSync) return;
         syncLoading = true;
         showSyncProgress = true;
 
@@ -88,15 +92,22 @@
     });
 
     // Status indicator color
-    $: statusColor = syncStatus.online ? "var(--status-success, #22c55e)"
+    $: statusColor = syncStatus.online && syncStatus.sync_enabled ? "var(--status-success, #22c55e)"
+                   : syncStatus.configured && !syncStatus.sync_enabled ? "var(--status-warning, #f59e0b)"
                    : syncStatus.configured ? "var(--status-warning, #f59e0b)"
                    : "var(--text-muted, #c7c7c7)";
-    $: statusLabel = syncStatus.online ? "Cloud sync active"
+    $: statusLabel = syncStatus.configured && !syncStatus.sync_enabled ? "Cloud sync paused"
+                   : syncStatus.online ? "Cloud sync active"
                    : syncStatus.configured ? "Connecting..."
                    : "Offline mode";
+    $: canManualSync = hasPermission("settings:update");
+    $: syncTitle = canManualSync
+        ? (syncStatus.sync_enabled && syncStatus.online ? "Click to sync now" : statusLabel)
+        : (syncStatus.configured && syncStatus.sync_enabled ? "Background sync runs automatically" : statusLabel);
 
     // Props
     export let currentScreen = "dashboard";
+    export let onNavigate: ((screenId: string) => void) | undefined = undefined;
 
     // Navigation Items with required permissions
     // Items without a permission are always visible
@@ -107,31 +118,33 @@
         { id: "opportunities", label: "Opportunities", icon: "target", permission: "offers:view" },
         { id: "operations", label: "Operations", icon: "layers", permission: "po:view" }, // Supplier-side ops: POs, Supplier Invoices - requires po:view
         { id: "finance", label: "Finance", icon: "bar-chart", permission: "finance:view" }, // HIDDEN for staff/sales
-        { id: "work", label: "Work", icon: "check-square", permission: "tasks:view" },
+        { id: "work", label: "Work", icon: "check-square", permission: null },
         { id: "people", label: "People", icon: "briefcase", permission: "hr:view" },
         { id: "notifications", label: "Notifications", icon: "bell", permission: null },
-        { id: "deployment", label: "Deployment", icon: "shield", permission: "settings:view" },
         { id: "relationships", label: "Relationships", icon: "users", permission: "customers:view" },
         { id: "intelligence", label: "Intelligence", icon: "zap", permission: "intelligence:chat" },
         // OneDrive import disabled — manual folder download + extraction in next session
         // { id: "onedrive_import", label: "OneDrive Import", icon: "folder", permission: "settings:view" },
-        { id: "settings", label: "Settings", icon: "settings", permission: "settings:view" },
+        { id: "settings", label: "Settings", icon: "settings", permission: ["settings:view", "settings:api_keys"] },
     ];
 
     // Check if user has a specific permission
-    function hasPermission(perm: string | null): boolean {
+    function hasPermission(perm: string | string[] | null): boolean {
         if (!perm) return true; // No permission required
         if (!$permissions || $permissions.length === 0) return false;
 
         // Wildcard access (admin)
         if ($permissions.includes('*')) return true;
 
-        // Direct match
-        if ($permissions.includes(perm)) return true;
+        const perms = Array.isArray(perm) ? perm : [perm];
+        for (const requiredPerm of perms) {
+            // Direct match
+            if ($permissions.includes(requiredPerm)) return true;
 
-        // Resource wildcard (e.g., "finance:*" matches "finance:view")
-        const [resource] = perm.split(':');
-        if ($permissions.includes(`${resource}:*`)) return true;
+            // Resource wildcard (e.g., "finance:*" matches "finance:view")
+            const [resource] = requiredPerm.split(':');
+            if ($permissions.includes(`${resource}:*`)) return true;
+        }
 
         return false;
     }
@@ -141,6 +154,10 @@
     $: visibleNavItems = navItems.filter(item => hasPermission(item.permission));
 
     function navigate(screenId: string) {
+        if (onNavigate) {
+            onNavigate(screenId);
+            return;
+        }
         dispatch("navigate", { screen: screenId });
     }
 
@@ -184,8 +201,9 @@
         type="button"
         class="sync-status"
         on:click={triggerSync}
-        title={syncStatus.online ? "Click to sync now" : statusLabel}
-        aria-label={syncStatus.online ? "Sync now" : statusLabel}
+        title={syncTitle}
+        aria-label={syncTitle}
+        disabled={!canManualSync || syncLoading || !syncStatus.configured || !syncStatus.sync_enabled}
     >
         <div class="sync-indicator" style="background-color: {statusColor}"></div>
         <span class="sync-label">{statusLabel}</span>
@@ -376,6 +394,14 @@
         background-color: var(--bg-base);
     }
 
+    .sync-status:disabled {
+        cursor: default;
+    }
+
+    .sync-status:disabled:hover {
+        background: transparent;
+    }
+
     .sync-indicator {
         width: 8px;
         height: 8px;
@@ -408,10 +434,47 @@
         to { transform: rotate(360deg); }
     }
 
-    /* Mobile Hide */
+    /* Mobile Top Navigation */
     @media (max-width: 1024px) {
         .sidebar {
-            display: none; /* In production, would be a drawer */
+            position: static;
+            width: 100%;
+            min-height: auto;
+            height: auto;
+            border-right: none;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        .sidebar-header {
+            height: 48px;
+            padding: 0 16px;
+        }
+
+        .nav-list {
+            flex: 0 0 auto;
+            flex-direction: row;
+            flex-wrap: wrap;
+            gap: 6px;
+            max-height: 150px;
+            overflow-y: auto;
+            padding: 10px 12px;
+        }
+
+        .nav-link {
+            border: 1px solid transparent;
+            border-radius: 8px;
+            font-size: 13px;
+            padding: 8px 10px;
+        }
+
+        .nav-link.active {
+            border-color: var(--border);
+        }
+
+        .sync-status,
+        .sidebar-footer {
+            display: none;
         }
     }
 </style>

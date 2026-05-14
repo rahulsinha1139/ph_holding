@@ -141,24 +141,18 @@ func (am *AuthManager) ValidateSession(accessToken string) (*UserSession, error)
 	// Check if refresh token expired
 	if now.After(session.RefreshTokenExpiry) {
 		// Invalidate session - refresh token expired
-		if err := am.InvalidateSession(session.ID, "refresh_token_expired"); err != nil {
-			log.Printf("WARNING: failed to invalidate expired refresh-token session %s: %v", session.ID, err)
-		}
+		am.InvalidateSession(session.ID, "refresh_token_expired")
 		return nil, fmt.Errorf("refresh token expired at %s", session.RefreshTokenExpiry.Format(time.RFC3339))
 	}
 
 	// Check session timeout (inactivity)
 	if now.Sub(session.LastActivityAt) > DefaultSessionTimeout {
-		if err := am.InvalidateSession(session.ID, "session_timeout"); err != nil {
-			log.Printf("WARNING: failed to invalidate timed-out session %s: %v", session.ID, err)
-		}
+		am.InvalidateSession(session.ID, "session_timeout")
 		return nil, fmt.Errorf("session timed out after %v of inactivity", DefaultSessionTimeout)
 	}
 
 	// Session valid - update activity
-	if err := am.UpdateSessionActivity(accessToken); err != nil {
-		return nil, fmt.Errorf("failed to update session activity: %w", err)
-	}
+	am.UpdateSessionActivity(accessToken)
 
 	return &session, nil
 }
@@ -347,9 +341,7 @@ func (a *App) RefreshAuthWithSession(session *UserSession) error {
 	newToken, err := a.authManager.refreshToken(refreshToken)
 	if err != nil {
 		// Refresh failed - invalidate session
-		if invalidateErr := a.authManager.InvalidateSession(session.ID, "refresh_failed"); invalidateErr != nil {
-			log.Printf("WARNING: failed to invalidate refresh-failed session %s: %v", session.ID, invalidateErr)
-		}
+		a.authManager.InvalidateSession(session.ID, "refresh_failed")
 		return fmt.Errorf("token refresh failed: %w", err)
 	}
 
@@ -407,9 +399,7 @@ func (a *App) LogoutWithSession() error {
 	a.authManager.mu.Unlock()
 
 	// Remove cached token file from disk
-	if err := os.Remove(".auth_token.json"); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("logout incomplete: failed to remove cached token file: %w", err)
-	}
+	os.Remove(".auth_token.json")
 
 	log.Println("✅ Logout complete: tokens cleared, session invalidated")
 	return nil

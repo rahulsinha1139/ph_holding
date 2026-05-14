@@ -25,7 +25,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -52,7 +51,7 @@ type FieldVisibilitySettings struct {
 // parseFieldVisibility parses the JSON field visibility settings
 func parseFieldVisibility(jsonStr string) FieldVisibilitySettings {
 	// Default settings: show customer-facing fields, hide internal cost data
-	defaults := FieldVisibilitySettings{
+	settings := FieldVisibilitySettings{
 		ShowEquipment:     true,
 		ShowSpecification: true,
 		ShowDetailedDesc:  false,
@@ -68,13 +67,25 @@ func parseFieldVisibility(jsonStr string) FieldVisibilitySettings {
 	}
 
 	if jsonStr == "" {
-		return defaults
+		return settings
 	}
 
-	var settings FieldVisibilitySettings
 	if err := json.Unmarshal([]byte(jsonStr), &settings); err != nil {
 		log.Printf("⚠️ Failed to parse field visibility JSON, using defaults: %v", err)
-		return defaults
+		return FieldVisibilitySettings{
+			ShowEquipment:     true,
+			ShowSpecification: true,
+			ShowDetailedDesc:  false,
+			ShowFOB:           false,
+			ShowFreight:       false,
+			ShowCost:          false,
+			ShowMargin:        false,
+			ShowContact:       true,
+			ShowRFQ:           true,
+			ShowCurrency:      false,
+			ShowCountryOrigin: true,
+			ShowDeliveryWeeks: true,
+		}
 	}
 
 	return settings
@@ -110,6 +121,8 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 		log.Printf("⚠️ Could not fetch customer details: %v", err)
 	}
 
+	profile := companyDocumentProfile(invoice.Division)
+
 	// 3. Fetch bank accounts for bank details section
 	bankAccounts, err := a.GetActiveBankAccounts()
 	if err != nil {
@@ -132,15 +145,8 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 	pdf.SetRightMargin(10)
 
 	// Set header function for letterhead on all pages
-	imgPath := a.letterheadImagePath()
 	pdf.SetHeaderFuncMode(func() {
-		fileInfo, err := os.Stat(imgPath)
-		if err == nil && fileInfo.Size() <= 10*1024*1024 {
-			opt := gofpdf.ImageOptions{ImageType: "PNG", ReadDpi: true}
-			pdf.ImageOptions(imgPath, 0, 0, 210, 297, false, opt, 0, "")
-		} else {
-			addLetterheadFallback(pdf)
-		}
+		a.applyLetterheadForDivision(pdf, profile.Division)
 	}, true)
 
 	pdf.AddPage()
@@ -167,22 +173,19 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 	pdf.SetXY(10, headerY)
 	pdf.SetFont("Helvetica", "B", 9)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(90, 4, "P H TRADING W.L.L")
+	pdf.Cell(90, 4, profile.LegalName)
 	pdf.Ln(4)
 	pdf.SetX(10)
 	pdf.SetFont("Helvetica", "", 8)
 	pdf.SetTextColor(60, 60, 60)
-	pdf.Cell(90, 4, "Flat/Shop No.91, Building 198")
-	pdf.Ln(4)
-	pdf.SetX(10)
-	pdf.Cell(90, 4, "Road/Street 2803, AL SEEF, Block 428")
-	pdf.Ln(4)
-	pdf.SetX(10)
-	pdf.Cell(90, 4, "Kingdom of Bahrain")
-	pdf.Ln(4)
+	for _, line := range profile.AddressLines {
+		pdf.Cell(90, 4, line)
+		pdf.Ln(4)
+		pdf.SetX(10)
+	}
 	pdf.SetX(10)
 	pdf.SetFont("Helvetica", "B", 8)
-	pdf.Cell(90, 4, "TRN: 200010357800002")
+	pdf.Cell(90, 4, "TRN: "+profile.VATNumber)
 
 	// RIGHT COLUMN: Invoice Metadata (11 fields in rows)
 	rightX := 105.0
@@ -611,18 +614,14 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 	declaration := "We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct."
 	pdf.MultiCell(90, 4, declaration, "", "", false)
 
-	// Right side: Signature box
+	// Right side: prepared-by signature block from PH's canonical signature list.
 	pdf.SetXY(130, declY)
 	pdf.SetFont("Helvetica", "B", 8)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(60, 5, "For P H TRADING W.L.L")
-	pdf.Ln(20)
-	pdf.SetX(130)
-	pdf.Cell(60, 5, "________________________")
-	pdf.Ln(4)
-	pdf.SetX(130)
-	pdf.SetFont("Helvetica", "", 7)
-	pdf.Cell(60, 5, "Authorized Signatory")
+	pdf.Cell(60, 5, "For "+profile.LegalName)
+	signerName := a.resolveDocumentSignerName(invoice.IssuedBy, invoice.CreatedBy)
+	signatureBlock := a.resolvePreparedBySignatureBlock(signerName)
+	drawPHSignaturePDFLines(pdf, 130, declY+7, 60, 3.7, 6.7, signatureBlock, false)
 
 	// ========================================================================
 	// SECTION 9: BANK DETAILS
@@ -636,12 +635,20 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 
 	pdf.SetFont("Helvetica", "", 7)
 	pdf.SetTextColor(60, 60, 60)
-	for i, bank := range bankAccounts {
-		pdf.SetX(10)
-		bankLine := fmt.Sprintf("%d. %s, A/c No: %s, IBAN: %s, BIC: %s",
-			i+1, bank.BankName, bank.AccountNumber, bank.IBAN, bank.SwiftBIC)
-		pdf.Cell(0, 4, bankLine)
-		pdf.Ln(4)
+	if len(profile.BankDetails) > 0 {
+		for _, bankLine := range profile.BankDetails {
+			pdf.SetX(10)
+			pdf.Cell(0, 4, bankLine)
+			pdf.Ln(4)
+		}
+	} else {
+		for i, bank := range bankAccounts {
+			pdf.SetX(10)
+			bankLine := fmt.Sprintf("%d. %s, A/c No: %s, IBAN: %s, BIC: %s",
+				i+1, bank.BankName, bank.AccountNumber, bank.IBAN, bank.SwiftBIC)
+			pdf.Cell(0, 4, bankLine)
+			pdf.Ln(4)
+		}
 	}
 
 	// ========================================================================
@@ -655,7 +662,7 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 		pdf.SetY(265)
 		pdf.SetFont("Helvetica", "I", 7)
 		pdf.SetTextColor(160, 160, 160)
-		pdf.CellFormat(0, 5, fmt.Sprintf("Invoice %s  |  Page %d of %d  |  PH Trading W.L.L.", invoice.InvoiceNumber, i, totalPages), "", 0, "C", false, 0, "")
+		pdf.CellFormat(0, 5, fmt.Sprintf("Invoice %s  |  Page %d of %d  |  %s", invoice.InvoiceNumber, i, totalPages, profile.LegalName), "", 0, "C", false, 0, "")
 	}
 
 	// ========================================================================
@@ -729,6 +736,7 @@ func (a *App) GenerateSupplierInvoicePDF(invoiceID string) (string, error) {
 	if invoice.PurchaseOrderID != "" {
 		a.db.First(&po, "id = ?", invoice.PurchaseOrderID)
 	}
+	profile := companyDocumentProfile(a.resolveSupplierInvoiceDivision(invoice))
 
 	// 4. Create PDF with letterhead
 	pdf := gofpdf.New("P", "mm", "A4", "")
@@ -738,18 +746,8 @@ func (a *App) GenerateSupplierInvoicePDF(invoiceID string) (string, error) {
 	pdf.SetRightMargin(18)
 
 	// Set header function so letterhead appears on ALL pages
-	imgPath := a.letterheadImagePath()
 	pdf.SetHeaderFuncMode(func() {
-		fileInfo, err := os.Stat(imgPath)
-		if err == nil && fileInfo.Size() <= 10*1024*1024 {
-			opt := gofpdf.ImageOptions{ImageType: "PNG", ReadDpi: true}
-			pdf.ImageOptions(imgPath, 0, 0, 210, 297, false, opt, 0, "")
-		} else if err == nil && fileInfo.Size() > 10*1024*1024 {
-			log.Printf("⚠️ Letterhead file too large (%d bytes), using fallback", fileInfo.Size())
-			addLetterheadFallback(pdf)
-		} else {
-			addLetterheadFallback(pdf)
-		}
+		a.applyLetterheadForDivision(pdf, profile.Division)
 	}, true)
 
 	pdf.AddPage()
@@ -925,7 +923,7 @@ func (a *App) GenerateSupplierInvoicePDF(invoiceID string) (string, error) {
 	pdf.SetY(270)
 	pdf.SetFont("Helvetica", "I", 7)
 	pdf.SetTextColor(160, 160, 160)
-	pdf.Cell(0, 5, fmt.Sprintf("Supplier Invoice Record  |  PH Trading W.L.L.  |  Generated %s", time.Now().Format("02 Jan 2006")))
+	pdf.Cell(0, 5, fmt.Sprintf("Supplier Invoice Record  |  %s  |  Generated %s", sanitizeForPDF(profile.LegalName), time.Now().Format("02 Jan 2006")))
 
 	// Save PDF
 	cleanInvoiceNum := filepath.Base(strings.ReplaceAll(invoice.InvoiceNumber, "..", ""))

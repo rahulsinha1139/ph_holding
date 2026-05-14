@@ -18,6 +18,9 @@ var collaborativeSyncTables = []string{
 	"task_activity",
 	"notifications",
 	"notification_receipts",
+	"delete_approval_requests",
+	"employee_archive_requests",
+	"opportunity_edit_conflicts",
 }
 
 const collaborativeSyncCursorSetting = "collaboration_sync_last_at"
@@ -28,7 +31,10 @@ func (a *App) ensureCollaborativeRemoteSchema() error {
 	}
 
 	remote := a.dbManager.Remote()
-	if remote.Migrator().HasTable("task_items") && remote.Migrator().HasTable("employees") {
+	if remote.Migrator().HasTable("task_items") &&
+		remote.Migrator().HasTable("employees") &&
+		remote.Migrator().HasTable("employee_archive_requests") &&
+		remote.Migrator().HasTable("opportunity_edit_conflicts") {
 		return nil
 	}
 
@@ -39,9 +45,12 @@ func (a *App) ensureCollaborativeRemoteSchema() error {
 		&ProjectMember{},
 		&Notification{},
 		&NotificationReceipt{},
+		&DeleteApprovalRequest{},
+		&EmployeeArchiveRequest{},
 		&TaskItem{},
 		&TaskComment{},
 		&TaskActivity{},
+		&OpportunityEditConflict{},
 	)
 }
 
@@ -59,14 +68,14 @@ func (a *App) getCollaborativeSyncCursor() time.Time {
 	if err != nil {
 		return time.Time{}
 	}
-	return cursor
+	return cursor.Local()
 }
 
 func (a *App) setCollaborativeSyncCursor(t time.Time) {
 	if a.db == nil || t.IsZero() {
 		return
 	}
-	a.saveSetting(collaborativeSyncCursorSetting, t.UTC().Format(time.RFC3339))
+	a.saveSetting(collaborativeSyncCursorSetting, t.Local().Format(time.RFC3339))
 }
 
 func (a *App) collectDueCollaborativeOperations() []CollaborativePendingOperation {
@@ -240,6 +249,14 @@ func (a *App) queueCollaborativeSync(trigger string) {
 }
 
 func (a *App) StartCollaborativeSyncLoop(interval time.Duration) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		log.Printf("StartCollaborativeSyncLoop blocked by RBAC: %v", err)
+		return
+	}
+	a.startCollaborativeSyncLoopInternal(interval)
+}
+
+func (a *App) startCollaborativeSyncLoopInternal(interval time.Duration) {
 	if a.dbManager == nil || !a.dbManager.IsSyncEnabled() {
 		return
 	}
@@ -285,6 +302,14 @@ func (a *App) StartCollaborativeSyncLoop(interval time.Duration) {
 }
 
 func (a *App) StopCollaborativeSyncLoop() {
+	if err := a.requirePermission("settings:update"); err != nil {
+		log.Printf("StopCollaborativeSyncLoop blocked by RBAC: %v", err)
+		return
+	}
+	a.stopCollaborativeSyncLoopInternal()
+}
+
+func (a *App) stopCollaborativeSyncLoopInternal() {
 	a.collaborationSyncInitMu.Lock()
 	stopChan := a.collaborationSyncStop
 	a.collaborationSyncInitMu.Unlock()
@@ -302,6 +327,9 @@ func (a *App) StopCollaborativeSyncLoop() {
 }
 
 func (a *App) RefreshCollaborativeWorkspace() error {
+	if err := a.requirePermission("tasks:view"); err != nil {
+		return err
+	}
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}

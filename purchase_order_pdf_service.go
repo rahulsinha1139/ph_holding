@@ -33,8 +33,8 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jung-kurt/gofpdf"
@@ -83,6 +83,8 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	}
 
 	// 3. Create PDF with letterhead
+	division := a.resolvePurchaseOrderDivision(po)
+	profile := companyDocumentProfile(division)
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.SetAutoPageBreak(true, 35) // Bottom margin: 35mm to avoid letterhead footer
 	pdf.SetTopMargin(50)           // Start content below letterhead header
@@ -90,19 +92,8 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	pdf.SetRightMargin(18)
 
 	// Set header function so letterhead appears on ALL pages
-	imgPath := a.letterheadImagePath()
 	pdf.SetHeaderFuncMode(func() {
-		fileInfo, err := os.Stat(imgPath)
-		if err == nil && fileInfo.Size() <= 10*1024*1024 { // 10MB max
-			opt := gofpdf.ImageOptions{ImageType: "PNG", ReadDpi: true}
-			pdf.ImageOptions(imgPath, 0, 0, 210, 297, false, opt, 0, "")
-		} else if err == nil && fileInfo.Size() > 10*1024*1024 {
-			log.Printf("⚠️ Letterhead file too large (%d bytes), using fallback", fileInfo.Size())
-			addLetterheadFallback(pdf)
-		} else {
-			// Fallback: simple text header if image not found
-			addLetterheadFallback(pdf)
-		}
+		a.applyLetterheadForDivision(pdf, profile.Division)
 	}, true) // true = allow content to overlap the header area
 
 	// ========================================================================
@@ -156,7 +147,7 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 		pdf.Ln(5)
 	}
 
-	// RIGHT BLOCK: DELIVER TO (PH Trading warehouse)
+	// RIGHT BLOCK: DELIVER TO
 	rightX := 110.0
 	pdf.SetXY(rightX, y)
 	pdf.SetFont("Helvetica", "B", 10)
@@ -166,19 +157,22 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 
 	pdf.SetXY(rightX, pdf.GetY())
 	pdf.SetFont("Helvetica", "B", 11)
-	pdf.Cell(0, 5, "PH TRADING W.L.L")
+	pdf.Cell(0, 5, sanitizeForPDF(profile.LegalName))
 	pdf.Ln(6)
 
-	pdf.SetXY(rightX, pdf.GetY())
 	pdf.SetFont("Helvetica", "", 9)
 	pdf.SetTextColor(60, 60, 60)
-	pdf.MultiCell(82, 5, "Building 325, Road 1704, Block 117\nSitra Industrial Area\nManama, Kingdom of Bahrain", "", "", false)
+	for _, line := range profile.AddressLines {
+		pdf.SetXY(rightX, pdf.GetY())
+		pdf.Cell(82, 5, sanitizeForPDF(line))
+		pdf.Ln(5)
+	}
 
 	pdf.SetXY(rightX, pdf.GetY()+2)
 	pdf.SetFont("Helvetica", "B", 9)
 	pdf.Cell(20, 5, "TRN:")
 	pdf.SetFont("Helvetica", "", 9)
-	pdf.Cell(0, 5, "200193538")
+	pdf.Cell(0, 5, sanitizeForPDF(profile.VATNumber))
 	pdf.Ln(8)
 
 	// ========================================================================
@@ -254,13 +248,19 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	// ========================================================================
 	// LINE ITEMS TABLE
 	// ========================================================================
-	tableColWidths := []float64{10, 88, 16, 30, 30}
-	tableLineHeight := 4.8
-	minRowHeight := 7.5
+	tableX := 18.0
+	tableColWidths := []float64{10, 86, 16, 34, 28}
+	tableWidth := 0.0
+	for _, width := range tableColWidths {
+		tableWidth += width
+	}
+	tableLineHeight := 4.4
+	minRowHeight := 7.8
 	tableHeaderHeight := 8.0
-	tableStartY := pdf.GetY()
+	tableContinuationY := 52.0
 
 	drawTableHeader := func() {
+		pdf.SetX(tableX)
 		pdf.SetFont("Helvetica", "B", 9)
 		pdf.SetTextColor(255, 255, 255)
 		pdf.SetFillColor(29, 29, 31)
@@ -272,6 +272,22 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 		pdf.Ln(tableHeaderHeight)
 		pdf.SetFont("Helvetica", "", 8.5)
 		pdf.SetTextColor(29, 29, 31)
+	}
+
+	wrappedLineCount := func(text string, width float64) int {
+		total := 0
+		for _, paragraph := range strings.Split(text, "\n") {
+			lines := pdf.SplitLines([]byte(paragraph), width)
+			if len(lines) == 0 {
+				total++
+				continue
+			}
+			total += len(lines)
+		}
+		if total == 0 {
+			return 1
+		}
+		return total
 	}
 
 	drawTableHeader()
@@ -291,6 +307,9 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 		if item.ProductCode != "" {
 			description = description + "\n" + sanitizeForPDF(item.ProductCode)
 		}
+		if item.SupplierPartNumber != "" && item.SupplierPartNumber != item.ProductCode {
+			description = description + "\nSupplier Part: " + sanitizeForPDF(item.SupplierPartNumber)
+		}
 
 		// Use foreign currency prices if available, otherwise BHD
 		unitPrice := item.UnitPriceForeign
@@ -302,11 +321,7 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 
 		subtotal += lineTotal
 
-		descriptionLines := pdf.SplitLines([]byte(description), tableColWidths[1]-3)
-		lineCount := len(descriptionLines)
-		if lineCount == 0 {
-			lineCount = 1
-		}
+		lineCount := wrappedLineCount(description, tableColWidths[1]-4)
 		rowHeight := float64(lineCount)*tableLineHeight + 1.8
 		if rowHeight < minRowHeight {
 			rowHeight = minRowHeight
@@ -314,22 +329,45 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 
 		if pdf.GetY()+rowHeight > 235 {
 			pdf.AddPage()
-			pdf.SetY(tableStartY)
+			pdf.SetY(tableContinuationY)
 			drawTableHeader()
 		}
 
-		rowX := pdf.GetX()
+		rowX := tableX
 		rowY := pdf.GetY()
-		pdf.CellFormat(tableColWidths[0], rowHeight, fmt.Sprintf("%d", lineNum), "1", 0, "C", false, 0, "")
+		pdf.SetDrawColor(175, 175, 175)
+		pdf.SetLineWidth(0.18)
+		if i%2 == 1 {
+			pdf.SetFillColor(248, 250, 252)
+			pdf.Rect(rowX, rowY, tableWidth, rowHeight, "FD")
+		} else {
+			pdf.Rect(rowX, rowY, tableWidth, rowHeight, "D")
+		}
+		gridX := rowX
+		for colIdx := 0; colIdx < len(tableColWidths)-1; colIdx++ {
+			gridX += tableColWidths[colIdx]
+			pdf.Line(gridX, rowY, gridX, rowY+rowHeight)
+		}
 
-		pdf.SetXY(rowX+tableColWidths[0], rowY)
-		pdf.MultiCell(tableColWidths[1], tableLineHeight, description, "1", "L", false)
+		pdf.SetFont("Helvetica", "", 8.7)
+		pdf.SetTextColor(29, 29, 31)
+		pdf.SetXY(rowX, rowY+(rowHeight-4.6)/2)
+		pdf.CellFormat(tableColWidths[0], 4.6, fmt.Sprintf("%d", lineNum), "", 0, "C", false, 0, "")
 
-		pdf.SetXY(rowX+tableColWidths[0]+tableColWidths[1], rowY)
-		pdf.CellFormat(tableColWidths[2], rowHeight, fmt.Sprintf("%.0f", item.Quantity), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(tableColWidths[3], rowHeight, fmt.Sprintf("%.3f %s", unitPrice, currencyLabel), "1", 0, "R", false, 0, "")
-		pdf.CellFormat(tableColWidths[4], rowHeight, fmt.Sprintf("%.3f", lineTotal), "1", 0, "R", false, 0, "")
-		pdf.Ln(rowHeight)
+		pdf.SetXY(rowX+tableColWidths[0]+2, rowY+1.3)
+		pdf.MultiCell(tableColWidths[1]-4, tableLineHeight, description, "", "L", false)
+
+		numericY := rowY + (rowHeight-4.6)/2
+		qtyX := rowX + tableColWidths[0] + tableColWidths[1]
+		unitX := qtyX + tableColWidths[2]
+		amountX := unitX + tableColWidths[3]
+		pdf.SetXY(qtyX, numericY)
+		pdf.CellFormat(tableColWidths[2], 4.6, fmt.Sprintf("%.0f", item.Quantity), "", 0, "C", false, 0, "")
+		pdf.SetXY(unitX+1, numericY)
+		pdf.CellFormat(tableColWidths[3]-2, 4.6, fmt.Sprintf("%.3f %s", unitPrice, currencyLabel), "", 0, "R", false, 0, "")
+		pdf.SetXY(amountX+1, numericY)
+		pdf.CellFormat(tableColWidths[4]-2, 4.6, fmt.Sprintf("%.3f", lineTotal), "", 0, "R", false, 0, "")
+		pdf.SetY(rowY + rowHeight)
 	}
 
 	pdf.Ln(3)
@@ -337,60 +375,73 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	// ========================================================================
 	// TOTALS SECTION (right-aligned)
 	// ========================================================================
-	totalsX := 142.0 // X position for totals labels
-
-	// Subtotal
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(80, 80, 80)
-	pdf.SetX(totalsX)
-	pdf.Cell(24, 6, "SUBTOTAL:")
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(27, 6, fmt.Sprintf("%.3f %s", subtotal, currencyLabel))
-	pdf.Ln(7)
-
-	// VAT (10%)
 	vatAmount := po.VATAmount
 	if showForeignCurrency {
 		vatAmount = subtotal * 0.10
 	}
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(80, 80, 80)
-	pdf.SetX(totalsX)
-	pdf.Cell(24, 6, "VAT 10%:")
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(27, 6, fmt.Sprintf("%.3f %s", vatAmount, currencyLabel))
-	pdf.Ln(7)
-
-	// Grand Total
 	grandTotal := subtotal + vatAmount
-	pdf.SetFont("Helvetica", "B", 11)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.SetX(totalsX)
-	pdf.Cell(24, 7, fmt.Sprintf("TOTAL (%s):", currencyLabel))
-	pdf.SetFont("Helvetica", "B", 11)
-	pdf.Cell(27, 7, fmt.Sprintf("%.3f", grandTotal))
-	pdf.Ln(8)
 
-	// If foreign currency, show BHD equivalent
+	totalsX := 110.0
+	labelWidth := 34.0
+	valueWidth := 48.0
+	totalRowHeight := 7.0
+	totalBlockHeight := totalRowHeight * 3
+	if showForeignCurrency && po.ExchangeRate > 0 {
+		totalBlockHeight += totalRowHeight + 5
+	}
+	if pdf.GetY()+totalBlockHeight > 238 {
+		pdf.AddPage()
+		pdf.SetY(tableContinuationY)
+	}
+
+	drawTotalRow := func(label, value string, bold bool, green bool) {
+		rowY := pdf.GetY()
+		pdf.SetDrawColor(190, 190, 190)
+		if bold {
+			pdf.SetFillColor(242, 248, 245)
+			pdf.Rect(totalsX, rowY, labelWidth+valueWidth, totalRowHeight, "FD")
+		} else {
+			pdf.SetFillColor(255, 255, 255)
+			pdf.Rect(totalsX, rowY, labelWidth+valueWidth, totalRowHeight, "D")
+		}
+		pdf.Line(totalsX+labelWidth, rowY, totalsX+labelWidth, rowY+totalRowHeight)
+
+		if bold {
+			pdf.SetFont("Helvetica", "B", 9)
+		} else {
+			pdf.SetFont("Helvetica", "", 8.5)
+		}
+		pdf.SetTextColor(80, 80, 80)
+		pdf.SetXY(totalsX+2, rowY+1.5)
+		pdf.CellFormat(labelWidth-4, 4.2, label, "", 0, "L", false, 0, "")
+
+		if bold {
+			pdf.SetFont("Helvetica", "B", 9)
+		} else {
+			pdf.SetFont("Helvetica", "", 8.5)
+		}
+		if green {
+			pdf.SetTextColor(0, 120, 80)
+		} else {
+			pdf.SetTextColor(29, 29, 31)
+		}
+		pdf.SetXY(totalsX+labelWidth+2, rowY+1.5)
+		pdf.CellFormat(valueWidth-4, 4.2, value, "", 0, "R", false, 0, "")
+		pdf.SetY(rowY + totalRowHeight)
+	}
+
+	drawTotalRow("SUBTOTAL", fmt.Sprintf("%.3f %s", subtotal, currencyLabel), false, false)
+	drawTotalRow("VAT 10%", fmt.Sprintf("%.3f %s", vatAmount, currencyLabel), false, false)
+	drawTotalRow(fmt.Sprintf("TOTAL (%s)", currencyLabel), fmt.Sprintf("%.3f %s", grandTotal, currencyLabel), true, false)
+
 	if showForeignCurrency && po.ExchangeRate > 0 {
 		totalBHD := po.TotalBHD
-		pdf.SetFont("Helvetica", "", 9)
-		pdf.SetTextColor(80, 80, 80)
-		pdf.SetX(totalsX)
-		pdf.Cell(24, 6, "TOTAL (BHD):")
-		pdf.SetFont("Helvetica", "B", 9)
-		pdf.SetTextColor(0, 120, 80) // Green for BHD
-		pdf.Cell(27, 6, fmt.Sprintf("%.3f BHD", totalBHD))
-		pdf.Ln(5)
-
-		// Exchange rate note
-		pdf.SetFont("Helvetica", "I", 8)
+		drawTotalRow("TOTAL (BHD)", fmt.Sprintf("%.3f BHD", totalBHD), true, true)
+		pdf.SetFont("Helvetica", "I", 7.5)
 		pdf.SetTextColor(120, 120, 120)
 		pdf.SetX(totalsX)
-		pdf.MultiCell(51, 4, fmt.Sprintf("Exchange Rate: 1 %s = %.4f BHD", currencyLabel, po.ExchangeRate), "", "R", false)
-		pdf.Ln(3)
+		pdf.CellFormat(labelWidth+valueWidth, 5, fmt.Sprintf("Exchange Rate: 1 %s = %.4f BHD", currencyLabel, po.ExchangeRate), "", 0, "R", false, 0, "")
+		pdf.Ln(6)
 	}
 
 	// ========================================================================
@@ -419,7 +470,7 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 		"Packaging: All items to be properly packaged for international shipping",
 		"Documentation: Invoice, packing list, and certificates to accompany shipment",
 		"Late Delivery: Supplier to notify buyer immediately of any delays",
-		"Partial Shipments: Subject to prior approval from PH Trading",
+		fmt.Sprintf("Partial Shipments: Subject to prior approval from %s", profile.Division),
 		"Dispute Resolution: Any disputes to be resolved per Bahrain Commercial Law",
 	}
 
@@ -518,35 +569,42 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	pdf.Cell(0, 5, "Al Salam Bank-Bahrain B.S.C.")
 	pdf.Ln(5)
 	pdf.SetFont("Helvetica", "", 8)
-	pdf.Cell(40, 4, "Account Name:")
-	pdf.Cell(0, 4, "PH TRADING WLL")
-	pdf.Ln(4)
-	pdf.Cell(40, 4, "Account Number:")
-	pdf.Cell(0, 4, "5050016804")
-	pdf.Ln(4)
-	pdf.Cell(40, 4, "IBAN:")
-	pdf.Cell(0, 4, "BH79ASBB00005050016804")
-	pdf.Ln(4)
-	pdf.Cell(40, 4, "SWIFT:")
-	pdf.Cell(0, 4, "ASBBBHBM")
-	pdf.Ln(10)
+	if len(profile.BankDetails) > 0 {
+		for _, bankLine := range profile.BankDetails {
+			pdf.MultiCell(0, 4, sanitizeForPDF(bankLine), "", "L", false)
+			pdf.Ln(1)
+		}
+		pdf.Ln(6)
+	} else {
+		pdf.Cell(40, 4, "Account Name:")
+		pdf.Cell(0, 4, "PH TRADING WLL")
+		pdf.Ln(4)
+		pdf.Cell(40, 4, "Account Number:")
+		pdf.Cell(0, 4, "5050016804")
+		pdf.Ln(4)
+		pdf.Cell(40, 4, "IBAN:")
+		pdf.Cell(0, 4, "BH79ASBB00005050016804")
+		pdf.Ln(4)
+		pdf.Cell(40, 4, "SWIFT:")
+		pdf.Cell(0, 4, "ASBBBHBM")
+		pdf.Ln(10)
+	}
 
 	// ========================================================================
 	// SIGNATURE SECTION
 	// ========================================================================
+	if pdf.GetY() > 218 {
+		pdf.AddPage()
+		pdf.SetY(52)
+	}
 	pdf.SetFont("Helvetica", "B", 10)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(0, 6, "For PH Trading W.L.L")
-	pdf.Ln(6)
-
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(60, 60, 60)
-	pdf.Cell(0, 5, "Authorized Signature: _____________________")
-	pdf.Ln(6)
-	pdf.Cell(0, 5, "Name: _____________________")
-	pdf.Ln(6)
-	pdf.Cell(0, 5, "Date: _____________________")
-	pdf.Ln(8)
+	pdf.Cell(0, 6, fmt.Sprintf("For %s", sanitizeForPDF(profile.LegalName)))
+	signatureY := pdf.GetY() + 7
+	signerName := a.resolveDocumentSignerName(po.ApprovedBy, po.CreatedBy)
+	signatureBlock := a.resolvePreparedBySignatureBlock(signerName)
+	endY := drawPHSignaturePDFLines(pdf, 20, signatureY, 95, 4.4, 8.2, signatureBlock, false)
+	pdf.SetY(endY + 4)
 
 	pdf.SetFont("Helvetica", "I", 8)
 	pdf.SetTextColor(120, 120, 120)
@@ -564,7 +622,7 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 		pdf.SetY(270) // Just above the letterhead footer area
 		pdf.SetFont("Helvetica", "I", 7)
 		pdf.SetTextColor(160, 160, 160)
-		pdf.CellFormat(0, 5, fmt.Sprintf("Purchase Order %s  |  Page %d of %d  |  PH Trading W.L.L.", po.PONumber, i, totalPages), "", 0, "C", false, 0, "")
+		pdf.CellFormat(0, 5, fmt.Sprintf("Purchase Order %s  |  Page %d of %d  |  %s", po.PONumber, i, totalPages, sanitizeForPDF(profile.LegalName)), "", 0, "C", false, 0, "")
 	}
 
 	// ========================================================================

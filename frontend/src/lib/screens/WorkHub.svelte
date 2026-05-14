@@ -4,6 +4,7 @@
   import { toast } from "../stores/toasts";
   import Modal from "$lib/components/layout/Modal.svelte";
   import Button from "$lib/components/ui/Button.svelte";
+  import WabiSpinner from "$lib/components/ui/WabiSpinner.svelte";
   import {
     addProjectMember,
     addTaskComment,
@@ -36,6 +37,26 @@
   } from "$lib/api/collaboration";
 
   type WorkTab = "my_work" | "team_board" | "projects";
+  const pendingTaskStorageKey = "asymmflow.pendingCollaborativeTaskId";
+  const pendingTaskPayloadStorageKey = "asymmflow.pendingCollaborativeTaskPayload";
+  const WORK_HUB_CACHE_TTL_MS = 30_000;
+
+  type WorkHubSnapshot = {
+    currentEmployee: CurrentEmployeeContext | null;
+    myTasks: CollaborativeTask[];
+    teamTasks: CollaborativeTask[];
+    projects: CollaborativeProject[];
+    employees: EmployeeProfile[];
+    selectedProjectId: string;
+    selectedProjectForTask: string;
+    selectedAssignee: string;
+    selectedTaskId: string;
+    activeTab: WorkTab;
+    initializedPreferredTab: boolean;
+    savedAt: number;
+  };
+
+  let workHubSnapshot: WorkHubSnapshot | null = null;
 
   let loading = true;
   let savingTask = false;
@@ -47,6 +68,7 @@
   let savingTaskDetails = false;
   let deletingTask = false;
   let confirmDeleteTask = false;
+  let remoteRefreshing = false;
 
   let activeTab: WorkTab = "team_board";
   let currentEmployee: CurrentEmployeeContext | null = null;
@@ -94,9 +116,15 @@
   let loadRequestSeq = 0;
   let projectContextRequestSeq = 0;
   let taskDetailRequestSeq = 0;
+  let pendingOpenTaskId = "";
+  let openingPendingTask = false;
   let lastLoadFailed = false;
   let lastLoadError = "";
   let boardRecoveryAttempts = 0;
+  let projectContextLoading = false;
+  let projectContextLoadedFor = "";
+  let projectContextFailedFor = "";
+  let taskDetailLoading = false;
 
   const boardColumns = [
     { key: "open", label: "Open" },
@@ -113,12 +141,76 @@
     return "my_work";
   }
 
-  async function load(options: { refreshRemote?: boolean } = {}) {
-    const { refreshRemote = false } = options;
+  function hasLoadedWorkspaceData() {
+    return Boolean(
+      currentEmployee
+      || myTasks.length
+      || teamTasks.length
+      || projects.length
+      || employees.length,
+    );
+  }
+
+  function restoreSnapshot() {
+    if (!workHubSnapshot) return false;
+    currentEmployee = workHubSnapshot.currentEmployee;
+    myTasks = workHubSnapshot.myTasks;
+    teamTasks = workHubSnapshot.teamTasks;
+    projects = workHubSnapshot.projects;
+    employees = workHubSnapshot.employees;
+    selectedProjectId = workHubSnapshot.selectedProjectId;
+    selectedProjectForTask = workHubSnapshot.selectedProjectForTask;
+    selectedAssignee = workHubSnapshot.selectedAssignee;
+    selectedTaskId = workHubSnapshot.selectedTaskId;
+    activeTab = workHubSnapshot.activeTab;
+    initializedPreferredTab = workHubSnapshot.initializedPreferredTab;
+    loading = false;
+    return true;
+  }
+
+  function saveSnapshot() {
+    workHubSnapshot = {
+      currentEmployee,
+      myTasks: [...myTasks],
+      teamTasks: [...teamTasks],
+      projects: [...projects],
+      employees: [...employees],
+      selectedProjectId,
+      selectedProjectForTask,
+      selectedAssignee,
+      selectedTaskId,
+      activeTab,
+      initializedPreferredTab,
+      savedAt: Date.now(),
+    };
+  }
+
+  function isSnapshotStale() {
+    return !workHubSnapshot || Date.now() - workHubSnapshot.savedAt > WORK_HUB_CACHE_TTL_MS;
+  }
+
+  function wait(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function waitForWorkspaceLoad(timeoutMs = 1500) {
+    const startedAt = Date.now();
+    while (loading && Date.now() - startedAt < timeoutMs) {
+      await wait(40);
+    }
+  }
+
+  async function load(options: { refreshRemote?: boolean; forceRemote?: boolean; silent?: boolean } = {}) {
+    const { refreshRemote = false, forceRemote = false, silent = false } = options;
     const requestSeq = ++loadRequestSeq;
-    loading = true;
+    const shouldShowLoading = !silent || !hasLoadedWorkspaceData();
+    if (shouldShowLoading) {
+      loading = true;
+    }
     try {
       if (refreshRemote) {
+        remoteRefreshing = true;
+        void forceRemote;
         await refreshCollaborativeWorkspace().catch(() => undefined);
       }
       const [employee, myTaskRows, teamTaskRows, projectRows, employeeRows] = await Promise.all([
@@ -158,18 +250,38 @@
         activeTab = defaultWorkTabForRole(currentEmployee.license_role);
         initializedPreferredTab = true;
       }
+      saveSnapshot();
     } catch (err) {
       if (requestSeq !== loadRequestSeq) {
         return;
       }
       lastLoadFailed = true;
       lastLoadError = String(err);
-      toast.danger(`Failed to load work hub: ${String(err)}`);
+      if (!silent || !hasLoadedWorkspaceData()) {
+        toast.danger(`Failed to load work hub: ${String(err)}`);
+      }
     } finally {
-      if (requestSeq === loadRequestSeq) {
+      if (requestSeq === loadRequestSeq && shouldShowLoading) {
         loading = false;
       }
+      if (requestSeq === loadRequestSeq && refreshRemote) {
+        remoteRefreshing = false;
+      }
     }
+  }
+
+  async function hydrateWorkHub() {
+    const restored = restoreSnapshot();
+    if (!restored) {
+      await load();
+      await load({ refreshRemote: true, silent: true });
+      return;
+    }
+    if (hasLoadedWorkspaceData()) {
+      await load({ refreshRemote: isSnapshotStale(), silent: true });
+      return;
+    }
+    await load({ refreshRemote: true, silent: true });
   }
 
   async function recoverBoardIfNeeded() {
@@ -179,7 +291,7 @@
       return;
     }
     boardRecoveryAttempts += 1;
-    await load({ refreshRemote: true });
+    await load({ refreshRemote: true, forceRemote: true });
   }
 
   async function loadProjectContext(projectID: string) {
@@ -188,9 +300,14 @@
       projectMembers = [];
       projectTasks = [];
       projectActivity = [];
+      projectContextLoading = false;
+      projectContextLoadedFor = "";
+      projectContextFailedFor = "";
       return;
     }
 
+    projectContextLoading = true;
+    projectContextFailedFor = "";
     try {
       const [memberRows, taskRows, activityRows] = await Promise.all([
         listProjectMembers(projectID),
@@ -203,20 +320,31 @@
       projectMembers = memberRows;
       projectTasks = taskRows;
       projectActivity = activityRows;
+      projectContextLoadedFor = projectID;
     } catch (err) {
-      toast.danger(`Failed to load project context: ${String(err)}`);
+      if (requestSeq === projectContextRequestSeq) {
+        projectContextFailedFor = projectID;
+        toast.danger(`Failed to load project context: ${String(err)}`);
+      }
+    } finally {
+      if (requestSeq === projectContextRequestSeq) {
+        projectContextLoading = false;
+      }
     }
   }
 
-  async function loadTaskDetail(taskID: string) {
+  async function loadTaskDetail(taskID: string, options: { suppressErrorToast?: boolean } = {}): Promise<boolean> {
+    const { suppressErrorToast = false } = options;
     const requestSeq = ++taskDetailRequestSeq;
     if (!taskID) {
       selectedTask = null;
       taskComments = [];
       taskActivity = [];
-      return;
+      taskDetailLoading = false;
+      return false;
     }
 
+    taskDetailLoading = true;
     try {
       const [task, comments, activity] = await Promise.all([
         getTask(taskID),
@@ -236,8 +364,72 @@
       selectedTaskDueDateDraft = task?.due_date ? new Date(task.due_date).toISOString().slice(0, 10) : "";
       selectedTaskBlockerDraft = task?.blocked_reason || "";
       confirmDeleteTask = false;
+      return true;
     } catch (err) {
-      toast.danger(`Failed to load task detail: ${String(err)}`);
+      if (requestSeq === taskDetailRequestSeq) {
+        selectedTask = null;
+        taskComments = [];
+        taskActivity = [];
+      }
+      if (!suppressErrorToast) {
+        toast.danger(`Failed to load task detail: ${String(err)}`);
+      }
+      return false;
+    } finally {
+      if (requestSeq === taskDetailRequestSeq) {
+        taskDetailLoading = false;
+      }
+    }
+  }
+
+  async function openTaskAfterRefresh(taskID: string) {
+    if (!taskID || openingPendingTask) return;
+
+    openingPendingTask = true;
+    taskModalOpen = true;
+    selectedTaskId = taskID;
+
+    try {
+      let opened = false;
+      const fallbackTask = selectedTask?.id === taskID ? selectedTask : null;
+      for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
+        if (loading) {
+          await waitForWorkspaceLoad();
+        }
+        if (attempt > 0) {
+          await load({ refreshRemote: true, forceRemote: true });
+        }
+        opened = await loadTaskDetail(taskID, { suppressErrorToast: true });
+        if (!opened) {
+          const cachedTask = selectedTask?.id === taskID
+            ? selectedTask
+            : fallbackTask?.id === taskID
+              ? fallbackTask
+            : [...myTasks, ...teamTasks, ...projectTasks].find((task) => task.id === taskID);
+          if (cachedTask) {
+            primeTaskDetail(cachedTask);
+            opened = true;
+          }
+        }
+      }
+
+      if (!opened) {
+        if (pendingOpenTaskId === taskID) {
+          pendingOpenTaskId = "";
+        }
+        if (selectedTaskId === taskID) {
+          selectedTaskId = "";
+        }
+        taskModalOpen = false;
+        toast.danger("Failed to load task detail: task not found. The task may still be syncing to this device.");
+        return;
+      }
+
+      if (pendingOpenTaskId === taskID) {
+        pendingOpenTaskId = "";
+      }
+    } finally {
+      openingPendingTask = false;
     }
   }
 
@@ -261,10 +453,23 @@
       taskDescription = "";
       taskPriority = "medium";
       taskDueDate = "";
-      selectedTaskId = created.id;
-      await load();
-      taskModalOpen = true;
-      await loadTaskDetail(created.id);
+      const createdAssignee = created.assignee_employee_id || selectedAssignee || currentEmployee?.employee_id || "";
+      const assignedToCurrent = !!currentEmployee?.employee_id && createdAssignee === currentEmployee.employee_id;
+      myTasks = assignedToCurrent ? upsertTaskRow(myTasks, created) : myTasks.filter((task) => task.id !== created.id);
+      teamTasks = upsertTaskRow(teamTasks, created);
+      if (selectedProjectForTask && created.project_id === selectedProjectForTask) {
+        projectTasks = upsertTaskRow(projectTasks, created);
+      }
+      activeTab = assignedToCurrent ? "my_work" : "team_board";
+      if (!assignedToCurrent) {
+        teamFocusFilter = "all";
+        teamAssigneeFilter = "all";
+      }
+      queuePendingTaskOpen(created.id);
+      primeTaskDetail(created);
+      pendingOpenTaskId = "";
+      void load({ refreshRemote: true, forceRemote: true, silent: true });
+      void loadTaskDetail(created.id, { suppressErrorToast: true });
       toast.success("Task created");
     } catch (err) {
       toast.danger(`Failed to create task: ${String(err)}`);
@@ -289,9 +494,25 @@
       projectName = "";
       projectDescription = "";
       projectType = "internal";
+      projects = upsertProjectRow(projects, created);
       selectedProjectId = created.id;
       selectedProjectForTask = created.id;
-      await load();
+      projectContextRequestSeq += 1;
+      projectMembers = [];
+      projectTasks = [];
+      projectActivity = [];
+      memberSelections = [];
+      projectContextLoading = false;
+      projectContextLoadedFor = created.id;
+      projectContextFailedFor = "";
+      if (employees.length === 0) {
+        employees = await listEmployeeProfiles(true).catch((err) => {
+          toast.danger(`Project created, but employee directory could not load: ${String(err)}`);
+          return [];
+        });
+      }
+      saveSnapshot();
+      void load({ refreshRemote: true, silent: true });
       toast.success("Project created");
     } catch (err) {
       toast.danger(`Failed to create project: ${String(err)}`);
@@ -366,12 +587,16 @@
 
   async function handleReassignSelectedTask() {
     if (!selectedTask) return;
+    if (!selectedTaskAssigneeChanged) {
+      toast.info("Choose a different assignee before confirming reassignment");
+      return;
+    }
     savingAssignment = true;
     try {
       await reassignTask(selectedTask.id, selectedTaskAssigneeDraft);
       await load();
       await loadTaskDetail(selectedTask.id);
-      toast.success("Task assignee updated");
+      toast.success("Task reassignment confirmed");
     } catch (err) {
       toast.danger(`Failed to reassign task: ${String(err)}`);
     } finally {
@@ -396,9 +621,10 @@
   }
 
   async function selectTask(taskID: string) {
-    selectedTaskId = taskID;
-    taskModalOpen = true;
-    await loadTaskDetail(taskID);
+    if (!taskID) return;
+    const cachedTask = [...myTasks, ...teamTasks, ...projectTasks].find((task) => task.id === taskID);
+    queuePendingTaskOpen(taskID, cachedTask || null);
+    await openTaskAfterRefresh(taskID);
   }
 
   function closeTaskModal() {
@@ -464,9 +690,97 @@
     }
   }
 
+  function queuePendingTaskOpen(taskID: string, fallbackTask?: CollaborativeTask | null) {
+    if (!taskID) return;
+    pendingOpenTaskId = taskID;
+    selectedTaskId = taskID;
+    taskModalOpen = true;
+    if (fallbackTask) {
+      primeTaskDetail(fallbackTask);
+    } else {
+      taskDetailLoading = true;
+      selectedTask = null;
+      selectedTaskTitleDraft = "";
+      selectedTaskDescriptionDraft = "";
+      selectedTaskPriorityDraft = "medium";
+      selectedTaskAssigneeDraft = "";
+      selectedTaskDueDateDraft = "";
+      selectedTaskBlockerDraft = "";
+    }
+    taskComments = [];
+    taskActivity = [];
+  }
+
+  function upsertTaskRow(rows: CollaborativeTask[], task: CollaborativeTask) {
+    const existingIndex = rows.findIndex((row) => row.id === task.id);
+    if (existingIndex >= 0) {
+      const next = [...rows];
+      next[existingIndex] = task;
+      return next;
+    }
+    return [task, ...rows];
+  }
+
+  function upsertProjectRow(rows: CollaborativeProject[], project: CollaborativeProject) {
+    const existingIndex = rows.findIndex((row) => row.id === project.id);
+    if (existingIndex >= 0) {
+      const next = [...rows];
+      next[existingIndex] = project;
+      return next;
+    }
+    return [project, ...rows];
+  }
+
+  function primeTaskDetail(task: CollaborativeTask) {
+    selectedTask = task;
+    selectedTaskId = task.id;
+    taskComments = [];
+    taskActivity = [];
+    taskDetailLoading = false;
+    selectedTaskTitleDraft = task.title || "";
+    selectedTaskDescriptionDraft = task.description || "";
+    selectedTaskPriorityDraft = task.priority || "medium";
+    selectedTaskAssigneeDraft = task.assignee_employee_id || "";
+    selectedTaskDueDateDraft = task.due_date ? new Date(task.due_date).toISOString().slice(0, 10) : "";
+    selectedTaskBlockerDraft = task.blocked_reason || "";
+  }
+
+  function consumePendingTaskOpenFromStorage(): string {
+    const taskID = sessionStorage.getItem(pendingTaskStorageKey)?.trim() || "";
+    if (taskID) {
+      sessionStorage.removeItem(pendingTaskStorageKey);
+    }
+    return taskID;
+  }
+
+  function consumePendingTaskPayloadFromStorage(taskID: string): CollaborativeTask | null {
+    const raw = sessionStorage.getItem(pendingTaskPayloadStorageKey);
+    if (raw) {
+      sessionStorage.removeItem(pendingTaskPayloadStorageKey);
+    }
+    if (!raw) return null;
+    try {
+      const task = JSON.parse(raw) as CollaborativeTask;
+      if (task?.id && String(task.id) === taskID && task.title) {
+        return {
+          ...task,
+          id: String(task.id),
+          title: String(task.title),
+          status: task.status || "open",
+          priority: task.priority || "medium",
+        };
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
   async function selectProject(projectID: string) {
     selectedProjectId = projectID;
     selectedProjectForTask = projectID;
+    projectContextLoadedFor = "";
+    projectContextFailedFor = "";
     await loadProjectContext(projectID);
   }
 
@@ -493,10 +807,12 @@
   }
 
   function handleOpenTaskEvent(event: Event) {
-    const taskID = (event as CustomEvent<{ taskID?: string }>).detail?.taskID || "";
+    const detail = (event as CustomEvent<{ taskID?: string; task?: CollaborativeTask }>).detail || {};
+    const taskID = detail.taskID || "";
     if (!taskID) return;
     activeTab = defaultWorkTabForRole(currentEmployee?.license_role);
-    void selectTask(taskID);
+    queuePendingTaskOpen(taskID, detail.task || null);
+    void openTaskAfterRefresh(taskID);
   }
 
   async function handleTaskDrop(task: CollaborativeTask, event: DragEvent) {
@@ -526,8 +842,13 @@
     return projects.find((project) => project.id === task.project_id)?.name || "None";
   }
 
-  function boardTasks(status: string) {
-    return filteredTeamTasks.filter((task) => (task.status || "open") === status);
+  function normalizedBoardStatus(task: CollaborativeTask) {
+    const status = String(task.status || "open").trim().toLowerCase().replace(/[\s-]+/g, "_");
+    if (["completed", "archived", "done"].includes(status)) return "completed";
+    if (status === "blocked") return "blocked";
+    if (["in_progress", "started", "active_progress"].includes(status)) return "in_progress";
+    if (["open", "pending", "new", "active", ""].includes(status)) return "open";
+    return "open";
   }
 
   function dueLabel(task: CollaborativeTask) {
@@ -545,6 +866,18 @@
   }
 
   $: selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
+  $: selectedTaskAssigneeChanged = Boolean(selectedTask) && (selectedTask.assignee_employee_id || "") !== selectedTaskAssigneeDraft;
+  $: boardTaskGroups = filteredTeamTasks.reduce((groups, task) => {
+    const lane = normalizedBoardStatus(task);
+    const targetLane = boardColumns.some((column) => column.key === lane) ? lane : "open";
+    groups[targetLane] = [...groups[targetLane], task];
+    return groups;
+  }, {
+    open: [] as CollaborativeTask[],
+    in_progress: [] as CollaborativeTask[],
+    blocked: [] as CollaborativeTask[],
+    completed: [] as CollaborativeTask[],
+  });
   $: projectStats = {
     open: projectTasks.filter((task) => !["completed", "archived"].includes(task.status || "")).length,
     blocked: projectTasks.filter((task) => task.status === "blocked").length,
@@ -580,12 +913,24 @@
     }))
     .sort((a, b) => b.openCount - a.openCount || b.blockedCount - a.blockedCount);
   $: activeWorkload = workload.filter((item) => item.openCount > 0 || item.blockedCount > 0);
-  $: if (activeTab === "projects" && selectedProjectId && !projectMembers.length && !projectTasks.length && !projectActivity.length && !loading) {
+  $: modalTask = selectedTask || [...myTasks, ...teamTasks, ...projectTasks].find((task) => task.id === selectedTaskId) || null;
+  $: if (
+    activeTab === "projects"
+    && selectedProjectId
+    && projectContextLoadedFor !== selectedProjectId
+    && projectContextFailedFor !== selectedProjectId
+    && !projectContextLoading
+    && !loading
+  ) {
     void loadProjectContext(selectedProjectId);
   }
 
-  $: if (selectedTaskId && activeTab !== "projects" && (!selectedTask || selectedTask.id !== selectedTaskId) && !loading) {
-    void loadTaskDetail(selectedTaskId);
+  $: if (pendingOpenTaskId && !loading && activeTab !== "projects") {
+    void openTaskAfterRefresh(pendingOpenTaskId);
+  }
+
+  $: if (selectedTaskId && activeTab !== "projects" && !pendingOpenTaskId && !openingPendingTask && (!selectedTask || selectedTask.id !== selectedTaskId) && !loading) {
+    void loadTaskDetail(selectedTaskId, { suppressErrorToast: true });
   }
 
   $: if (activeTab === "team_board" && !loading && (lastLoadFailed || (teamTasks.length === 0 && employees.length === 0 && projects.length === 0))) {
@@ -593,11 +938,22 @@
   }
 
   onMount(() => {
-    void load({ refreshRemote: true });
-    EventsOn("tasks:updated", () => void load());
-    EventsOn("projects:updated", () => void load());
-    EventsOn("employees:updated", () => void load());
+    void hydrateWorkHub();
+    EventsOn("tasks:updated", () => void load({ silent: true }));
+    EventsOn("projects:updated", () => {
+      void load({ silent: true });
+      if (selectedProjectId) {
+        projectContextLoadedFor = "";
+        projectContextFailedFor = "";
+        void loadProjectContext(selectedProjectId);
+      }
+    });
+    EventsOn("employees:updated", () => void load({ silent: true }));
     window.addEventListener("openCollaborativeTask", handleOpenTaskEvent);
+    const pendingTaskID = consumePendingTaskOpenFromStorage();
+    if (pendingTaskID) {
+      queuePendingTaskOpen(pendingTaskID, consumePendingTaskPayloadFromStorage(pendingTaskID));
+    }
   });
 
   onDestroy(() => {
@@ -617,6 +973,14 @@
         <span class="label">Active Employee</span>
         <strong>{currentEmployee.employee_name}</strong>
         <span class="meta">{currentEmployee.license_role || currentEmployee.resolved_by}</span>
+        {#if remoteRefreshing}
+          <span class="meta">Syncing latest changes</span>
+        {/if}
+      </div>
+    {:else if remoteRefreshing}
+      <div class="identity-card">
+        <span class="label">Workspace</span>
+        <strong>Syncing latest changes</strong>
       </div>
     {/if}
   </header>
@@ -820,13 +1184,13 @@
             <section class="board-lane">
               <div class="board-lane-head">
                 <h3>{column.label}</h3>
-                <span>{boardTasks(column.key).length}</span>
+                <span>{boardTaskGroups[column.key]?.length || 0}</span>
               </div>
-              {#if boardTasks(column.key).length === 0}
+              {#if (boardTaskGroups[column.key]?.length || 0) === 0}
                 <div class="empty compact lane-empty">No tasks in this lane.</div>
               {:else}
                 <div class="task-gallery lane-gallery">
-                  {#each boardTasks(column.key) as task}
+                  {#each boardTaskGroups[column.key] as task}
                     <button
                       class="task-shell board-card selectable"
                       class:selected={selectedTaskId === task.id}
@@ -948,7 +1312,12 @@
                   {memberSelections.length > 0 ? `Add ${memberSelections.length} Member${memberSelections.length === 1 ? "" : "s"}` : "Add Members"}
                 </button>
               </div>
-              {#if availableProjectMembers.length > 0}
+              {#if projectContextLoading}
+                <div class="section-loading">
+                  <WabiSpinner size="md" tempo="calm" />
+                  <p>Loading members...</p>
+                </div>
+              {:else if availableProjectMembers.length > 0}
                 <div class="member-picker">
                   {#each availableProjectMembers as employee}
                     <button
@@ -982,7 +1351,12 @@
                 <h3>Project Tasks</h3>
                 <span class="count">{projectTasks.length}</span>
               </div>
-              {#if projectTasks.length === 0}
+              {#if projectContextLoading}
+                <div class="section-loading">
+                  <WabiSpinner size="md" tempo="calm" />
+                  <p>Loading project tasks...</p>
+                </div>
+              {:else if projectTasks.length === 0}
                 <div class="empty compact">No tasks attached to this project yet.</div>
               {:else}
                 <div class="timeline">
@@ -1001,7 +1375,12 @@
                 <h3>Project Activity</h3>
                 <span class="count">{projectActivity.length}</span>
               </div>
-              {#if projectActivity.length === 0}
+              {#if projectContextLoading}
+                <div class="section-loading">
+                  <WabiSpinner size="md" tempo="calm" />
+                  <p>Loading project activity...</p>
+                </div>
+              {:else if projectActivity.length === 0}
                 <div class="empty compact">No project activity yet.</div>
               {:else}
                 <div class="timeline">
@@ -1022,25 +1401,30 @@
   {/if}
 </div>
 
-<Modal bind:open={taskModalOpen} title={selectedTask ? selectedTask.title : "Task Detail"} size="lg" on:close={closeTaskModal}>
-  {#if !selectedTask}
+<Modal bind:open={taskModalOpen} title={modalTask ? modalTask.title : "Task Detail"} size="lg" on:close={closeTaskModal}>
+  {#if taskDetailLoading && !modalTask}
+    <div class="modal-loading-state">
+      <WabiSpinner size="lg" tempo="calm" />
+      <p>Loading task history...</p>
+    </div>
+  {:else if !modalTask}
     <div class="empty compact">Choose a task to inspect comments and history.</div>
   {:else}
     <div class="task-modal-body">
       <div class="detail-hero">
         <div>
-          <p class="eyebrow">{(selectedTask.status || "open").replaceAll("_", " ")}</p>
-          <h3>{selectedTask.title}</h3>
-          <p>{selectedTask.description || "No task details provided."}</p>
+          <p class="eyebrow">{(modalTask.status || "open").replaceAll("_", " ")}</p>
+          <h3>{modalTask.title}</h3>
+          <p>{modalTask.description || "No task details provided."}</p>
         </div>
-        <span class="pill {selectedTask.priority || 'medium'}">{selectedTask.priority || "medium"}</span>
+        <span class="pill {modalTask.priority || 'medium'}">{modalTask.priority || "medium"}</span>
       </div>
 
       <div class="task-meta chips">
-        <span>Assignee: {selectedTask.assignee_name || "Unassigned"}</span>
-        <span>Project: {projectNameFor(selectedTask)}</span>
-        <span>{dueLabel(selectedTask)}</span>
-        <span>Created by: {selectedTask.creator_name || "System"}</span>
+        <span>Assignee: {modalTask.assignee_name || "Unassigned"}</span>
+        <span>Project: {projectNameFor(modalTask)}</span>
+        <span>{dueLabel(modalTask)}</span>
+        <span>Created by: {modalTask.creator_name || "System"}</span>
       </div>
 
       <div class="subpanel modal-subpanel">
@@ -1074,7 +1458,7 @@
       <div class="subpanel modal-subpanel">
         <div class="section-head">
           <h3>Blocker</h3>
-          <span class="count">{selectedTask.status === "blocked" ? "Active" : "Optional"}</span>
+          <span class="count">{modalTask.status === "blocked" ? "Active" : "Optional"}</span>
         </div>
         <textarea
           bind:value={selectedTaskBlockerDraft}
@@ -1084,14 +1468,17 @@
       </div>
 
       <div class="editor-grid">
-        <select bind:value={selectedTaskAssigneeDraft}>
-          <option value="">Unassigned</option>
-          {#each employees as employee}
-            <option value={employee.id}>{employee.full_name}{employee.department ? ` • ${employee.department}` : ""}</option>
-          {/each}
-        </select>
-        <Button variant="secondary" size="sm" on:click={handleReassignSelectedTask} disabled={savingAssignment}>
-          {savingAssignment ? "Saving..." : "Save Assignee"}
+        <label class="assignment-field">
+          <span>Assignee</span>
+          <select bind:value={selectedTaskAssigneeDraft}>
+            <option value="">Unassigned</option>
+            {#each employees as employee}
+              <option value={employee.id}>{employee.full_name}{employee.department ? ` • ${employee.department}` : ""}</option>
+            {/each}
+          </select>
+        </label>
+        <Button variant={selectedTaskAssigneeChanged ? "primary" : "secondary"} size="sm" on:click={handleReassignSelectedTask} disabled={savingAssignment || !selectedTaskAssigneeChanged}>
+          {savingAssignment ? "Confirming..." : selectedTaskAssigneeChanged ? "Confirm Reassignment" : "Assignee Saved"}
         </Button>
         <input bind:value={selectedTaskDueDateDraft} type="date" />
         <Button variant="secondary" size="sm" on:click={handleUpdateDueDate} disabled={savingDueDate}>
@@ -1100,16 +1487,16 @@
       </div>
 
       <div class="task-actions">
-        {#if selectedTask.status === "blocked"}
-          <Button variant="success" size="sm" on:click={() => changeStatus(selectedTask, "open")}>Unblock</Button>
+        {#if modalTask.status === "blocked"}
+          <Button variant="success" size="sm" on:click={() => changeStatus(modalTask, "open")}>Unblock</Button>
         {/if}
-        {#if selectedTask.status !== "in_progress"}
-          <Button variant="secondary" size="sm" on:click={() => changeStatus(selectedTask, "in_progress")}>Start</Button>
+        {#if modalTask.status !== "in_progress"}
+          <Button variant="secondary" size="sm" on:click={() => changeStatus(modalTask, "in_progress")}>Start</Button>
         {/if}
-        {#if selectedTask.status !== "completed"}
-          <Button variant="primary" size="sm" on:click={() => changeStatus(selectedTask, "completed")}>Complete</Button>
+        {#if modalTask.status !== "completed"}
+          <Button variant="primary" size="sm" on:click={() => changeStatus(modalTask, "completed")}>Complete</Button>
         {/if}
-        {#if selectedTask.status !== "blocked"}
+        {#if modalTask.status !== "blocked"}
           <Button variant="warning" size="sm" on:click={handleBlockSelectedTask}>Block</Button>
         {/if}
         <Button variant={confirmDeleteTask ? "danger" : "ghost"} size="sm" on:click={handleDeleteSelectedTask} disabled={deletingTask}>
@@ -1123,11 +1510,12 @@
             <h3>Comments</h3>
             <span class="count">{taskComments.length}</span>
           </div>
-          <div class="comment-composer">
-            <textarea bind:value={commentDraft} rows="2" placeholder="Add a progress note or blocker update"></textarea>
-            <Button variant="primary" size="sm" on:click={handleAddComment} disabled={savingComment}>Comment</Button>
-          </div>
-          {#if taskComments.length === 0}
+          {#if taskDetailLoading}
+            <div class="section-loading">
+              <WabiSpinner size="md" tempo="calm" />
+              <p>Loading comments...</p>
+            </div>
+          {:else if taskComments.length === 0}
             <div class="empty compact">No comments yet.</div>
           {:else}
             <div class="timeline">
@@ -1140,6 +1528,10 @@
               {/each}
             </div>
           {/if}
+          <div class="comment-composer">
+            <textarea bind:value={commentDraft} rows="2" placeholder="Add a progress note or blocker update"></textarea>
+            <Button variant="primary" size="sm" on:click={handleAddComment} disabled={savingComment || taskDetailLoading}>Comment</Button>
+          </div>
         </div>
 
         <div class="subpanel modal-subpanel">
@@ -1147,7 +1539,12 @@
             <h3>Activity Timeline</h3>
             <span class="count">{taskActivity.length}</span>
           </div>
-          {#if taskActivity.length === 0}
+          {#if taskDetailLoading}
+            <div class="section-loading">
+              <WabiSpinner size="md" tempo="calm" />
+              <p>Loading activity...</p>
+            </div>
+          {:else if taskActivity.length === 0}
             <div class="empty compact">No activity yet.</div>
           {:else}
             <div class="timeline">
@@ -1317,6 +1714,18 @@
     grid-template-columns: 1.5fr auto 1fr auto;
   }
 
+  .assignment-field {
+    display: grid;
+    gap: 6px;
+  }
+
+  .assignment-field span {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
   input,
   select,
   textarea,
@@ -1338,6 +1747,16 @@
     display: flex;
     justify-content: flex-end;
     margin-top: 12px;
+  }
+
+  .section-loading,
+  .modal-loading-state {
+    display: grid;
+    place-items: center;
+    gap: 10px;
+    padding: 24px;
+    color: var(--text-secondary);
+    text-align: center;
   }
 
   .primary {
@@ -1667,17 +2086,38 @@
 
   .task-modal-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
   }
 
   .modal-subpanel {
     border-top: none;
     padding-top: 0;
+    align-self: start;
+    height: auto;
+    min-height: 0;
   }
 
   .task-meta.chips span {
     padding: 6px 10px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--bg-base) 85%, #e2e8f0 15%);
+  }
+
+  .task-modal-grid .timeline {
+    align-content: start;
+    grid-auto-rows: max-content;
+  }
+
+  .task-modal-grid .timeline-item {
+    align-self: start;
+    height: auto;
+    min-height: 0;
+  }
+
+  .task-modal-grid .comment-composer,
+  .task-modal-grid .section-loading,
+  .task-modal-grid .empty {
+    align-self: start;
   }
 
   @media (max-width: 1100px) {

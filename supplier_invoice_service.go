@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,12 +51,11 @@ func (a *App) CreateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 	if inv.MatchStatus == "" {
 		inv.MatchStatus = "Pending"
 	}
+	inv.Currency = strings.ToUpper(strings.TrimSpace(inv.Currency))
 	if inv.Currency == "" {
 		inv.Currency = "BHD" // Default to Bahraini Dinar
 	}
-	if inv.ExchangeRate == 0 {
-		inv.ExchangeRate = 1.0 // Default to 1:1 for BHD
-	}
+	inv.ExchangeRate = normalizeExchangeRateToBHD(inv.Currency, inv.ExchangeRate)
 
 	// Enrich supplier_name from SupplierMaster (denormalized for display)
 	if inv.SupplierID != "" && inv.SupplierName == "" {
@@ -72,7 +72,15 @@ func (a *App) CreateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 		var po PurchaseOrder
 		if err := a.db.Where("id = ?", inv.PurchaseOrderID).First(&po).Error; err == nil {
 			inv.PONumber = po.PONumber
+			if strings.TrimSpace(inv.Division) == "" {
+				inv.Division = a.resolvePurchaseOrderDivision(po)
+			}
 		}
+	}
+	if strings.TrimSpace(inv.Division) == "" {
+		inv.Division = a.resolveSupplierInvoiceDivision(inv)
+	} else {
+		inv.Division = normalizeDivisionName(inv.Division)
 	}
 
 	// Check for duplicate invoice number for same supplier
@@ -87,6 +95,9 @@ func (a *App) CreateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 
 	// Timestamp
 	now := time.Now()
+	if strings.TrimSpace(inv.CreatedBy) == "" {
+		inv.CreatedBy = a.getCurrentUserID()
+	}
 	inv.CreatedAt = now
 	inv.UpdatedAt = now
 
@@ -278,8 +289,21 @@ func (a *App) UpdateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 		var po PurchaseOrder
 		if err := tx.Where("id = ?", inv.PurchaseOrderID).First(&po).Error; err == nil {
 			inv.PONumber = po.PONumber
+			if strings.TrimSpace(inv.Division) == "" {
+				inv.Division = a.resolvePurchaseOrderDivision(po)
+			}
 		}
 	}
+	if strings.TrimSpace(inv.Division) == "" {
+		inv.Division = a.resolveSupplierInvoiceDivision(inv)
+	} else {
+		inv.Division = normalizeDivisionName(inv.Division)
+	}
+	inv.Currency = strings.ToUpper(strings.TrimSpace(inv.Currency))
+	if inv.Currency == "" {
+		inv.Currency = "BHD"
+	}
+	inv.ExchangeRate = normalizeExchangeRateToBHD(inv.Currency, inv.ExchangeRate)
 
 	// Update timestamp
 	inv.UpdatedAt = time.Now()
@@ -352,8 +376,21 @@ func (a *App) UpdateSupplierInvoiceWithPayment(inv SupplierInvoice, createPaymen
 		var po PurchaseOrder
 		if err := tx.Where("id = ?", inv.PurchaseOrderID).First(&po).Error; err == nil {
 			inv.PONumber = po.PONumber
+			if strings.TrimSpace(inv.Division) == "" {
+				inv.Division = a.resolvePurchaseOrderDivision(po)
+			}
 		}
 	}
+	if strings.TrimSpace(inv.Division) == "" {
+		inv.Division = a.resolveSupplierInvoiceDivision(inv)
+	} else {
+		inv.Division = normalizeDivisionName(inv.Division)
+	}
+	inv.Currency = strings.ToUpper(strings.TrimSpace(inv.Currency))
+	if inv.Currency == "" {
+		inv.Currency = "BHD"
+	}
+	inv.ExchangeRate = normalizeExchangeRateToBHD(inv.Currency, inv.ExchangeRate)
 
 	inv.UpdatedAt = time.Now()
 
@@ -413,6 +450,9 @@ func (a *App) UpdateSupplierInvoiceWithPayment(inv SupplierInvoice, createPaymen
 
 // DeleteSupplierInvoice deletes a supplier invoice (soft delete)
 func (a *App) DeleteSupplierInvoice(id string) error {
+	if ok, err := a.guardDeleteOrRequest("po:create", "supplier_invoice", id, "Supplier invoice"); !ok {
+		return err
+	}
 	if err := a.requirePermission("po:create"); err != nil {
 		return err
 	}
@@ -867,6 +907,9 @@ func (a *App) CreateSupplierInvoiceFromOCR(ocrDocID string, supplierID string, p
 		var po PurchaseOrder
 		if err := a.db.Where("id = ?", poID).First(&po).Error; err == nil {
 			invoice.PONumber = po.PONumber
+			if strings.TrimSpace(invoice.Division) == "" {
+				invoice.Division = a.resolvePurchaseOrderDivision(po)
+			}
 		}
 	}
 
@@ -922,17 +965,51 @@ func (a *App) CreateSupplierInvoiceFromOCR(ocrDocID string, supplierID string, p
 	if currency, ok := extractedData["currency"].(string); ok && currency != "" {
 		invoice.Currency = currency
 	}
+	if rate, ok := extractedData["exchange_rate"].(float64); ok && rate > 0 {
+		invoice.ExchangeRate = rate
+	}
+	invoice.Currency = strings.ToUpper(strings.TrimSpace(invoice.Currency))
+	if invoice.Currency == "" {
+		invoice.Currency = "BHD"
+	}
+	invoice.ExchangeRate = normalizeExchangeRateToBHD(invoice.Currency, invoice.ExchangeRate)
+	if invoice.TotalForeign <= 0 && (invoice.SubtotalForeign > 0 || invoice.VATForeign > 0) {
+		invoice.TotalForeign = invoice.SubtotalForeign + invoice.VATForeign
+	}
+	invoice.SubtotalBHD = roundTo3(invoice.SubtotalForeign * invoice.ExchangeRate)
+	invoice.VATBHD = roundTo3(invoice.VATForeign * invoice.ExchangeRate)
+	invoice.TotalBHD = roundTo3(invoice.TotalForeign * invoice.ExchangeRate)
 
 	// Extract PO number if present (and poID not provided)
 	if poID == "" {
 		if poNum, ok := extractedData["po_number"].(string); ok && poNum != "" {
-			// NOTE: Would need to look up actual PO by number when PO entity is implemented
-			log.Printf("📝 OCR extracted PO Number: %s (lookup not yet implemented)", poNum)
+			var po PurchaseOrder
+			if err := a.db.Where("po_number = ?", poNum).First(&po).Error; err == nil {
+				invoice.PurchaseOrderID = po.ID
+				invoice.PONumber = po.PONumber
+				if invoice.SupplierID == "" {
+					invoice.SupplierID = po.SupplierID
+					invoice.SupplierName = po.SupplierName
+				}
+				if strings.TrimSpace(invoice.Division) == "" {
+					invoice.Division = a.resolvePurchaseOrderDivision(po)
+				}
+			} else {
+				invoice.PONumber = poNum
+			}
 		}
+	}
+	if strings.TrimSpace(invoice.Division) == "" {
+		invoice.Division = a.resolveSupplierInvoiceDivision(invoice)
+	} else {
+		invoice.Division = normalizeDivisionName(invoice.Division)
 	}
 
 	// Create the invoice
 	now := time.Now()
+	if strings.TrimSpace(invoice.CreatedBy) == "" {
+		invoice.CreatedBy = a.getCurrentUserID()
+	}
 	invoice.CreatedAt = now
 	invoice.UpdatedAt = now
 

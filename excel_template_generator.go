@@ -12,25 +12,20 @@ import (
 
 // GenerateDataImportTemplate creates a multi-sheet Excel template for client data onboarding.
 // The client fills this out and returns it for import into AsymmFlow.
-func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
+func (a *App) GenerateDataImportTemplate() (string, error) {
 	if err := a.requirePermission("settings:update"); err != nil {
 		return "", err
 	}
 
 	f := excelize.NewFile()
-	xl := newGuardedExcelFile(f)
-	defer func() {
-		if closeErr := xl.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("failed to close workbook: %w", closeErr)
-		}
-	}()
+	defer f.Close()
 
 	// =========================================================================
 	// STYLES
 	// =========================================================================
 
 	// Title style - dark blue background, white bold text, large font
-	titleStyle := xl.NewStyle(&excelize.Style{
+	titleStyle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 16, Color: "FFFFFF", Family: "Calibri"},
 		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"1B2A4A"}},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center", WrapText: true},
@@ -40,14 +35,14 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 	})
 
 	// Section header style - gold accent
-	sectionStyle := xl.NewStyle(&excelize.Style{
+	sectionStyle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 11, Color: "1B2A4A", Family: "Calibri"},
 		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"E8A838"}},
 		Alignment: &excelize.Alignment{Horizontal: "left", Vertical: "center", WrapText: true},
 	})
 
 	// Column header style - dark header with white text
-	headerStyle := xl.NewStyle(&excelize.Style{
+	headerStyle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 10, Color: "FFFFFF", Family: "Calibri"},
 		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"2C3E50"}},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center", WrapText: true},
@@ -60,7 +55,7 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 	})
 
 	// Required column header - red accent to show mandatory
-	requiredHeaderStyle := xl.NewStyle(&excelize.Style{
+	requiredHeaderStyle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 10, Color: "FFFFFF", Family: "Calibri"},
 		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"C0392B"}},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center", WrapText: true},
@@ -73,7 +68,7 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 	})
 
 	// Example data style - light blue background, italic
-	exampleStyle := xl.NewStyle(&excelize.Style{
+	exampleStyle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Italic: true, Size: 10, Color: "7F8C8D", Family: "Calibri"},
 		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"EBF5FB"}},
 		Alignment: &excelize.Alignment{Vertical: "center", WrapText: true},
@@ -86,7 +81,7 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 	})
 
 	// Normal data cell style
-	dataStyle := xl.NewStyle(&excelize.Style{
+	dataStyle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Size: 10, Family: "Calibri"},
 		Alignment: &excelize.Alignment{Vertical: "center", WrapText: true},
 		Border: []excelize.Border{
@@ -98,7 +93,7 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 	})
 
 	// Note/instruction style - yellow background
-	noteStyle := xl.NewStyle(&excelize.Style{
+	noteStyle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Size: 10, Color: "856404", Family: "Calibri"},
 		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"FFF3CD"}},
 		Alignment: &excelize.Alignment{Horizontal: "left", Vertical: "center", WrapText: true},
@@ -114,14 +109,14 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 	// SHEET 1: INSTRUCTIONS
 	// =========================================================================
 	instrSheet := "Instructions"
-	xl.SetSheetName("Sheet1", instrSheet)
+	f.SetSheetName("Sheet1", instrSheet)
 
-	xl.SetColWidth(instrSheet, "A", "A", 80)
-	xl.SetRowHeight(instrSheet, 1, 45)
+	f.SetColWidth(instrSheet, "A", "A", 80)
+	f.SetRowHeight(instrSheet, 1, 45)
 
-	xl.MergeCell(instrSheet, "A1", "A1")
-	xl.SetCellValue(instrSheet, "A1", "AsymmFlow - Data Import Template")
-	xl.SetCellStyle(instrSheet, "A1", "A1", titleStyle)
+	f.MergeCell(instrSheet, "A1", "A1")
+	f.SetCellValue(instrSheet, "A1", "AsymmFlow - Data Import Template")
+	f.SetCellStyle(instrSheet, "A1", "A1", titleStyle)
 
 	instructions := []struct {
 		row   int
@@ -164,18 +159,23 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 	}
 
 	for _, instr := range instructions {
-		xl.SetCellValue(instrSheet, fmt.Sprintf("A%d", instr.row), instr.text)
-		xl.SetCellStyle(instrSheet, fmt.Sprintf("A%d", instr.row), fmt.Sprintf("A%d", instr.row), instr.style)
-		xl.SetRowHeight(instrSheet, instr.row, 22)
+		f.SetCellValue(instrSheet, fmt.Sprintf("A%d", instr.row), instr.text)
+		f.SetCellStyle(instrSheet, fmt.Sprintf("A%d", instr.row), fmt.Sprintf("A%d", instr.row), instr.style)
+		f.SetRowHeight(instrSheet, instr.row, 22)
 	}
 
 	// =========================================================================
 	// SHEET 2: CUSTOMERS
 	// =========================================================================
 	custSheet := "Customers"
-	xl.NewSheet(custSheet)
+	f.NewSheet(custSheet)
 
-	custHeaders := []sheetHeader{
+	custHeaders := []struct {
+		col      string
+		name     string
+		width    float64
+		required bool
+	}{
 		{"A", "customer_code", 18, true},
 		{"B", "business_name", 35, true},
 		{"C", "customer_type", 18, false},
@@ -190,7 +190,7 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		{"L", "customer_grade", 15, false},
 	}
 
-	writeSheetHeaders(xl, custSheet, custHeaders, headerStyle, requiredHeaderStyle, titleStyle)
+	writeSheetHeaders(f, custSheet, custHeaders, headerStyle, requiredHeaderStyle, titleStyle)
 
 	// Example row
 	custExample := []string{
@@ -198,23 +198,28 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		"P.O. Box 25555, Awali", "Awali", "Bahrain",
 		"123456789", "Oil & Gas", "30", "50000.000", "A", "A",
 	}
-	writeExampleRow(xl, custSheet, custExample, exampleStyle, len(custHeaders))
+	writeExampleRow(f, custSheet, custExample, exampleStyle, len(custHeaders))
 
 	// Apply data style to rows 3-100
-	applyDataStyle(xl, custSheet, dataStyle, len(custHeaders), 3, 100)
+	applyDataStyle(f, custSheet, dataStyle, len(custHeaders), 3, 100)
 
 	// Dropdowns
-	addDropdown(xl, custSheet, "C3:C500", `"Corporate,Government,SME,Individual,Joint Venture"`)
-	addDropdown(xl, custSheet, "K3:K500", `"A,B,C,D"`)
-	addDropdown(xl, custSheet, "L3:L500", `"A,B,C,D"`)
+	addDropdown(f, custSheet, "C3:C500", `"Corporate,Government,SME,Individual,Joint Venture"`)
+	addDropdown(f, custSheet, "K3:K500", `"A,B,C,D"`)
+	addDropdown(f, custSheet, "L3:L500", `"A,B,C,D"`)
 
 	// =========================================================================
 	// SHEET 3: CUSTOMER CONTACTS
 	// =========================================================================
 	ccSheet := "Customer Contacts"
-	xl.NewSheet(ccSheet)
+	f.NewSheet(ccSheet)
 
-	ccHeaders := []sheetHeader{
+	ccHeaders := []struct {
+		col      string
+		name     string
+		width    float64
+		required bool
+	}{
 		{"A", "customer_code", 18, true},
 		{"B", "contact_name", 30, true},
 		{"C", "job_title", 25, false},
@@ -224,23 +229,28 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		{"G", "is_primary_contact", 18, false},
 	}
 
-	writeSheetHeaders(xl, ccSheet, ccHeaders, headerStyle, requiredHeaderStyle, titleStyle)
+	writeSheetHeaders(f, ccSheet, ccHeaders, headerStyle, requiredHeaderStyle, titleStyle)
 
 	ccExample := []string{
 		"BAPCO-001", "Ahmed Al Khalifa", "Procurement Manager",
 		"ahmed@bapco.net", "+973 1775 5555", "P.O. Box 25555, Awali", "TRUE",
 	}
-	writeExampleRow(xl, ccSheet, ccExample, exampleStyle, len(ccHeaders))
-	applyDataStyle(xl, ccSheet, dataStyle, len(ccHeaders), 3, 100)
-	addDropdown(xl, ccSheet, "G3:G500", `"TRUE,FALSE"`)
+	writeExampleRow(f, ccSheet, ccExample, exampleStyle, len(ccHeaders))
+	applyDataStyle(f, ccSheet, dataStyle, len(ccHeaders), 3, 100)
+	addDropdown(f, ccSheet, "G3:G500", `"TRUE,FALSE"`)
 
 	// =========================================================================
 	// SHEET 4: SUPPLIERS
 	// =========================================================================
 	supSheet := "Suppliers"
-	xl.NewSheet(supSheet)
+	f.NewSheet(supSheet)
 
-	supHeaders := []sheetHeader{
+	supHeaders := []struct {
+		col      string
+		name     string
+		width    float64
+		required bool
+	}{
 		{"A", "supplier_code", 18, true},
 		{"B", "supplier_name", 35, true},
 		{"C", "country", 15, false},
@@ -258,7 +268,7 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		{"O", "tax_id", 18, false},
 	}
 
-	writeSheetHeaders(xl, supSheet, supHeaders, headerStyle, requiredHeaderStyle, titleStyle)
+	writeSheetHeaders(f, supSheet, supHeaders, headerStyle, requiredHeaderStyle, titleStyle)
 
 	supExample := []string{
 		"SUP-EH", "Endress+Hauser AG", "Switzerland", "Manufacturer",
@@ -266,17 +276,22 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		"Kagenstrasse 2, 4153 Reinach", "Net 60", "45",
 		"UBS AG", "CH93 0076 2011 6238 5295 7", "UBSWCHZH80A", "CHE-123.456.789",
 	}
-	writeExampleRow(xl, supSheet, supExample, exampleStyle, len(supHeaders))
-	applyDataStyle(xl, supSheet, dataStyle, len(supHeaders), 3, 100)
-	addDropdown(xl, supSheet, "D3:D500", `"Manufacturer,Distributor,Agent,Service Provider"`)
+	writeExampleRow(f, supSheet, supExample, exampleStyle, len(supHeaders))
+	applyDataStyle(f, supSheet, dataStyle, len(supHeaders), 3, 100)
+	addDropdown(f, supSheet, "D3:D500", `"Manufacturer,Distributor,Agent,Service Provider"`)
 
 	// =========================================================================
 	// SHEET 5: SUPPLIER CONTACTS
 	// =========================================================================
 	scSheet := "Supplier Contacts"
-	xl.NewSheet(scSheet)
+	f.NewSheet(scSheet)
 
-	scHeaders := []sheetHeader{
+	scHeaders := []struct {
+		col      string
+		name     string
+		width    float64
+		required bool
+	}{
 		{"A", "supplier_code", 18, true},
 		{"B", "contact_name", 30, true},
 		{"C", "job_title", 25, false},
@@ -286,23 +301,28 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		{"G", "is_primary_contact", 18, false},
 	}
 
-	writeSheetHeaders(xl, scSheet, scHeaders, headerStyle, requiredHeaderStyle, titleStyle)
+	writeSheetHeaders(f, scSheet, scHeaders, headerStyle, requiredHeaderStyle, titleStyle)
 
 	scExample := []string{
 		"SUP-EH", "Hans Mueller", "Regional Sales Manager",
 		"hans@endress.com", "+41 61 715 7575", "Kagenstrasse 2, Reinach", "TRUE",
 	}
-	writeExampleRow(xl, scSheet, scExample, exampleStyle, len(scHeaders))
-	applyDataStyle(xl, scSheet, dataStyle, len(scHeaders), 3, 100)
-	addDropdown(xl, scSheet, "G3:G500", `"TRUE,FALSE"`)
+	writeExampleRow(f, scSheet, scExample, exampleStyle, len(scHeaders))
+	applyDataStyle(f, scSheet, dataStyle, len(scHeaders), 3, 100)
+	addDropdown(f, scSheet, "G3:G500", `"TRUE,FALSE"`)
 
 	// =========================================================================
 	// SHEET 6: PRODUCTS
 	// =========================================================================
 	prodSheet := "Products"
-	xl.NewSheet(prodSheet)
+	f.NewSheet(prodSheet)
 
-	prodHeaders := []sheetHeader{
+	prodHeaders := []struct {
+		col      string
+		name     string
+		width    float64
+		required bool
+	}{
 		{"A", "product_code", 20, true},
 		{"B", "product_name", 35, true},
 		{"C", "product_category", 20, false},
@@ -315,25 +335,30 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		{"J", "hs_code", 15, false},
 	}
 
-	writeSheetHeaders(xl, prodSheet, prodHeaders, headerStyle, requiredHeaderStyle, titleStyle)
+	writeSheetHeaders(f, prodSheet, prodHeaders, headerStyle, requiredHeaderStyle, titleStyle)
 
 	prodExample := []string{
 		"EH-FMR60", "Micropilot FMR60 Radar Level", "Level Measurement",
 		"SUP-EH", "FMR60-AAACCAAPK2", "80 GHz radar level transmitter for liquids",
 		"2500.000", "4200.000", "Each", "9026.10",
 	}
-	writeExampleRow(xl, prodSheet, prodExample, exampleStyle, len(prodHeaders))
-	applyDataStyle(xl, prodSheet, dataStyle, len(prodHeaders), 3, 100)
-	addDropdown(xl, prodSheet, "C3:C500", `"Level Measurement,Flow Measurement,Pressure Measurement,Temperature Measurement,Analytics,Gas Analysis,Electrical,Services,Spare Parts,Other"`)
-	addDropdown(xl, prodSheet, "I3:I500", `"Each,Set,Meter,Kg,Lot,Box"`)
+	writeExampleRow(f, prodSheet, prodExample, exampleStyle, len(prodHeaders))
+	applyDataStyle(f, prodSheet, dataStyle, len(prodHeaders), 3, 100)
+	addDropdown(f, prodSheet, "C3:C500", `"Level Measurement,Flow Measurement,Pressure Measurement,Temperature Measurement,Analytics,Gas Analysis,Electrical,Services,Spare Parts,Other"`)
+	addDropdown(f, prodSheet, "I3:I500", `"Each,Set,Meter,Kg,Lot,Box"`)
 
 	// =========================================================================
 	// SHEET 7: ORDERS
 	// =========================================================================
 	orderSheet := "Orders"
-	xl.NewSheet(orderSheet)
+	f.NewSheet(orderSheet)
 
-	orderHeaders := []sheetHeader{
+	orderHeaders := []struct {
+		col      string
+		name     string
+		width    float64
+		required bool
+	}{
 		{"A", "order_number", 18, true},
 		{"B", "customer_code", 18, true},
 		{"C", "customer_po_number", 20, false},
@@ -347,7 +372,7 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		{"K", "attention_person", 25, false},
 	}
 
-	writeSheetHeaders(xl, orderSheet, orderHeaders, headerStyle, requiredHeaderStyle, titleStyle)
+	writeSheetHeaders(f, orderSheet, orderHeaders, headerStyle, requiredHeaderStyle, titleStyle)
 
 	orderExample := []string{
 		"ORD-2025-001", "BAPCO-001", "BAPCO-PO-44521",
@@ -355,17 +380,22 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		"42500.000", "30 days from delivery", "DAP Bahrain",
 		"RFQ-2025-188", "Ahmed Al Khalifa",
 	}
-	writeExampleRow(xl, orderSheet, orderExample, exampleStyle, len(orderHeaders))
-	applyDataStyle(xl, orderSheet, dataStyle, len(orderHeaders), 3, 100)
-	addDropdown(xl, orderSheet, "F3:F500", `"Processing,Confirmed,Shipped,Delivered,Completed,Cancelled"`)
+	writeExampleRow(f, orderSheet, orderExample, exampleStyle, len(orderHeaders))
+	applyDataStyle(f, orderSheet, dataStyle, len(orderHeaders), 3, 100)
+	addDropdown(f, orderSheet, "F3:F500", `"Processing,Confirmed,Shipped,Delivered,Completed,Cancelled"`)
 
 	// =========================================================================
 	// SHEET 8: INVOICES
 	// =========================================================================
 	invSheet := "Invoices"
-	xl.NewSheet(invSheet)
+	f.NewSheet(invSheet)
 
-	invHeaders := []sheetHeader{
+	invHeaders := []struct {
+		col      string
+		name     string
+		width    float64
+		required bool
+	}{
 		{"A", "invoice_number", 20, true},
 		{"B", "invoice_date (DD/MM/YYYY)", 22, true},
 		{"C", "customer_code", 18, true},
@@ -382,7 +412,7 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		{"N", "mode_of_payment", 20, false},
 	}
 
-	writeSheetHeaders(xl, invSheet, invHeaders, headerStyle, requiredHeaderStyle, titleStyle)
+	writeSheetHeaders(f, invSheet, invHeaders, headerStyle, requiredHeaderStyle, titleStyle)
 
 	invExample := []string{
 		"INV-2025-001", "20/03/2025", "BAPCO-001",
@@ -391,18 +421,23 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		"Sent", "42500.000", "19/04/2025",
 		"30 days from delivery", "Bank Transfer",
 	}
-	writeExampleRow(xl, invSheet, invExample, exampleStyle, len(invHeaders))
-	applyDataStyle(xl, invSheet, dataStyle, len(invHeaders), 3, 100)
-	addDropdown(xl, invSheet, "J3:J500", `"Draft,Sent,Paid,PartiallyPaid,Overdue,Cancelled"`)
-	addDropdown(xl, invSheet, "N3:N500", `"Bank Transfer,Cheque,Cash,LC,Credit Card,PDC"`)
+	writeExampleRow(f, invSheet, invExample, exampleStyle, len(invHeaders))
+	applyDataStyle(f, invSheet, dataStyle, len(invHeaders), 3, 100)
+	addDropdown(f, invSheet, "J3:J500", `"Draft,Sent,Paid,PartiallyPaid,Overdue,Cancelled"`)
+	addDropdown(f, invSheet, "N3:N500", `"Bank Transfer,Cheque,Cash,LC,Credit Card,PDC"`)
 
 	// =========================================================================
 	// SHEET 9: PAYMENTS
 	// =========================================================================
 	paySheet := "Payments"
-	xl.NewSheet(paySheet)
+	f.NewSheet(paySheet)
 
-	payHeaders := []sheetHeader{
+	payHeaders := []struct {
+		col      string
+		name     string
+		width    float64
+		required bool
+	}{
 		{"A", "invoice_number", 20, true},
 		{"B", "payment_date (DD/MM/YYYY)", 22, true},
 		{"C", "amount_bhd", 18, true},
@@ -410,23 +445,28 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		{"E", "reference", 25, false},
 	}
 
-	writeSheetHeaders(xl, paySheet, payHeaders, headerStyle, requiredHeaderStyle, titleStyle)
+	writeSheetHeaders(f, paySheet, payHeaders, headerStyle, requiredHeaderStyle, titleStyle)
 
 	payExample := []string{
 		"INV-2025-001", "15/04/2025", "42500.000",
 		"Bank Transfer", "TRF-2025-04-15-BAPCO",
 	}
-	writeExampleRow(xl, paySheet, payExample, exampleStyle, len(payHeaders))
-	applyDataStyle(xl, paySheet, dataStyle, len(payHeaders), 3, 100)
-	addDropdown(xl, paySheet, "D3:D500", `"Cash,Cheque,Bank Transfer,Credit Card,LC,PDC,Other"`)
+	writeExampleRow(f, paySheet, payExample, exampleStyle, len(payHeaders))
+	applyDataStyle(f, paySheet, dataStyle, len(payHeaders), 3, 100)
+	addDropdown(f, paySheet, "D3:D500", `"Cash,Cheque,Bank Transfer,Credit Card,LC,PDC,Other"`)
 
 	// =========================================================================
 	// SHEET 10: PURCHASE ORDERS (Bonus - useful for ops data)
 	// =========================================================================
 	poSheet := "Purchase Orders"
-	xl.NewSheet(poSheet)
+	f.NewSheet(poSheet)
 
-	poHeaders := []sheetHeader{
+	poHeaders := []struct {
+		col      string
+		name     string
+		width    float64
+		required bool
+	}{
 		{"A", "po_number", 18, true},
 		{"B", "supplier_code", 18, true},
 		{"C", "order_number (internal)", 22, false},
@@ -440,7 +480,7 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		{"K", "payment_terms", 25, false},
 	}
 
-	writeSheetHeaders(xl, poSheet, poHeaders, headerStyle, requiredHeaderStyle, titleStyle)
+	writeSheetHeaders(f, poSheet, poHeaders, headerStyle, requiredHeaderStyle, titleStyle)
 
 	poExample := []string{
 		"PO-2025-001", "SUP-EH", "ORD-2025-001",
@@ -448,18 +488,23 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		"22727.273", "2272.727", "25000.000",
 		"Sent", "Net 60",
 	}
-	writeExampleRow(xl, poSheet, poExample, exampleStyle, len(poHeaders))
-	applyDataStyle(xl, poSheet, dataStyle, len(poHeaders), 3, 100)
-	addDropdown(xl, poSheet, "F3:F500", `"BHD,USD,EUR,GBP,CHF,SAR,AED"`)
-	addDropdown(xl, poSheet, "J3:J500", `"Draft,Approved,Sent,Acknowledged,Partially Received,Received,Cancelled"`)
+	writeExampleRow(f, poSheet, poExample, exampleStyle, len(poHeaders))
+	applyDataStyle(f, poSheet, dataStyle, len(poHeaders), 3, 100)
+	addDropdown(f, poSheet, "F3:F500", `"BHD,USD,EUR,GBP,CHF,SAR,AED"`)
+	addDropdown(f, poSheet, "J3:J500", `"Draft,Approved,Sent,Acknowledged,Partially Received,Received,Cancelled"`)
 
 	// =========================================================================
 	// SHEET 11: SUPPLIER INVOICES
 	// =========================================================================
 	siSheet := "Supplier Invoices"
-	xl.NewSheet(siSheet)
+	f.NewSheet(siSheet)
 
-	siHeaders := []sheetHeader{
+	siHeaders := []struct {
+		col      string
+		name     string
+		width    float64
+		required bool
+	}{
 		{"A", "invoice_number", 20, true},
 		{"B", "supplier_code", 18, true},
 		{"C", "po_number", 18, false},
@@ -471,26 +516,31 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		{"I", "payment_status", 15, false},
 	}
 
-	writeSheetHeaders(xl, siSheet, siHeaders, headerStyle, requiredHeaderStyle, titleStyle)
+	writeSheetHeaders(f, siSheet, siHeaders, headerStyle, requiredHeaderStyle, titleStyle)
 
 	siExample := []string{
 		"EH-INV-2025-4421", "SUP-EH", "PO-2025-001",
 		"25/04/2025", "24/06/2025", "EUR",
 		"25000.000", "Approved", "Unpaid",
 	}
-	writeExampleRow(xl, siSheet, siExample, exampleStyle, len(siHeaders))
-	applyDataStyle(xl, siSheet, dataStyle, len(siHeaders), 3, 100)
-	addDropdown(xl, siSheet, "F3:F500", `"BHD,USD,EUR,GBP,CHF,SAR,AED"`)
-	addDropdown(xl, siSheet, "H3:H500", `"Pending,Approved,Rejected,Paid,Dispute"`)
-	addDropdown(xl, siSheet, "I3:I500", `"Unpaid,Scheduled,Paid"`)
+	writeExampleRow(f, siSheet, siExample, exampleStyle, len(siHeaders))
+	applyDataStyle(f, siSheet, dataStyle, len(siHeaders), 3, 100)
+	addDropdown(f, siSheet, "F3:F500", `"BHD,USD,EUR,GBP,CHF,SAR,AED"`)
+	addDropdown(f, siSheet, "H3:H500", `"Pending,Approved,Rejected,Paid,Dispute"`)
+	addDropdown(f, siSheet, "I3:I500", `"Unpaid,Scheduled,Paid"`)
 
 	// =========================================================================
 	// SHEET 12: SUPPLIER PAYMENTS
 	// =========================================================================
 	spSheet := "Supplier Payments"
-	xl.NewSheet(spSheet)
+	f.NewSheet(spSheet)
 
-	spHeaders := []sheetHeader{
+	spHeaders := []struct {
+		col      string
+		name     string
+		width    float64
+		required bool
+	}{
 		{"A", "supplier_invoice_number", 22, true},
 		{"B", "supplier_code", 18, true},
 		{"C", "payment_date (DD/MM/YYYY)", 22, true},
@@ -501,22 +551,22 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 		{"H", "notes", 35, false},
 	}
 
-	writeSheetHeaders(xl, spSheet, spHeaders, headerStyle, requiredHeaderStyle, titleStyle)
+	writeSheetHeaders(f, spSheet, spHeaders, headerStyle, requiredHeaderStyle, titleStyle)
 
 	spExample := []string{
 		"EH-INV-2025-4421", "SUP-EH", "20/06/2025",
 		"25000.000", "EUR", "Bank Transfer",
 		"TT-2025-06-20-EH", "Payment for FMR60 order",
 	}
-	writeExampleRow(xl, spSheet, spExample, exampleStyle, len(spHeaders))
-	applyDataStyle(xl, spSheet, dataStyle, len(spHeaders), 3, 100)
-	addDropdown(xl, spSheet, "E3:E500", `"BHD,USD,EUR,GBP,CHF,SAR,AED"`)
-	addDropdown(xl, spSheet, "F3:F500", `"Bank Transfer,Cheque,LC,Cash,Wire Transfer,PDC,Other"`)
+	writeExampleRow(f, spSheet, spExample, exampleStyle, len(spHeaders))
+	applyDataStyle(f, spSheet, dataStyle, len(spHeaders), 3, 100)
+	addDropdown(f, spSheet, "E3:E500", `"BHD,USD,EUR,GBP,CHF,SAR,AED"`)
+	addDropdown(f, spSheet, "F3:F500", `"Bank Transfer,Cheque,LC,Cash,Wire Transfer,PDC,Other"`)
 
 	// =========================================================================
 	// Set active sheet to Instructions
 	// =========================================================================
-	instrIdx := xl.GetSheetIndex(instrSheet)
+	instrIdx, _ := f.GetSheetIndex(instrSheet)
 	f.SetActiveSheet(instrIdx)
 
 	// =========================================================================
@@ -535,13 +585,9 @@ func (a *App) GenerateDataImportTemplate() (outputPath string, err error) {
 
 	timestamp := time.Now().Format("2006_01_02")
 	fileName := fmt.Sprintf("AsymmFlow_Data_Import_Template_%s.xlsx", timestamp)
-	outputPath = filepath.Join(desktopDir, fileName)
+	outputPath := filepath.Join(desktopDir, fileName)
 
-	if err := xl.Err(); err != nil {
-		return "", fmt.Errorf("failed to build template workbook: %w", err)
-	}
-	xl.SaveAs(outputPath)
-	if err := xl.Err(); err != nil {
+	if err := f.SaveAs(outputPath); err != nil {
 		return "", fmt.Errorf("failed to save template: %w", err)
 	}
 
@@ -560,51 +606,56 @@ type sheetHeader struct {
 	required bool
 }
 
-func writeSheetHeaders(xl *guardedExcelFile, sheet string, headers []sheetHeader, headerStyle, requiredHeaderStyle, titleStyle int) {
+func writeSheetHeaders(f *excelize.File, sheet string, headers []struct {
+	col      string
+	name     string
+	width    float64
+	required bool
+}, headerStyle, requiredHeaderStyle, titleStyle int) {
 
 	// Title row
 	lastCol := headers[len(headers)-1].col
-	xl.MergeCell(sheet, "A1", lastCol+"1")
-	xl.SetCellValue(sheet, "A1", fmt.Sprintf("  %s", sheet))
-	xl.SetCellStyle(sheet, "A1", lastCol+"1", titleStyle)
-	xl.SetRowHeight(sheet, 1, 35)
+	f.MergeCell(sheet, "A1", lastCol+"1")
+	f.SetCellValue(sheet, "A1", fmt.Sprintf("  %s", sheet))
+	f.SetCellStyle(sheet, "A1", lastCol+"1", titleStyle)
+	f.SetRowHeight(sheet, 1, 35)
 
 	// Header row
-	xl.SetRowHeight(sheet, 2, 28)
+	f.SetRowHeight(sheet, 2, 28)
 	for _, h := range headers {
 		cell := h.col + "2"
-		xl.SetCellValue(sheet, cell, h.name)
-		xl.SetColWidth(sheet, h.col, h.col, h.width)
+		f.SetCellValue(sheet, cell, h.name)
+		f.SetColWidth(sheet, h.col, h.col, h.width)
 		if h.required {
-			xl.SetCellStyle(sheet, cell, cell, requiredHeaderStyle)
+			f.SetCellStyle(sheet, cell, cell, requiredHeaderStyle)
 		} else {
-			xl.SetCellStyle(sheet, cell, cell, headerStyle)
+			f.SetCellStyle(sheet, cell, cell, headerStyle)
 		}
 	}
 }
 
-func writeExampleRow(xl *guardedExcelFile, sheet string, values []string, style int, colCount int) {
-	xl.SetRowHeight(sheet, 3, 22)
+func writeExampleRow(f *excelize.File, sheet string, values []string, style int, colCount int) {
+	f.SetRowHeight(sheet, 3, 22)
 	for i, val := range values {
 		if i >= colCount {
 			break
 		}
-		colLetter := xl.ColumnName(i + 1)
+		colLetter, _ := excelize.ColumnNumberToName(i + 1)
 		cell := colLetter + "3"
-		xl.SetCellValue(sheet, cell, val)
-		xl.SetCellStyle(sheet, cell, cell, style)
+		f.SetCellValue(sheet, cell, val)
+		f.SetCellStyle(sheet, cell, cell, style)
 	}
 }
 
-func applyDataStyle(xl *guardedExcelFile, sheet string, style int, colCount int, startRow, endRow int) {
+func applyDataStyle(f *excelize.File, sheet string, style int, colCount int, startRow, endRow int) {
 	firstCol := "A"
-	lastCol := xl.ColumnName(colCount)
+	lastCol, _ := excelize.ColumnNumberToName(colCount)
 	for row := startRow; row <= endRow; row++ {
-		xl.SetCellStyle(sheet, fmt.Sprintf("%s%d", firstCol, row), fmt.Sprintf("%s%d", lastCol, row), style)
+		f.SetCellStyle(sheet, fmt.Sprintf("%s%d", firstCol, row), fmt.Sprintf("%s%d", lastCol, row), style)
 	}
 }
 
-func addDropdown(xl *guardedExcelFile, sheet, sqref, formula string) {
+func addDropdown(f *excelize.File, sheet, sqref, formula string) {
 	dv := excelize.NewDataValidation(true)
 	dv.Sqref = sqref
 	// Parse the formula string like `"A,B,C"` into a slice
@@ -613,10 +664,10 @@ func addDropdown(xl *guardedExcelFile, sheet, sqref, formula string) {
 		trimmed = trimmed[1 : len(trimmed)-1]
 	}
 	items := splitDropdownItems(trimmed)
-	xl.capture(dv.SetDropList(items))
+	dv.SetDropList(items)
 	dv.SetError(excelize.DataValidationErrorStyleWarning, "Invalid Value", "Please select from the dropdown or type a valid value.")
 	dv.SetInput("Select Value", "Choose from the dropdown or type a custom value.")
-	xl.AddDataValidation(sheet, dv)
+	f.AddDataValidation(sheet, dv)
 }
 
 func splitDropdownItems(s string) []string {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -27,9 +28,9 @@ func setupTestApp(t *testing.T) *App {
 	// Use shared cache with unique name per test (prevents cross-test contamination and db.Begin() issues)
 	dbName := strings.ReplaceAll(t.Name(), "/", "_")
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger:                                   logger.Default.LogMode(logger.Silent),
 		DisableForeignKeyConstraintWhenMigrating: true,
-		SkipDefaultTransaction: true,
+		SkipDefaultTransaction:                   true,
 	})
 	require.NoError(t, err, "Failed to create in-memory database")
 
@@ -71,11 +72,11 @@ func setupTestApp(t *testing.T) *App {
 
 	// Create app with test database
 	app := &App{
-		db:               db,
-		cache:            NewCache(),
-		startupImporting: false,
+		db:                     db,
+		cache:                  NewCache(),
+		startupImporting:       false,
 		startupImportStartTime: time.Now(),
-		currentUserID:    "test-user",
+		currentUserID:          "test-user",
 		currentUser: &User{
 			Base:     Base{ID: "test-user"},
 			Username: "test-admin",
@@ -88,7 +89,318 @@ func setupTestApp(t *testing.T) *App {
 		},
 	}
 
+	alignTestAppWithCurrentWorkflow(t, app)
+
 	return app
+}
+
+func TestGetExportDirGroupsDocumentsByEntityWithoutYearDepth(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	app := &App{}
+
+	customerDir := app.getExportDir("customer", "The Bahrain Petroleum Co. (Bapco)", "RFQ", 2026)
+	require.Equal(t,
+		filepath.Join(homeDir, "Documents", "AsymmFlow Exports", sanitizeFileName("The Bahrain Petroleum Co. (Bapco)"), "RFQ"),
+		customerDir,
+	)
+	require.DirExists(t, customerDir)
+	require.NotContains(t, customerDir, string(filepath.Separator)+"2026"+string(filepath.Separator))
+
+	supplierDir := app.getExportDir("supplier", "Endress+Hauser", "Orders", 2026)
+	require.Equal(t,
+		filepath.Join(homeDir, "Documents", "AsymmFlow Exports", "Suppliers", sanitizeFileName("Endress+Hauser"), "Orders"),
+		supplierDir,
+	)
+	require.DirExists(t, supplierDir)
+	require.NotContains(t, supplierDir, string(filepath.Separator)+"2026"+string(filepath.Separator))
+}
+
+func resetLicenseAttemptLimiterForTest(t *testing.T) {
+	t.Helper()
+	licenseAttemptsMu.Lock()
+	defer licenseAttemptsMu.Unlock()
+	licenseAttempts = make(map[string][]time.Time)
+}
+
+func TestValidateLicenseRebindsRahulAdminKeyWhenMachineHashChanges(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&LicenseKey{}).Error)
+
+	staleActivatedAt := time.Now().Add(-time.Hour)
+	require.NoError(t, app.db.Create(&LicenseKey{
+		Key:         rahulMonitoringLicenseKey,
+		Role:        "admin",
+		DisplayName: "Rahul",
+		Activated:   true,
+		DeviceHash:  "stale-device-hash",
+		ActivatedAt: &staleActivatedAt,
+	}).Error)
+
+	currentHash := app.getDeviceHash()
+	result, err := app.ValidateLicense()
+	require.NoError(t, err)
+	require.True(t, result.Valid)
+	require.Equal(t, rahulMonitoringLicenseKey, result.Key)
+	require.Equal(t, "Rahul", result.DisplayName)
+
+	var persisted LicenseKey
+	require.NoError(t, app.db.Where("key = ?", rahulMonitoringLicenseKey).First(&persisted).Error)
+	require.Equal(t, currentHash, persisted.DeviceHash)
+}
+
+func TestActivateLicenseRebindsRahulAdminKeyWhenMachineHashChanges(t *testing.T) {
+	resetLicenseAttemptLimiterForTest(t)
+	app := setupTestApp(t)
+	require.NoError(t, app.db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&LicenseKey{}).Error)
+
+	staleActivatedAt := time.Now().Add(-time.Hour)
+	require.NoError(t, app.db.Create(&LicenseKey{
+		Key:         rahulMonitoringLicenseKey,
+		Role:        "admin",
+		DisplayName: "Rahul",
+		Activated:   true,
+		DeviceHash:  "stale-device-hash",
+		ActivatedAt: &staleActivatedAt,
+	}).Error)
+
+	result, err := app.ActivateLicense(rahulMonitoringLicenseKey)
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, "admin", result.Role)
+	require.Equal(t, "Rahul", result.DisplayName)
+
+	var persisted LicenseKey
+	require.NoError(t, app.db.Where("key = ?", rahulMonitoringLicenseKey).First(&persisted).Error)
+	require.Equal(t, result.DeviceHash, persisted.DeviceHash)
+}
+
+func alignTestAppWithCurrentWorkflow(t *testing.T, app *App) {
+	t.Helper()
+
+	require.NoError(t, app.db.AutoMigrate(
+		&Role{},
+		&User{},
+		&Setting{},
+		&LicenseKey{},
+		&ChartOfAccount{},
+		&CompanyBankAccount{},
+		&BankStatement{},
+		&BankStatementLine{},
+		&BankLinePaymentAllocation{},
+		&Offer{},
+		&OfferItem{},
+		&Opportunity{},
+	))
+	require.NoError(t, app.ensureCriticalDeploymentFoundations())
+}
+
+func TestNonAdminDeleteCreatesApprovalRequestAndAdminApprovalDeletes(t *testing.T) {
+	app := setupTestApp(t)
+
+	customer := CustomerMaster{
+		Base:         Base{ID: uuid.New().String()},
+		CustomerCode: "CUST-DELETE-APPROVAL",
+		BusinessName: "Delete Approval Customer",
+	}
+	require.NoError(t, app.db.Create(&customer).Error)
+
+	adminEmployee := Employee{
+		Base:             Base{ID: "employee-admin"},
+		EmployeeCode:     "EMP-ADMIN",
+		FullName:         "Admin User",
+		EmploymentStatus: "active",
+		IsActive:         true,
+	}
+	salesEmployee := Employee{
+		Base:             Base{ID: "employee-sales"},
+		EmployeeCode:     "EMP-SALES",
+		FullName:         "Sales User",
+		EmploymentStatus: "active",
+		IsActive:         true,
+	}
+	require.NoError(t, app.db.Create(&adminEmployee).Error)
+	require.NoError(t, app.db.Create(&salesEmployee).Error)
+	require.NoError(t, app.db.Create(&LicenseKey{Key: "PH-ADM-TEST01", Role: "admin", DisplayName: "Admin User"}).Error)
+	require.NoError(t, app.db.Create(&EmployeeAccessLink{
+		Base:         Base{ID: "link-admin"},
+		EmployeeID:   adminEmployee.ID,
+		LicenseKey:   "PH-ADM-TEST01",
+		UserID:       "admin-user",
+		AccessStatus: "active",
+		IsPrimary:    true,
+	}).Error)
+	require.NoError(t, app.db.Create(&EmployeeAccessLink{
+		Base:         Base{ID: "link-sales"},
+		EmployeeID:   salesEmployee.ID,
+		LicenseKey:   "PH-SLS-TEST01",
+		UserID:       "sales-user",
+		AccessStatus: "active",
+		IsPrimary:    true,
+	}).Error)
+
+	app.currentUserID = "sales-user"
+	app.currentUser = &User{
+		Base:     Base{ID: "sales-user"},
+		Username: "sales-user",
+		RoleName: "sales",
+		Role: Role{
+			Name:        "sales",
+			DisplayName: "Sales",
+			Permissions: `["customers:view","customers:edit","notifications:view"]`,
+		},
+	}
+
+	err := app.DeleteCustomer(customer.ID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "delete approval requested")
+
+	var customerCount int64
+	require.NoError(t, app.db.Model(&CustomerMaster{}).Where("id = ?", customer.ID).Count(&customerCount).Error)
+	require.EqualValues(t, 1, customerCount)
+
+	var request DeleteApprovalRequest
+	require.NoError(t, app.db.Where("entity_type = ? AND entity_id = ?", "customer", customer.ID).First(&request).Error)
+	require.Equal(t, "pending", request.Status)
+
+	var adminNotificationCount int64
+	require.NoError(t, app.db.Model(&Notification{}).
+		Where("employee_id = ? AND source_type = ? AND source_id = ?", adminEmployee.ID, "delete_approval", request.ID).
+		Count(&adminNotificationCount).Error)
+	require.EqualValues(t, 1, adminNotificationCount)
+
+	app.currentUserID = "admin-user"
+	app.currentUser = &User{
+		Base:     Base{ID: "admin-user"},
+		Username: "admin-user",
+		RoleName: "admin",
+		Role: Role{
+			Name:        "admin",
+			DisplayName: "Administrator",
+			Permissions: `["*"]`,
+		},
+	}
+
+	reviewed, err := app.ReviewDeleteApprovalRequest(request.ID, "approve", "verified duplicate")
+	require.NoError(t, err)
+	require.Equal(t, "approved", reviewed.Status)
+	require.NoError(t, app.db.Model(&CustomerMaster{}).Where("id = ?", customer.ID).Count(&customerCount).Error)
+	require.EqualValues(t, 0, customerCount)
+}
+
+func TestAdminLicenseCanDeleteCustomersAndSuppliersWithStaleUserRole(t *testing.T) {
+	app := setupTestApp(t)
+
+	customer := CustomerMaster{
+		Base:         Base{ID: uuid.New().String()},
+		CustomerCode: "CUST-ADMIN-LICENSE-DELETE",
+		BusinessName: "Admin License Delete Customer",
+	}
+	supplier := SupplierMaster{
+		Base:         Base{ID: uuid.New().String()},
+		SupplierCode: "SUP-ADMIN-LICENSE-DELETE",
+		SupplierName: "Admin License Delete Supplier",
+	}
+	require.NoError(t, app.db.Create(&customer).Error)
+	require.NoError(t, app.db.Create(&supplier).Error)
+	require.NoError(t, app.db.Create(&LicenseKey{
+		Key:        "PH-ADM-DELETE",
+		Role:       "admin",
+		Activated:  true,
+		DeviceHash: app.getDeviceHash(),
+	}).Error)
+
+	app.currentUserID = "sales-user"
+	app.currentUser = &User{
+		Base:     Base{ID: "sales-user"},
+		Username: "sales-user",
+		RoleName: "sales",
+		Role: Role{
+			Name:        "sales",
+			DisplayName: "Sales",
+			Permissions: `["customers:view","suppliers:view"]`,
+		},
+	}
+
+	require.NoError(t, app.DeleteCustomer(customer.ID))
+	require.NoError(t, app.DeleteSupplier(supplier.ID))
+
+	var deleteRequests int64
+	require.NoError(t, app.db.Model(&DeleteApprovalRequest{}).Count(&deleteRequests).Error)
+	require.EqualValues(t, 0, deleteRequests)
+}
+
+func TestApplyDeploymentLicenseActivationFlushResetsExistingActivationOnce(t *testing.T) {
+	app := setupTestApp(t)
+	t.Setenv("ASYMMFLOW_LICENSE_FLUSH_STAMP", "deploy-a")
+
+	now := time.Now()
+	license := LicenseKey{
+		Key:         "PH-SLS-FLUSH1",
+		Role:        "sales",
+		DisplayName: "Sales Test",
+		DeviceHash:  "device-a",
+		Activated:   true,
+		ActivatedAt: &now,
+		CreatedBy:   "test",
+	}
+	require.NoError(t, app.db.Create(&license).Error)
+
+	require.NoError(t, app.ApplyDeploymentLicenseActivationFlush())
+
+	var flushed LicenseKey
+	require.NoError(t, app.db.Where("key = ?", license.Key).First(&flushed).Error)
+	require.False(t, flushed.Activated)
+	require.Empty(t, flushed.DeviceHash)
+	require.Nil(t, flushed.ActivatedAt)
+
+	var marker Setting
+	require.NoError(t, app.db.Where("key = ?", "deployment_license_activation_flush_stamp").First(&marker).Error)
+	require.Equal(t, "deploy-a", marker.Value)
+
+	later := time.Now()
+	require.NoError(t, app.db.Model(&flushed).Updates(map[string]interface{}{
+		"activated":    true,
+		"device_hash":  "device-b",
+		"activated_at": &later,
+	}).Error)
+
+	require.NoError(t, app.ApplyDeploymentLicenseActivationFlush())
+	require.NoError(t, app.db.Where("key = ?", license.Key).First(&flushed).Error)
+	require.True(t, flushed.Activated, "same deployment stamp must not flush every launch")
+	require.Equal(t, "device-b", flushed.DeviceHash)
+
+	t.Setenv("ASYMMFLOW_LICENSE_FLUSH_STAMP", "deploy-b")
+	require.NoError(t, app.ApplyDeploymentLicenseActivationFlush())
+	require.NoError(t, app.db.Where("key = ?", license.Key).First(&flushed).Error)
+	require.False(t, flushed.Activated)
+	require.Empty(t, flushed.DeviceHash)
+}
+
+func TestApplyDeploymentLicenseActivationFlushIgnoresReseedFlagWithoutExplicitStamp(t *testing.T) {
+	app := setupTestApp(t)
+	t.Setenv("ASYMMFLOW_FLUSH_LICENSE_ON_RESEED", "true")
+	t.Setenv("ASYMMFLOW_LICENSE_FLUSH_STAMP", "")
+
+	now := time.Now()
+	license := LicenseKey{
+		Key:         "PH-SLS-STAY1",
+		Role:        "sales",
+		DisplayName: "Sales Test",
+		DeviceHash:  "device-a",
+		Activated:   true,
+		ActivatedAt: &now,
+		CreatedBy:   "test",
+	}
+	require.NoError(t, app.db.Create(&license).Error)
+
+	require.NoError(t, app.ApplyDeploymentLicenseActivationFlush())
+
+	var persisted LicenseKey
+	require.NoError(t, app.db.Where("key = ?", license.Key).First(&persisted).Error)
+	require.True(t, persisted.Activated, "normal reseed/update packages must preserve activated licenses")
+	require.Equal(t, "device-a", persisted.DeviceHash)
 }
 
 // seedTestCustomer creates a test customer and returns its ID
@@ -329,7 +641,7 @@ func TestListOrders(t *testing.T) {
 		customerID := seedTestCustomer(t, app.db, "Test Customer")
 
 		// Create orders with different dates
-		pastDate := time.Now().AddDate(0, 0, -10) // 10 days ago
+		pastDate := time.Now().AddDate(0, 0, -10)  // 10 days ago
 		futureDate := time.Now().AddDate(0, 0, 10) // 10 days from now
 
 		order1 := Order{
@@ -1014,6 +1326,27 @@ func TestGetDashboardStats(t *testing.T) {
 		require.Equal(t, 2500.0, stats.OutstandingAR, "Outstanding AR should be 2500 BHD")
 	})
 
+	t.Run("should fallback to uninvoiced active orders when invoice ar is zero", func(t *testing.T) {
+		app := setupTestApp(t)
+		customerID := seedTestCustomer(t, app.db, "Test Customer")
+
+		order := Order{
+			Base:          Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+			OrderNumber:   "ORD-AR-001",
+			CustomerID:    customerID,
+			CustomerName:  "Test Customer",
+			OrderDate:     time.Now(),
+			Status:        "Processing",
+			GrandTotalBHD: 1750.0,
+		}
+		require.NoError(t, app.db.Create(&order).Error)
+
+		stats, err := app.GetDashboardStats()
+		require.NoError(t, err)
+		require.Equal(t, 1750.0, stats.OutstandingAR, "Outstanding AR should fallback to uninvoiced active order value")
+		require.Equal(t, 1, stats.PendingInvoices, "Pending invoices should reflect orders awaiting invoicing when no invoice AR exists")
+	})
+
 	t.Run("should count orders by status", func(t *testing.T) {
 		app := setupTestApp(t)
 		customerID := seedTestCustomer(t, app.db, "Test Customer")
@@ -1098,4 +1431,82 @@ func TestGetDashboardStats(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 1, stats2.ActiveCustomers, "Stats should reflect new customer")
 	})
+}
+
+func TestRouteToBankStatementHonorsExplicitBankAccountSelection(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&BankStatement{}, &BankStatementLine{}))
+
+	kuwaitAccount := CompanyBankAccount{
+		ID:            "bank-kfh-test",
+		BankName:      "Kuwait Finance House",
+		AccountName:   "PH Trading WLL",
+		AccountNumber: "2000000410700002",
+		Currency:      "BHD",
+		IsActive:      true,
+		DisplayOrder:  10,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	otherAccount := CompanyBankAccount{
+		ID:            "bank-other-test",
+		BankName:      "National Bank of Bahrain BSC",
+		AccountName:   "PH Trading WLL",
+		AccountNumber: "99570076",
+		Currency:      "BHD",
+		IsActive:      true,
+		DisplayOrder:  11,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	require.NoError(t, app.db.Create(&kuwaitAccount).Error)
+	require.NoError(t, app.db.Create(&otherAccount).Error)
+
+	statementID, err := app.routeToBankStatement(map[string]interface{}{
+		"bank_account_id": kuwaitAccount.ID,
+		"bank_name":       "KFH",
+		"account_number":  "2000000410700002",
+		"period_start":    "2026-01-01",
+		"period_end":      "2026-01-31",
+		"opening_balance": 25709.210,
+		"closing_balance": 56753.716,
+		"currency":        "BHD",
+		"line_items":      []interface{}{},
+	}, "kfh-test.pdf", 0.98)
+	require.NoError(t, err)
+	require.NotEmpty(t, statementID)
+
+	var stmt BankStatement
+	require.NoError(t, app.db.First(&stmt, "id = ?", statementID).Error)
+	require.Equal(t, kuwaitAccount.ID, stmt.BankAccountID)
+}
+
+func TestRouteToBankStatementDoesNotFallbackToFirstActiveAccount(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&BankStatement{}, &BankStatementLine{}))
+
+	require.NoError(t, app.db.Create(&CompanyBankAccount{
+		ID:            "bank-only-test",
+		BankName:      "National Bank of Bahrain BSC",
+		AccountName:   "PH Trading WLL",
+		AccountNumber: "99570076",
+		Currency:      "BHD",
+		IsActive:      true,
+		DisplayOrder:  12,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}).Error)
+
+	_, err := app.routeToBankStatement(map[string]interface{}{
+		"bank_name":       "Kuwait Finance House",
+		"account_number":  "2000000410700002",
+		"period_start":    "2026-01-01",
+		"period_end":      "2026-01-31",
+		"opening_balance": 25709.210,
+		"closing_balance": 56753.716,
+		"currency":        "BHD",
+		"line_items":      []interface{}{},
+	}, "kfh-unmatched.pdf", 0.98)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "could not match this statement to an active bank account")
 }

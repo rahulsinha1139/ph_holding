@@ -285,6 +285,7 @@ func (a *App) createRemainingSupplierInvoicePayment(tx *gorm.DB, invoice Supplie
 		Notes:             notes,
 		SupplierName:      invoice.SupplierName,
 		InvoiceNumber:     invoice.InvoiceNumber,
+		Division:          a.resolveSupplierInvoiceDivision(invoice),
 	}
 
 	if err := tx.Create(&payment).Error; err != nil {

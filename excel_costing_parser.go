@@ -31,36 +31,36 @@ import (
 
 const (
 	// Metadata rows
-	ROW_DATE          = 2
-	ROW_PREPARED_BY   = 3
-	ROW_CUSTOMER      = 4
-	ROW_REFERENCE     = 5
+	ROW_DATE        = 2
+	ROW_PREPARED_BY = 3
+	ROW_CUSTOMER    = 4
+	ROW_REFERENCE   = 5
 
 	// Product data rows
-	ROW_SUPPLIER       = 7
-	ROW_EQUIPMENT      = 8
-	ROW_MODEL          = 9
-	ROW_SPECIFICATION  = 10
-	ROW_QUANTITY       = 11
-	ROW_FOB_EUR        = 12
-	ROW_FREIGHT_EUR    = 13
-	ROW_EXCHANGE_RATE  = 14
-	ROW_FOB_BHD        = 15
-	ROW_FREIGHT_BHD    = 16
-	ROW_CNF            = 17
-	ROW_INSURANCE      = 18
-	ROW_CUSTOMS        = 19
-	ROW_LANDED_COST    = 20
-	ROW_HANDLING       = 21
+	ROW_SUPPLIER        = 7
+	ROW_EQUIPMENT       = 8
+	ROW_MODEL           = 9
+	ROW_SPECIFICATION   = 10
+	ROW_QUANTITY        = 11
+	ROW_FOB_EUR         = 12
+	ROW_FREIGHT_EUR     = 13
+	ROW_EXCHANGE_RATE   = 14
+	ROW_FOB_BHD         = 15
+	ROW_FREIGHT_BHD     = 16
+	ROW_CNF             = 17
+	ROW_INSURANCE       = 18
+	ROW_CUSTOMS         = 19
+	ROW_LANDED_COST     = 20
+	ROW_HANDLING        = 21
 	ROW_FINANCE_CHARGES = 22
-	ROW_OTHER_COSTS    = 23
-	ROW_TOTAL_COST     = 24
-	ROW_MARKUP_PERCENT = 25
-	ROW_SELLING_PRICE  = 26
+	ROW_OTHER_COSTS     = 23
+	ROW_TOTAL_COST      = 24
+	ROW_MARKUP_PERCENT  = 25
+	ROW_SELLING_PRICE   = 26
 	ROW_SUGGESTED_PRICE = 27
 	ROW_TOTAL_SUGGESTED = 28
-	ROW_VAT_AMOUNT     = 29
-	ROW_GRAND_TOTAL    = 30
+	ROW_VAT_AMOUNT      = 29
+	ROW_GRAND_TOTAL     = 30
 
 	// Column constants
 	COL_LABELS        = 1  // Column A - Row labels
@@ -79,57 +79,57 @@ const (
 
 // ExcelCostingData represents the complete parsed data from a costing sheet
 type ExcelCostingData struct {
-	FilePath  string                  `json:"file_path"`
-	FileName  string                  `json:"file_name"`
-	Metadata  ExcelCostingMetadata    `json:"metadata"`
-	LineItems []ExcelCostingLineItem  `json:"line_items"`
-	Totals    ExcelCostingTotals      `json:"totals"`
-	ParsedAt  time.Time               `json:"parsed_at"`
-	Warnings  []string                `json:"warnings"`
+	FilePath  string                 `json:"file_path"`
+	FileName  string                 `json:"file_name"`
+	Metadata  ExcelCostingMetadata   `json:"metadata"`
+	LineItems []ExcelCostingLineItem `json:"line_items"`
+	Totals    ExcelCostingTotals     `json:"totals"`
+	ParsedAt  time.Time              `json:"parsed_at"`
+	Warnings  []string               `json:"warnings"`
 }
 
 // ExcelCostingMetadata contains header information from the costing sheet
 type ExcelCostingMetadata struct {
-	Date             string `json:"date"`
-	FolderNumber     string `json:"folder_number"`
-	EstDelivery      string `json:"est_delivery"`
-	PreparedBy       string `json:"prepared_by"`
-	CostingID        string `json:"costing_id"`
-	DeliveryTerms    string `json:"delivery_terms"`
-	Customer         string `json:"customer"`
-	ContactPerson    string `json:"contact_person"`
-	OrderType        string `json:"order_type"`
-	Reference        string `json:"reference"`
-	PaymentTerms     string `json:"payment_terms"`
-	CountryOfOrigin  string `json:"country_of_origin"`
+	Date            string `json:"date"`
+	FolderNumber    string `json:"folder_number"`
+	EstDelivery     string `json:"est_delivery"`
+	PreparedBy      string `json:"prepared_by"`
+	CostingID       string `json:"costing_id"`
+	DeliveryTerms   string `json:"delivery_terms"`
+	Customer        string `json:"customer"`
+	ContactPerson   string `json:"contact_person"`
+	OrderType       string `json:"order_type"`
+	Reference       string `json:"reference"`
+	PaymentTerms    string `json:"payment_terms"`
+	CountryOfOrigin string `json:"country_of_origin"`
 }
 
 // ExcelCostingLineItem represents a single product/line in the costing
 type ExcelCostingLineItem struct {
-	ProductNumber         int     `json:"product_number"`
-	ColumnIndex           int     `json:"column_index"`
-	Supplier              string  `json:"supplier"`
-	Equipment             string  `json:"equipment"`
-	Model                 string  `json:"model"`
-	Specification         string  `json:"specification"`
-	Quantity              float64 `json:"quantity"`
-	FobEUR                float64 `json:"fob_eur"`
-	FreightEUR            float64 `json:"freight_eur"`
-	ExchangeRate          float64 `json:"exchange_rate"`
-	FobBHD                float64 `json:"fob_bhd"`
-	FreightBHD            float64 `json:"freight_bhd"`
-	CnfBHD                float64 `json:"cnf_bhd"`
-	Insurance             float64 `json:"insurance"`
-	Customs               float64 `json:"customs"`
-	LandedCost            float64 `json:"landed_cost"`
-	Handling              float64 `json:"handling"`
-	FinanceCharges        float64 `json:"finance_charges"`
-	OtherCosts            float64 `json:"other_costs"`
-	TotalCost             float64 `json:"total_cost"`
-	MarkupPercent         float64 `json:"markup_percent"`
-	SellingPriceBHD       float64 `json:"selling_price_bhd"`
-	SuggestedPriceBHD     float64 `json:"suggested_price_bhd"`
-	TotalSuggestedBHD     float64 `json:"total_suggested_bhd"`
+	ProductNumber     int     `json:"product_number"`
+	ColumnIndex       int     `json:"column_index"`
+	Supplier          string  `json:"supplier"`
+	Equipment         string  `json:"equipment"`
+	Model             string  `json:"model"`
+	Specification     string  `json:"specification"`
+	Quantity          float64 `json:"quantity"`
+	FobEUR            float64 `json:"fob_eur"`
+	FreightEUR        float64 `json:"freight_eur"`
+	ExchangeRate      float64 `json:"exchange_rate"`
+	FobBHD            float64 `json:"fob_bhd"`
+	FreightBHD        float64 `json:"freight_bhd"`
+	CnfBHD            float64 `json:"cnf_bhd"`
+	Insurance         float64 `json:"insurance"`
+	Customs           float64 `json:"customs"`
+	LandedCost        float64 `json:"landed_cost"`
+	Handling          float64 `json:"handling"`
+	FinanceCharges    float64 `json:"finance_charges"`
+	OtherCosts        float64 `json:"other_costs"`
+	TotalCost         float64 `json:"total_cost"`
+	MarkupPercent     float64 `json:"markup_percent"`
+	SellingPriceBHD   float64 `json:"selling_price_bhd"`
+	SuggestedPriceBHD float64 `json:"suggested_price_bhd"`
+	TotalSuggestedBHD float64 `json:"total_suggested_bhd"`
 }
 
 // ExcelCostingTotals contains the summary totals
@@ -142,50 +142,50 @@ type ExcelCostingTotals struct {
 
 // ExcelImportResult represents the result of importing a single file
 type ExcelImportResult struct {
-	FilePath    string `json:"file_path"`
-	FileName    string `json:"file_name"`
-	Success     bool   `json:"success"`
-	Message     string `json:"message"`
-	ItemCount   int    `json:"item_count"`
+	FilePath    string  `json:"file_path"`
+	FileName    string  `json:"file_name"`
+	Success     bool    `json:"success"`
+	Message     string  `json:"message"`
+	ItemCount   int     `json:"item_count"`
 	GrandTotal  float64 `json:"grand_total"`
-	Customer    string `json:"customer"`
-	OfferNumber string `json:"offer_number"`
+	Customer    string  `json:"customer"`
+	OfferNumber string  `json:"offer_number"`
 }
 
 // ExcelBatchImportResult represents the result of batch importing
 type ExcelBatchImportResult struct {
-	TotalFiles     int                   `json:"total_files"`
-	Successful     int                   `json:"successful"`
-	Failed         int                   `json:"failed"`
-	Results        []ExcelImportResult   `json:"results"`
-	TotalLineItems int                   `json:"total_line_items"`
-	TotalValue     float64               `json:"total_value"`
+	TotalFiles     int                 `json:"total_files"`
+	Successful     int                 `json:"successful"`
+	Failed         int                 `json:"failed"`
+	Results        []ExcelImportResult `json:"results"`
+	TotalLineItems int                 `json:"total_line_items"`
+	TotalValue     float64             `json:"total_value"`
 }
 
 type costingRowMap struct {
-	Supplier          int
-	Equipment         int
-	Model             int
-	Specification     int
-	Quantity          int
-	FobEUR            int
-	FreightEUR        int
-	ExchangeRate      int
-	FobBHD            int
-	FreightBHD        int
-	Cnf               int
-	Insurance         int
-	Customs           int
-	LandedCost        int
-	Handling          int
-	FinanceCharges    int
-	OtherCosts        int
-	TotalCost         int
-	Markup            int
-	SellingPrice      int
-	SuggestedPrice    int
-	TotalSuggested    int
-	SummaryTotal      int
+	Supplier       int
+	Equipment      int
+	Model          int
+	Specification  int
+	Quantity       int
+	FobEUR         int
+	FreightEUR     int
+	ExchangeRate   int
+	FobBHD         int
+	FreightBHD     int
+	Cnf            int
+	Insurance      int
+	Customs        int
+	LandedCost     int
+	Handling       int
+	FinanceCharges int
+	OtherCosts     int
+	TotalCost      int
+	Markup         int
+	SellingPrice   int
+	SuggestedPrice int
+	TotalSuggested int
+	SummaryTotal   int
 }
 
 // ============================================================================
@@ -205,10 +205,21 @@ func isEmpty(s string) bool {
 
 func cleanProductCell(s string) string {
 	trimmed := strings.TrimSpace(s)
-	if trimmed == "" || isPlaceholder(trimmed) || isCostingSummaryLabel(trimmed) {
+	if trimmed == "" || isPlaceholder(trimmed) || isCostingSummaryLabel(trimmed) || isCostingTemplatePlaceholder(trimmed) {
 		return ""
 	}
 	return trimmed
+}
+
+func isCostingTemplatePlaceholder(s string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(s)), " "))
+	normalized = strings.TrimSuffix(normalized, " -")
+	normalized = strings.TrimSuffix(normalized, "-")
+	switch normalized {
+	case "principle name", "principal name", "supplier name", "supplier", "equipment", "model", "specification":
+		return true
+	}
+	return regexp.MustCompile(`^line item\s+\d+$`).MatchString(normalized)
 }
 
 func firstNonEmptyCostingValue(values ...string) string {
@@ -627,10 +638,11 @@ func extractLineItems(f *excelize.File, sheetName string) []ExcelCostingLineItem
 		totalSuggested := getFloatCellValue(f, sheetName, col, rows.TotalSuggested)
 
 		hasDescriptor := firstNonEmptyCostingValue(equipment, model, specification) != ""
-		hasStrongNumericSignal := quantity > 0 || totalSuggested > 0 ||
-			(hasDescriptor && (fobEUR > 0 || freightEUR > 0 || fobBHD > 0 || freightBHD > 0 ||
-				cnfBHD > 0 || customs > 0 || landedCost > 0 || otherCosts > 0 ||
-				totalCost > 0 || sellingPrice > 0 || suggestedPrice > 0))
+		hasCommercialSignal := totalSuggested > 0 || fobEUR > 0 || freightEUR > 0 ||
+			fobBHD > 0 || freightBHD > 0 || cnfBHD > 0 || customs > 0 ||
+			landedCost > 0 || otherCosts > 0 || totalCost > 0 ||
+			sellingPrice > 0 || suggestedPrice > 0
+		hasStrongNumericSignal := hasDescriptor && (quantity > 0 || hasCommercialSignal)
 
 		if !hasStrongNumericSignal {
 			continue
@@ -642,11 +654,8 @@ func extractLineItems(f *excelize.File, sheetName string) []ExcelCostingLineItem
 			ColumnIndex:   col,
 		}
 
-		// Some real files leave the template placeholders in the Equipment row but
-		// populate the model/specification or just numeric values. Fall back so we
-		// still capture the commercial line instead of dropping the column.
 		item.Supplier = supplier
-		item.Equipment = firstNonEmptyCostingValue(equipment, model, specification, fmt.Sprintf("Line Item %d", productNum))
+		item.Equipment = firstNonEmptyCostingValue(equipment, model, specification)
 		item.Model = model
 		item.Specification = specification
 

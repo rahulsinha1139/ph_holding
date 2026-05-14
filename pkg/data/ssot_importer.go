@@ -43,28 +43,28 @@ import (
 // ImportResult contains statistics from the import operation
 type ImportResult struct {
 	// Customers
-	CustomersTotal    int      `json:"customers_total"`
-	CustomersImported int      `json:"customers_imported"`
-	CustomersSkipped  int      `json:"customers_skipped"`
-	CustomerErrors    []string `json:"customer_errors,omitempty"`
+	CustomersTotal      int       `json:"customers_total"`
+	CustomersImported   int       `json:"customers_imported"`
+	CustomersSkipped    int       `json:"customers_skipped"`
+	CustomerErrors      []string  `json:"customer_errors,omitempty"`
 
 	// Opportunities
-	OpportunitiesTotal    int      `json:"opportunities_total"`
-	OpportunitiesImported int      `json:"opportunities_imported"`
-	OpportunitiesSkipped  int      `json:"opportunities_skipped"`
-	OpportunityErrors     []string `json:"opportunity_errors,omitempty"`
+	OpportunitiesTotal    int       `json:"opportunities_total"`
+	OpportunitiesImported int       `json:"opportunities_imported"`
+	OpportunitiesSkipped  int       `json:"opportunities_skipped"`
+	OpportunityErrors     []string  `json:"opportunity_errors,omitempty"`
 
 	// Payments
-	PaymentsTotal    int      `json:"payments_total"`
-	PaymentsImported int      `json:"payments_imported"`
-	PaymentsSkipped  int      `json:"payments_skipped"`
-	PaymentErrors    []string `json:"payment_errors,omitempty"`
+	PaymentsTotal    int       `json:"payments_total"`
+	PaymentsImported int       `json:"payments_imported"`
+	PaymentsSkipped  int       `json:"payments_skipped"`
+	PaymentErrors    []string  `json:"payment_errors,omitempty"`
 
 	// Products
-	ProductsTotal    int      `json:"products_total"`
-	ProductsImported int      `json:"products_imported"`
-	ProductsSkipped  int      `json:"products_skipped"`
-	ProductErrors    []string `json:"product_errors,omitempty"`
+	ProductsTotal    int       `json:"products_total"`
+	ProductsImported int       `json:"products_imported"`
+	ProductsSkipped  int       `json:"products_skipped"`
+	ProductErrors    []string  `json:"product_errors,omitempty"`
 
 	// Overall
 	TotalRecords  int           `json:"total_records"`
@@ -78,7 +78,6 @@ type ImportResult struct {
 type CustomerMaster struct {
 	ID           uint   `gorm:"primaryKey"`
 	CustomerID   string `gorm:"uniqueIndex;size:50"`
-	CustomerCode string `gorm:"uniqueIndex;size:50"`
 	CustomerType string `gorm:"index;size:50"`
 	BusinessName string `gorm:"index;size:255"`
 	ShortCode    string `gorm:"size:10"`
@@ -96,7 +95,7 @@ type CustomerMaster struct {
 	RelationYears int
 
 	// Payment Profile
-	PaymentGrade     string `gorm:"index;size:10"`
+	PaymentGrade     string  `gorm:"index;size:10"`
 	PaymentTermsDays int
 	AvgPaymentDays   float64
 	DisputeCount     int
@@ -116,8 +115,8 @@ type CustomerMaster struct {
 	// Audit
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	CreatedBy string     `gorm:"size:100"`
-	UpdatedBy string     `gorm:"size:100"`
+	CreatedBy string `gorm:"size:100"`
+	UpdatedBy string `gorm:"size:100"`
 	DeletedAt *time.Time `gorm:"index"`
 }
 
@@ -127,37 +126,37 @@ func (CustomerMaster) TableName() string {
 
 // OpportunitySSOT represents opportunities from Excel
 type OpportunitySSOT struct {
-	ID            uint   `gorm:"primaryKey"`
-	OpportunityID string `gorm:"uniqueIndex;size:100"`
-	CustomerName  string `gorm:"index;size:255"`
-	CustomerID    uint   `gorm:"index"`
+	ID             uint      `gorm:"primaryKey"`
+	OpportunityID  string    `gorm:"uniqueIndex;size:100"`
+	CustomerName   string    `gorm:"index;size:255"`
+	CustomerID     uint      `gorm:"index"`
 
 	// Opportunity Details
-	Title       string `gorm:"size:500"`
-	Description string `gorm:"type:text"`
-	ValueBHD    float64
-	Stage       string  `gorm:"index;size:50"`
-	Probability float64 // 0.0 - 1.0
+	Title          string    `gorm:"size:500"`
+	Description    string    `gorm:"type:text"`
+	ValueBHD       float64
+	Stage          string    `gorm:"index;size:50"`
+	Probability    float64   // 0.0 - 1.0
 
 	// Dates
-	CreatedDate   time.Time `gorm:"index"`
-	ExpectedClose time.Time `gorm:"index"`
-	ActualClose   *time.Time
+	CreatedDate    time.Time `gorm:"index"`
+	ExpectedClose  time.Time `gorm:"index"`
+	ActualClose    *time.Time
 
 	// Product/Industry
-	ProductType string `gorm:"index;size:100"`
-	Industry    string `gorm:"index;size:100"`
+	ProductType    string    `gorm:"index;size:100"`
+	Industry       string    `gorm:"index;size:100"`
 
 	// Competition
 	HasCompetition bool
-	CompetitorName string `gorm:"size:255"`
+	CompetitorName string    `gorm:"size:255"`
 
 	// Source tracking
-	SourceFile string    `gorm:"size:500"`
-	ImportedAt time.Time `gorm:"index"`
+	SourceFile     string    `gorm:"size:500"`
+	ImportedAt     time.Time `gorm:"index"`
 
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 func (OpportunitySSOT) TableName() string {
@@ -166,34 +165,34 @@ func (OpportunitySSOT) TableName() string {
 
 // PaymentSSOT represents supplier payments from Excel
 type PaymentSSOT struct {
-	ID        uint   `gorm:"primaryKey"`
-	PaymentID string `gorm:"uniqueIndex;size:100"`
+	ID             uint      `gorm:"primaryKey"`
+	PaymentID      string    `gorm:"uniqueIndex;size:100"`
 
 	// Supplier Details
-	SupplierName string `gorm:"index;size:255"`
-	SupplierCode string `gorm:"index;size:50"`
+	SupplierName   string    `gorm:"index;size:255"`
+	SupplierCode   string    `gorm:"index;size:50"`
 
 	// Payment Details
-	PaymentDate  time.Time `gorm:"index"`
-	AmountBHD    float64
-	Currency     string `gorm:"size:10"`
-	ExchangeRate float64
+	PaymentDate    time.Time `gorm:"index"`
+	AmountBHD      float64
+	Currency       string    `gorm:"size:10"`
+	ExchangeRate   float64
 
 	// Reference
-	InvoiceNumber   string `gorm:"index;size:100"`
-	ReferenceNumber string `gorm:"size:255"`
-	PaymentMethod   string `gorm:"size:100"`
+	InvoiceNumber  string    `gorm:"index;size:100"`
+	ReferenceNumber string   `gorm:"size:255"`
+	PaymentMethod  string    `gorm:"size:100"`
 
 	// Categories
-	Category string `gorm:"index;size:100"`
-	Notes    string `gorm:"type:text"`
+	Category       string    `gorm:"index;size:100"`
+	Notes          string    `gorm:"type:text"`
 
 	// Source tracking
-	SourceFile string    `gorm:"size:500"`
-	ImportedAt time.Time `gorm:"index"`
+	SourceFile     string    `gorm:"size:500"`
+	ImportedAt     time.Time `gorm:"index"`
 
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 func (PaymentSSOT) TableName() string {
@@ -202,34 +201,34 @@ func (PaymentSSOT) TableName() string {
 
 // ProductCostingSSOT represents product costing from Excel
 type ProductCostingSSOT struct {
-	ID          uint   `gorm:"primaryKey"`
-	ProductCode string `gorm:"index;size:100"`
-	ProductName string `gorm:"index;size:255"`
+	ID             uint      `gorm:"primaryKey"`
+	ProductCode    string    `gorm:"index;size:100"`
+	ProductName    string    `gorm:"index;size:255"`
 
 	// Supplier
-	SupplierCode string `gorm:"index;size:50"`
-	SupplierName string `gorm:"size:255"`
+	SupplierCode   string    `gorm:"index;size:50"`
+	SupplierName   string    `gorm:"size:255"`
 
 	// Costing
-	CostBHD       float64
-	PriceBHD      float64
-	MarginPercent float64
+	CostBHD        float64
+	PriceBHD       float64
+	MarginPercent  float64
 
 	// Product Details
-	Category     string `gorm:"index;size:100"`
-	Description  string `gorm:"type:text"`
-	LeadTimeDays int
+	Category       string    `gorm:"index;size:100"`
+	Description    string    `gorm:"type:text"`
+	LeadTimeDays   int
 
 	// Competitive
-	ABBEquivalent    string `gorm:"size:100"`
-	CompetitiveNotes string `gorm:"type:text"`
+	ABBEquivalent  string    `gorm:"size:100"`
+	CompetitiveNotes string  `gorm:"type:text"`
 
 	// Source tracking
-	SourceFile string    `gorm:"size:500"`
-	ImportedAt time.Time `gorm:"index"`
+	SourceFile     string    `gorm:"size:500"`
+	ImportedAt     time.Time `gorm:"index"`
 
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 func (ProductCostingSSOT) TableName() string {
@@ -346,18 +345,22 @@ func importCustomersFromCSV(db *gorm.DB, filename string, result *ImportResult) 
 		result.CustomersTotal++
 
 		// Parse customer record
-		rawCustomerType := getField(record, colMap, "customer_type")
 		customer := CustomerMaster{
-			BusinessName: getField(record, colMap, "business_account_name"),
-			Industry:     getField(record, colMap, "industry"),
-			City:         getField(record, colMap, "city"),
-			Country:      getField(record, colMap, "country_iso"),
-			PostalCode:   getField(record, colMap, "postal_code"),
-			CreatedBy:    "SSOT_IMPORT",
-			UpdatedBy:    "SSOT_IMPORT",
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			BusinessName:  getField(record, colMap, "business_account_name"),
+			CustomerType:  getField(record, colMap, "customer_type"),
+			Industry:      getField(record, colMap, "industry"),
+			City:          getField(record, colMap, "city"),
+			Country:       getField(record, colMap, "country_iso"),
+			PostalCode:    getField(record, colMap, "postal_code"),
+			CreatedBy:     "SSOT_IMPORT",
+			UpdatedBy:     "SSOT_IMPORT",
+			CreatedAt:     time.Now(),
+			UpdatedAt:     time.Now(),
 		}
+
+		// Generate customer ID from business name (simplified)
+		customer.CustomerID = generateCustomerID(customer.BusinessName, customer.CustomerType)
+		customer.ShortCode = extractShortCode(customer.CustomerType)
 
 		// Skip empty business names
 		if customer.BusinessName == "" {
@@ -365,16 +368,8 @@ func importCustomersFromCSV(db *gorm.DB, filename string, result *ImportResult) 
 			continue
 		}
 
-		preparedCustomer, err := prepareImportedCustomer(customer, rawCustomerType)
-		if err != nil {
-			result.CustomersSkipped++
-			result.CustomerErrors = append(result.CustomerErrors,
-				fmt.Sprintf("Line %d: %v", lineNum, err))
-			continue
-		}
-
 		// Add to batch
-		batch = append(batch, preparedCustomer)
+		batch = append(batch, customer)
 
 		// Insert batch when full
 		if len(batch) >= batchSize {
@@ -398,41 +393,20 @@ func importCustomersFromCSV(db *gorm.DB, filename string, result *ImportResult) 
 }
 
 func insertCustomerBatch(db *gorm.DB, batch []CustomerMaster, result *ImportResult) error {
-	preparedBatch := make([]CustomerMaster, 0, len(batch))
-	for _, customer := range batch {
-		preparedCustomer, err := prepareImportedCustomer(customer, customer.CustomerType)
-		if err != nil {
-			if result != nil {
-				result.CustomersSkipped++
-				result.CustomerErrors = append(result.CustomerErrors, err.Error())
-			}
-			continue
-		}
-		preparedBatch = append(preparedBatch, preparedCustomer)
-	}
-
-	if len(preparedBatch) == 0 {
-		return nil
-	}
-
 	// Use GORM's CreateInBatches for optimal batch insertion
-	if err := db.CreateInBatches(preparedBatch, len(preparedBatch)).Error; err != nil {
+	if err := db.CreateInBatches(batch, len(batch)).Error; err != nil {
 		// If batch fails, try individual inserts (may be duplicates)
-		for _, customer := range preparedBatch {
+		for _, customer := range batch {
 			if err := db.Create(&customer).Error; err != nil {
-				if result != nil {
-					result.CustomersSkipped++
-				}
-			} else if result != nil {
+				result.CustomersSkipped++
+			} else {
 				result.CustomersImported++
 			}
 		}
 		return err
 	}
 
-	if result != nil {
-		result.CustomersImported += len(preparedBatch)
-	}
+	result.CustomersImported += len(batch)
 	return nil
 }
 
@@ -478,17 +452,17 @@ func importOpportunitiesFromExcel(db *gorm.DB, filename string, result *ImportRe
 
 		// Parse opportunity
 		opp := OpportunitySSOT{
-			CustomerName: getFieldFromRow(row, colMap, "customer"),
-			Title:        getFieldFromRow(row, colMap, "title"),
-			Description:  getFieldFromRow(row, colMap, "description"),
-			ValueBHD:     parseFloat(getFieldFromRow(row, colMap, "value")),
-			Stage:        getFieldFromRow(row, colMap, "stage"),
-			ProductType:  getFieldFromRow(row, colMap, "product"),
-			Industry:     getFieldFromRow(row, colMap, "industry"),
-			SourceFile:   filepath.Base(filename),
-			ImportedAt:   time.Now(),
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			CustomerName:   getFieldFromRow(row, colMap, "customer"),
+			Title:          getFieldFromRow(row, colMap, "title"),
+			Description:    getFieldFromRow(row, colMap, "description"),
+			ValueBHD:       parseFloat(getFieldFromRow(row, colMap, "value")),
+			Stage:          getFieldFromRow(row, colMap, "stage"),
+			ProductType:    getFieldFromRow(row, colMap, "product"),
+			Industry:       getFieldFromRow(row, colMap, "industry"),
+			SourceFile:     filepath.Base(filename),
+			ImportedAt:     time.Now(),
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
 		}
 
 		// Generate opportunity ID
@@ -765,68 +739,6 @@ func generateCustomerID(businessName, customerType string) string {
 	}
 
 	return fmt.Sprintf("%s%03d", prefix, hash)
-}
-
-func prepareImportedCustomer(customer CustomerMaster, rawCustomerType string) (CustomerMaster, error) {
-	customer.BusinessName = strings.TrimSpace(customer.BusinessName)
-	if customer.BusinessName == "" {
-		return customer, fmt.Errorf("business name is required")
-	}
-
-	customer.ShortCode = strings.TrimSpace(customer.ShortCode)
-	if customer.ShortCode == "" {
-		customer.ShortCode = extractShortCode(rawCustomerType)
-	}
-
-	customer.CustomerType = normalizeImportedCustomerType(rawCustomerType, customer.ShortCode)
-
-	if strings.TrimSpace(customer.CustomerID) == "" {
-		customer.CustomerID = generateCustomerID(customer.BusinessName, rawCustomerType)
-	}
-	customer.CustomerID = strings.TrimSpace(customer.CustomerID)
-
-	if strings.TrimSpace(customer.CustomerCode) == "" {
-		customer.CustomerCode = customer.CustomerID
-	}
-	customer.CustomerCode = strings.TrimSpace(customer.CustomerCode)
-
-	if customer.Country == "" {
-		customer.Country = "Bahrain"
-	}
-
-	return customer, nil
-}
-
-func normalizeImportedCustomerType(rawCustomerType, shortCode string) string {
-	shortCode = strings.ToUpper(strings.TrimSpace(shortCode))
-	switch shortCode {
-	case "EC":
-		return "EC"
-	case "GOV":
-		return "Government"
-	case "SME":
-		return "SME"
-	case "IND":
-		return "Individual"
-	case "CORP":
-		return "Corporate"
-	}
-
-	customerType := strings.ToUpper(strings.TrimSpace(rawCustomerType))
-	switch {
-	case strings.Contains(customerType, "END CUSTOMER"):
-		return "EC"
-	case strings.Contains(customerType, "GOVERNMENT"):
-		return "Government"
-	case strings.Contains(customerType, "SME"):
-		return "SME"
-	case strings.Contains(customerType, "INDIVIDUAL"):
-		return "Individual"
-	case strings.Contains(customerType, "CORPORATE"):
-		return "Corporate"
-	default:
-		return "Corporate"
-	}
 }
 
 func extractShortCode(customerType string) string {

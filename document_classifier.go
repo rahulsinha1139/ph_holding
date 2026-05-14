@@ -699,6 +699,28 @@ Respond with ONLY a JSON object, no markdown fences or explanation:
 	return result
 }
 
+// classifyDocumentForOCR runs the deterministic classifier for internal OCR flows
+// that have already passed their public endpoint permission checks.
+func (a *App) classifyDocumentForOCR(text string, filename string) *ClassificationResult {
+	if a.classifier == nil {
+		a.classifier = NewDocumentClassifier()
+	}
+
+	result := a.classifier.Classify(text, filename)
+	if result != nil {
+		return result
+	}
+
+	return &ClassificationResult{
+		DocumentType:    "Other",
+		Confidence:      0.3,
+		Method:          "fallback",
+		RouteTo:         "inbox",
+		SuggestedAction: "Review document manually",
+		Explanation:     "No classifier result was available",
+	}
+}
+
 // addAIRoutingInfo adds routing information for AI-classified documents
 func addAIRoutingInfo(result *ClassificationResult) {
 	switch result.DocumentType {
@@ -1150,7 +1172,7 @@ func (s *FilesystemDocumentClassifierService) determineDocumentType(fileName, fi
 
 // extractOfferNumber extracts offer number from folder path (e.g., "101" from "101 ENGIE AIT")
 func (s *FilesystemDocumentClassifierService) extractOfferNumber(folderPath string) string {
-	parts := strings.Split(folderPath, string(filepath.Separator))
+	parts := splitDocumentPathParts(folderPath)
 
 	for _, part := range parts {
 		if matches := s.offerNumberPattern.FindStringSubmatch(part); len(matches) > 1 {
@@ -1163,8 +1185,12 @@ func (s *FilesystemDocumentClassifierService) extractOfferNumber(folderPath stri
 
 // extractCustomerName extracts customer name from folder path or filename
 func (s *FilesystemDocumentClassifierService) extractCustomerName(folderPath, fileName string) string {
+	if exportCustomer := extractAsymmFlowExportCustomerName(folderPath); exportCustomer != "" {
+		return exportCustomer
+	}
+
 	// Try to extract from folder path first (e.g., "101 ENGIE AIT" -> "ENGIE")
-	parts := strings.Split(folderPath, string(filepath.Separator))
+	parts := splitDocumentPathParts(folderPath)
 
 	for _, part := range parts {
 		// Match pattern: "101 ENGIE AIT" -> extract "ENGIE"
@@ -1206,6 +1232,38 @@ func (s *FilesystemDocumentClassifierService) extractCustomerName(folderPath, fi
 	}
 
 	return ""
+}
+
+func splitDocumentPathParts(path string) []string {
+	return strings.FieldsFunc(path, func(r rune) bool {
+		return r == '/' || r == '\\' || r == filepath.Separator
+	})
+}
+
+func extractAsymmFlowExportCustomerName(folderPath string) string {
+	parts := splitDocumentPathParts(folderPath)
+	for i, part := range parts {
+		if !strings.EqualFold(strings.TrimSpace(part), "AsymmFlow Exports") {
+			continue
+		}
+		if i+1 >= len(parts) {
+			return ""
+		}
+		next := strings.TrimSpace(parts[i+1])
+		if strings.EqualFold(next, "Suppliers") || strings.EqualFold(next, "Reports") {
+			return ""
+		}
+		return displayNameFromExportFolder(next)
+	}
+	return ""
+}
+
+func displayNameFromExportFolder(segment string) string {
+	name := strings.TrimSpace(strings.ReplaceAll(segment, "_", " "))
+	if name == "" || strings.EqualFold(name, "unnamed") || strings.EqualFold(name, "Unassigned Customer") {
+		return ""
+	}
+	return name
 }
 
 // extractProductType extracts product type from folder path or filename

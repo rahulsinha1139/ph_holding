@@ -26,6 +26,7 @@
 
   export let embedded = false;
   export let mode: "compensation" | "runs" | "payouts" | "workspace" = "compensation";
+  export let company: "PH Trading" | "AHS Trading" = "PH Trading";
 
   let loading = true;
   let saving = false;
@@ -79,7 +80,10 @@
     account_name: string;
     account_number: string;
     currency?: string;
+    division?: string;
   };
+
+  $: visibleBankAccounts = bankAccounts.filter((account) => (account.division || "PH Trading") === company);
 
   function toISODate(value: string) {
     return value ? `${value}T00:00:00Z` : undefined;
@@ -116,6 +120,7 @@
       payouts = payoutRows;
       summary = summaryRow;
       bankAccounts = (bankAccountRows || []) as CompanyBankAccount[];
+      const scopedBankAccounts = bankAccounts.filter((account) => (account.division || "PH Trading") === company);
 
       if (!selectedPeriodID && periods.length > 0) {
         selectedPeriodID = periods[0].id;
@@ -133,8 +138,8 @@
           selectedRun = null;
         }
       }
-      if (!payrollBankAccountID && bankAccounts.length > 0) {
-        payrollBankAccountID = bankAccounts[0].id;
+      if (!payrollBankAccountID && scopedBankAccounts.length > 0) {
+        payrollBankAccountID = scopedBankAccounts[0].id;
       }
     } catch (err) {
       toast.danger(`Failed to load payroll workspace: ${String(err)}`);
@@ -263,7 +268,7 @@
       selectedRun = await getPayrollRun(runID);
       paymentReference = selectedRun.payment_reference || "";
       payrollPaidAt = selectedRun.paid_at?.slice(0, 10) || new Date().toISOString().slice(0, 10);
-      payrollBankAccountID = selectedRun.bank_account_id || bankAccounts[0]?.id || "";
+      payrollBankAccountID = selectedRun.bank_account_id || visibleBankAccounts[0]?.id || "";
     } catch (err) {
       toast.danger(`Failed to load payroll run: ${String(err)}`);
     }
@@ -587,7 +592,7 @@
                 <span>Bank Account</span>
                 <select bind:value={payrollBankAccountID}>
                   <option value="">Select bank account</option>
-                  {#each bankAccounts as account}
+                  {#each visibleBankAccounts as account}
                     <option value={account.id}>
                       {account.bank_name} - {account.account_name} ({account.account_number})
                     </option>

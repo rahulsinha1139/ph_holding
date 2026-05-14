@@ -1,7 +1,6 @@
 <script lang="ts">
     import { devLog } from "$lib/utils/devLog";
-    import { onMount, onDestroy } from "svelte";
-    import DashboardScreen from "./lib/screens/DashboardScreen.svelte";
+    import { onMount, onDestroy, tick } from "svelte";
 
     // ============================================
     // DESIGN MODE - For frontend-only development
@@ -13,25 +12,10 @@
     const DEMO_SETUP_SCREEN = false; // Toggle to true to show ArrivalCeremony
 
     // Core screens used directly in routing
-    import Customer360 from "./lib/screens/Customer360.svelte";
-    import SettingsScreen from "./lib/screens/SettingsScreen.svelte";
     // OneDrive import disabled — manual folder download + extraction in next session
     // import OneDriveImportScreen from "./lib/screens/OneDriveImportScreen.svelte";
     import ArrivalCeremony from "./lib/screens/ArrivalCeremony.svelte";
-    import UserManagementScreen from "./lib/screens/UserManagementScreen.svelte";
-
-    // Hub screens (these import their own sub-screens internally)
-    import SalesHub from "./lib/screens/SalesHub.svelte";
-    import OperationsHub from "./lib/screens/OperationsHub.svelte";
-    import FinanceHub from "./lib/screens/FinanceHub.svelte";
-    import IntelligenceHub from "./lib/screens/IntelligenceHub.svelte";
-    import CRMHub from "./lib/screens/CRMHub.svelte";
-    import WorkHub from "./lib/screens/WorkHub.svelte";
-    import PeopleHub from "./lib/screens/PeopleHub.svelte";
-    import NotificationsScreen from "./lib/screens/NotificationsScreen.svelte";
-    import DeploymentHub from "./lib/screens/DeploymentHub.svelte";
-    import ShowcaseScreen from "./lib/screens/ShowcaseScreen.svelte";
-    import RFQScreen from "./lib/screens/RFQScreen.svelte";
+    import DashboardScreen from "./lib/screens/DashboardScreen.svelte";
 
     // Auth Context
     import {
@@ -59,7 +43,7 @@
 
     // Wails bindings
     import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff } from "../wailsjs/runtime/runtime";
-    import { NeedsSetup, ProcessDocumentWithOCR, SaveDocumentToEntity, RegisterDevice, ValidateLicense, NeedsLicenseActivation } from "../wailsjs/go/main/App";
+    import { NeedsSetup, PickFile, ProcessDocumentWithOCR, SaveDocumentToEntity, RegisterDevice, ValidateLicense, NeedsLicenseActivation } from "../wailsjs/go/main/App";
 
     // Device Registration Screens (legacy)
     import SetupAdminScreen from "./lib/screens/SetupAdminScreen.svelte";
@@ -74,12 +58,19 @@
 
     // Global OCR Modal
     import QuickCaptureModal from "./lib/components/QuickCaptureModal.svelte";
+    import {
+        recordActivityNavigation,
+        startActivityMonitor,
+        stopActivityMonitor,
+    } from "./lib/telemetry/activityMonitor";
+    import { initTextScale } from "./lib/stores/textScale";
 
     // Global OCR State - Works on ANY screen
     let showGlobalOCRModal = false;
     let globalOCRProcessing = false;
     let globalOCRResult = null;
     let globalOCRFileName = "";
+    let globalOCRSessionKey = 0;
 
     // Butler event handler - shows real-time notifications for file events
     function handleButlerEvent(event) {
@@ -112,6 +103,83 @@
     // Currently active screen
     let currentScreen = "dashboard";
     let currentParams = {};
+    let screenParamsById: Record<string, Record<string, any>> = { dashboard: {} };
+    const persistentScreenIDs = new Set([
+        "dashboard",
+        "opportunities",
+        "operations",
+        "finance",
+        "work",
+        "people",
+        "notifications",
+        "deployment",
+        "relationships",
+        "intelligence",
+        "settings",
+        "showcase",
+        "usermanagement",
+        "rfqs",
+    ]);
+    let mountedPersistentScreens: string[] = ["dashboard"];
+
+    function isPersistentScreen(screen: string) {
+        return persistentScreenIDs.has(screen);
+    }
+
+    function setCurrentScreen(screen: string, params: Record<string, any> = {}) {
+        currentScreen = screen;
+        currentParams = params;
+        screenParamsById = { ...screenParamsById, [screen]: params };
+        recordActivityNavigation(screen, params);
+    }
+
+    function startMonitoringIfReady() {
+        if (DESIGN_MODE || deviceStatus !== "approved") return;
+        void startActivityMonitor(() => currentScreen);
+    }
+
+    async function ensureScreenComponent(screen: string) {
+        const loader = screenLoaders[screen];
+        if (!loader) {
+            activeScreenComponent = null;
+            activeScreenLoading = false;
+            return;
+        }
+
+        if (loadedScreenComponents[screen]) {
+            activeScreenComponent = loadedScreenComponents[screen];
+            if (isPersistentScreen(screen) && !mountedPersistentScreens.includes(screen)) {
+                mountedPersistentScreens = [...mountedPersistentScreens, screen];
+            }
+            activeScreenLoading = false;
+            return;
+        }
+
+        const loadToken = ++activeScreenLoadToken;
+        activeScreenLoading = true;
+        activeScreenComponent = null;
+        try {
+            const mod = await loader();
+            if (loadToken !== activeScreenLoadToken) return;
+            loadedScreenComponents[screen] = mod.default;
+            activeScreenComponent = mod.default;
+            if (isPersistentScreen(screen) && !mountedPersistentScreens.includes(screen)) {
+                mountedPersistentScreens = [...mountedPersistentScreens, screen];
+            }
+        } catch (err) {
+            if (loadToken !== activeScreenLoadToken) return;
+            console.error("Failed to load screen component", screen, err);
+            toast.danger(`Failed to load ${screen} screen`);
+            activeScreenComponent = null;
+        } finally {
+            if (loadToken === activeScreenLoadToken) {
+                activeScreenLoading = false;
+            }
+        }
+    }
+
+    let navigateToScreenListener: ((event: Event) => void) | null = null;
+    let requestGlobalOCRListener: ((event: Event) => void) | null = null;
 
     // For simple hash-based routing support (uses navigate for permission checking)
     function handleHashChange() {
@@ -120,27 +188,28 @@
             const id = hash.split("/")[2];
             // P0-4 FIX: Check permission via navigate before showing screen
             if (hasScreenPermission("customer360")) {
-                currentScreen = "customer360";
-                currentParams = { id };
+                setCurrentScreen("customer360", { id });
             } else {
                 toast.danger("Access denied: You don't have permission to view customer details");
             }
         } else if (hash === "/customers") {
             if (hasScreenPermission("relationships")) {
-                currentScreen = "relationships";
-                currentParams = {};
+                setCurrentScreen("relationships", {});
             } else {
                 toast.danger("Access denied: You don't have permission to view customers");
             }
         } else if (hash && screenPermissions[hash] !== undefined) {
             // Handle direct screen hashes like #finance, #operations
             if (hasScreenPermission(hash)) {
-                currentScreen = hash;
-                currentParams = {};
+                setCurrentScreen(hash, {});
             } else {
                 toast.danger(`Access denied: You don't have permission to view ${hash}`);
             }
         }
+    }
+
+    $: if (deviceStatus === "approved" && !needsSetup) {
+        void ensureScreenComponent(currentScreen);
     }
 
     // Handle setup completion - transition from ceremony to main app
@@ -149,10 +218,10 @@
         needsSetup = false;
 
         // Personalize initial screen based on role
-        if (selectedRole === "sales") currentScreen = "opportunities";
-        else if (selectedRole === "ops") currentScreen = "operations";
-        else if (selectedRole === "finance") currentScreen = "finance";
-        else currentScreen = "dashboard";
+        if (selectedRole === "sales") setCurrentScreen("opportunities");
+        else if (selectedRole === "ops") setCurrentScreen("operations");
+        else if (selectedRole === "finance") setCurrentScreen("finance");
+        else setCurrentScreen("dashboard");
 
         toast.success(
             `Welcome back, ${userName || "Commander"}. Your workspace is ready.`,
@@ -179,7 +248,16 @@
             return;
         }
 
+        if (showGlobalOCRModal) {
+            showGlobalOCRModal = false;
+            globalOCRResult = null;
+            globalOCRFileName = "";
+            globalOCRProcessing = false;
+            await tick();
+        }
+
         // Show modal in processing state
+        globalOCRSessionKey += 1;
         globalOCRFileName = fileName;
         globalOCRResult = null;
         globalOCRProcessing = true;
@@ -200,6 +278,18 @@
             toast.danger(`OCR failed: ${err?.message || err}`);
             globalOCRProcessing = false;
             showGlobalOCRModal = false;
+        }
+    }
+
+    async function handleManualDocumentCapture() {
+        if (globalOCRProcessing) return;
+        try {
+            const filePath = await PickFile("Select document");
+            if (!filePath) return;
+            await handleGlobalFileDrop(filePath);
+        } catch (err) {
+            console.error("Manual document capture failed:", err);
+            toast.danger(`Unable to open document: ${err?.message || err}`);
         }
     }
 
@@ -285,6 +375,7 @@
             const typeToScreen = {
                 "invoice": "finance",
                 "supplier_invoice": "finance",
+                "bank_statement": "finance",
                 "rfq": "opportunities",
                 "quotation": "opportunities",
                 "costing": "costing",
@@ -294,12 +385,14 @@
             };
             const targetScreen = typeToScreen[type];
             if (targetScreen) {
-                if (targetScreen === "costing" || targetScreen === "offers" || targetScreen === "orders") {
-                    currentScreen = "opportunities";
-                    currentParams = { tab: targetScreen };
+                if (targetScreen === "finance" && type === "invoice") {
+                    navigate({ screen: "finance", tab: "invoices", company: mergedData.division || "PH Trading" });
+                } else if (targetScreen === "finance" && type === "bank_statement") {
+                    navigate({ screen: "finance", tab: "bank_recon", company: mergedData.division || "PH Trading" });
+                } else if (targetScreen === "costing" || targetScreen === "offers" || targetScreen === "orders") {
+                    navigate({ screen: "opportunities", tab: targetScreen });
                 } else {
-                    currentScreen = targetScreen;
-                    currentParams = {};
+                    navigate(targetScreen);
                 }
                 toast.info(`Navigate to ${typeName} to continue editing`);
             }
@@ -347,26 +440,29 @@
         }
     }
 
-    // Screen component map - Onyx & Ether flow architecture
-    const screenComponents = {
-        dashboard: DashboardScreen,
-        opportunities: SalesHub,
-        operations: OperationsHub,
-        finance: FinanceHub,
-        work: WorkHub,
-        people: PeopleHub,
-        notifications: NotificationsScreen,
-        deployment: DeploymentHub,
-        relationships: CRMHub,
-        intelligence: IntelligenceHub,
-        // Utility screens (accessible via shortcuts, not main nav)
-        // onedrive_import: OneDriveImportScreen, // Disabled — next session
-        settings: SettingsScreen,
-        showcase: ShowcaseScreen,
-        customer360: Customer360,
-        usermanagement: UserManagementScreen,
-        rfqs: RFQScreen,
+    type ScreenModule = { default: any };
+
+    const screenLoaders: Record<string, () => Promise<ScreenModule>> = {
+        dashboard: () => Promise.resolve({ default: DashboardScreen }),
+        opportunities: () => import("./lib/screens/SalesHub.svelte"),
+        operations: () => import("./lib/screens/OperationsHub.svelte"),
+        finance: () => import("./lib/screens/FinanceHub.svelte"),
+        work: () => import("./lib/screens/WorkHub.svelte"),
+        people: () => import("./lib/screens/PeopleHub.svelte"),
+        notifications: () => import("./lib/screens/NotificationsScreen.svelte"),
+        deployment: () => import("./lib/screens/DeploymentHub.svelte"),
+        relationships: () => import("./lib/screens/CRMHub.svelte"),
+        intelligence: () => import("./lib/screens/IntelligenceHub.svelte"),
+        settings: () => import("./lib/screens/SettingsScreen.svelte"),
+        showcase: () => import("./lib/screens/ShowcaseScreen.svelte"),
+        customer360: () => import("./lib/screens/Customer360.svelte"),
+        usermanagement: () => import("./lib/screens/UserManagementScreen.svelte"),
+        rfqs: () => import("./lib/screens/RFQScreen.svelte"),
     };
+    const loadedScreenComponents: Record<string, any> = { dashboard: DashboardScreen };
+    let activeScreenComponent: any = DashboardScreen;
+    let activeScreenLoading = false;
+    let activeScreenLoadToken = 0;
 
     // Primary navigation flows
     let screens = [
@@ -377,7 +473,6 @@
         { id: "work", label: "Work" },
         { id: "people", label: "People" },
         { id: "notifications", label: "Notifications" },
-        { id: "deployment", label: "Deployment" },
         { id: "relationships", label: "Relationships" },
         { id: "intelligence", label: "Intelligence" },
     ];
@@ -393,6 +488,7 @@
     // SINGLE UNIFIED onMount - Consolidates all initialization
     onMount(() => {
         let cleanup: (() => void) | undefined;
+        initTextScale();
 
         void (async () => {
 
@@ -456,6 +552,7 @@
 
                     // Register file drop handler now that license is valid
                     registerFileDropHandler();
+                    startMonitoringIfReady();
                 } else {
                     // No valid license - show activation screen
                     devLog.info("No valid license found - showing activation screen");
@@ -490,18 +587,18 @@
         window.addEventListener("setup-complete", handleSetupComplete);
 
         // Subscribe to screen navigation events (from OrdersScreen, etc.)
-        window.addEventListener("navigateToScreen", (e) => {
-            // @ts-ignore - CustomEvent detail property
-            const { screen } = e.detail;
-            if (!screen) return;
-            if (screen === "costing" || screen === "offers" || screen === "orders") {
-                currentScreen = "opportunities";
-                currentParams = { tab: screen };
-                return;
-            }
-            currentScreen = screen;
-            currentParams = {};
-        });
+        navigateToScreenListener = (e: Event) => {
+            const detail = (e as CustomEvent).detail;
+            navigate(detail);
+        };
+        window.addEventListener("navigateToScreen", navigateToScreenListener);
+
+        requestGlobalOCRListener = (e: Event) => {
+            const detail = (e as CustomEvent).detail || {};
+            void handleGlobalFileDrop(detail.filePath);
+        };
+        window.addEventListener("requestGlobalOCR", requestGlobalOCRListener);
+        window.addEventListener("document-capture:open", handleManualDocumentCapture);
 
         // Subscribe to Butler file watcher events for real-time notifications
         // Only in non-design mode (requires Wails runtime)
@@ -518,12 +615,19 @@
             window.removeEventListener("hashchange", handleHashChange);
             window.removeEventListener("setup-complete", handleSetupComplete);
             window.removeEventListener("keydown", handleKeyboard);
-            window.removeEventListener("navigateToScreen", () => {});
+            if (navigateToScreenListener) {
+                window.removeEventListener("navigateToScreen", navigateToScreenListener);
+            }
+            if (requestGlobalOCRListener) {
+                window.removeEventListener("requestGlobalOCR", requestGlobalOCRListener);
+            }
+            window.removeEventListener("document-capture:open", handleManualDocumentCapture);
 
             // Clean up Wails event handlers
             if (!DESIGN_MODE) {
                 EventsOff("butler:event");
                 OnFileDropOff(); // CRITICAL: Removes drag/drop listeners
+                void stopActivityMonitor();
             }
         };
 
@@ -535,18 +639,18 @@
     });
 
     // Screen permission mapping - mirrors EnterpriseSidebar.svelte navItems
-    const screenPermissions: Record<string, string | null> = {
+    const screenPermissions: Record<string, string | string[] | null> = {
         dashboard: null, // Always accessible
         opportunities: "offers:view",
         operations: "po:view",
         finance: "finance:view",
-        work: "tasks:view",
+        work: null,
         people: "hr:view",
         notifications: null,
-        deployment: "settings:view",
+        deployment: "settings:update",
         relationships: "customers:view",
         intelligence: "intelligence:chat",
-        settings: "settings:view",
+        settings: ["settings:view", "settings:api_keys"],
         showcase: null, // Dev only
         customer360: "customers:view",
         users: "users:manage",
@@ -557,26 +661,48 @@
         const requiredPerm = screenPermissions[screenID];
         if (!requiredPerm) return true; // No permission required
 
-        const perms = $permissions || [];
+        const perms = Array.isArray($permissions) ? $permissions : [];
         if (perms.length === 0) return false;
 
         // Wildcard (admin)
         if (perms.includes('*')) return true;
 
-        // Direct match
-        if (perms.includes(requiredPerm)) return true;
+        const requiredPerms = Array.isArray(requiredPerm) ? requiredPerm : [requiredPerm];
+        for (const perm of requiredPerms) {
+            // Direct match
+            if (perms.includes(perm)) return true;
 
-        // Resource wildcard (e.g., "finance:*" matches "finance:view")
-        const [resource] = requiredPerm.split(':');
-        if (perms.includes(`${resource}:*`)) return true;
+            // Resource wildcard (e.g., "finance:*" matches "finance:view")
+            const [resource] = perm.split(':');
+            if (perms.includes(`${resource}:*`)) return true;
+        }
 
         return false;
     }
 
-    function navigate(screenID) {
+    function normalizeNavigationTarget(target) {
+        if (!target) return { screen: "", params: {} };
+        if (typeof target === "string") return { screen: target, params: {} };
+
+        const { screen = "", ...rest } = target;
+        const params = {};
+        for (const [key, value] of Object.entries(rest)) {
+            if (value !== undefined && value !== null && value !== "") {
+                params[key] = value;
+            }
+        }
+        return { screen, params };
+    }
+
+    function navigate(target) {
+        const { screen: screenID, params } = normalizeNavigationTarget(target);
+        if (!screenID) return;
+
         console.log(
             "Navigation clicked:",
             screenID,
+            "params:",
+            params,
             "changing from",
             currentScreen,
         );
@@ -588,13 +714,17 @@
             return;
         }
 
-        currentScreen = screenID;
-        console.log("Screen now:", currentScreen);
+        if (screenID === "costing" || screenID === "offers" || screenID === "orders") {
+            setCurrentScreen("opportunities", { tab: screenID, ...params });
+        } else {
+            setCurrentScreen(screenID, params);
+        }
+        console.log("Screen now:", currentScreen, "params:", currentParams);
         if (isMobile) showNav = false;
     }
 
     function handleFloatingNav(event) {
-        navigate(event.detail.screen);
+        navigate(event.detail);
     }
 
     // Handle admin setup completion
@@ -603,6 +733,7 @@
         deviceStatus = "approved";
         await initAuthContext();
         toast.success("Administrator account created successfully!");
+        startMonitoringIfReady();
     }
 
     // Handle device approval (from pending screen)
@@ -632,6 +763,7 @@
         deviceStatus = "approved";
         await initAuthContext();
         toast.success(`Welcome, ${result.user_name}!`);
+        startMonitoringIfReady();
     }
 
     // Handle blocked device
@@ -670,6 +802,7 @@
 
         // Register file drop handler now that license is valid
         registerFileDropHandler();
+        startMonitoringIfReady();
     }
 
     // Register file drop handler - only after license is validated
@@ -826,7 +959,7 @@
             <!-- Sidebar Navigation -->
             <EnterpriseSidebar
                 {currentScreen}
-                on:navigate={(e) => navigate(e.detail.screen)}
+                onNavigate={navigate}
             />
 
             <!-- Main Content Area -->
@@ -836,12 +969,62 @@
                 
                 <!-- Screen Content -->
                 <main class="screen-content">
-                    {#if screenComponents[currentScreen]}
-                        <svelte:component
-                            this={screenComponents[currentScreen]}
-                            params={currentParams}
-                            on:navigate={(e) => navigate(e.detail.screen)}
-                        />
+                    {#if isPersistentScreen(currentScreen)}
+                        {#if !loadedScreenComponents[currentScreen]}
+                            {#if activeScreenLoading}
+                                <div class="loading-screen inline-screen-loader">
+                                    <div class="loading-spinner"></div>
+                                    <p>Loading {screens.find((s) => s.id === currentScreen)?.label || currentScreen}...</p>
+                                </div>
+                            {:else}
+                                <div class="coming-soon">
+                                    <h2>
+                                        {screens.find((s) => s.id === currentScreen)
+                                            ?.label || "Unknown"}
+                                    </h2>
+                                    <p class="subtitle">Screen did not finish loading. Try another section or restart the app.</p>
+                                </div>
+                            {/if}
+                        {:else if mountedPersistentScreens.length > 0}
+                            {#each mountedPersistentScreens as screenID (screenID)}
+                                {#if loadedScreenComponents[screenID]}
+                                    <div
+                                        class="screen-host"
+                                        class:screen-hidden={screenID !== currentScreen}
+                                    >
+                                        <svelte:component
+                                            this={loadedScreenComponents[screenID]}
+                                            params={{
+                                                ...(screenParamsById[screenID] || {}),
+                                                __active: screenID === currentScreen,
+                                            }}
+                                            on:navigate={(e) => navigate(e.detail)}
+                                        />
+                                    </div>
+                                {/if}
+                            {/each}
+                        {:else}
+                            <div class="screen-host">
+                                <svelte:component
+                                    this={loadedScreenComponents[currentScreen]}
+                                    params={screenParamsById[currentScreen] || {}}
+                                    on:navigate={(e) => navigate(e.detail)}
+                                />
+                            </div>
+                        {/if}
+                    {:else if activeScreenComponent}
+                        <div class="screen-host">
+                            <svelte:component
+                                this={activeScreenComponent}
+                                params={currentParams}
+                                on:navigate={(e) => navigate(e.detail)}
+                            />
+                        </div>
+                    {:else if activeScreenLoading}
+                        <div class="loading-screen inline-screen-loader">
+                            <div class="loading-spinner"></div>
+                            <p>Loading {screens.find((s) => s.id === currentScreen)?.label || currentScreen}...</p>
+                        </div>
                     {:else}
                         <!-- Placeholder for screens not yet implemented -->
                         <div class="coming-soon">
@@ -858,14 +1041,16 @@
     {/if}
 
     <!-- GLOBAL OCR Quick Capture Modal - Works on ANY screen! -->
-    <QuickCaptureModal
-        bind:show={showGlobalOCRModal}
-        processing={globalOCRProcessing}
-        ocrResult={globalOCRResult}
-        fileName={globalOCRFileName}
-        on:save={handleGlobalOCRSave}
-        on:close={handleGlobalOCRModalClose}
-    />
+    {#key globalOCRSessionKey}
+        <QuickCaptureModal
+            bind:show={showGlobalOCRModal}
+            processing={globalOCRProcessing}
+            ocrResult={globalOCRResult}
+            fileName={globalOCRFileName}
+            on:save={handleGlobalOCRSave}
+            on:close={handleGlobalOCRModalClose}
+        />
+    {/key}
 </ErrorBoundary>
 
 <style>
@@ -900,7 +1085,6 @@
         overflow-y: auto;
         min-height: 0; /* Allow flex shrinking for overflow to work */
         position: relative;
-        z-index: 1;
         /* Padding is handled by individual screens now */
     }
 
@@ -948,6 +1132,18 @@
         margin-top: 16px;
     }
 
+    .inline-screen-loader {
+        min-height: 320px;
+    }
+
+    .screen-host {
+        min-height: 100%;
+    }
+
+    .screen-hidden {
+        display: none;
+    }
+
     .loading-spinner {
         width: 32px;
         height: 32px;
@@ -960,6 +1156,23 @@
     @keyframes spin {
         to {
             transform: rotate(360deg);
+        }
+    }
+
+    @media (max-width: 1024px) {
+        .app-layout {
+            flex-direction: column;
+        }
+
+        .main-content-wrapper {
+            margin-left: 0;
+            height: auto;
+            min-height: 0;
+            flex: 1 1 auto;
+        }
+
+        .screen-content {
+            min-height: 0;
         }
     }
 

@@ -24,10 +24,8 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -105,8 +103,8 @@ func (a *App) GenerateButlerReport(reportType string, query string) (string, err
 	context := a.buildIntentContext(intent)
 
 	// 3. Call Mistral for structured analysis
-	contextJSON, _ := json.MarshalIndent(context, "", "  ")
-	reportPrompt := buildReportPrompt(reportType, query, string(contextJSON))
+	contextJSON := marshalContextForPrompt(context, butlerMaxReportContextChars)
+	reportPrompt := buildReportPrompt(reportType, query, contextJSON)
 
 	aiAnalysis, err := callMistral(mistralModelLarge, reportPrompt, query)
 	if err != nil {
@@ -177,104 +175,22 @@ Generate the report now.`, reportType, query, contextJSON)
 // PDF GENERATION
 // ============================================================================
 
-// letterheadImagePath returns the path to the PH Trading letterhead template
-// First checks database (synced via Supabase), then falls back to file system
+// letterheadImagePath returns the default PH Trading letterhead path.
+// Division-aware document flows should call letterheadImagePathForDivision.
 func (a *App) letterheadImagePath() string {
-	// PRIMARY: Try to get from database (synced via Supabase)
-	// This eliminates the need to include asset folders in deployment
-	if a.HasAsset(AssetLetterhead) {
-		cachePath, err := a.GetAssetToFile(AssetLetterhead)
-		if err == nil {
-			log.Printf("📄 Using letterhead from database cache: %s", cachePath)
-			return cachePath
-		}
-		log.Printf("⚠️ Failed to extract letterhead from DB: %v, falling back to file system", err)
-	}
-
-	// FALLBACK: Search file system (for dev mode or first-run before sync)
-	letterheadFile := "PH Trading Quotation Template.png"
-
-	// Try multiple locations in order of preference
-	candidatePaths := []string{}
-
-	// 1. From project root (dev mode / wails dev)
-	paths := a.getAppPaths()
-	candidatePaths = append(candidatePaths, filepath.Join(paths.ProjectRoot, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile))
-
-	// 2. Relative to executable (production mode - exe is in build/bin/)
-	if exePath, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exePath)
-		// From build/bin/ go up 2 levels to project root
-		candidatePaths = append(candidatePaths, filepath.Join(exeDir, "..", "..", "CRITICAL_PH_CONTEXT_SSOT", letterheadFile))
-		// Also try if letterhead is copied to build/bin/data/
-		candidatePaths = append(candidatePaths, filepath.Join(exeDir, "data", letterheadFile))
-	}
-
-	// 3. Current working directory
-	if cwd, err := os.Getwd(); err == nil {
-		candidatePaths = append(candidatePaths, filepath.Join(cwd, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile))
-	}
-
-	// Find first existing path
-	for _, path := range candidatePaths {
-		if _, err := os.Stat(path); err == nil {
-			log.Printf("📄 Found letterhead at: %s", path)
-			return path
-		}
-	}
-
-	// Return default path (will trigger fallback if not found)
-	defaultPath := filepath.Join(paths.ProjectRoot, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile)
-	log.Printf("⚠️ Letterhead not found in any location, using default: %s", defaultPath)
-	return defaultPath
+	return a.letterheadImagePathForDivision("PH Trading")
 }
 
 // addLetterheadBackground places the full letterhead template as a page background
 func (a *App) addLetterheadBackground(pdf *gofpdf.Fpdf) {
-	imgPath := a.letterheadImagePath()
-	fileInfo, err := os.Stat(imgPath)
-	if err != nil {
-		// Fallback: simple text header if image not found
-		addLetterheadFallback(pdf)
-		return
-	}
-
-	// Check file size to prevent memory issues (10MB max)
-	if fileInfo.Size() > 10*1024*1024 {
-		log.Printf("⚠️ Letterhead file too large (%d bytes), using fallback", fileInfo.Size())
-		addLetterheadFallback(pdf)
-		return
-	}
-
-	// Place the full letterhead template as background (A4: 210x297mm)
-	opt := gofpdf.ImageOptions{
-		ImageType: "PNG",
-		ReadDpi:   true,
-	}
-	pdf.ImageOptions(imgPath, 0, 0, 210, 297, false, opt, 0, "")
-
+	a.applyLetterheadForDivision(pdf, "PH Trading")
 	// Set cursor below the header area (logo is ~35mm tall)
 	pdf.SetY(42)
 }
 
 // addLetterheadFallback renders a simple text letterhead when image is unavailable
 func addLetterheadFallback(pdf *gofpdf.Fpdf) {
-	// Simple text header
-	pdf.SetY(10)
-	pdf.SetFont("Helvetica", "B", 14)
-	pdf.SetTextColor(80, 80, 80)
-	pdf.CellFormat(0, 8, "PH TRADING W.L.L.", "", 0, "C", false, 0, "")
-	pdf.Ln(10)
-
-	pdf.SetFont("Helvetica", "", 8)
-	pdf.SetTextColor(120, 120, 120)
-	pdf.CellFormat(0, 5, "P.O. Box 815, Manama, Kingdom of Bahrain | Tel: +973 17 587654 | CR. No.68034-1", "", 0, "C", false, 0, "")
-	pdf.Ln(8)
-
-	// Divider
-	pdf.SetDrawColor(200, 200, 200)
-	pdf.Line(15, pdf.GetY(), 195, pdf.GetY())
-	pdf.Ln(6)
+	addLetterheadFallbackForDivision(pdf, "PH Trading")
 }
 
 func (a *App) generateIntelligenceReportPDF(reportType, query string, context map[string]interface{}, aiAnalysis string) (string, error) {
@@ -285,15 +201,8 @@ func (a *App) generateIntelligenceReportPDF(reportType, query string, context ma
 	pdf.SetRightMargin(18)
 
 	// Set header function so letterhead appears on ALL pages including auto-break pages
-	imgPath := a.letterheadImagePath()
 	pdf.SetHeaderFuncMode(func() {
-		fileInfo, err := os.Stat(imgPath)
-		if err == nil && fileInfo.Size() <= 10*1024*1024 { // 10MB max
-			opt := gofpdf.ImageOptions{ImageType: "PNG", ReadDpi: true}
-			pdf.ImageOptions(imgPath, 0, 0, 210, 297, false, opt, 0, "")
-		} else if err == nil {
-			log.Printf("⚠️ Letterhead file too large (%d bytes), skipping", fileInfo.Size())
-		}
+		a.applyLetterheadForDivision(pdf, "PH Trading")
 	}, true) // true = allow content to overlap the header area
 
 	// === COVER PAGE ===

@@ -113,16 +113,13 @@ type opportunityProductDetail struct {
 	PartNumber  string  `json:"part_number"`
 }
 
-func TestManualAudit2026OneDriveImport(t *testing.T) {
-	dbPath := os.Getenv("ONEDRIVE_IMPORT_DB")
-	if dbPath == "" {
-		dbPath = filepath.Join(".", "ph_holdings.db")
-	}
+func TestManualAuditOneDriveImport(t *testing.T) {
+	dbPath := resolveOneDriveImportDBPath()
 
 	sourceExportDir := os.Getenv("ONEDRIVE_AUDIT_SOURCE_DIR")
 	if sourceExportDir == "" {
 		var err error
-		sourceExportDir, err = findLatestOneDriveReportDir("reports", "onedrive_2026_seed_")
+		sourceExportDir, err = findLatestOneDriveReportDir("reports", "onedrive_seed_")
 		if err != nil {
 			t.Fatalf("failed to locate latest OneDrive seed report: %v", err)
 		}
@@ -148,6 +145,11 @@ func TestManualAudit2026OneDriveImport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read staged opportunities: %v", err)
 	}
+	importYear := inferStageOpportunityYear(stageOpps)
+	if importYear == 0 {
+		importYear = resolveOneDriveImportYear(sourceExportDir)
+	}
+	importSource := oneDriveOpportunitySource(importYear)
 	stageLines, err := readStageLineItemsCSV(filepath.Join(sourceExportDir, "line_items.csv"))
 	if err != nil {
 		t.Fatalf("failed to read staged line items: %v", err)
@@ -155,7 +157,7 @@ func TestManualAudit2026OneDriveImport(t *testing.T) {
 	stagePrimaryLines := buildPrimaryStageLineMap(stageOpps, stageLines)
 
 	var dbOpps []Opportunity
-	if err := db.Where("year = ? AND source = ? AND deleted_at IS NULL", 2026, "2026_onedrive").
+	if err := db.Where("year = ? AND source = ? AND deleted_at IS NULL", importYear, importSource).
 		Find(&dbOpps).Error; err != nil {
 		t.Fatalf("failed to load imported opportunities: %v", err)
 	}
@@ -472,6 +474,24 @@ func findLatestOneDriveReportDir(rootDir, prefix string) (string, error) {
 		return matches[i].modTime.After(matches[j].modTime)
 	})
 	return matches[0].path, nil
+}
+
+func inferStageOpportunityYear(stageOpps map[string]postImportStageOpportunity) int {
+	for _, stage := range stageOpps {
+		derivedParts := strings.Split(strings.TrimSpace(stage.DerivedPipelineKey), "-")
+		if len(derivedParts) > 0 {
+			if year := parseMetaYear(strings.TrimSpace(derivedParts[0])); year != 0 {
+				return year
+			}
+		}
+		rawParts := strings.Split(strings.TrimSpace(stage.RawFolderNumber), "-")
+		if len(rawParts) >= 3 {
+			if year := parseMetaYear(strings.TrimSpace(rawParts[len(rawParts)-1])); year != 0 {
+				return year
+			}
+		}
+	}
+	return 0
 }
 
 func readStageOpportunitiesCSV(path string) (map[string]postImportStageOpportunity, error) {

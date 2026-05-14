@@ -6,6 +6,7 @@
     import PaymentsScreen from "./PaymentsScreen.svelte";
     import SupplierPaymentsScreen from "./SupplierPaymentsScreen.svelte";
     import ExpensesScreen from "./ExpensesScreen.svelte";
+    import AccountingScreen from "./AccountingScreen.svelte";
     import PayrollScreen from "./PayrollScreen.svelte";
 
     // Bank Reconciliation Screens (Feature B)
@@ -18,11 +19,28 @@
     import AHSDashboard from "./AHSDashboard.svelte";
     import ErrorBoundary from "../components/ErrorBoundary.svelte";
 
+    export let params = {};
+
     let activeTab = "dashboard";
+    let lastAppliedRouteKey = "";
 
     // E2: Company selector - 'PH Trading' is the default, 'AHS Trading' is the sister company
+    /** @typedef {"PH Trading" | "AHS Trading"} CompanyName */
+    /** @type {CompanyName} */
     let selectedCompany = "PH Trading";
+    /** @type {CompanyName[]} */
     const companies = ["PH Trading", "AHS Trading"];
+
+    /**
+     * @param {unknown} value
+     * @returns {CompanyName | null}
+     */
+    function normalizeCompanyName(value) {
+        if (value === "PH Trading" || value === "AHS Trading") {
+            return value;
+        }
+        return null;
+    }
 
     const tabs = [
         { id: "dashboard", label: "Dashboard" },
@@ -30,6 +48,7 @@
         { id: "payments", label: "Receipts" },
         { id: "payments_made", label: "Supplier Settlements" },
         { id: "expenses", label: "Expenses" },
+        { id: "accounting", label: "Accounting" },
         { id: "expense_approvals", label: "Approvals" },
         { id: "payroll_runs", label: "Payroll" },
         { id: "bank_recon", label: "Bank Recon" },
@@ -49,8 +68,13 @@
 
     function handleFinanceNavigate(event) {
         const nextTab = event?.detail?.tab;
+        const nextCompany = event?.detail?.company;
         if (nextTab && tabs.some((tab) => tab.id === nextTab)) {
             activeTab = nextTab;
+        }
+        const normalizedCompany = normalizeCompanyName(nextCompany);
+        if (normalizedCompany) {
+            selectedCompany = normalizedCompany;
         }
     }
 
@@ -61,6 +85,26 @@
     onDestroy(() => {
         window.removeEventListener("finance:navigate", handleFinanceNavigate);
     });
+
+    $: {
+        const requestedTab = params?.tab;
+        const requestedCompany = params?.company;
+        const nextRouteKey = JSON.stringify({
+            tab: requestedTab || "",
+            company: requestedCompany || "",
+        });
+
+        if (nextRouteKey !== lastAppliedRouteKey) {
+            if (requestedTab && tabs.some((tab) => tab.id === requestedTab)) {
+                activeTab = requestedTab;
+            }
+            const normalizedCompany = normalizeCompanyName(requestedCompany);
+            if (normalizedCompany) {
+                selectedCompany = normalizedCompany;
+            }
+            lastAppliedRouteKey = nextRouteKey;
+        }
+    }
 </script>
 
 <ErrorBoundary name="Finance Hub">
@@ -83,42 +127,41 @@
             </div>
 
             <nav class="tabs">
-                {#if selectedCompany === 'PH Trading'}
-                    {#each tabs as tab}
-                        <button
-                            class="tab"
-                            class:active={activeTab === tab.id}
-                            on:click={() => (activeTab = tab.id)}
-                        >
-                            {tab.label}
-                        </button>
-                    {/each}
-                {:else}
-                    <button class="tab active">AHS Trading Dashboard</button>
-                {/if}
+                {#each tabs as tab}
+                    <button
+                        class="tab"
+                        class:active={activeTab === tab.id}
+                        on:click={() => (activeTab = tab.id)}
+                    >
+                        {tab.label}
+                    </button>
+                {/each}
             </nav>
         </header>
 
         <main class="content">
-            {#if selectedCompany === 'AHS Trading'}
-                <!-- E2: AHS Trading Dashboard -->
-                <AHSDashboard embedded={true} />
-            {:else if activeTab === "dashboard"}
-                <FinancialDashboard embedded={true} />
+            {#if activeTab === "dashboard"}
+                {#if selectedCompany === 'AHS Trading'}
+                    <AHSDashboard embedded={true} />
+                {:else}
+                    <FinancialDashboard embedded={true} />
+                {/if}
             {:else if activeTab === "invoices"}
-                <InvoicesScreen embedded={true} on:navigate={handleNavigate} />
+                <InvoicesScreen embedded={true} company={selectedCompany} on:navigate={handleNavigate} />
             {:else if activeTab === "payments"}
-                <PaymentsScreen embedded={true} on:navigate={handleNavigate} />
+                <PaymentsScreen embedded={true} company={selectedCompany} on:navigate={handleNavigate} />
             {:else if activeTab === "payments_made"}
-                <SupplierPaymentsScreen embedded={true} on:navigate={handleNavigate} />
+                <SupplierPaymentsScreen embedded={true} company={selectedCompany} on:navigate={handleNavigate} />
             {:else if activeTab === "expenses"}
-                <ExpensesScreen embedded={true} mode="workspace" />
+                <ExpensesScreen embedded={true} mode="workspace" company={selectedCompany} />
+            {:else if activeTab === "accounting"}
+                <AccountingScreen embedded={true} company={selectedCompany} />
             {:else if activeTab === "expense_approvals"}
-                <ExpensesScreen embedded={true} mode="approvals" />
+                <ExpensesScreen embedded={true} mode="approvals" company={selectedCompany} />
             {:else if activeTab === "payroll_runs"}
-                <PayrollScreen embedded={true} mode="workspace" />
+                <PayrollScreen embedded={true} mode="workspace" company={selectedCompany} />
             {:else if activeTab === "bank_recon"}
-                <BankReconciliationScreen embedded={true} />
+                <BankReconciliationScreen embedded={true} company={selectedCompany} />
             <!-- Developing later:
             {:else if activeTab === "cheques"}
                 <ChequeRegisterScreen embedded={true} />
@@ -223,6 +266,10 @@
     .tab.active {
         color: #1d1d1f;
         border-bottom-color: #1d1d1f;
+    }
+
+    .static-tab {
+        cursor: default;
     }
 
     .content {

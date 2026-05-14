@@ -5,6 +5,7 @@
 package main
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,6 +97,62 @@ func TestLoadConfigWithEnvVars(t *testing.T) {
 	t.Logf("✓ Config loaded with environment variables successfully")
 }
 
+func TestLoadEnvFilesWithPrecedenceMergesMissingKeys(t *testing.T) {
+	dir := t.TempDir()
+	lowPriority := filepath.Join(dir, "appdata.env")
+	highPriority := filepath.Join(dir, "bundle.env")
+
+	if err := os.WriteFile(lowPriority, []byte("ASYMMFLOW_TEST_AIML_KEY=from-appdata\nASYMMFLOW_TEST_SYNC=false\nASYMMFLOW_TEST_OS_LOCK=from-appdata\n"), 0600); err != nil {
+		t.Fatalf("failed to write low priority env: %v", err)
+	}
+	if err := os.WriteFile(highPriority, []byte("ASYMMFLOW_TEST_SYNC=true\nASYMMFLOW_TEST_LOG=debug\nASYMMFLOW_TEST_OS_LOCK=from-bundle\n"), 0600); err != nil {
+		t.Fatalf("failed to write high priority env: %v", err)
+	}
+
+	keys := []string{
+		"ASYMMFLOW_TEST_AIML_KEY",
+		"ASYMMFLOW_TEST_SYNC",
+		"ASYMMFLOW_TEST_LOG",
+		"ASYMMFLOW_TEST_OS_LOCK",
+	}
+	original := make(map[string]string, len(keys))
+	present := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok {
+			original[key] = value
+			present[key] = true
+		}
+		_ = os.Unsetenv(key)
+	}
+	defer func() {
+		for _, key := range keys {
+			if present[key] {
+				_ = os.Setenv(key, original[key])
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		}
+	}()
+
+	if err := os.Setenv("ASYMMFLOW_TEST_OS_LOCK", "from-process"); err != nil {
+		t.Fatalf("failed to set process env: %v", err)
+	}
+
+	loaded := loadEnvFilesWithPrecedence([]string{highPriority, lowPriority})
+	if len(loaded) != 2 || loaded[0] != highPriority || loaded[1] != lowPriority {
+		t.Fatalf("expected loaded files in priority order, got %#v", loaded)
+	}
+	if got := os.Getenv("ASYMMFLOW_TEST_AIML_KEY"); got != "from-appdata" {
+		t.Fatalf("expected missing AIML key to be supplied by lower-priority env, got %q", got)
+	}
+	if got := os.Getenv("ASYMMFLOW_TEST_SYNC"); got != "true" {
+		t.Fatalf("expected high-priority env to override lower-priority value, got %q", got)
+	}
+	if got := os.Getenv("ASYMMFLOW_TEST_OS_LOCK"); got != "from-process" {
+		t.Fatalf("expected real process env to be preserved, got %q", got)
+	}
+}
+
 func TestGetDatabasePathResolvesRelativeEnvPath(t *testing.T) {
 	dataDir := filepath.Join(".", "data")
 	dbPath := filepath.Join(dataDir, "ph_holdings.db")
@@ -138,6 +195,286 @@ func TestGetDatabasePathResolvesRelativeEnvPath(t *testing.T) {
 	if _, err := os.Stat(resolved); err != nil {
 		t.Fatalf("expected resolved database path to exist: %v", err)
 	}
+}
+
+func TestSeedAppDataDatabaseReplacesHollowExistingDB(t *testing.T) {
+	dir := t.TempDir()
+	appDataPath := filepath.Join(dir, "appdata", "ph_holdings.db")
+	packagedPath := filepath.Join(dir, "package", "data", "ph_holdings.db")
+
+	createDeploymentProfileDB(t, appDataPath, 0, 0, 0, 0, 0)
+	db, err := sql.Open("sqlite3", appDataPath)
+	if err != nil {
+		t.Fatalf("failed to open hollow appdata db: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE license_keys (
+			key TEXT PRIMARY KEY,
+			role TEXT,
+			display_name TEXT,
+			device_hash TEXT,
+			activated INTEGER,
+			activated_at TEXT,
+			notes TEXT,
+			created_by TEXT
+		);
+		INSERT INTO license_keys (key, role, display_name, device_hash, activated, activated_at)
+		VALUES ('PH-SLS-B4AA10', 'sales', 'Sales Test', 'device-123', 1, '2026-04-20 10:00:00');
+	`); err != nil {
+		db.Close()
+		t.Fatalf("failed to seed hollow appdata license: %v", err)
+	}
+	db.Close()
+
+	createDeploymentProfileDB(t, packagedPath, 453, 35, 196, 470, 586)
+	db, err = sql.Open("sqlite3", packagedPath)
+	if err != nil {
+		t.Fatalf("failed to open packaged db: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE license_keys (
+			key TEXT PRIMARY KEY,
+			role TEXT,
+			display_name TEXT,
+			device_hash TEXT,
+			activated INTEGER,
+			activated_at TEXT,
+			notes TEXT,
+			created_by TEXT
+		);
+		INSERT INTO license_keys (key, role, display_name, device_hash, activated, activated_at)
+		VALUES ('PH-SLS-B4AA10', 'sales', 'Sales Test', '', 0, NULL);
+	`); err != nil {
+		db.Close()
+		t.Fatalf("failed to seed packaged license: %v", err)
+	}
+	db.Close()
+
+	if !seedAppDataDatabaseFromPackaged(appDataPath, packagedPath) {
+		t.Fatalf("expected hollow appdata db to be replaced from packaged seed")
+	}
+
+	profile := readDeploymentDatabaseProfile(appDataPath)
+	if profile.Customers != 453 || profile.Orders != 196 || profile.Invoices != 470 {
+		t.Fatalf("expected packaged business data after reseed, got %+v", profile)
+	}
+
+	db, err = sql.Open("sqlite3", appDataPath)
+	if err != nil {
+		t.Fatalf("failed to reopen reseeded db: %v", err)
+	}
+	defer db.Close()
+	var activated int
+	var deviceHash string
+	if err := db.QueryRow(`SELECT activated, device_hash FROM license_keys WHERE key = 'PH-SLS-B4AA10'`).Scan(&activated, &deviceHash); err != nil {
+		t.Fatalf("failed to load restored license activation: %v", err)
+	}
+	if activated != 1 || deviceHash != "device-123" {
+		t.Fatalf("expected existing Sales Test activation to be preserved, got activated=%d device=%q", activated, deviceHash)
+	}
+
+	matches, err := filepath.Glob(appDataPath + ".reseed-backup-*")
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("expected existing hollow db to be backed up, matches=%v err=%v", matches, err)
+	}
+}
+
+func TestSeedAppDataDatabaseReplacesMateriallyStaleExistingDB(t *testing.T) {
+	dir := t.TempDir()
+	appDataPath := filepath.Join(dir, "appdata", "ph_holdings.db")
+	packagedPath := filepath.Join(dir, "package", "data", "ph_holdings.db")
+
+	createDeploymentProfileDB(t, appDataPath, 381, 35, 17, 0, 0)
+	db, err := sql.Open("sqlite3", appDataPath)
+	if err != nil {
+		t.Fatalf("failed to open stale appdata db: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE license_keys (
+			key TEXT PRIMARY KEY,
+			role TEXT,
+			display_name TEXT,
+			device_hash TEXT,
+			activated INTEGER,
+			activated_at TEXT,
+			notes TEXT,
+			created_by TEXT
+		);
+		INSERT INTO license_keys (key, role, display_name, device_hash, activated, activated_at)
+		VALUES ('PH-SLS-B4AA10', 'sales', 'Sales Test', 'sales-device', 1, '2026-04-20 11:00:00');
+	`); err != nil {
+		db.Close()
+		t.Fatalf("failed to seed stale appdata license: %v", err)
+	}
+	db.Close()
+
+	createDeploymentProfileDB(t, packagedPath, 453, 35, 196, 470, 586)
+	db, err = sql.Open("sqlite3", packagedPath)
+	if err != nil {
+		t.Fatalf("failed to open packaged db: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE license_keys (
+			key TEXT PRIMARY KEY,
+			role TEXT,
+			display_name TEXT,
+			device_hash TEXT,
+			activated INTEGER,
+			activated_at TEXT,
+			notes TEXT,
+			created_by TEXT
+		);
+		INSERT INTO license_keys (key, role, display_name, device_hash, activated, activated_at)
+		VALUES ('PH-SLS-B4AA10', 'sales', 'Sales Test', '', 0, NULL);
+	`); err != nil {
+		db.Close()
+		t.Fatalf("failed to seed packaged license: %v", err)
+	}
+	db.Close()
+
+	if !seedAppDataDatabaseFromPackaged(appDataPath, packagedPath) {
+		t.Fatalf("expected materially stale appdata db to be replaced from packaged seed")
+	}
+
+	profile := readDeploymentDatabaseProfile(appDataPath)
+	if profile.Opportunities != 586 || profile.Orders != 196 || profile.Invoices != 470 {
+		t.Fatalf("expected current packaged business data after reseed, got %+v", profile)
+	}
+
+	db, err = sql.Open("sqlite3", appDataPath)
+	if err != nil {
+		t.Fatalf("failed to reopen reseeded db: %v", err)
+	}
+	defer db.Close()
+	var activated int
+	var deviceHash string
+	if err := db.QueryRow(`SELECT activated, device_hash FROM license_keys WHERE key = 'PH-SLS-B4AA10'`).Scan(&activated, &deviceHash); err != nil {
+		t.Fatalf("failed to load restored license activation: %v", err)
+	}
+	if activated != 1 || deviceHash != "sales-device" {
+		t.Fatalf("expected Sales Test activation to survive stale DB reseed, got activated=%d device=%q", activated, deviceHash)
+	}
+}
+
+func TestSeedAppDataDatabaseFlushesActivationWhenRequested(t *testing.T) {
+	dir := t.TempDir()
+	appDataPath := filepath.Join(dir, "appdata", "ph_holdings.db")
+	packagedPath := filepath.Join(dir, "package", "data", "ph_holdings.db")
+
+	createDeploymentProfileDB(t, appDataPath, 381, 35, 17, 0, 0)
+	db, err := sql.Open("sqlite3", appDataPath)
+	if err != nil {
+		t.Fatalf("failed to open stale appdata db: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE license_keys (
+			key TEXT PRIMARY KEY,
+			role TEXT,
+			display_name TEXT,
+			device_hash TEXT,
+			activated INTEGER,
+			activated_at TEXT,
+			notes TEXT,
+			created_by TEXT
+		);
+		INSERT INTO license_keys (key, role, display_name, device_hash, activated, activated_at)
+		VALUES ('PH-SLS-B4AA10', 'sales', 'Sales Test', 'sales-device', 1, '2026-04-20 11:00:00');
+	`); err != nil {
+		db.Close()
+		t.Fatalf("failed to seed stale appdata license: %v", err)
+	}
+	db.Close()
+
+	createDeploymentProfileDB(t, packagedPath, 453, 35, 196, 470, 586)
+	db, err = sql.Open("sqlite3", packagedPath)
+	if err != nil {
+		t.Fatalf("failed to open packaged db: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE license_keys (
+			key TEXT PRIMARY KEY,
+			role TEXT,
+			display_name TEXT,
+			device_hash TEXT,
+			activated INTEGER,
+			activated_at TEXT,
+			notes TEXT,
+			created_by TEXT
+		);
+		INSERT INTO license_keys (key, role, display_name, device_hash, activated, activated_at)
+		VALUES ('PH-SLS-B4AA10', 'sales', 'Sales Test', '', 0, NULL);
+	`); err != nil {
+		db.Close()
+		t.Fatalf("failed to seed packaged license: %v", err)
+	}
+	db.Close()
+
+	originalFlush, hadFlush := os.LookupEnv("ASYMMFLOW_FLUSH_LICENSE_ON_RESEED")
+	if err := os.Setenv("ASYMMFLOW_FLUSH_LICENSE_ON_RESEED", "true"); err != nil {
+		t.Fatalf("failed to set flush env: %v", err)
+	}
+	defer func() {
+		if hadFlush {
+			_ = os.Setenv("ASYMMFLOW_FLUSH_LICENSE_ON_RESEED", originalFlush)
+		} else {
+			_ = os.Unsetenv("ASYMMFLOW_FLUSH_LICENSE_ON_RESEED")
+		}
+	}()
+
+	if !seedAppDataDatabaseFromPackaged(appDataPath, packagedPath) {
+		t.Fatalf("expected stale appdata db to be replaced from packaged seed")
+	}
+
+	db, err = sql.Open("sqlite3", appDataPath)
+	if err != nil {
+		t.Fatalf("failed to reopen reseeded db: %v", err)
+	}
+	defer db.Close()
+	var activated int
+	var deviceHash string
+	if err := db.QueryRow(`SELECT activated, device_hash FROM license_keys WHERE key = 'PH-SLS-B4AA10'`).Scan(&activated, &deviceHash); err != nil {
+		t.Fatalf("failed to load flushed license activation: %v", err)
+	}
+	if activated != 0 || deviceHash != "" {
+		t.Fatalf("expected Sales Test activation to be flushed, got activated=%d device=%q", activated, deviceHash)
+	}
+}
+
+func createDeploymentProfileDB(t *testing.T, path string, customers, suppliers, orders, invoices, opportunities int) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatalf("failed to create db dir: %v", err)
+	}
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+	statements := []string{
+		`CREATE TABLE customers (id INTEGER PRIMARY KEY, deleted_at TEXT);`,
+		`CREATE TABLE suppliers (id INTEGER PRIMARY KEY, deleted_at TEXT);`,
+		`CREATE TABLE orders (id INTEGER PRIMARY KEY);`,
+		`CREATE TABLE invoices (id INTEGER PRIMARY KEY);`,
+		`CREATE TABLE opportunities (id INTEGER PRIMARY KEY);`,
+	}
+	for _, stmt := range statements {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("failed to create test table: %v", err)
+		}
+	}
+	insertRows := func(table string, count int) {
+		t.Helper()
+		for i := 0; i < count; i++ {
+			if _, err := db.Exec("INSERT INTO " + table + " DEFAULT VALUES"); err != nil {
+				t.Fatalf("failed to insert into %s: %v", table, err)
+			}
+		}
+	}
+	insertRows("customers", customers)
+	insertRows("suppliers", suppliers)
+	insertRows("orders", orders)
+	insertRows("invoices", invoices)
+	insertRows("opportunities", opportunities)
 }
 
 func TestConfigValidation(t *testing.T) {

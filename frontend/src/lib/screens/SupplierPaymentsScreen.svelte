@@ -3,19 +3,25 @@
   import { fade } from 'svelte/transition';
   import {
     GetAllSupplierPayments,
-    GetSupplierPaymentsSummary,
+    GetSupplierPayment,
     RecordSupplierPayment,
-    GetSupplierInvoices
+    GetSupplierInvoices,
+    UpdateSupplierPayment,
+    DeleteSupplierPayment
   } from '../../../wailsjs/go/main/App';
+  import { main } from '../../../wailsjs/go/models';
 
   import PageLayout from '$lib/components/layout/PageLayout.svelte';
   import DataTable from '$lib/components/ui/DataTable.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import { listExpenseEntries, type ExpenseEntry } from '$lib/api/expenses';
   import { toast } from '$lib/stores/toasts';
+  import { permissions } from '$lib/stores/authContext';
+  import { buildWailsInput } from '$lib/utils/wailsInterop';
   const dispatch = createEventDispatcher();
 
   export let embedded = false;
+  export let company: 'PH Trading' | 'AHS Trading' = 'PH Trading';
 
   let payments: any[] = [];
   let invoices: any[] = [];
@@ -23,12 +29,24 @@
   let showPaymentModal = false;
   let summary: any = { total_paid_bhd: 0, outstanding_count: 0, overdue_count: 0 };
   let invoicesLoaded = false;
+  let paymentModalMode: 'create' | 'edit' = 'create';
+  let editingPaymentId = '';
+  let paymentSaving = false;
+  let selectedPaymentId = '';
+  let selectedPayment: any = null;
+  let deleteConfirmPaymentId = '';
+
+  $: permissionList = Array.isArray($permissions) ? $permissions : [];
+  $: canCreate = permissionList.includes('*') || permissionList.includes('payments:record') || permissionList.includes('payments:*') || permissionList.includes('finance:*');
+  $: canUpdate = permissionList.includes('*') || permissionList.includes('supplier_payments:update') || permissionList.includes('supplier_payments:*') || permissionList.includes('finance:*');
+  $: canDelete = permissionList.includes('*') || permissionList.includes('supplier_payments:delete') || permissionList.includes('supplier_payments:*') || permissionList.includes('finance:*');
 
   // Payment form
   let paymentForm = {
     invoice_id: '',
     amount: 0,
     currency: 'BHD',
+    exchange_rate: 1,
     method: 'Bank Transfer',
     date: new Date().toISOString().split('T')[0],
     reference: ''
@@ -56,6 +74,23 @@
     }).format(Number(amount) || 0);
   }
 
+  function toInputDate(dateStr: any): string {
+    if (!dateStr) return new Date().toISOString().split('T')[0];
+    const dateVal = typeof dateStr === 'string' ? dateStr : String(dateStr);
+    const date = new Date(dateVal);
+    if (isNaN(date.getTime())) return new Date().toISOString().split('T')[0];
+    return date.toISOString().split('T')[0];
+  }
+
+  function normalizeSupplierPaymentMethod(method: string): string {
+    if (method === 'Letter of Credit') return 'LC';
+    return method;
+  }
+
+  function isExpenseSettlement(row: any): boolean {
+    return row?.source === 'Expense' || String(row?.id || '').startsWith('expense-');
+  }
+
   function isCurrentYear(dateStr: any): boolean {
     if (!dateStr) return false;
     const dateVal = typeof dateStr === 'string' ? dateStr : String(dateStr);
@@ -66,6 +101,10 @@
 
   function openBankReconciliation() {
     dispatch('navigate', { tab: 'bank_recon', source: 'supplier_payments' });
+  }
+
+  function matchesCompany(division?: string) {
+    return (division || 'PH Trading') === company;
   }
 
   const columns = [
@@ -114,18 +153,19 @@
   ];
 
   const paymentMethods = [
-    'Bank Transfer', 'Cheque', 'Letter of Credit', 'Cash', 'Wire Transfer'
+    'Bank Transfer', 'Cheque', 'LC', 'Cash', 'Wire Transfer', 'PDC', 'Other'
   ];
 
   async function loadData() {
     loading = true;
     try {
-      const [paymentsRes, summaryRes, expenseEntries] = await Promise.all([
+      const [paymentsRes, supplierInvoicesRes, expenseEntries] = await Promise.all([
         GetAllSupplierPayments(),
-        GetSupplierPaymentsSummary(),
+        GetSupplierInvoices(),
         listExpenseEntries('', true)
       ]);
-      const paidExpenses = (expenseEntries || []).filter((entry: ExpenseEntry) => entry.payment_status === 'paid');
+      const scopedExpenses = (expenseEntries || []).filter((entry: ExpenseEntry) => matchesCompany((entry as any).division));
+      const paidExpenses = scopedExpenses.filter((entry: ExpenseEntry) => entry.payment_status === 'paid');
       const expensePaymentRows = paidExpenses.map((entry: ExpenseEntry) => ({
         id: `expense-${entry.id}`,
         source: 'Expense',
@@ -138,7 +178,7 @@
         payment_method: entry.payment_method || 'NEFT',
         reference: entry.payment_reference || '',
       }));
-      const supplierPaymentRows = (paymentsRes || []).map((row: any) => ({
+      const supplierPaymentRows = (paymentsRes || []).filter((row: any) => matchesCompany(row.division)).map((row: any) => ({
         ...row,
         source: row.source || 'Supplier Payable',
       }));
@@ -147,19 +187,32 @@
         const rightTime = new Date(right.payment_date || 0).getTime();
         return rightTime - leftTime;
       });
+      if (selectedPaymentId) {
+        selectedPayment = payments.find((payment: any) => payment.id === selectedPaymentId) || null;
+        if (!selectedPayment) {
+          selectedPaymentId = '';
+          deleteConfirmPaymentId = '';
+        }
+      }
 
       const paidExpenseTotal = paidExpenses.reduce((sum: number, entry: ExpenseEntry) => sum + (Number(entry.total_amount) || 0), 0);
-      const unpaidExpenseEntries = (expenseEntries || []).filter((entry: ExpenseEntry) => entry.payment_status !== 'paid' && ['approved', 'posted'].includes(entry.status));
+      const unpaidExpenseEntries = scopedExpenses.filter((entry: ExpenseEntry) => entry.payment_status !== 'paid' && ['approved', 'posted'].includes(entry.status));
       const overdueExpenseCount = unpaidExpenseEntries.filter((entry: ExpenseEntry) => {
         if (!entry.due_date) return false;
         return new Date(entry.due_date).getTime() < Date.now();
       }).length;
+      const filteredInvoices = (supplierInvoicesRes || []).filter((invoice: any) => matchesCompany(invoice.division));
+      const outstandingInvoices = filteredInvoices.filter((invoice: any) => String(invoice?.payment_status || '').toLowerCase() !== 'paid');
+      const overdueInvoices = outstandingInvoices.filter((invoice: any) => {
+        if (!invoice?.due_date) return false;
+        return new Date(invoice.due_date).getTime() < Date.now();
+      });
 
       summary = {
-        total_paid_bhd: (summaryRes?.total_paid_bhd || 0) + paidExpenseTotal,
-        outstanding_bhd: (summaryRes?.outstanding_bhd || 0) + unpaidExpenseEntries.reduce((sum: number, entry: ExpenseEntry) => sum + (Number(entry.total_amount) || 0), 0),
-        outstanding_count: (summaryRes?.outstanding_count || 0) + unpaidExpenseEntries.length,
-        overdue_count: (summaryRes?.overdue_count || 0) + overdueExpenseCount,
+        total_paid_bhd: supplierPaymentRows.reduce((sum: number, row: any) => sum + (Number(row.amount_bhd) || 0), 0) + paidExpenseTotal,
+        outstanding_bhd: outstandingInvoices.reduce((sum: number, invoice: any) => sum + (Number(invoice.outstanding_bhd || invoice.total_bhd || 0) || 0), 0) + unpaidExpenseEntries.reduce((sum: number, entry: ExpenseEntry) => sum + (Number(entry.total_amount) || 0), 0),
+        outstanding_count: outstandingInvoices.length + unpaidExpenseEntries.length,
+        overdue_count: overdueInvoices.length + overdueExpenseCount,
       };
     } catch (e) {
       console.error('Failed to load supplier payments:', e);
@@ -169,11 +222,18 @@
   }
 
   async function openPaymentModal() {
+    if (!canCreate) {
+      toast.warning('You do not have permission to record supplier payments');
+      return;
+    }
+
+    paymentModalMode = 'create';
+    editingPaymentId = '';
     showPaymentModal = true;
     if (!invoicesLoaded) {
       try {
         invoices = await GetSupplierInvoices() || [];
-        invoices = invoices.filter((invoice: any) => Number(invoice?.outstanding_bhd || 0) > 0);
+        invoices = invoices.filter((invoice: any) => matchesCompany(invoice?.division) && Number(invoice?.outstanding_bhd || 0) > 0);
         invoicesLoaded = true;
       } catch (e) {
         console.error('Failed to load invoices:', e);
@@ -185,6 +245,7 @@
       invoice_id: '',
       amount: 0,
       currency: 'BHD',
+      exchange_rate: 1,
       method: 'Bank Transfer',
       date: new Date().toISOString().split('T')[0],
       reference: ''
@@ -193,6 +254,8 @@
 
   function closePaymentModal() {
     showPaymentModal = false;
+    paymentModalMode = 'create';
+    editingPaymentId = '';
   }
 
   function handlePaymentBackdropClick(event: MouseEvent) {
@@ -213,24 +276,128 @@
       return;
     }
 
+    if ((paymentForm.method === 'Bank Transfer' || paymentForm.method === 'Wire Transfer') && !paymentForm.reference.trim()) {
+      toast.danger('Reference is required for bank transfers');
+      return;
+    }
+
     try {
-      await RecordSupplierPayment(
-        paymentForm.invoice_id,
-        paymentForm.amount,
-        paymentForm.currency,
-        paymentForm.method,
-        paymentForm.date,
-        paymentForm.reference
-      );
-      toast.success('Payment recorded successfully');
+      paymentSaving = true;
+      if (paymentModalMode === 'create') {
+        await RecordSupplierPayment(
+          paymentForm.invoice_id,
+          paymentForm.amount,
+          paymentForm.currency,
+          normalizeSupplierPaymentMethod(paymentForm.method),
+          paymentForm.date,
+          paymentForm.reference.trim()
+        );
+        toast.success('Payment recorded successfully');
+      } else {
+        const existing = await GetSupplierPayment(editingPaymentId);
+        const amountForeign = paymentForm.amount;
+        const exchangeRate = paymentForm.currency === 'BHD' ? 1 : Number(paymentForm.exchange_rate || 0);
+        if (paymentForm.currency !== 'BHD' && exchangeRate <= 0) {
+          toast.danger('Exchange rate must be greater than zero for foreign-currency payments');
+          return;
+        }
+        const amountBHD = Number((paymentForm.currency === 'BHD' ? amountForeign : amountForeign * exchangeRate).toFixed(3));
+
+        await UpdateSupplierPayment(editingPaymentId, buildWailsInput(main.SupplierPayment, {
+          ...existing,
+          amount_foreign: amountForeign,
+          currency: paymentForm.currency,
+          exchange_rate: exchangeRate,
+          amount_bhd: amountBHD,
+          payment_method: normalizeSupplierPaymentMethod(paymentForm.method),
+          payment_date: new Date(`${paymentForm.date}T00:00:00`).toISOString(),
+          reference: paymentForm.reference.trim(),
+        }));
+        toast.success('Payment updated successfully');
+      }
+
       showPaymentModal = false;
+      paymentModalMode = 'create';
+      editingPaymentId = '';
       await loadData();
     } catch (e) {
-      toast.danger(`Failed to record payment: ${e}`);
+      toast.danger(`Failed to ${paymentModalMode === 'create' ? 'record' : 'update'} payment: ${String(e)}`);
+    } finally {
+      paymentSaving = false;
+    }
+  }
+
+  function handlePaymentRowClick(row: any) {
+    if (selectedPaymentId === row.id) {
+      selectedPaymentId = '';
+      selectedPayment = null;
+      deleteConfirmPaymentId = '';
+      return;
+    }
+
+    selectedPaymentId = row.id;
+    selectedPayment = row;
+    deleteConfirmPaymentId = '';
+  }
+
+  async function openEditPaymentModal() {
+    if (!selectedPayment || isExpenseSettlement(selectedPayment) || !canUpdate) {
+      return;
+    }
+
+    paymentSaving = true;
+    try {
+      const payment = await GetSupplierPayment(selectedPayment.id);
+      paymentModalMode = 'edit';
+      editingPaymentId = payment.id;
+      paymentForm = {
+        invoice_id: payment.supplier_invoice_id,
+        amount: Number(payment.amount_foreign || payment.amount_bhd || 0),
+        currency: payment.currency || 'BHD',
+        exchange_rate: Number(payment.exchange_rate || 1),
+        method: payment.payment_method || 'Bank Transfer',
+        date: toInputDate(payment.payment_date),
+        reference: payment.reference || ''
+      };
+      showPaymentModal = true;
+    } catch (e) {
+      console.error('Failed to load supplier payment:', e);
+      toast.danger(`Failed to load payment details: ${String(e)}`);
+    } finally {
+      paymentSaving = false;
+    }
+  }
+
+  async function handleDeleteSelectedPayment() {
+    if (!selectedPayment || isExpenseSettlement(selectedPayment) || !canDelete) {
+      return;
+    }
+
+    if (deleteConfirmPaymentId !== selectedPayment.id) {
+      deleteConfirmPaymentId = selectedPayment.id;
+      return;
+    }
+
+    paymentSaving = true;
+    try {
+      await DeleteSupplierPayment(selectedPayment.id);
+      toast.success(`Deleted supplier payment ${selectedPayment.invoice_number || ''}`.trim());
+      selectedPaymentId = '';
+      selectedPayment = null;
+      deleteConfirmPaymentId = '';
+      await loadData();
+    } catch (e) {
+      toast.danger(`Failed to delete payment: ${String(e)}`);
+    } finally {
+      paymentSaving = false;
     }
   }
 
   onMount(loadData);
+  $: if (company) {
+    invoicesLoaded = false;
+    loadData();
+  }
 
   $: totalPaidYTD = payments
     .filter((payment: any) => isCurrentYear(payment.payment_date))
@@ -242,13 +409,13 @@
     <PageLayout title="Supplier Settlements" subtitle="Track outgoing cash events alongside open supplier payables">
       <svelte:fragment slot="actions">
         <Button variant="secondary" on:click={openBankReconciliation}>Open Bank Recon</Button>
-        <Button variant="primary" on:click={openPaymentModal}>Record Payment</Button>
+        <Button variant="primary" on:click={openPaymentModal} disabled={!canCreate}>Record Payment</Button>
       </svelte:fragment>
     </PageLayout>
   {:else}
     <div class="embedded-header">
       <Button variant="secondary" size="sm" on:click={openBankReconciliation}>Open Bank Recon</Button>
-      <Button variant="primary" size="sm" on:click={openPaymentModal}>Record Payment</Button>
+      <Button variant="primary" size="sm" on:click={openPaymentModal} disabled={!canCreate}>Record Payment</Button>
     </div>
   {/if}
 
@@ -273,10 +440,38 @@
   </div>
 
   <!-- Payments Table -->
+  {#if selectedPayment}
+    <div class="selection-bar">
+      <div class="selection-copy">
+        <span class="selection-label">Selected Row</span>
+        <span class="selection-title">{selectedPayment.invoice_number || selectedPayment.entry_number || 'Payment'} · {selectedPayment.supplier_name || selectedPayment.counterparty_name || 'Counterparty'}</span>
+        <span class="selection-meta">
+          {formatBHD(selectedPayment.amount_bhd || 0)} {selectedPayment.currency || 'BHD'} on {fmtDate(selectedPayment.payment_date)}
+        </span>
+      </div>
+      <div class="selection-actions">
+        {#if isExpenseSettlement(selectedPayment)}
+          <span class="selection-note">Expense settlements are managed from Expenses.</span>
+        {:else}
+          {#if canUpdate}
+            <Button variant="secondary" size="sm" on:click={openEditPaymentModal} disabled={paymentSaving}>Edit</Button>
+          {/if}
+          {#if canDelete}
+            <Button variant={deleteConfirmPaymentId === selectedPayment.id ? 'primary' : 'ghost'} size="sm" on:click={handleDeleteSelectedPayment} disabled={paymentSaving}>
+              {deleteConfirmPaymentId === selectedPayment.id ? 'Confirm Delete' : 'Delete'}
+            </Button>
+          {/if}
+        {/if}
+      </div>
+    </div>
+  {/if}
+
   <DataTable
     data={payments}
     {columns}
     {loading}
+    selectedId={selectedPaymentId}
+    onRowClick={handlePaymentRowClick}
     emptyMessage="No outgoing payments recorded yet"
   />
 </div>
@@ -292,28 +487,38 @@
     on:keydown={handlePaymentBackdropKeydown}
   >
     <div class="modal" in:fade={{ duration: 150 }} role="dialog" aria-modal="true" aria-labelledby="supplier-payment-modal-title">
-      <h2 id="supplier-payment-modal-title">Record Supplier Payment</h2>
+      <h2 id="supplier-payment-modal-title">{paymentModalMode === 'edit' ? 'Edit Supplier Payment' : 'Record Supplier Payment'}</h2>
+      {#if paymentModalMode === 'edit'}
+        <p class="modal-intro">Editing the existing supplier payment. Invoice linkage stays locked for audit safety.</p>
+      {/if}
 
       <div class="form-group">
         <label for="supplier-payment-invoice">Supplier Invoice</label>
-        <select id="supplier-payment-invoice" bind:value={paymentForm.invoice_id}>
-          <option value="">Select invoice...</option>
-          {#each invoices as inv}
-            <option value={inv.id}>
-              {inv.invoice_number || inv.id?.slice(0,8)} - {formatBHD(inv.outstanding_bhd || inv.total_bhd)} BHD open
-            </option>
-          {/each}
-        </select>
+        {#if paymentModalMode === 'create'}
+          <select id="supplier-payment-invoice" bind:value={paymentForm.invoice_id} disabled={paymentSaving}>
+            <option value="">Select invoice...</option>
+            {#each invoices as inv}
+              <option value={inv.id}>
+                {inv.invoice_number || inv.id?.slice(0,8)} - {formatBHD(inv.outstanding_bhd || inv.total_bhd)} BHD open
+              </option>
+            {/each}
+          </select>
+        {:else}
+          <div class="locked-field">
+            <div class="locked-title">{selectedPayment?.invoice_number || 'Linked supplier invoice'}</div>
+            <div class="locked-subtitle">{selectedPayment?.supplier_name || selectedPayment?.counterparty_name || 'Supplier payment'}</div>
+          </div>
+        {/if}
       </div>
 
       <div class="form-row">
         <div class="form-group">
           <label for="supplier-payment-amount">Amount</label>
-          <input id="supplier-payment-amount" type="number" step="0.001" bind:value={paymentForm.amount} />
+          <input id="supplier-payment-amount" type="number" step="0.001" bind:value={paymentForm.amount} disabled={paymentSaving} />
         </div>
         <div class="form-group">
           <label for="supplier-payment-currency">Currency</label>
-          <select id="supplier-payment-currency" bind:value={paymentForm.currency}>
+          <select id="supplier-payment-currency" bind:value={paymentForm.currency} disabled={paymentSaving}>
             <option value="BHD">BHD</option>
             <option value="USD">USD</option>
             <option value="EUR">EUR</option>
@@ -322,10 +527,24 @@
         </div>
       </div>
 
+      {#if paymentModalMode === 'edit' && paymentForm.currency !== 'BHD'}
+        <div class="form-group">
+          <label for="supplier-payment-exchange-rate">Exchange Rate to BHD</label>
+          <input
+            id="supplier-payment-exchange-rate"
+            type="number"
+            min="0.000001"
+            step="0.000001"
+            bind:value={paymentForm.exchange_rate}
+            disabled={paymentSaving}
+          />
+        </div>
+      {/if}
+
       <div class="form-row">
         <div class="form-group">
           <label for="supplier-payment-method">Payment Method</label>
-          <select id="supplier-payment-method" bind:value={paymentForm.method}>
+          <select id="supplier-payment-method" bind:value={paymentForm.method} disabled={paymentSaving}>
             {#each paymentMethods as method}
               <option value={method}>{method}</option>
             {/each}
@@ -333,18 +552,20 @@
         </div>
         <div class="form-group">
           <label for="supplier-payment-date">Date</label>
-          <input id="supplier-payment-date" type="date" bind:value={paymentForm.date} />
+          <input id="supplier-payment-date" type="date" bind:value={paymentForm.date} disabled={paymentSaving} />
         </div>
       </div>
 
       <div class="form-group">
         <label for="supplier-payment-reference">Reference</label>
-        <input id="supplier-payment-reference" type="text" bind:value={paymentForm.reference} placeholder="Cheque/transfer reference" />
+        <input id="supplier-payment-reference" type="text" bind:value={paymentForm.reference} placeholder="Cheque/transfer reference" disabled={paymentSaving} />
       </div>
 
       <div class="modal-actions">
-        <Button variant="secondary" on:click={() => showPaymentModal = false}>Cancel</Button>
-        <Button variant="primary" on:click={recordPayment}>Record Payment</Button>
+        <Button variant="secondary" on:click={closePaymentModal} disabled={paymentSaving}>Cancel</Button>
+        <Button variant="primary" on:click={recordPayment} disabled={paymentSaving}>
+          {paymentSaving ? (paymentModalMode === 'create' ? 'Recording...' : 'Saving...') : (paymentModalMode === 'create' ? 'Record Payment' : 'Save Changes')}
+        </Button>
       </div>
     </div>
   </div>
@@ -392,6 +613,57 @@
     color: #d00;
   }
 
+  .selection-bar {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: center;
+    padding: 12px 14px;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 12px;
+    margin-bottom: 16px;
+    background: rgba(255,255,255,0.72);
+  }
+
+  .selection-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .selection-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--steel, #86868B);
+  }
+
+  .selection-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--onyx, #1D1D1F);
+  }
+
+  .selection-meta {
+    font-size: 12px;
+    color: var(--steel, #86868B);
+    font-family: var(--font-mono, monospace);
+  }
+
+  .selection-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .selection-note {
+    font-size: 12px;
+    color: var(--steel, #86868B);
+  }
+
   .modal-overlay {
     position: fixed;
     inset: 0;
@@ -416,6 +688,12 @@
     font-size: 18px;
     font-weight: 600;
     color: var(--onyx, #1D1D1F);
+  }
+
+  .modal-intro {
+    margin: -12px 0 18px;
+    font-size: 13px;
+    color: var(--steel, #86868B);
   }
 
   .form-group {
@@ -457,6 +735,25 @@
 
   .form-row .form-group {
     flex: 1;
+  }
+
+  .locked-field {
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 8px;
+    background: rgba(247, 247, 245, 0.92);
+    padding: 11px 12px;
+  }
+
+  .locked-title {
+    font-weight: 600;
+    color: var(--onyx, #1D1D1F);
+    font-family: var(--font-mono, monospace);
+  }
+
+  .locked-subtitle {
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--steel, #86868B);
   }
 
   .modal-actions {

@@ -220,11 +220,9 @@ func (a *App) ForceReimportStatement(statementID string, user, reason string) er
 		if err := tx.Where("bank_statement_id = ?", statementID).Delete(&StatementHash{}).Error; err != nil {
 			return fmt.Errorf("failed to delete statement hash: %w", err)
 		}
-
 		if err := tx.Where("bank_statement_id = ?", statementID).Delete(&BankStatementLine{}).Error; err != nil {
 			return fmt.Errorf("failed to delete statement lines: %w", err)
 		}
-
 		if err := tx.Delete(&BankStatement{}, "id = ?", statementID).Error; err != nil {
 			return fmt.Errorf("failed to delete statement: %w", err)
 		}

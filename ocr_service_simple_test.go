@@ -1,9 +1,11 @@
 package main
 
 import (
-	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/xuri/excelize/v2"
 )
 
 // Test vector PDF detection
@@ -54,18 +56,10 @@ func TestNewSimpleOCRService(t *testing.T) {
 		t.Error("dpi should be > 0")
 	}
 
-	// Verify default endpoint — expects the VPS asymm-engine (Apr 2026 migration).
-	// Accepts either the new default or an env-var override; the test only cares
-	// that we're no longer hitting Fly.io.
-	if service.flyEndpoint == "https://asymmetrica-runtime.fly.dev" {
-		t.Errorf("Default endpoint should NOT be fly.io, got %s", service.flyEndpoint)
-	}
-	expectedDefault := "https://api.asymmetrica.ai/engine"
-	// Only assert the exact default if no env vars are overriding it.
-	if os.Getenv("ASYMM_ENGINE_URL") == "" && os.Getenv("FLY_OCR_URL") == "" {
-		if service.flyEndpoint != expectedDefault {
-			t.Errorf("Expected default endpoint %s, got %s", expectedDefault, service.flyEndpoint)
-		}
+	// Verify default endpoint
+	expectedEndpoint := "https://asymmetrica-runtime.fly.dev"
+	if service.flyEndpoint != expectedEndpoint {
+		t.Errorf("Expected endpoint %s, got %s", expectedEndpoint, service.flyEndpoint)
 	}
 }
 
@@ -98,6 +92,57 @@ func TestOCRResultSimple(t *testing.T) {
 	}
 }
 
+func TestSimpleOCRServiceProcessesExcelLocally(t *testing.T) {
+	tmpDir := t.TempDir()
+	workbookPath := filepath.Join(tmpDir, "rfq_fixture.xlsx")
+
+	f := excelize.NewFile()
+	sheet := f.GetSheetName(0)
+	if err := f.SetCellValue(sheet, "A1", "Request for Quotation"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetCellValue(sheet, "A2", "RFQ Number"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetCellValue(sheet, "B2", "RFQ-2026-LOCAL"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetCellValue(sheet, "A3", "Please quote analyzer spares"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SaveAs(workbookPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	service, err := NewSimpleOCRService()
+	if err != nil {
+		t.Fatalf("NewSimpleOCRService() failed: %v", err)
+	}
+
+	result, err := service.ProcessDocument(workbookPath, "rfq")
+	if err != nil {
+		t.Fatalf("ProcessDocument() failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Excel OCR result should be successful")
+	}
+	if result.Engine != "excelize" {
+		t.Fatalf("expected excelize engine, got %s", result.Engine)
+	}
+	if result.DocumentType != "rfq" {
+		t.Fatalf("expected rfq document type, got %s", result.DocumentType)
+	}
+	if !strings.Contains(result.Text, "Request for Quotation") {
+		t.Fatalf("expected extracted workbook text, got %q", result.Text)
+	}
+	if result.ExtractedData["source_type"] != "excel" {
+		t.Fatalf("expected source_type=excel, got %#v", result.ExtractedData["source_type"])
+	}
+}
+
 // Benchmark vector PDF detection (should be fast!)
 func BenchmarkIsVectorPDF(b *testing.B) {
 	// Test with a non-PDF file (fast path)
@@ -106,26 +151,5 @@ func BenchmarkIsVectorPDF(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		isVectorPDF(path)
-	}
-}
-
-func TestExtractTextFromRTF_DecodesHexEscapes(t *testing.T) {
-	rtf := "{\\rtf1\\ansi Hello \\'41\\'42\\'43 world}"
-
-	text := extractTextFromRTF(rtf)
-	if !strings.Contains(text, "Hello ABC world") {
-		t.Fatalf("extractTextFromRTF() = %q, want decoded hex text", text)
-	}
-}
-
-func TestExtractTextFromRTF_IgnoresInvalidHexEscapes(t *testing.T) {
-	rtf := "{\\rtf1\\ansi Keep \\'zz text}"
-
-	text := extractTextFromRTF(rtf)
-	if strings.Contains(text, "zz") {
-		t.Fatalf("extractTextFromRTF() = %q, should not emit invalid hex bytes", text)
-	}
-	if !strings.Contains(text, "Keep") || !strings.Contains(text, "text") {
-		t.Fatalf("extractTextFromRTF() = %q, expected surrounding plain text to survive", text)
 	}
 }

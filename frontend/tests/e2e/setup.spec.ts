@@ -16,9 +16,13 @@ test.describe('Application shell setup', () => {
     await expect(page.getByRole('link', { name: 'Operations' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Intelligence' })).toBeVisible();
 
-    await expect(page.getByText('Overview.')).toBeVisible();
-    await expect(page.getByText('TOTAL REVENUE (YTD)')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Browse' })).toBeVisible();
-    await expect(page.getByText('Open Opportunities')).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Good (morning|afternoon|evening), Developer/ })).toBeVisible();
+    await expect(page.getByText('Revenue YTD 2026', { exact: true })).toBeVisible();
+    await expect(page.getByText('Operating Focus', { exact: true })).toBeVisible();
+    await expect(page.getByText('Top Customer Revenue', { exact: true })).toBeVisible();
+    await expect(page.getByText('YTD 2026', { exact: true })).toBeVisible();
+    await expect(page.getByText('Pipeline by Stage', { exact: true })).toBeVisible();
+    await expect(page.getByText('Receivables Aging', { exact: true })).toBeVisible();
+    await expect(page.getByText(/YTD 2026 records/)).toBeVisible();
   });
 });

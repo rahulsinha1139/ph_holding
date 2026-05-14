@@ -48,6 +48,7 @@
 
   // Props
   export let embedded = false;
+  export let company: 'PH Trading' | 'AHS Trading' = 'PH Trading';
 
   // Types
   type StatusFilter = 'All' | 'Draft' | 'Open' | 'Partial' | 'Settled' | 'Overdue' | 'Proforma';
@@ -92,6 +93,7 @@
     country_of_origin?: string;
     payment_terms?: string;
     delivery_terms?: string;
+    division?: string;
   }
 
   interface Order {
@@ -102,6 +104,7 @@
     order_date: any;
     grand_total_bhd: number;
     status: string;
+    division?: string;
   }
 
   interface DeliveryNote {
@@ -166,7 +169,7 @@
     loadingCreditNotes = true;
     try {
       const data = await ListCreditNotes(100, 0);
-      creditNotes = data || [];
+      creditNotes = (data || []).filter((note: any) => matchesCompany(note.division));
     } catch (err) {
       console.error('Failed to load credit notes:', err);
       creditNotes = [];
@@ -561,6 +564,10 @@
     dispatch('navigate', { tab: 'bank_recon', source: 'customer_invoices' });
   }
 
+  function matchesCompany(division?: string) {
+    return (division || 'PH Trading') === company;
+  }
+
   // Parse Go time.Time to JS Date
   function parseGoDate(dateValue: any): Date {
     if (!dateValue) return new Date(0);
@@ -611,7 +618,7 @@
     hasMore = true;
     try {
       const data = await ListCustomerInvoices(PAGE_SIZE, 0);
-      invoices = data || [];
+      invoices = (data || []).filter((invoice) => matchesCompany(invoice.division));
       currentPage = 1;
       totalLoaded = invoices.length;
       hasMore = invoices.length === PAGE_SIZE;
@@ -639,7 +646,7 @@
       const data = await ListCustomerInvoices(PAGE_SIZE, offset);
 
       if (data && data.length > 0) {
-        invoices = [...invoices, ...data];
+        invoices = [...invoices, ...data.filter((invoice) => matchesCompany(invoice.division))];
         currentPage++;
         totalLoaded = invoices.length;
         hasMore = data.length === PAGE_SIZE;
@@ -660,7 +667,7 @@
     try {
       const allOrders = await ListOrders(500, 0);
       orders = (allOrders || []).filter(
-        (order) => order.status !== 'Complete' && order.status !== 'Invoiced'
+        (order) => matchesCompany(order.division) && order.status !== 'Complete' && order.status !== 'Invoiced'
       );
       devLog.info(`Loaded ${orders.length} unfulfilled orders`);
     } catch (err) {
@@ -793,10 +800,19 @@
     }
   }
 
+  let lastLoadedCompany = '';
+
   onMount(() => {
+    lastLoadedCompany = company;
     loadInvoices();
     loadCreditNotes();
   });
+
+  $: if (lastLoadedCompany && company !== lastLoadedCompany) {
+    lastLoadedCompany = company;
+    loadInvoices();
+    loadCreditNotes();
+  }
 </script>
 
 <PageLayout title="Invoices" subtitle="Customer billing and receivables settlement" {embedded}>

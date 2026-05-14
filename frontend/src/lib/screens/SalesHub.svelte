@@ -12,6 +12,7 @@
 
     let activeTab = "opportunities";
     let lastAppliedRouteTab = "";
+    $: isActiveScreen = params?.__active !== false;
 
     // Text-only tabs - Living Minimalist
     // Sales flow: RFQ → Costing → Offer → Customer Order
@@ -28,6 +29,10 @@
         // Map screen names to tab IDs
         if (screen === 'opportunities' && tab === 'offers') {
             activeTab = 'offers';
+        } else if (screen === 'opportunities' && tab === 'costing') {
+            activeTab = 'costing';
+        } else if (screen === 'opportunities') {
+            activeTab = 'opportunities';
         } else if (screen === 'offers') {
             activeTab = 'offers';
         } else if (screen === 'costing') {
@@ -66,9 +71,9 @@
         <!-- Content -->
         <main class="content">
             {#if activeTab === "opportunities"}
-                <OpportunitiesScreen />
+                <OpportunitiesScreen on:navigate={handleNavigate} />
             {:else if activeTab === "costing"}
-                <CostingSheetScreen on:navigate={handleNavigate} />
+                <CostingSheetScreen active={isActiveScreen} on:navigate={handleNavigate} />
             {:else if activeTab === "offers"}
                 <OffersScreen embedded={true} on:navigate={handleNavigate} />
             {:else if activeTab === "orders"}

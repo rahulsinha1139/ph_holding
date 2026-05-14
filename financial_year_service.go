@@ -7,6 +7,20 @@ import (
 	"time"
 )
 
+var operationalFreshStartDate = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+func usesOperationalFreshStart(year int) bool {
+	return !operationalFreshStartDate.IsZero() && year >= operationalFreshStartDate.Year()
+}
+
+func operationalMetricStartForYear(year int) time.Time {
+	yearStart := time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
+	if usesOperationalFreshStart(year) && operationalFreshStartDate.After(yearStart) {
+		return operationalFreshStartDate
+	}
+	return yearStart
+}
+
 // =============================================================================
 // FINANCIAL YEAR SERVICE - Dynamic Finance with Verified Data
 // =============================================================================
@@ -185,6 +199,10 @@ func (a *App) calculateFinancialYearFromTally(year int) (*FinancialYearSummary, 
 		AsOfDate: fmt.Sprintf("%d-12-31", year),
 	}
 
+	if usesOperationalFreshStart(year) {
+		return a.calculateFreshStartFinancialYear(year, summary)
+	}
+
 	// Get revenue from customer invoices (using SQLite strftime)
 	var totalRevenue float64
 	err := a.db.Model(&Invoice{}).
@@ -196,6 +214,19 @@ func (a *App) calculateFinancialYearFromTally(year int) (*FinancialYearSummary, 
 	}
 	summary.Revenue = totalRevenue
 	log.Printf("📊 Year %d revenue from invoices: %.2f BHD", year, totalRevenue)
+
+	var bookedOrderValue float64
+	err = a.db.Model(&Order{}).
+		Where("strftime('%Y', order_date) = ? AND status NOT IN ?", fmt.Sprintf("%d", year), []string{"Cancelled", "Canceled", "Void"}).
+		Select("COALESCE(SUM(CASE WHEN grand_total_bhd > 0 THEN grand_total_bhd ELSE total_value_bhd END), 0)").
+		Scan(&bookedOrderValue).Error
+	if err != nil {
+		log.Printf("⚠️ Error fetching booked order value for year %d: %v", year, err)
+	} else if bookedOrderValue > summary.Revenue {
+		summary.Revenue = bookedOrderValue
+		summary.Source = "Live Data (Unaudited - booked orders)"
+		log.Printf("📊 Year %d using booked order value for current live revenue: %.2f BHD", year, bookedOrderValue)
+	}
 
 	// For COGS, we need to estimate based on historical gross margin
 	// Raw supplier invoice totals != COGS (proper COGS = Opening Inv + Purchases - Closing Inv)
@@ -244,15 +275,23 @@ func (a *App) calculateFinancialYearFromTally(year int) (*FinancialYearSummary, 
 	// Invoice uses outstanding_bhd (pre-calculated outstanding amount)
 	var outstandingAR float64
 	err = a.db.Model(&Invoice{}).
-		Where("strftime('%Y', invoice_date) = ? AND status NOT IN ('Paid', 'Cancelled')", fmt.Sprintf("%d", year)).
+		Where("strftime('%Y', invoice_date) = ? AND status NOT IN ('Paid', 'Cancelled', 'Void', 'Proforma', 'Draft')", fmt.Sprintf("%d", year)).
 		Select("COALESCE(SUM(outstanding_bhd), 0)").
 		Scan(&outstandingAR).Error
 	if err == nil && outstandingAR > 0 {
 		summary.TradeReceivables = outstandingAR
 		log.Printf("📊 Year %d AR from invoices: %.2f BHD", year, outstandingAR)
 	} else {
-		// Estimate from revenue
-		summary.TradeReceivables = summary.Revenue * 0.08 // ~30 days DSO
+		start := time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC)
+		end := time.Date(year+1, time.January, 1, 0, 0, 0, 0, time.UTC)
+		orderExposure, pendingOrders, exposureErr := a.calculateUninvoicedOrderExposure(start, end)
+		if exposureErr == nil && orderExposure > 0 {
+			summary.TradeReceivables = orderExposure
+			log.Printf("📊 Year %d AR fallback from %d uninvoiced confirmed orders: %.2f BHD", year, pendingOrders, orderExposure)
+		} else {
+			// Estimate from revenue
+			summary.TradeReceivables = summary.Revenue * 0.08 // ~30 days DSO
+		}
 	}
 
 	// Calculate payables from live supplier invoice data (using SQLite strftime)
@@ -329,32 +368,133 @@ func (a *App) calculateFinancialYearFromTally(year int) (*FinancialYearSummary, 
 	summary.CurrentLiabilities = summary.TradePayables + summary.LeaseCurrent
 	summary.TotalLiabilities = summary.CurrentLiabilities + summary.LeaseNonCurrent
 
-	// For current year with no invoices yet, show offer pipeline as context
 	if summary.Revenue == 0 {
-		var pipelineValue float64
-		var offerCount int64
-		a.db.Model(&Offer{}).
-			Where("strftime('%Y', quotation_date) = ? AND stage NOT IN ('Lost', 'Expired')", fmt.Sprintf("%d", year)).
-			Select("COALESCE(SUM(total_value_bhd), 0)").Scan(&pipelineValue)
-		a.db.Model(&Offer{}).
-			Where("strftime('%Y', quotation_date) = ? AND stage NOT IN ('Lost', 'Expired')", fmt.Sprintf("%d", year)).
-			Count(&offerCount)
-
-		if pipelineValue > 0 || offerCount > 0 {
-			summary.Source = fmt.Sprintf("Pipeline Data (%d offers, Unaudited)", offerCount)
-			// Use pipeline as estimated revenue (weighted by typical conversion rate)
-			summary.Revenue = pipelineValue * 0.4 // 40% conversion estimate
-			summary.CostOfSales = summary.Revenue * (1 - grossMarginPct2024)
-			summary.GrossProfit = summary.Revenue - summary.CostOfSales
-			log.Printf("📊 Year %d: Using offer pipeline (%.2f BHD, %d offers) for estimates",
-				year, pipelineValue, offerCount)
-		}
+		summary.Source = "Live Data (Unaudited - no posted invoices)"
 	}
 
 	log.Printf("✅ Calculated financial data for year %d: Revenue=%.2f, GrossProfit=%.2f",
 		year, summary.Revenue, summary.GrossProfit)
 
 	return summary, nil
+}
+
+func (a *App) calculateFreshStartFinancialYear(year int, summary *FinancialYearSummary) (*FinancialYearSummary, error) {
+	start := operationalMetricStartForYear(year)
+	end := time.Date(year+1, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+	sourceBasis := "posted invoices"
+	summary.Source = fmt.Sprintf("Fresh Start Live Data (from %s)", start.Format("2 Jan 2006"))
+	summary.AsOfDate = time.Now().Format("2006-01-02")
+
+	postedInvoiceStatuses := []string{"Sent", "Paid", "PartiallyPaid", "Overdue"}
+	if err := a.db.Model(&Invoice{}).
+		Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", postedInvoiceStatuses, start, end).
+		Select("COALESCE(SUM(grand_total_bhd), 0)").
+		Scan(&summary.Revenue).Error; err != nil {
+		log.Printf("⚠️ Error fetching fresh-start invoice revenue for year %d: %v", year, err)
+	}
+
+	var bookedOrderValue float64
+	if err := a.db.Model(&Order{}).
+		Where("status NOT IN ? AND order_date >= ? AND order_date < ?", []string{"Draft", "Cancelled", "Canceled", "Void"}, start, end).
+		Select("COALESCE(SUM(CASE WHEN grand_total_bhd > 0 THEN grand_total_bhd ELSE total_value_bhd END), 0)").
+		Scan(&bookedOrderValue).Error; err != nil {
+		log.Printf("⚠️ Error fetching fresh-start booked orders for year %d: %v", year, err)
+	} else if bookedOrderValue > summary.Revenue {
+		summary.Revenue = bookedOrderValue
+		sourceBasis = "posted invoices plus booked orders"
+		log.Printf("📊 Year %d using booked order value for live revenue exposure: %.2f BHD", year, bookedOrderValue)
+	}
+
+	if err := a.db.Model(&SupplierInvoice{}).
+		Where("invoice_date >= ? AND invoice_date < ? AND status NOT IN ?", start, end, []string{"Rejected", "Dispute"}).
+		Select("COALESCE(SUM(total_bhd), 0)").
+		Scan(&summary.CostOfSales).Error; err != nil {
+		log.Printf("⚠️ Error fetching fresh-start supplier costs for year %d: %v", year, err)
+	}
+
+	openInvoiceStatuses := []string{"Sent", "PartiallyPaid", "Overdue"}
+	var openInvoiceAR float64
+	if err := a.db.Model(&Invoice{}).
+		Where("status IN ? AND invoice_date >= ? AND invoice_date < ?", openInvoiceStatuses, start, end).
+		Select("COALESCE(SUM(outstanding_bhd), 0)").
+		Scan(&openInvoiceAR).Error; err != nil {
+		log.Printf("⚠️ Error fetching fresh-start AR for year %d: %v", year, err)
+	}
+	summary.TradeReceivables = openInvoiceAR
+
+	orderExposure, pendingOrders, exposureErr := a.calculateUninvoicedOrderExposure(start, end)
+	if exposureErr != nil {
+		log.Printf("⚠️ Error fetching fresh-start uninvoiced order exposure for year %d: %v", year, exposureErr)
+	} else if orderExposure > 0 {
+		summary.TradeReceivables += orderExposure
+		log.Printf("📊 Year %d added %d uninvoiced orders to AR exposure: %.2f BHD", year, pendingOrders, orderExposure)
+	}
+
+	if err := a.db.Model(&SupplierInvoice{}).
+		Where("invoice_date >= ? AND invoice_date < ? AND status NOT IN ?", start, end, []string{"Paid", "Rejected", "Dispute"}).
+		Select("COALESCE(SUM(total_bhd), 0)").
+		Scan(&summary.TradePayables).Error; err != nil {
+		log.Printf("⚠️ Error fetching fresh-start AP for year %d: %v", year, err)
+	}
+
+	summary.Source = fmt.Sprintf("Fresh Start Live Data (from %s; %s)", start.Format("2 Jan 2006"), sourceBasis)
+	applyFreshStartProfitabilityEstimate(summary)
+
+	if cash, err := a.computeCashPositionSnapshot(); err == nil {
+		summary.CashEquivalents = cash.CashBalanceBHD
+	} else {
+		log.Printf("⚠️ Error fetching fresh-start cash position: %v", err)
+	}
+
+	summary.CurrentAssets = summary.TradeReceivables + summary.CashEquivalents
+	summary.TotalAssets = summary.CurrentAssets
+	summary.CurrentLiabilities = summary.TradePayables
+	summary.TotalLiabilities = summary.CurrentLiabilities
+	summary.TotalEquity = summary.TotalAssets - summary.TotalLiabilities
+	summary.OwnerCurrentAcct = summary.TotalEquity
+
+	log.Printf("✅ Fresh-start financial data for year %d from %s: Revenue=%.2f, Cash=%.2f, AR=%.2f",
+		year, start.Format("2006-01-02"), summary.Revenue, summary.CashEquivalents, summary.TradeReceivables)
+
+	return summary, nil
+}
+
+func applyFreshStartProfitabilityEstimate(summary *FinancialYearSummary) {
+	if summary == nil || summary.Revenue <= 0 {
+		return
+	}
+
+	fs2024 := getVerifiedFS2024Data()[2024]
+	if summary.CostOfSales <= 0 && fs2024.Revenue > 0 {
+		grossMarginPct2024 := (fs2024.Revenue - fs2024.CostOfSales) / fs2024.Revenue
+		summary.CostOfSales = summary.Revenue * (1 - grossMarginPct2024)
+	}
+	summary.GrossProfit = summary.Revenue - summary.CostOfSales
+
+	revenueRatio := summary.Revenue / fs2024.Revenue
+	yearStart := operationalMetricStartForYear(summary.Year)
+	yearEnd := time.Date(summary.Year+1, time.January, 1, 0, 0, 0, 0, time.UTC)
+	asOf := time.Now()
+	if asOf.Before(yearStart) {
+		asOf = yearStart
+	}
+	if asOf.After(yearEnd) {
+		asOf = yearEnd
+	}
+	elapsedYearRatio := asOf.Sub(yearStart).Hours() / yearEnd.Sub(yearStart).Hours()
+	if elapsedYearRatio <= 0 || elapsedYearRatio > 1 {
+		elapsedYearRatio = 1
+	}
+
+	summary.StaffCosts = fs2024.StaffCosts * revenueRatio * 0.9
+	summary.AdminExpenses = fs2024.AdminExpenses * revenueRatio
+	summary.Depreciation = fs2024.Depreciation * elapsedYearRatio
+	summary.FinanceCosts = fs2024.FinanceCosts * 0.95 * elapsedYearRatio
+	summary.OtherIncome = fs2024.OtherIncome * revenueRatio
+
+	totalOpex := summary.StaffCosts + summary.AdminExpenses + summary.Depreciation + summary.FinanceCosts
+	summary.NetProfit = summary.GrossProfit + summary.OtherIncome - totalOpex
 }
 
 // GetDynamicFinancialDashboard returns a complete dashboard with calculated ratios
@@ -382,6 +522,7 @@ func (a *App) GetDynamicFinancialDashboard(year int) (FinancialDashboard, error)
 		Period:    fmt.Sprintf("FY%d", year),
 		PriorYear: fmt.Sprintf("FY%d", year-1),
 		AsOfDate:  currentYear.AsOfDate,
+		Source:    currentYear.Source,
 
 		// P&L Summary
 		Revenue:     currentYear.Revenue,
@@ -476,6 +617,10 @@ func (a *App) GetDynamicFinancialDashboard(year int) (FinancialDashboard, error)
 	dashboard.AROver90 = arAging.Over90
 	dashboard.AROverdue = arAging.Days30_60 + arAging.Days60_90 + arAging.Over90
 	totalAR := arAging.Current + arAging.Days30_60 + arAging.Days60_90 + arAging.Over90
+	if currentYear.TradeReceivables > totalAR {
+		dashboard.ARCurrent += currentYear.TradeReceivables - totalAR
+		totalAR = currentYear.TradeReceivables
+	}
 	if totalAR > 0 {
 		dashboard.AROverduePct = (dashboard.AROverdue / totalAR) * 100
 	}
@@ -504,8 +649,13 @@ func (a *App) calculateARAging(year int) ARAging {
 
 	// Get unpaid invoices for the year (SQLite strftime)
 	var invoices []Invoice
-	err := a.db.Where("strftime('%Y', invoice_date) = ? AND status NOT IN ('Paid', 'Cancelled')", fmt.Sprintf("%d", year)).
-		Find(&invoices).Error
+	query := a.db.Where("status NOT IN ?", []string{"Paid", "Cancelled", "Void", "Proforma", "Draft"})
+	if usesOperationalFreshStart(year) {
+		query = query.Where("invoice_date >= ? AND invoice_date < ?", operationalMetricStartForYear(year), time.Date(year+1, time.January, 1, 0, 0, 0, 0, time.UTC))
+	} else {
+		query = query.Where("strftime('%Y', invoice_date) = ?", fmt.Sprintf("%d", year))
+	}
+	err := query.Find(&invoices).Error
 	if err != nil {
 		log.Printf("⚠️ Error fetching invoices for AR aging: %v", err)
 		return aging
@@ -621,7 +771,8 @@ func (a *App) GetAvailableFinancialYears() ([]int, error) {
 	if err == nil {
 		for _, yearStr := range invoiceYears {
 			if yearStr != "" {
-				year := parseIntString(yearStr, "financial year invoice year")
+				var year int
+				fmt.Sscanf(yearStr, "%d", &year)
 				if year > 0 && year != 2023 && year != 2024 {
 					yearsMap[year] = true
 				}
@@ -629,17 +780,19 @@ func (a *App) GetAvailableFinancialYears() ([]int, error) {
 		}
 	}
 
-	// Add years from offers (for current year pipeline visibility)
-	var offerYears []string
-	err = a.db.Model(&Offer{}).
-		Select("DISTINCT strftime('%Y', quotation_date) as year").
-		Where("quotation_date IS NOT NULL AND deleted_at IS NULL").
-		Pluck("year", &offerYears).Error
+	// Add years from booked orders so fresh-start years with draft/unposted invoices
+	// still appear in Finance Hub.
+	var orderYears []string
+	err = a.db.Model(&Order{}).
+		Select("DISTINCT strftime('%Y', order_date) as year").
+		Where("order_date IS NOT NULL AND deleted_at IS NULL AND status NOT IN ?", []string{"Draft", "Cancelled", "Canceled", "Void"}).
+		Pluck("year", &orderYears).Error
 	if err == nil {
-		for _, yearStr := range offerYears {
+		for _, yearStr := range orderYears {
 			if yearStr != "" {
-				year := parseIntString(yearStr, "financial year offer year")
-				if year > 0 {
+				var year int
+				fmt.Sscanf(yearStr, "%d", &year)
+				if year > 0 && year != 2023 && year != 2024 {
 					yearsMap[year] = true
 				}
 			}
@@ -655,7 +808,8 @@ func (a *App) GetAvailableFinancialYears() ([]int, error) {
 	if err == nil {
 		for _, yearStr := range bankYears {
 			if yearStr != "" {
-				year := parseIntString(yearStr, "financial year bank year")
+				var year int
+				fmt.Sscanf(yearStr, "%d", &year)
 				if year > 0 {
 					yearsMap[year] = true
 				}
@@ -688,17 +842,72 @@ func (a *App) GetAvailableFinancialYears() ([]int, error) {
 
 // DivisionFinancialSummary represents financial summary for a specific division
 type DivisionFinancialSummary struct {
-	Division       string  `json:"division"`
-	Year           int     `json:"year"`
-	Revenue        float64 `json:"revenue"`
-	InvoiceCount   int     `json:"invoice_count"`
-	OrderCount     int     `json:"order_count"`
-	OutstandingAR  float64 `json:"outstanding_ar"`
-	PaidAmount     float64 `json:"paid_amount"`
-	OverdueAmount  float64 `json:"overdue_amount"`
-	OverdueCount   int     `json:"overdue_count"`
-	AvgInvoiceSize float64 `json:"avg_invoice_size"`
-	HasData        bool    `json:"has_data"`
+	Division         string  `json:"division"`
+	Year             int     `json:"year"`
+	Revenue          float64 `json:"revenue"`
+	InvoiceCount     int     `json:"invoice_count"`
+	OrderCount       int     `json:"order_count"`
+	OutstandingAR    float64 `json:"outstanding_ar"`
+	PaidAmount       float64 `json:"paid_amount"`
+	OverdueAmount    float64 `json:"overdue_amount"`
+	OverdueCount     int     `json:"overdue_count"`
+	AvgInvoiceSize   float64 `json:"avg_invoice_size"`
+	Source           string  `json:"source"`
+	IsAudited        bool    `json:"is_audited"`
+	CostOfSales      float64 `json:"cost_of_sales"`
+	GrossProfit      float64 `json:"gross_profit"`
+	StaffCosts       float64 `json:"staff_costs"`
+	AdminExpenses    float64 `json:"admin_expenses"`
+	NetProfit        float64 `json:"net_profit"`
+	CashEquivalents  float64 `json:"cash_equivalents"`
+	TradeReceivables float64 `json:"trade_receivables"`
+	TotalAssets      float64 `json:"total_assets"`
+	TotalLiabilities float64 `json:"total_liabilities"`
+	TotalEquity      float64 `json:"total_equity"`
+	HasData          bool    `json:"has_data"`
+}
+
+func getAHSAuditedDivisionData() map[int]DivisionFinancialSummary {
+	return map[int]DivisionFinancialSummary{
+		2023: {
+			Division:         "AHS Trading",
+			Year:             2023,
+			Source:           "Grant Thornton FS2023 (Audited)",
+			IsAudited:        true,
+			Revenue:          0,
+			CostOfSales:      0,
+			GrossProfit:      0,
+			StaffCosts:       0,
+			AdminExpenses:    1962,
+			NetProfit:        -1962,
+			CashEquivalents:  427,
+			TradeReceivables: 100,
+			OutstandingAR:    100,
+			TotalAssets:      44893,
+			TotalLiabilities: 4538,
+			TotalEquity:      40355,
+			HasData:          true,
+		},
+		2024: {
+			Division:         "AHS Trading",
+			Year:             2024,
+			Source:           "Grant Thornton FS2024 (Audited)",
+			IsAudited:        true,
+			Revenue:          63570,
+			CostOfSales:      60542,
+			GrossProfit:      3028,
+			StaffCosts:       3722,
+			AdminExpenses:    2693,
+			NetProfit:        -3387,
+			CashEquivalents:  2520,
+			TradeReceivables: 70027,
+			OutstandingAR:    70027,
+			TotalAssets:      72547,
+			TotalLiabilities: 35579,
+			TotalEquity:      36968,
+			HasData:          true,
+		},
+	}
 }
 
 // GetFinancialDashboardByDivision returns financial metrics filtered by division (PH Trading or AHS Trading)
@@ -722,6 +931,12 @@ func (a *App) GetFinancialDashboardByDivision(year int, division string) (Divisi
 	summary := DivisionFinancialSummary{
 		Division: division,
 		Year:     year,
+	}
+
+	if division == "AHS Trading" {
+		if audited, ok := getAHSAuditedDivisionData()[year]; ok {
+			return audited, nil
+		}
 	}
 
 	yearStr := fmt.Sprintf("%d", year)

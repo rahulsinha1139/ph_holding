@@ -21,9 +21,15 @@
   // Wails API imports
   import {
     GetAllPayments,
-    RecordPayment,
+    GetPayment,
+    CreateCustomerReceipt,
+    ListCustomerReceipts,
+    UpdatePayment,
+    DeletePayment,
     ListCustomerInvoices,
+    GetAllCustomers,
   } from '../../../wailsjs/go/main/App';
+  import { main } from '../../../wailsjs/go/models';
 
   // Security utilities
   import { escapeHtml } from '$lib/utils/escapeHtml';
@@ -41,18 +47,30 @@
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
   import { permissions } from '$lib/stores/authContext';
+  import { buildWailsInput, toWailsDate } from '$lib/utils/wailsInterop';
 
-  $: canView = $permissions.includes('*') || $permissions.includes('finance:view') || $permissions.includes('finance:*');
+  $: permissionList = Array.isArray($permissions) ? $permissions : [];
+  $: canView = permissionList.includes('*') || permissionList.includes('finance:view') || permissionList.includes('finance:*');
+  $: canCreate = permissionList.includes('*') || permissionList.includes('payments:create') || permissionList.includes('payments:*') || permissionList.includes('finance:*');
+  $: canUpdate = permissionList.includes('*') || permissionList.includes('payments:update') || permissionList.includes('payments:*') || permissionList.includes('finance:*');
+  $: canDelete = permissionList.includes('*') || permissionList.includes('payments:delete') || permissionList.includes('payments:*') || permissionList.includes('finance:*');
   const dispatch = createEventDispatcher();
 
   // Props
   export let embedded = false;
+  export let company: 'PH Trading' | 'AHS Trading' = 'PH Trading';
 
   // Types
   type TimeFilter = 'All' | 'This Month' | 'This Quarter';
 
   interface Payment {
     id: string;
+    source_kind?: 'payment' | 'receipt';
+    receipt_id?: string;
+    receipt_number?: string;
+    receipt_status?: string;
+    unapplied_amount_bhd?: number;
+    customer_id?: string;
     invoice_id: string;
     invoice_number: string;
     customer_name?: string;
@@ -61,6 +79,22 @@
     payment_method: string;
     days_to_payment: number;
     reference?: string;
+    division?: string;
+  }
+
+  interface CustomerReceipt {
+    id: string;
+    receipt_number: string;
+    customer_id: string;
+    customer_name: string;
+    amount_bhd: number;
+    applied_amount_bhd: number;
+    unapplied_amount_bhd: number;
+    receipt_date: any;
+    payment_method: string;
+    reference?: string;
+    status: string;
+    division?: string;
   }
 
   interface Invoice {
@@ -71,12 +105,22 @@
     outstanding_bhd: number;
     status: string;
     invoice_date?: any; // Go Time type serializes as object, not string
+    division?: string;
+  }
+
+  interface CustomerOption {
+    id: string;
+    customer_id?: string;
+    business_name: string;
+    customer_code?: string;
+    division?: string;
   }
 
   // State
   let payments: Payment[] = [];
   let filteredPayments: Payment[] = [];
   let invoices: Invoice[] = [];
+  let customers: CustomerOption[] = [];
   let loading = true;
   let selectedFilter: TimeFilter = 'All';
 
@@ -90,14 +134,23 @@
   // Modal state
   let showRecordModal = false;
   let recordLoading = false;
+  let paymentModalMode: 'create' | 'edit' = 'create';
+  let receiptMode: 'invoice' | 'on_account' = 'invoice';
+  let editingPaymentId = '';
   let selectedInvoiceId = '';
   let selectedInvoice: Invoice | null = null;
+  let selectedCustomerId = '';
+  let selectedCustomer: CustomerOption | null = null;
+  let customerSearchQuery = '';
   let paymentAmount = '';
   let paymentMethod = 'Bank Transfer';
   let paymentDate = new Date().toISOString().split('T')[0];
   let paymentReference = '';
   let invoiceSearchQuery = '';
   let debouncedInvoiceSearch = '';
+  let selectedPaymentId = '';
+  let selectedPayment: Payment | null = null;
+  let deleteConfirmPaymentId = '';
 
   // Debounced invoice search (300ms delay)
   const updateDebouncedInvoiceSearch = debounce((value: string) => {
@@ -115,6 +168,10 @@
     'Wire Transfer',
     'Online'
   ];
+
+  function matchesCompany(division?: string) {
+    return (division || 'PH Trading') === company;
+  }
 
   // DataTable columns configuration
   const columns = [
@@ -235,7 +292,7 @@
   };
 
   // Computed: Update selected invoice when dropdown changes
-  $: {
+  $: if (paymentModalMode === 'create') {
     if (selectedInvoiceId) {
       selectedInvoice = invoices.find(inv => inv.id === selectedInvoiceId) || null;
       if (selectedInvoice) {
@@ -246,6 +303,10 @@
       selectedInvoice = null;
       paymentAmount = '';
     }
+  }
+
+  $: if (paymentModalMode === 'create' && receiptMode === 'on_account') {
+    selectedCustomer = customers.find((customer) => customer.id === selectedCustomerId || customer.customer_id === selectedCustomerId) || null;
   }
 
   // Filter invoices for dropdown search (debounced for performance)
@@ -259,12 +320,31 @@
       })
     : invoices;
 
+  $: filteredCustomersForDropdown = customerSearchQuery
+    ? customers.filter((customer) => {
+        const query = customerSearchQuery.toLowerCase();
+        return (
+          customer.business_name?.toLowerCase().includes(query) ||
+          customer.customer_id?.toLowerCase().includes(query) ||
+          customer.customer_code?.toLowerCase().includes(query)
+        );
+      })
+    : customers;
+
   // Currency formatter - BHD with 3 decimal places
   function formatBHD(amount: number): string {
     return new Intl.NumberFormat('en-US', {
       minimumFractionDigits: 3,
       maximumFractionDigits: 3
     }).format(Number(amount) || 0);
+  }
+
+  function toInputDate(dateStr: any): string {
+    if (!dateStr) return new Date().toISOString().split('T')[0];
+    const dateVal = typeof dateStr === 'string' ? dateStr : String(dateStr);
+    const date = new Date(dateVal);
+    if (isNaN(date.getTime())) return new Date().toISOString().split('T')[0];
+    return date.toISOString().split('T')[0];
   }
 
   function openBankReconciliation() {
@@ -321,12 +401,47 @@
     currentPage = 0;
     hasMore = true;
     try {
-      const [paymentsData, invoicesData] = await Promise.all([
+      const [paymentsData, invoicesData, receiptData, customerData] = await Promise.all([
         GetAllPayments(PAGE_SIZE, 0),
-        ListCustomerInvoices(500, 0) // Load more invoices for dropdown
+        ListCustomerInvoices(500, 0), // Load more invoices for dropdown
+        ListCustomerReceipts(500, 0).catch(() => []),
+        GetAllCustomers().catch(() => [])
       ]);
 
-      payments = paymentsData || [];
+      const receiptRows = ((receiptData || []) as CustomerReceipt[])
+        .filter((receipt) => matchesCompany(receipt.division))
+        .map((receipt) => ({
+          id: receipt.id,
+          source_kind: 'receipt' as const,
+          receipt_id: receipt.id,
+          receipt_number: receipt.receipt_number,
+          receipt_status: receipt.status,
+          unapplied_amount_bhd: Number(receipt.unapplied_amount_bhd || 0),
+          customer_id: receipt.customer_id,
+          invoice_id: '',
+          invoice_number: receipt.receipt_number || 'On-account receipt',
+          customer_name: receipt.customer_name,
+          amount_bhd: Number(receipt.amount_bhd || 0),
+          payment_date: receipt.receipt_date,
+          payment_method: receipt.payment_method,
+          days_to_payment: 0,
+          reference: receipt.reference || '',
+          division: receipt.division,
+        }));
+      const receiptIds = new Set(receiptRows.map((receipt) => receipt.id));
+      const legacyPaymentRows = ((paymentsData || []) as Payment[])
+        .filter((payment) => matchesCompany(payment.division))
+        .filter((payment) => !payment.receipt_id || !receiptIds.has(payment.receipt_id))
+        .map((payment) => ({ ...payment, source_kind: 'payment' as const }));
+      payments = [...receiptRows, ...legacyPaymentRows];
+      customers = ((customerData || []) as CustomerOption[]).filter((customer) => matchesCompany(customer.division));
+      if (selectedPaymentId) {
+        selectedPayment = payments.find((payment) => payment.id === selectedPaymentId) || null;
+        if (!selectedPayment) {
+          selectedPaymentId = '';
+          deleteConfirmPaymentId = '';
+        }
+      }
       currentPage = 1;
       totalLoaded = payments.length;
       hasMore = payments.length === PAGE_SIZE;
@@ -334,15 +449,16 @@
       // Filter to only unpaid/partially paid invoices for dropdown
       invoices = (invoicesData || []).filter((inv) => {
         const status = String(inv?.status || '').toLowerCase();
-        return Number(inv?.outstanding_bhd || 0) > 0 && !['draft', 'cancelled', 'void', 'proforma'].includes(status);
+        return matchesCompany(inv?.division) && Number(inv?.outstanding_bhd || 0) > 0 && !['draft', 'cancelled', 'void', 'proforma'].includes(status);
       });
 
-      console.log(`Loaded ${payments.length} receipts (page 1), ${invoices.length} open invoices`);
+      console.log(`Loaded ${payments.length} receipts (page 1), ${invoices.length} open invoices, ${customers.length} customers`);
     } catch (err) {
       console.error('Failed to load payment data:', err);
       toast.danger('Failed to load receipt data');
       payments = [];
       invoices = [];
+      customers = [];
       hasMore = false;
     } finally {
       loading = false;
@@ -359,7 +475,14 @@
       const data = await GetAllPayments(PAGE_SIZE, offset);
 
       if (data && data.length > 0) {
-        payments = [...payments, ...data];
+        const existingReceiptIds = new Set(payments.map((payment) => payment.receipt_id).filter(Boolean));
+        payments = [
+          ...payments,
+          ...data
+            .filter((payment) => matchesCompany(payment.division))
+            .filter((payment) => !payment.receipt_id || !existingReceiptIds.has(payment.receipt_id))
+            .map((payment) => ({ ...payment, source_kind: 'payment' as const }))
+        ];
         currentPage++;
         totalLoaded = payments.length;
         hasMore = data.length === PAGE_SIZE;
@@ -377,14 +500,20 @@
 
   // Open record payment modal
   function openRecordModal() {
-    if (invoices.length === 0) {
-      toast.warning('No open invoices available. All invoices are fully settled.');
+    if (!canCreate) {
+      toast.warning('You do not have permission to apply customer receipts');
       return;
     }
 
+    paymentModalMode = 'create';
+    receiptMode = invoices.length > 0 ? 'invoice' : 'on_account';
+    editingPaymentId = '';
     // Reset form
     selectedInvoiceId = '';
     selectedInvoice = null;
+    selectedCustomerId = '';
+    selectedCustomer = null;
+    customerSearchQuery = '';
     paymentAmount = '';
     paymentMethod = 'Bank Transfer';
     paymentDate = new Date().toISOString().split('T')[0];
@@ -394,11 +523,96 @@
     showRecordModal = true;
   }
 
+  function handlePaymentRowClick(row: Payment) {
+    if (selectedPaymentId === row.id) {
+      selectedPaymentId = '';
+      selectedPayment = null;
+      deleteConfirmPaymentId = '';
+      return;
+    }
+
+    selectedPaymentId = row.id;
+    selectedPayment = row;
+    deleteConfirmPaymentId = '';
+  }
+
+  async function openEditModal() {
+    if (!selectedPayment || !canUpdate) {
+      return;
+    }
+    if (selectedPayment.source_kind === 'receipt') {
+      toast.info('Receipt headers are audit records. Apply on-account balances from the receipt workflow instead.');
+      return;
+    }
+
+    recordLoading = true;
+    try {
+      const payment = await GetPayment(selectedPayment.id);
+      paymentModalMode = 'edit';
+      receiptMode = 'invoice';
+      editingPaymentId = payment.id;
+      selectedInvoiceId = payment.invoice_id || selectedPayment.invoice_id || '';
+      selectedInvoice = {
+        id: selectedInvoiceId,
+        invoice_number: payment.invoice_number || selectedPayment.invoice_number,
+        customer_name: selectedPayment.customer_name || '—',
+        grand_total_bhd: 0,
+        outstanding_bhd: 0,
+        status: '',
+        invoice_date: null,
+      };
+      paymentAmount = Number(payment.amount_bhd || 0).toFixed(3);
+      paymentMethod = payment.payment_method || 'Bank Transfer';
+      paymentDate = toInputDate(payment.payment_date);
+      paymentReference = payment.reference || '';
+      showRecordModal = true;
+    } catch (err) {
+      console.error('Failed to load receipt for editing:', err);
+      toast.danger('Failed to load receipt details');
+    } finally {
+      recordLoading = false;
+    }
+  }
+
+  async function handleDeleteSelectedPayment() {
+    if (!selectedPayment || !canDelete) {
+      return;
+    }
+    if (selectedPayment.source_kind === 'receipt') {
+      toast.warning('Receipt headers are protected audit records and cannot be deleted here');
+      return;
+    }
+
+    if (deleteConfirmPaymentId !== selectedPayment.id) {
+      deleteConfirmPaymentId = selectedPayment.id;
+      return;
+    }
+
+    recordLoading = true;
+    try {
+      await DeletePayment(selectedPayment.id);
+      toast.success(`Deleted receipt ${selectedPayment.invoice_number || ''}`.trim());
+      selectedPaymentId = '';
+      selectedPayment = null;
+      deleteConfirmPaymentId = '';
+      await loadData();
+    } catch (err) {
+      console.error('Failed to delete receipt:', err);
+      toast.danger(`Failed to delete receipt: ${String(err)}`);
+    } finally {
+      recordLoading = false;
+    }
+  }
+
   // Record payment
   async function handleRecordPayment() {
     // Validation
-    if (!selectedInvoiceId) {
+    if (paymentModalMode === 'create' && receiptMode === 'invoice' && !selectedInvoiceId) {
       toast.warning('Please select an invoice');
+      return;
+    }
+    if (paymentModalMode === 'create' && receiptMode === 'on_account' && !selectedCustomerId) {
+      toast.warning('Please select a customer');
       return;
     }
 
@@ -408,12 +622,12 @@
       return;
     }
 
-    if (!selectedInvoice) {
+    if (!selectedInvoice && paymentModalMode === 'create' && receiptMode === 'invoice') {
       toast.danger('Selected invoice not found');
       return;
     }
 
-    if (amount > selectedInvoice.outstanding_bhd) {
+    if (paymentModalMode === 'create' && receiptMode === 'invoice' && selectedInvoice && amount > selectedInvoice.outstanding_bhd) {
       toast.warning(`Receipt amount (${formatBHD(amount)} BHD) exceeds open balance (${formatBHD(selectedInvoice.outstanding_bhd)} BHD)`);
       return;
     }
@@ -423,18 +637,53 @@
       return;
     }
 
+    if ((paymentMethod === 'Bank Transfer' || paymentMethod === 'Wire Transfer') && !paymentReference.trim()) {
+      toast.warning('Reference is required for bank transfers');
+      return;
+    }
+
     recordLoading = true;
     try {
-      const newPayment = await RecordPayment(
-        selectedInvoiceId,
-        amount,
-        paymentMethod,
-        paymentDate,
-        paymentReference
-      );
+      if (paymentModalMode === 'create') {
+        await CreateCustomerReceipt({
+          invoice_id: receiptMode === 'invoice' ? selectedInvoiceId : '',
+          customer_id: receiptMode === 'on_account' ? selectedCustomerId : '',
+          customer_name: receiptMode === 'on_account' ? (selectedCustomer?.business_name || '') : '',
+          amount_bhd: amount,
+          receipt_date: paymentDate,
+          payment_method: paymentMethod,
+          reference: paymentReference.trim(),
+          division: company,
+          notes: receiptMode === 'on_account' ? 'Received on account' : '',
+        });
+        toast.success(
+          receiptMode === 'invoice'
+            ? `Receipt of ${formatBHD(amount)} BHD applied successfully`
+            : `On-account receipt of ${formatBHD(amount)} BHD recorded`
+        );
+      } else {
+        const existingPayment = await GetPayment(editingPaymentId);
+        const originalDate = toWailsDate(existingPayment.payment_date) || new Date();
+        const nextDate = new Date(`${paymentDate}T00:00:00`);
+        const inferredInvoiceDate = new Date(originalDate.getTime() - ((existingPayment.days_to_payment || 0) * 24 * 60 * 60 * 1000));
+        const recalculatedDaysToPayment = Math.max(
+          0,
+          Math.round((nextDate.getTime() - inferredInvoiceDate.getTime()) / (24 * 60 * 60 * 1000))
+        );
 
-      toast.success(`Receipt of ${formatBHD(amount)} BHD applied successfully`);
+        await UpdatePayment(editingPaymentId, buildWailsInput(main.Payment, {
+          ...existingPayment,
+          amount_bhd: amount,
+          payment_method: paymentMethod,
+          payment_date: nextDate.toISOString(),
+          reference: paymentReference.trim(),
+          days_to_payment: recalculatedDaysToPayment,
+        }));
+        toast.success(`Receipt updated to ${formatBHD(amount)} BHD`);
+      }
+
       showRecordModal = false;
+      deleteConfirmPaymentId = '';
 
       // Reload data to reflect changes
       await loadData();
@@ -457,6 +706,10 @@
     if (!canView) return;
     loadData();
   });
+
+  $: if (company && canView) {
+    loadData();
+  }
 </script>
 
 <PageLayout
@@ -471,7 +724,7 @@
     <Button variant="secondary" on:click={openBankReconciliation}>
       Open Bank Recon
     </Button>
-    <Button variant="primary" on:click={openRecordModal}>
+    <Button variant="primary" on:click={openRecordModal} disabled={!canCreate}>
       + Apply Receipt
     </Button>
   </svelte:fragment>
@@ -524,20 +777,66 @@
       </div>
     </Card>
 
+    <Card padding="sm">
+      <div class="receipts-toolbar">
+        <div>
+          <strong>Add customer receipt</strong>
+          <span>Apply to an invoice or hold customer money on account.</span>
+        </div>
+        <Button variant="primary" on:click={openRecordModal} disabled={!canCreate}>
+          + Add Receipt
+        </Button>
+      </div>
+    </Card>
+
     <!-- Payments DataTable -->
     <Card padding="sm">
+      {#if selectedPayment}
+        <div class="selection-bar">
+          <div class="selection-copy">
+            <span class="selection-label">Selected Receipt</span>
+            <span class="selection-title">{selectedPayment.invoice_number} · {selectedPayment.customer_name || 'Customer receipt'}</span>
+            <span class="selection-meta">{formatBHD(selectedPayment.amount_bhd)} BHD on {formatDate(selectedPayment.payment_date)}</span>
+          </div>
+          <div class="selection-actions">
+            {#if canUpdate}
+              <Button variant="secondary" size="sm" on:click={openEditModal} disabled={recordLoading}>
+                Edit
+              </Button>
+            {/if}
+            {#if canDelete}
+              <Button variant={deleteConfirmPaymentId === selectedPayment.id ? 'primary' : 'ghost'} size="sm" on:click={handleDeleteSelectedPayment} disabled={recordLoading}>
+                {deleteConfirmPaymentId === selectedPayment.id ? 'Confirm Delete' : 'Delete'}
+              </Button>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
       {#if loading}
         <div class="loading-container">
           <WabiSpinner size="lg" />
           <p>Loading receipts...</p>
         </div>
       {:else}
+        {#if filteredPayments.length === 0}
+          <div class="empty-receipts-cta">
+            <div>
+              <strong>No receipts recorded yet.</strong>
+              <span>Start with an invoice receipt or an on-account customer receipt.</span>
+            </div>
+            <Button variant="primary" on:click={openRecordModal} disabled={!canCreate}>
+              + Add Receipt
+            </Button>
+          </div>
+        {/if}
         <DataTable
           {columns}
           data={filteredPayments}
           {loading}
-          emptyMessage="No receipts recorded yet. Click 'Apply Receipt' to add one."
-          onRowClick={(row) => {}}
+          emptyMessage="No receipts recorded yet."
+          selectedId={selectedPaymentId}
+          onRowClick={handlePaymentRowClick}
           stickyHeader={!embedded}
           maxHeight={embedded ? "400px" : "calc(100vh - 480px)"}
           showBorder={false}
@@ -572,41 +871,110 @@
 <!-- Apply Receipt Modal -->
 {#if showRecordModal}
   <Modal
-    title="Apply Customer Receipt"
+    title={paymentModalMode === 'create' ? 'Apply Customer Receipt' : 'Edit Customer Receipt'}
     open={showRecordModal}
-    on:close={() => showRecordModal = false}
+    on:close={() => {
+      showRecordModal = false;
+      paymentModalMode = 'create';
+      editingPaymentId = '';
+    }}
     size="md"
   >
     <div class="record-form">
+      {#if paymentModalMode === 'create'}
+        <div class="receipt-mode-switch" role="tablist" aria-label="Receipt mode">
+          <button
+            type="button"
+            class:active={receiptMode === 'invoice'}
+            on:click={() => {
+              receiptMode = 'invoice';
+              selectedCustomerId = '';
+              selectedCustomer = null;
+            }}
+            disabled={recordLoading}
+          >
+            Apply to Invoice
+          </button>
+          <button
+            type="button"
+            class:active={receiptMode === 'on_account'}
+            on:click={() => {
+              receiptMode = 'on_account';
+              selectedInvoiceId = '';
+              selectedInvoice = null;
+              invoiceSearchQuery = '';
+              paymentAmount = '';
+            }}
+            disabled={recordLoading}
+          >
+            On Account
+          </button>
+        </div>
+      {/if}
+
       <!-- Invoice Selection with Search -->
-      <FormGroup label="Select Open Invoice" required>
-        <!-- Search input -->
-        <Input
-          type="text"
-          bind:value={invoiceSearchQuery}
-          placeholder="Search by invoice # or customer..."
-          disabled={recordLoading}
-        />
+      <FormGroup label={receiptMode === 'invoice' ? 'Select Open Invoice' : 'Select Customer'} required>
+        {#if paymentModalMode === 'create' && receiptMode === 'invoice'}
+          <!-- Search input -->
+          <Input
+            type="text"
+            bind:value={invoiceSearchQuery}
+            placeholder="Search by invoice # or customer..."
+            disabled={recordLoading}
+          />
 
-        <!-- Filtered dropdown -->
-        <select
-          class="select-input"
-          bind:value={selectedInvoiceId}
-          disabled={recordLoading}
-          style="margin-top: 8px;"
-        >
-          <option value="">-- Select an open invoice ({filteredInvoicesForDropdown.length} shown) --</option>
-          {#each filteredInvoicesForDropdown as invoice}
-            <option value={invoice.id}>
-              {invoice.invoice_number} - {invoice.customer_name} ({formatBHD(invoice.outstanding_bhd)} BHD open)
-            </option>
-          {/each}
-        </select>
+          <!-- Filtered dropdown -->
+          <select
+            class="select-input"
+            bind:value={selectedInvoiceId}
+            disabled={recordLoading}
+            style="margin-top: 8px;"
+          >
+            <option value="">-- Select an open invoice ({filteredInvoicesForDropdown.length} shown) --</option>
+            {#each filteredInvoicesForDropdown as invoice}
+              <option value={invoice.id}>
+                {invoice.invoice_number} - {invoice.customer_name} ({formatBHD(invoice.outstanding_bhd)} BHD open)
+              </option>
+            {/each}
+          </select>
 
-        {#if invoiceSearchQuery && filteredInvoicesForDropdown.length === 0}
-          <p class="no-results" style="color: var(--text-muted); margin-top: 4px; font-size: 0.85rem;">
-            No invoices match "{invoiceSearchQuery}"
-          </p>
+          {#if invoiceSearchQuery && filteredInvoicesForDropdown.length === 0}
+            <p class="no-results" style="color: var(--text-muted); margin-top: 4px; font-size: 0.85rem;">
+              No invoices match "{invoiceSearchQuery}"
+            </p>
+          {/if}
+        {:else if paymentModalMode === 'create' && receiptMode === 'on_account'}
+          <Input
+            type="text"
+            bind:value={customerSearchQuery}
+            placeholder="Search customer name or code..."
+            disabled={recordLoading}
+          />
+
+          <select
+            class="select-input"
+            bind:value={selectedCustomerId}
+            disabled={recordLoading}
+            style="margin-top: 8px;"
+          >
+            <option value="">-- Select a customer ({filteredCustomersForDropdown.length} shown) --</option>
+            {#each filteredCustomersForDropdown as customer}
+              <option value={customer.id}>
+                {customer.business_name} {customer.customer_code ? `(${customer.customer_code})` : ''}
+              </option>
+            {/each}
+          </select>
+
+          {#if customerSearchQuery && filteredCustomersForDropdown.length === 0}
+            <p class="no-results" style="color: var(--text-muted); margin-top: 4px; font-size: 0.85rem;">
+              No customers match "{customerSearchQuery}"
+            </p>
+          {/if}
+        {:else if selectedPayment}
+          <div class="locked-field">
+            <div class="locked-title">{selectedPayment.invoice_number}</div>
+            <div class="locked-subtitle">{selectedPayment.customer_name || 'Customer receipt'}</div>
+          </div>
         {/if}
       </FormGroup>
 
@@ -645,7 +1013,7 @@
           min="0.001"
           placeholder="0.000"
           bind:value={paymentAmount}
-          disabled={recordLoading || !selectedInvoiceId}
+          disabled={recordLoading || (paymentModalMode === 'create' && receiptMode === 'invoice' && !selectedInvoiceId) || (paymentModalMode === 'create' && receiptMode === 'on_account' && !selectedCustomerId)}
         />
         {#if selectedInvoice && paymentAmount}
           <div class="amount-helper">
@@ -698,8 +1066,16 @@
       <Button variant="ghost" on:click={() => showRecordModal = false} disabled={recordLoading}>
         Cancel
       </Button>
-      <Button variant="primary" on:click={handleRecordPayment} disabled={recordLoading || !selectedInvoiceId || !paymentAmount || (selectedInvoice && parseFloat(paymentAmount) > selectedInvoice.outstanding_bhd)}>
-        {recordLoading ? 'Applying...' : 'Apply Receipt'}
+      <Button
+        variant="primary"
+        on:click={handleRecordPayment}
+        disabled={recordLoading || !paymentAmount || (paymentModalMode === 'create' && receiptMode === 'invoice' && !selectedInvoiceId) || (paymentModalMode === 'create' && receiptMode === 'on_account' && !selectedCustomerId) || (paymentModalMode === 'create' && receiptMode === 'invoice' && selectedInvoice && parseFloat(paymentAmount) > selectedInvoice.outstanding_bhd)}
+      >
+        {#if recordLoading}
+          {paymentModalMode === 'create' ? 'Applying...' : 'Saving...'}
+        {:else}
+          {paymentModalMode === 'create' ? 'Apply Receipt' : 'Save Changes'}
+        {/if}
       </Button>
     </svelte:fragment>
   </Modal>
@@ -710,6 +1086,124 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
+  }
+
+  .receipts-toolbar,
+  .empty-receipts-cta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .receipts-toolbar strong,
+  .empty-receipts-cta strong {
+    display: block;
+    font-size: 14px;
+    color: var(--text-primary);
+  }
+
+  .receipts-toolbar span,
+  .empty-receipts-cta span {
+    display: block;
+    margin-top: 3px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .empty-receipts-cta {
+    padding: 18px;
+    margin-bottom: 10px;
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    background: var(--surface-subtle, #f8faf8);
+  }
+
+  .receipt-mode-switch {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-subtle, #f8f7f4);
+  }
+
+  .receipt-mode-switch button {
+    border: 0;
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .receipt-mode-switch button.active {
+    background: var(--brand-primary, #4f8f45);
+    color: #fff;
+  }
+
+  .selection-bar {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: center;
+    padding: 10px 12px 14px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+  }
+
+  .selection-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .selection-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    font-weight: 600;
+  }
+
+  .selection-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .selection-meta {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+  }
+
+  .selection-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .locked-field {
+    border: 1px solid var(--border);
+    background: var(--surface-subtle, #f8f7f4);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+
+  .locked-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+  }
+
+  .locked-subtitle {
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--text-secondary);
   }
 
   /* KPI Grid */

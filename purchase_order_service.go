@@ -89,14 +89,15 @@ func (a *App) normalizePurchaseOrder(po *PurchaseOrder) error {
 	}
 	po.SupplierName = supplier.SupplierName
 
-	if strings.TrimSpace(po.Currency) == "" {
+	po.Currency = strings.ToUpper(strings.TrimSpace(po.Currency))
+	if po.Currency == "" {
 		po.Currency = "BHD"
 	}
-	if po.ExchangeRate <= 0 {
-		po.ExchangeRate = 1
-	}
-	if po.Currency == "BHD" {
-		po.ExchangeRate = 1
+	po.ExchangeRate = normalizeExchangeRateToBHD(po.Currency, po.ExchangeRate)
+	if strings.TrimSpace(po.Division) == "" {
+		po.Division = a.resolveOrderDivision(po.OrderID)
+	} else {
+		po.Division = normalizeDivisionName(po.Division)
 	}
 
 	if len(po.Items) == 0 {
@@ -411,6 +412,7 @@ func (a *App) UpdatePurchaseOrder(po PurchaseOrder) (PurchaseOrder, error) {
 		"total_foreign":     po.TotalForeign,
 		"total_bhd":         po.TotalBHD,
 		"payment_terms":     po.PaymentTerms,
+		"division":          po.Division,
 		"updated_at":        time.Now(),
 	}
 
@@ -644,6 +646,9 @@ func (a *App) SendPurchaseOrder(id string) error {
 
 // DeletePurchaseOrder soft-deletes a purchase order
 func (a *App) DeletePurchaseOrder(id string) error {
+	if ok, err := a.guardDeleteOrRequest("po:delete", "purchase_order", id, "Purchase order"); !ok {
+		return err
+	}
 	if err := a.requirePermission("po:delete"); err != nil {
 		return err
 	}
@@ -681,6 +686,9 @@ func (a *App) DeletePurchaseOrder(id string) error {
 // GeneratePONumber generates a new PO number in format PO-YYYY-NNNN
 // Uses InvoiceSequence table with row locking (same pattern as GenerateInvoiceNumber/GenerateCreditNoteNumber)
 func (a *App) GeneratePONumber() (string, error) {
+	if err := a.requirePermission("po:create"); err != nil {
+		return "", err
+	}
 	if a.db == nil {
 		return "", newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
@@ -777,6 +785,7 @@ func (a *App) CreatePOFromOrder(orderID string, supplierID string, itemIDs []str
 		ExchangeRate:     1.0,                // 1:1 for BHD
 		PaymentTerms:     "Net 30",           // Default, override from supplier if available
 		Status:           "Draft",
+		Division:         normalizeDivisionName(order.Division),
 		Items:            []PurchaseOrderItem{},
 	}
 

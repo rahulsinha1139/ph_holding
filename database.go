@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -254,20 +255,25 @@ type Offer struct {
 	LostReason        string `gorm:"type:varchar(2000)" json:"lost_reason"`
 
 	// PDF Generation Fields (Terms & Conditions)
-	PaymentTerms      string  `gorm:"type:varchar(500);default:'30 days from Date of Delivery'" json:"payment_terms"`
-	DeliveryTerms     string  `gorm:"type:varchar(500);default:'DAP Bahrain at your store or PH Trading'" json:"delivery_terms"`
-	DeliveryWeeks     string  `gorm:"size:50;default:'4-6 weeks'" json:"delivery_weeks"`
-	CountryOfOrigin   string  `gorm:"size:100;default:'Germany / USA'" json:"country_of_origin"`
-	IssuedBy          string  `gorm:"size:100" json:"issued_by"`
-	ContactPhone      string  `gorm:"size:50" json:"contact_phone"`
-	CustomerReference string  `gorm:"size:255" json:"customer_reference"` // RFQ/enquiry reference
-	AttentionPerson   string  `gorm:"size:255" json:"attention_person"`   // Contact name
-	AttentionCompany  string  `gorm:"size:255" json:"attention_company"`
-	AttentionPhone    string  `gorm:"size:50" json:"attention_phone"`
-	AttentionAddress  string  `gorm:"type:varchar(1000)" json:"attention_address"`
-	DiscountPercent   float64 `json:"discount_percent"`
-	QuoteType         string  `gorm:"size:50;default:'Quotation'" json:"quote_type"` // "Quotation" or "Budgetary Quote"
-	VatRate           float64 `gorm:"default:10" json:"vat_rate"`                    // VAT percentage (default 10%)
+	PaymentTerms       string  `gorm:"type:varchar(500);default:'30 days from Date of Delivery'" json:"payment_terms"`
+	DeliveryTerms      string  `gorm:"type:varchar(500);default:'DAP Bahrain at your store or PH Trading'" json:"delivery_terms"`
+	DeliveryWeeks      string  `gorm:"size:50;default:'4-6 weeks'" json:"delivery_weeks"`
+	CountryOfOrigin    string  `gorm:"size:100;default:'Germany / USA'" json:"country_of_origin"`
+	IssuedBy           string  `gorm:"size:100" json:"issued_by"`
+	ContactPhone       string  `gorm:"size:50" json:"contact_phone"`
+	CustomerReference  string  `gorm:"size:255" json:"customer_reference"` // RFQ/enquiry reference
+	AttentionPerson    string  `gorm:"size:255" json:"attention_person"`   // Contact name
+	AttentionCompany   string  `gorm:"size:255" json:"attention_company"`
+	AttentionPhone     string  `gorm:"size:50" json:"attention_phone"`
+	AttentionAddress   string  `gorm:"type:varchar(1000)" json:"attention_address"`
+	DiscountPercent    float64 `json:"discount_percent"`
+	QuoteType          string  `gorm:"size:50;default:'Quotation'" json:"quote_type"` // "Quotation" or "Budgetary Quote"
+	VatRate            float64 `gorm:"default:10" json:"vat_rate"`                    // VAT percentage (default 10%)
+	Division           string  `gorm:"size:100;default:'PH Trading'" json:"division"`
+	TermsAndConditions string  `gorm:"type:text" json:"terms_and_conditions"`
+	Subject            string  `gorm:"type:varchar(1000)" json:"subject"`
+	Body               string  `gorm:"type:text" json:"body"`
+	AttachmentScopeID  string  `gorm:"size:160" json:"attachment_scope_id"`
 
 	// Additional costing header fields
 	CocCoo          string `gorm:"size:50" json:"coc_coo"`                    // Certificate of Conformity/Country of Origin
@@ -340,6 +346,7 @@ type Opportunity struct {
 	CustomerName  string `gorm:"index;size:255" json:"customer_name"`
 	CustomerGrade string `gorm:"size:10" json:"customer_grade"` // Grade at time of opportunity (A/B/C)
 	Salesperson   string `gorm:"index;size:100" json:"salesperson"`
+	Division      string `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	// Pipeline Identification (from canonical seed)
 	Year           int    `gorm:"index" json:"year"`                     // Pipeline year (2024, 2025, 2026)
@@ -368,9 +375,9 @@ type Opportunity struct {
 	ProfitBHD  float64 `json:"profit_bhd"`  // Expected profit
 
 	// Status Tracking
-	SPOCStatus string `gorm:"index;size:50" json:"spoc_status"` // Single Point of Contact status
-	WIPStatus  string `gorm:"index;size:50" json:"wip_status"`  // Work In Progress status
-	Stage      string `gorm:"index;size:50" json:"stage"`       // Lead/Qualified/Proposal/Negotiation/Won/Lost/Quoted
+	SPOCStatus string `gorm:"column:spoc_status;index;size:50" json:"spoc_status"` // Single Point of Contact status
+	WIPStatus  string `gorm:"column:wip_status;index;size:50" json:"wip_status"`   // Work In Progress status
+	Stage      string `gorm:"index;size:50" json:"stage"`                          // Lead/Qualified/Proposal/Negotiation/Won/Lost/Quoted
 
 	// Three-Regime Dynamics (Asymmetrica Mathematical Framework)
 	Regime     int     `gorm:"index" json:"regime"` // 1=Exploration(0-30%), 2=Optimization(30-50%), 3=Stabilization(50%+)
@@ -829,6 +836,7 @@ type CreditNote struct {
 	VATPercent       float64          `json:"vat_percent"`
 	GrandTotalBHD    float64          `gorm:"type:decimal(15,3)" json:"grand_total_bhd"`
 	Status           string           `gorm:"index;size:50;default:'Draft'" json:"status"` // Draft, Issued, Applied
+	Division         string           `gorm:"size:100;default:'PH Trading'" json:"division"`
 	AppliedAt        *time.Time       `json:"applied_at"`
 	CreditNoteHash   string           `gorm:"size:64" json:"credit_note_hash"`
 	Items            []CreditNoteItem `gorm:"foreignKey:CreditNoteID" json:"items"`
@@ -1000,15 +1008,53 @@ type Payment struct {
 	IdempotencyKey string `gorm:"uniqueIndex;size:64" json:"idempotency_key"`
 
 	// Accounting Integration (Tally Killer feature)
-	JournalEntryID string `gorm:"index;size:36" json:"journal_entry_id"` // Link to auto-generated GL entry
-	BankAccountID  string `gorm:"index;size:36" json:"bank_account_id"`  // Bank account for reconciliation
-	Reference      string `gorm:"size:100" json:"reference"`             // Payment reference (cheque no, transfer ref)
+	JournalEntryID string  `gorm:"index;size:36" json:"journal_entry_id"`     // Link to auto-generated GL entry
+	BankAccountID  string  `gorm:"index;size:36" json:"bank_account_id"`      // Bank account for reconciliation
+	ReceiptID      *string `gorm:"index;size:36" json:"receipt_id,omitempty"` // Customer receipt header, including on-account receipts
+	Reference      string  `gorm:"size:100" json:"reference"`                 // Payment reference (cheque no, transfer ref)
+	Division       string  `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	// P1 Fix: Audit fields
 	UpdatedBy string `json:"updated_by"`
 }
 
 func (Payment) TableName() string { return "payments" }
+
+// CustomerReceipt is the receipt header used for both invoice-applied receipts
+// and on-account customer advances/deposits that can be allocated later.
+type CustomerReceipt struct {
+	Base
+	ReceiptNumber      string    `gorm:"uniqueIndex;size:50" json:"receipt_number"`
+	CustomerID         string    `gorm:"index;size:36" json:"customer_id"`
+	CustomerName       string    `gorm:"index;size:255" json:"customer_name"`
+	Division           string    `gorm:"size:100;default:'PH Trading'" json:"division"`
+	ReceiptDate        time.Time `gorm:"index;autoCreateTime:false" json:"receipt_date"`
+	AmountBHD          float64   `gorm:"type:decimal(15,3);not null;default:0;check:amount_bhd >= 0" json:"amount_bhd"`
+	AppliedAmountBHD   float64   `gorm:"type:decimal(15,3);not null;default:0;check:applied_amount_bhd >= 0" json:"applied_amount_bhd"`
+	UnappliedAmountBHD float64   `gorm:"type:decimal(15,3);not null;default:0;check:unapplied_amount_bhd >= 0" json:"unapplied_amount_bhd"`
+	PaymentMethod      string    `gorm:"size:50" json:"payment_method"`
+	Reference          string    `gorm:"size:100" json:"reference"`
+	Status             string    `gorm:"index;size:30;default:'OnAccount'" json:"status"` // OnAccount, PartiallyApplied, Applied, Reversed
+	Notes              string    `gorm:"type:text" json:"notes"`
+	UpdatedBy          string    `json:"updated_by"`
+}
+
+func (CustomerReceipt) TableName() string { return "customer_receipts" }
+
+// CustomerReceiptAllocation links a receipt to the invoice payment row it funded.
+type CustomerReceiptAllocation struct {
+	Base
+	ReceiptID          string    `gorm:"index;size:36" json:"receipt_id"`
+	InvoiceID          string    `gorm:"index;size:36" json:"invoice_id"`
+	InvoiceNumber      string    `gorm:"index;size:50" json:"invoice_number"`
+	PaymentID          string    `gorm:"index;size:36" json:"payment_id"`
+	AllocatedAmountBHD float64   `gorm:"type:decimal(15,3);not null;default:0;check:allocated_amount_bhd >= 0" json:"allocated_amount_bhd"`
+	AllocationDate     time.Time `gorm:"index;autoCreateTime:false" json:"allocation_date"`
+	Status             string    `gorm:"index;size:20;default:'Applied'" json:"status"` // Applied, Reversed
+	UpdatedBy          string    `json:"updated_by"`
+}
+
+func (CustomerReceiptAllocation) TableName() string { return "customer_receipt_allocations" }
 
 // =============================================================================
 // MODULE: INVENTORY & WAREHOUSING
@@ -1200,6 +1246,27 @@ type CostingHistory struct {
 }
 
 func (CostingHistory) TableName() string { return "costing_history" }
+
+type CostingLineItemData struct {
+	ID                string    `gorm:"primaryKey;type:text" json:"id"`
+	CostingSheetID    int       `gorm:"index" json:"costing_sheet_id"`
+	ProductNumber     int       `json:"product_number"`
+	Equipment         string    `gorm:"type:text" json:"equipment"`
+	Model             string    `gorm:"type:text" json:"model"`
+	Specification     string    `gorm:"type:text" json:"specification"`
+	Supplier          string    `gorm:"type:text" json:"supplier"`
+	Quantity          float64   `json:"quantity"`
+	FobEUR            float64   `json:"fob_eur"`
+	ExchangeRate      float64   `json:"exchange_rate"`
+	TotalCostBHD      float64   `json:"total_cost_bhd"`
+	MarkupPercent     float64   `json:"markup_percent"`
+	SellingPriceBHD   float64   `json:"selling_price_bhd"`
+	TotalSuggestedBHD float64   `json:"total_suggested_bhd"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+func (CostingLineItemData) TableName() string { return "costing_line_items" }
 
 type GradeChange struct {
 	Base
@@ -1425,6 +1492,8 @@ type PurchaseOrder struct {
 	// P1 Fix: Audit fields
 	UpdatedBy string `json:"updated_by"`
 
+	Division string `gorm:"size:100;default:'PH Trading'" json:"division"`
+
 	// Relationships
 	Items []PurchaseOrderItem `gorm:"foreignKey:PurchaseOrderID" json:"items,omitempty"`
 }
@@ -1561,6 +1630,7 @@ type SupplierInvoice struct {
 	// OCR Metadata
 	OCRDocumentID string  `json:"ocr_document_id"` // Link to OCR scan
 	OCRConfidence float64 `json:"ocr_confidence"`
+	Division      string  `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	// Discrepancy tracking
 	DiscrepancyReason string `gorm:"type:varchar(2000)" json:"discrepancy_reason"`
@@ -1651,6 +1721,7 @@ type SupplierPayment struct {
 
 	// P1 Fix: Audit field (DeletedAt already in Base for soft delete)
 	UpdatedBy string `json:"updated_by"`
+	Division  string `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	// Display fields (populated from linked invoice for UI display)
 	SupplierName  string `gorm:"column:supplier_name;size:255" json:"supplier_name"`
@@ -1822,6 +1893,8 @@ type BankStatement struct {
 	ImportedFrom  string  `gorm:"size:500" json:"imported_from"`
 	ImportMethod  string  `gorm:"size:20" json:"import_method"` // PDF_OCR, CSV, Manual
 	OCRConfidence float64 `json:"ocr_confidence"`
+	Notes         string  `gorm:"type:text" json:"notes"`
+	Division      string  `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	// Verification
 	BalanceVerified   bool    `gorm:"default:false" json:"balance_verified"`
@@ -1881,8 +1954,10 @@ func (BankStatementLine) TableName() string { return "bank_statement_lines" }
 type BankLinePaymentAllocation struct {
 	Base
 	BankStatementLineID string  `gorm:"index;size:36" json:"bank_statement_line_id"`
-	AllocationType      string  `gorm:"size:30" json:"allocation_type"` // CUSTOMER_INVOICE, SUPPLIER_INVOICE, EXPENSE
+	AllocationType      string  `gorm:"size:30" json:"allocation_type"` // CUSTOMER_INVOICE, CUSTOMER_PAYMENT, CUSTOMER_RECEIPT, SUPPLIER_INVOICE, EXPENSE
 	CustomerInvoiceID   *string `gorm:"size:36" json:"customer_invoice_id"`
+	CustomerPaymentID   *string `gorm:"size:36" json:"customer_payment_id"`
+	CustomerReceiptID   *string `gorm:"size:36" json:"customer_receipt_id"`
 	SupplierInvoiceID   *string `gorm:"size:36" json:"supplier_invoice_id"`
 	ExpenseEntryID      *string `gorm:"size:36" json:"expense_entry_id"`
 	AllocatedAmount     float64 `gorm:"type:decimal(15,3)" json:"allocated_amount"`
@@ -1911,6 +1986,7 @@ func (BankCashBalance) TableName() string { return "bank_cash_balances" }
 type BankExpenseEntry struct {
 	Base
 	BankStatementLineID string    `gorm:"index;size:36" json:"bank_statement_line_id"`
+	Division            string    `gorm:"size:100;default:'PH Trading'" json:"division"`
 	ExpenseDate         time.Time `json:"expense_date"`
 	Description         string    `gorm:"size:500" json:"description"`
 	Category            string    `gorm:"size:50" json:"category"` // BANK_FEE, SWIFT_CHARGE, VAT, BG_FEE, OTHER
@@ -2096,6 +2172,22 @@ func (BankReconciliationAuditLog) TableName() string { return "bank_reconciliati
 
 const maxBackups = 7
 
+const (
+	backupAutoEnabledSetting = "backup_auto_enabled"
+	backupFrequencyDaysKey   = "backup_frequency_days"
+	backupLastAtSetting      = "backup_last_at"
+	backupLastPathSetting    = "backup_last_path"
+)
+
+type BackupPolicy struct {
+	AutoBackupEnabled bool   `json:"auto_backup_enabled"`
+	FrequencyDays     int    `json:"frequency_days"`
+	LastBackupAt      string `json:"last_backup_at"`
+	LastBackupPath    string `json:"last_backup_path"`
+	NextBackupDueAt   string `json:"next_backup_due_at"`
+	DueNow            bool   `json:"due_now"`
+}
+
 // BackupDatabase creates an atomic backup of the SQLite database using VACUUM INTO.
 // Backups are stored in a "backups/" directory next to the database file.
 // Keeps the last 7 backups and deletes older ones.
@@ -2103,6 +2195,10 @@ func (a *App) BackupDatabase() (string, error) {
 	if err := a.requirePermission("settings:update"); err != nil {
 		return "", err
 	}
+	return a.backupDatabaseInternal()
+}
+
+func (a *App) backupDatabaseInternal() (string, error) {
 	if a.db == nil {
 		return "", fmt.Errorf("database not initialized")
 	}
@@ -2149,8 +2245,113 @@ func (a *App) BackupDatabase() (string, error) {
 
 	// Prune old backups (keep last maxBackups)
 	a.pruneOldBackups(backupDir)
+	a.recordBackupCompletion(backupPath, time.Now())
 
 	return backupPath, nil
+}
+
+func (a *App) recordBackupCompletion(path string, at time.Time) {
+	if a == nil || a.db == nil {
+		return
+	}
+	a.saveSetting(backupLastAtSetting, at.UTC().Format(time.RFC3339))
+	a.saveSetting(backupLastPathSetting, path)
+}
+
+func (a *App) getSettingString(key, fallback string) string {
+	if a == nil || a.db == nil {
+		return fallback
+	}
+	var setting Setting
+	if err := a.db.Where("key = ?", key).First(&setting).Error; err != nil {
+		return fallback
+	}
+	if strings.TrimSpace(setting.Value) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(setting.Value)
+}
+
+func (a *App) getBackupPolicyInternal() BackupPolicy {
+	enabledRaw := strings.ToLower(a.getSettingString(backupAutoEnabledSetting, "true"))
+	enabled := enabledRaw != "false" && enabledRaw != "0" && enabledRaw != "no"
+
+	frequencyDays, err := strconv.Atoi(a.getSettingString(backupFrequencyDaysKey, "7"))
+	if err != nil || frequencyDays < 1 {
+		frequencyDays = 7
+	}
+	if frequencyDays > 30 {
+		frequencyDays = 30
+	}
+
+	lastAt := a.getSettingString(backupLastAtSetting, "")
+	lastPath := a.getSettingString(backupLastPathSetting, "")
+	policy := BackupPolicy{
+		AutoBackupEnabled: enabled,
+		FrequencyDays:     frequencyDays,
+		LastBackupAt:      lastAt,
+		LastBackupPath:    lastPath,
+		DueNow:            enabled,
+	}
+
+	if parsed, err := time.Parse(time.RFC3339, lastAt); err == nil {
+		next := parsed.AddDate(0, 0, frequencyDays)
+		policy.NextBackupDueAt = next.UTC().Format(time.RFC3339)
+		policy.DueNow = enabled && !time.Now().Before(next)
+	}
+
+	return policy
+}
+
+func (a *App) GetBackupPolicy() (BackupPolicy, error) {
+	if err := a.requirePermission("settings:view"); err != nil {
+		return BackupPolicy{}, err
+	}
+	return a.getBackupPolicyInternal(), nil
+}
+
+func (a *App) SaveBackupPolicy(autoEnabled bool, frequencyDays int) (BackupPolicy, error) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return BackupPolicy{}, err
+	}
+	if frequencyDays < 1 {
+		frequencyDays = 1
+	}
+	if frequencyDays > 30 {
+		frequencyDays = 30
+	}
+	a.saveSetting(backupAutoEnabledSetting, fmt.Sprintf("%t", autoEnabled))
+	a.saveSetting(backupFrequencyDaysKey, fmt.Sprintf("%d", frequencyDays))
+	return a.getBackupPolicyInternal(), nil
+}
+
+func (a *App) RunScheduledBackupIfDue(reason string) map[string]interface{} {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+	return a.runScheduledBackupIfDueInternal(reason)
+}
+
+func (a *App) runScheduledBackupIfDueInternal(reason string) map[string]interface{} {
+	policy := a.getBackupPolicyInternal()
+	if !policy.AutoBackupEnabled {
+		return map[string]interface{}{"success": true, "skipped": true, "reason": "auto backup disabled", "policy": policy}
+	}
+	if !policy.DueNow {
+		return map[string]interface{}{"success": true, "skipped": true, "reason": "not due", "policy": policy}
+	}
+	path, err := a.backupDatabaseInternal()
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error(), "policy": policy}
+	}
+	log.Printf("Scheduled database backup completed (%s): %s", strings.TrimSpace(reason), path)
+	return map[string]interface{}{
+		"success":     true,
+		"skipped":     false,
+		"backup_path": path,
+		"timestamp":   time.Now().Format(time.RFC3339),
+		"policy":      a.getBackupPolicyInternal(),
+	}
 }
 
 // pruneOldBackups keeps the most recent maxBackups files and deletes older ones.

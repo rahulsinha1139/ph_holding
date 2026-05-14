@@ -33,7 +33,7 @@
   }
 
   .toast-container > :global(*) {
-    pointer-events: auto;
+    pointer-events: none;
   }
 
   /* Position variants */

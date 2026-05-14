@@ -30,6 +30,7 @@ export interface RevenueChartData {
   customer_name: string;
   revenue: number;
   invoice_count: number;
+  year?: number;
 }
 
 // ============================================================

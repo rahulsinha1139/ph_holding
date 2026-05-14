@@ -8,8 +8,572 @@ import (
 	"time"
 )
 
+func (a *App) tryGroundedCapabilitiesFastPath(intent Intent, message string, hasFinanceAccess bool) (string, bool) {
+	if a == nil || a.db == nil {
+		return "", false
+	}
+
+	q := strings.ToLower(strings.TrimSpace(message))
+	if q == "" {
+		return "", false
+	}
+
+	capabilitySignals := []string{
+		"what can you do", "what all can you do", "all that you can do", "tell me all that you can do",
+		"what you can do", "tell us what you can do", "tell me what you can do",
+		"what are your capabilities", "what can butler do", "how can you help", "what can u do",
+		"show me all butler capabilities", "show all butler capabilities", "all butler capabilities",
+		"capabilities from live erp data", "capabilities for sales pipeline", "capabilities for finance",
+		"ocr ingestion", "task follow-up and daily briefing capabilities", "task follow up and daily briefing capabilities",
+		"report and document generation capabilities",
+	}
+	matched := false
+	for _, signal := range capabilitySignals {
+		if strings.Contains(q, signal) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return "", false
+	}
+
+	var customerCount, supplierCount, orderCount, invoiceCount, offerCount, opportunityCount, taskCount, productCount int64
+	_ = a.db.Model(&CustomerMaster{}).Count(&customerCount).Error
+	_ = a.db.Model(&SupplierMaster{}).Count(&supplierCount).Error
+	_ = a.db.Model(&Order{}).Where("status NOT IN ?", []string{"Cancelled", "Canceled", "Void"}).Count(&orderCount).Error
+	_ = a.db.Model(&Invoice{}).Where("status NOT IN ?", []string{"Cancelled", "Void", "Proforma"}).Count(&invoiceCount).Error
+	_ = a.db.Model(&Offer{}).Where("stage NOT IN ?", []string{"Lost", "Expired"}).Count(&offerCount).Error
+	_ = a.db.Model(&Opportunity{}).Count(&opportunityCount).Error
+	_ = a.db.Model(&TaskItem{}).Where("status NOT IN ?", []string{"completed", "archived"}).Count(&taskCount).Error
+	_ = a.db.Model(&ProductMaster{}).Where("is_active = ?", true).Count(&productCount).Error
+
+	currentYear := time.Now().Year()
+	yearStart := time.Date(currentYear, time.January, 1, 0, 0, 0, 0, time.Local)
+	yearEnd := yearStart.AddDate(1, 0, 0)
+	var currentYearOrders, currentYearOffers float64
+	_ = a.db.Model(&Order{}).
+		Where("order_date >= ? AND order_date < ? AND status NOT IN ?", yearStart, yearEnd, []string{"Cancelled", "Canceled", "Void"}).
+		Select("COALESCE(SUM(CASE WHEN grand_total_bhd > 0 THEN grand_total_bhd ELSE total_value_bhd END), 0)").
+		Scan(&currentYearOrders).Error
+	_ = a.db.Model(&Offer{}).
+		Where("quotation_date >= ? AND quotation_date < ? AND stage IN ?", yearStart, yearEnd, []string{"RFQ", "Quoted", "Won"}).
+		Select("COALESCE(SUM(total_value_bhd), 0)").
+		Scan(&currentYearOffers).Error
+
+	financeLine := "Financial data is permission-gated. I can discuss operational context unless your role has finance:view."
+	if hasFinanceAccess {
+		financeLine = fmt.Sprintf("For FY%d I can see confirmed orders of %s BHD and offer coverage of %s BHD.", currentYear, formatBHD(currentYearOrders), formatBHD(currentYearOffers))
+	}
+
+	databaseInventory := a.getDatabaseInventoryContext(hasFinanceAccess)
+	tableCount, _ := databaseInventory["total_tables"].(int)
+	if tableCount == 0 {
+		if tables, ok := databaseInventory["tables"].([]map[string]interface{}); ok {
+			tableCount = len(tables)
+		}
+	}
+	modulesLine := "relationships, commercial pipeline, operations, work management, products, intelligence, and system records"
+	if hasFinanceAccess {
+		modulesLine = "relationships, commercial pipeline, operations, finance, banking, payroll, work management, products, intelligence, and system records"
+	}
+
+	response := fmt.Sprintf(`I can help as a grounded ERP intelligence layer, not a generic chatbot.
+
+Live data I can use right now
+- Customers: %d
+- Suppliers: %d
+- Orders: %d
+- Customer invoices: %d
+- Active or won offers: %d
+- Pipeline opportunities: %d
+- Active work tasks: %d
+- Active products: %d
+- Database tables indexed for guarded querying: %d
+
+What I can do
+- Answer customer, supplier, order, offer, invoice, delivery, and task questions from local ERP data.
+- Build manager briefings for pipeline, AR, cash position, and operating risk.
+- Create follow-up tasks, offer drafts, customers, suppliers, and contacts when the required fields are present.
+- Prepare PDF intelligence reports from local data.
+- Keep continuity across this conversation and use recent context when you refer to the same customer, offer, or task.
+- Query across %s using controlled ERP access paths instead of guessing from memory.
+
+Finance access
+- %s
+
+How I will behave
+- I will separate actual records from projections.
+- I will say when a number is unavailable instead of inventing it.
+- If the external AI service is slow, I will still answer from local ERP data where possible.`, customerCount, supplierCount, orderCount, invoiceCount, offerCount, opportunityCount, taskCount, productCount, tableCount, modulesLine, financeLine)
+
+	return response, true
+}
+
+func isManagerFinancialBriefRequest(message string) bool {
+	q := strings.ToLower(strings.TrimSpace(message))
+	if q == "" {
+		return false
+	}
+
+	hasDocumentSignal := strings.Contains(q, "document") ||
+		strings.Contains(q, "report") ||
+		strings.Contains(q, "brief") ||
+		strings.Contains(q, "briefing") ||
+		strings.Contains(q, "manager")
+	hasFinanceSignal := strings.Contains(q, "financial") ||
+		strings.Contains(q, "finance") ||
+		strings.Contains(q, "ar") ||
+		strings.Contains(q, "receivable") ||
+		strings.Contains(q, "cash") ||
+		strings.Contains(q, "standing")
+	hasCommercialSignal := strings.Contains(q, "pipeline") ||
+		strings.Contains(q, "offer") ||
+		strings.Contains(q, "order") ||
+		strings.Contains(q, "forecast") ||
+		strings.Contains(q, "prediction")
+
+	return hasDocumentSignal && hasFinanceSignal && hasCommercialSignal
+}
+
+func requestedBriefYear(message string) int {
+	_, _, year, _, ok := parseYearWindowFromQuery(message)
+	if ok {
+		return year
+	}
+	return time.Now().Year()
+}
+
+func (a *App) tryGroundedManagerFinancialBriefFastPath(intent Intent, message string, hasFinanceAccess bool) (string, []ButlerAction, bool) {
+	if a == nil || a.db == nil || !isManagerFinancialBriefRequest(message) {
+		return "", nil, false
+	}
+	if !hasFinanceAccess {
+		return "This manager financial brief needs finance:view permission because it includes AR, cash, and supplier exposure. I can still prepare an operations-only pipeline brief if you want that version.", []ButlerAction{}, true
+	}
+
+	year := requestedBriefYear(message)
+	start := time.Date(year, time.January, 1, 0, 0, 0, 0, time.Local)
+	end := start.AddDate(1, 0, 0)
+	now := time.Now()
+	horizon := now.AddDate(0, 0, 60)
+
+	type rollupRow struct {
+		Label    string  `gorm:"column:label"`
+		Count    int64   `gorm:"column:count"`
+		TotalBHD float64 `gorm:"column:total_bhd"`
+	}
+
+	var orderCount int64
+	var orderTotal float64
+	_ = a.db.Model(&Order{}).
+		Where("order_date >= ? AND order_date < ? AND status NOT IN ?", start, end, []string{"Cancelled", "Canceled", "Void"}).
+		Count(&orderCount).Error
+	_ = a.db.Model(&Order{}).
+		Where("order_date >= ? AND order_date < ? AND status NOT IN ?", start, end, []string{"Cancelled", "Canceled", "Void"}).
+		Select("COALESCE(SUM(CASE WHEN grand_total_bhd > 0 THEN grand_total_bhd ELSE total_value_bhd END), 0)").
+		Scan(&orderTotal).Error
+
+	var activeOrderCount int64
+	var activeOrderTotal float64
+	_ = a.db.Model(&Order{}).
+		Where("order_date >= ? AND order_date < ? AND status NOT IN ?", start, end, []string{"Delivered", "Completed", "Closed", "Cancelled", "Canceled", "Void"}).
+		Count(&activeOrderCount).Error
+	_ = a.db.Model(&Order{}).
+		Where("order_date >= ? AND order_date < ? AND status NOT IN ?", start, end, []string{"Delivered", "Completed", "Closed", "Cancelled", "Canceled", "Void"}).
+		Select("COALESCE(SUM(CASE WHEN grand_total_bhd > 0 THEN grand_total_bhd ELSE total_value_bhd END), 0)").
+		Scan(&activeOrderTotal).Error
+
+	var offerRows []rollupRow
+	_ = a.db.Raw(`
+		SELECT COALESCE(stage, 'Unstaged') AS label, COUNT(*) AS count, COALESCE(SUM(total_value_bhd), 0) AS total_bhd
+		FROM offers
+		WHERE deleted_at IS NULL
+			AND quotation_date >= ?
+			AND quotation_date < ?
+			AND stage IN ('RFQ', 'Quoted', 'Won')
+		GROUP BY COALESCE(stage, 'Unstaged')
+		ORDER BY total_bhd DESC
+	`, start, end).Scan(&offerRows).Error
+
+	var offerCount int64
+	var offerTotal float64
+	for _, row := range offerRows {
+		offerCount += row.Count
+		offerTotal += row.TotalBHD
+	}
+
+	var opportunityRows []rollupRow
+	_ = a.db.Raw(`
+		SELECT COALESCE(stage, 'Unstaged') AS label, COUNT(*) AS count, COALESCE(SUM(revenue_bhd), 0) AS total_bhd
+		FROM opportunities
+		WHERE deleted_at IS NULL
+			AND year = ?
+			AND stage NOT IN ('Lost', 'Expired')
+		GROUP BY COALESCE(stage, 'Unstaged')
+		ORDER BY total_bhd DESC
+	`, year).Scan(&opportunityRows).Error
+
+	var openInvoiceAR, dueNext60, overdueAR, supplierAP float64
+	openInvoiceStatuses := []string{"Sent", "PartiallyPaid", "Overdue"}
+	_ = a.db.Model(&Invoice{}).
+		Where("status IN ? AND outstanding_bhd > 0", openInvoiceStatuses).
+		Select("COALESCE(SUM(outstanding_bhd), 0)").
+		Scan(&openInvoiceAR).Error
+	_ = a.db.Model(&Invoice{}).
+		Where("status IN ? AND outstanding_bhd > 0 AND due_date <= ?", openInvoiceStatuses, horizon).
+		Select("COALESCE(SUM(outstanding_bhd), 0)").
+		Scan(&dueNext60).Error
+	_ = a.db.Model(&Invoice{}).
+		Where("status IN ? AND outstanding_bhd > 0 AND due_date < ?", openInvoiceStatuses, now).
+		Select("COALESCE(SUM(outstanding_bhd), 0)").
+		Scan(&overdueAR).Error
+	_ = a.db.Model(&SupplierInvoice{}).
+		Where("status NOT IN ? AND COALESCE(payment_status, '') != ?", []string{"Paid", "Rejected", "Dispute"}, "Paid").
+		Select("COALESCE(SUM(total_bhd), 0)").
+		Scan(&supplierAP).Error
+
+	uninvoicedOrderExposure, pendingOrderCount, _ := a.calculateUninvoicedOrderExposure(start, end)
+	predicted60DayAR := dueNext60 + uninvoicedOrderExposure
+
+	cashBalance := 0.0
+	cashNote := "No latest bank statement balance was available."
+	if cash, err := a.computeCashPositionSnapshot(); err == nil && cash != nil {
+		cashBalance = cash.CashBalanceBHD
+		cashNote = fmt.Sprintf("Latest statement cash balance is %s BHD.", formatBHD(cashBalance))
+		if len(cash.Notices) > 0 {
+			cashNote += " Statement notices: " + strings.Join(cash.Notices, " ")
+		}
+	}
+
+	stageLines := make([]string, 0, len(offerRows))
+	for _, row := range offerRows {
+		stageLines = append(stageLines, fmt.Sprintf("- %s offers: %d records, %s BHD", firstNonEmpty(row.Label, "Unstaged"), row.Count, formatBHD(row.TotalBHD)))
+	}
+	if len(stageLines) == 0 {
+		stageLines = append(stageLines, "- No RFQ, Quoted, or Won offers found for this year.")
+	}
+
+	opportunityLines := make([]string, 0, len(opportunityRows))
+	for _, row := range opportunityRows {
+		opportunityLines = append(opportunityLines, fmt.Sprintf("- %s opportunities: %d records, %s BHD", firstNonEmpty(row.Label, "Unstaged"), row.Count, formatBHD(row.TotalBHD)))
+	}
+	if len(opportunityLines) == 0 {
+		opportunityLines = append(opportunityLines, "- No active opportunity rows found for this year.")
+	}
+
+	liquidityGap := cashBalance + dueNext60 - supplierAP
+	reportText := fmt.Sprintf(`Manager financial brief - FY%d order, offer, and AR outlook
+
+As of %s
+
+Commercial position
+- Confirmed orders: %d orders, %s BHD.
+- Active order backlog: %d orders, %s BHD.
+- Offer coverage: %d RFQ/Quoted/Won offers, %s BHD.
+- Uninvoiced confirmed-order exposure: %d orders, %s BHD.
+
+Offer pipeline by stage
+%s
+
+Opportunity pipeline by stage
+%s
+
+AR outlook for the next 60 days
+- Current open invoice AR: %s BHD.
+- Already overdue AR: %s BHD.
+- Invoice AR due by %s: %s BHD.
+- Likely invoiceable confirmed-order exposure: %s BHD.
+- Conservative 60-day AR focus: %s BHD.
+
+Financial standing
+- %s
+- Open supplier payable exposure: %s BHD.
+- Cash plus 60-day invoice AR less open supplier exposure: %s BHD.
+
+Manager interpretation
+- FY%d has real commercial coverage even where posted invoice revenue is still light.
+- Collections should separate existing invoice AR from uninvoiced order exposure; they are not the same risk.
+- The next two months should focus on turning active orders into clean invoices, then chasing existing overdue invoices.
+- This document was generated from local ERP data without waiting for the external model.`, year, now.Format("2 Jan 2006 15:04"), orderCount, formatBHD(orderTotal), activeOrderCount, formatBHD(activeOrderTotal), offerCount, formatBHD(offerTotal), pendingOrderCount, formatBHD(uninvoicedOrderExposure), strings.Join(stageLines, "\n"), strings.Join(opportunityLines, "\n"), formatBHD(openInvoiceAR), formatBHD(overdueAR), horizon.Format("2 Jan 2006"), formatBHD(dueNext60), formatBHD(uninvoicedOrderExposure), formatBHD(predicted60DayAR), cashNote, formatBHD(supplierAP), formatBHD(liquidityGap), year)
+
+	actions := []ButlerAction{}
+	if strings.Contains(strings.ToLower(message), "pdf") ||
+		strings.Contains(strings.ToLower(message), "document") ||
+		strings.Contains(strings.ToLower(message), "report") {
+		filePath, err := a.generateIntelligenceReportPDF("financial", fmt.Sprintf("FY%d Pipeline AR Outlook", year), map[string]interface{}{
+			"manager_financial_brief": map[string]interface{}{
+				"year":                       year,
+				"confirmed_order_value_bhd":  round3(orderTotal),
+				"offer_pipeline_bhd":         round3(offerTotal),
+				"open_invoice_ar_bhd":        round3(openInvoiceAR),
+				"uninvoiced_order_ar_bhd":    round3(uninvoicedOrderExposure),
+				"predicted_60_day_ar_bhd":    round3(predicted60DayAR),
+				"cash_balance_bhd":           round3(cashBalance),
+				"open_supplier_payables_bhd": round3(supplierAP),
+			},
+		}, reportText)
+		if err == nil {
+			reportText += fmt.Sprintf("\n\nGenerated document\n- %s", filePath)
+			actions = append(actions, ButlerAction{Type: "fetch", Target: "report", Label: "Open manager financial brief", Data: filePath})
+		} else {
+			reportText += fmt.Sprintf("\n\nDocument note\n- I prepared the brief in chat, but PDF generation failed locally: %v", err)
+		}
+	}
+
+	return reportText, actions, true
+}
+
+func (a *App) buildGroundedModelFallbackResponse(intent Intent, message string, context map[string]interface{}, hasFinanceAccess bool, backendErr error) ButlerResponse {
+	if msg, actions, handled := a.tryGroundedManagerFinancialBriefFastPath(intent, message, hasFinanceAccess); handled {
+		return ButlerResponse{
+			Message:    msg,
+			Actions:    actions,
+			Confidence: 0.88,
+			Context:    map[string]interface{}{"fast_path": "grounded_manager_financial_brief", "model_error": fmt.Sprint(backendErr)},
+			Metadata:   buildButlerMetadata(intent, context, hasFinanceAccess, "grounded_sql_fallback", "", "", fmt.Sprint(backendErr), backendErr),
+		}
+	}
+	if msg, handled := a.tryGroundedCapabilitiesFastPath(intent, message, hasFinanceAccess); handled {
+		return ButlerResponse{
+			Message:    msg,
+			Actions:    []ButlerAction{},
+			Confidence: 0.9,
+			Context:    map[string]interface{}{"fast_path": "grounded_capabilities", "model_error": fmt.Sprint(backendErr)},
+			Metadata:   buildButlerMetadata(intent, context, hasFinanceAccess, "grounded_sql_fallback", "", "", fmt.Sprint(backendErr), backendErr),
+		}
+	}
+
+	summary := a.getBusinessSummary()
+	customerCount := fmt.Sprint(summary["total_customers"])
+	supplierCount := fmt.Sprint(summary["total_suppliers"])
+	orderCount := fmt.Sprint(summary["total_orders"])
+	invoiceCount := fmt.Sprint(summary["total_invoices"])
+	databaseInventory := a.getDatabaseInventoryContext(hasFinanceAccess)
+	tableCount := fmt.Sprint(databaseInventory["total_tables"])
+	moduleCoverage := "relationships, commercial pipeline, operations, work management, products, intelligence, and system records"
+	if hasFinanceAccess {
+		moduleCoverage = "relationships, commercial pipeline, operations, finance, banking, payroll, work management, products, intelligence, and system records"
+	}
+
+	lines := []string{
+		"The external intelligence model did not respond quickly, so I am answering from local ERP data.",
+		"",
+		"Current local coverage",
+		fmt.Sprintf("- Customers: %s", customerCount),
+		fmt.Sprintf("- Suppliers: %s", supplierCount),
+		fmt.Sprintf("- Orders: %s", orderCount),
+		fmt.Sprintf("- Customer invoices: %s", invoiceCount),
+		fmt.Sprintf("- Queryable database tables: %s", tableCount),
+		fmt.Sprintf("- Covered modules: %s", moduleCoverage),
+	}
+
+	if hasFinanceAccess {
+		if yearSummary := a.getBusinessYearSummary(message); len(yearSummary) > 0 {
+			lines = append(lines,
+				"",
+				"Year coverage",
+				fmt.Sprintf("- Period: %v", yearSummary["period"]),
+				fmt.Sprintf("- Invoices: %v", yearSummary["invoices"]),
+				fmt.Sprintf("- Orders: %v", yearSummary["orders"]),
+				fmt.Sprintf("- Offers: %v", yearSummary["offers"]),
+				fmt.Sprintf("- Opportunities: %v", yearSummary["opportunities"]),
+			)
+		}
+	}
+
+	lines = append(lines,
+		"",
+		"What I can answer locally",
+		"- Customers, suppliers, contacts, notes, offers, opportunities, RFQs, orders, purchase orders, deliveries, products, serials, tasks, and notifications.",
+		"- Finance, AR, AP, payments, bank statements, expenses, payroll, VAT, and cash position when your role has finance:view.",
+		"- Manager reports, pipeline summaries, relationship history, task follow-ups, and cross-module record lookup from guarded ERP queries.",
+	)
+
+	return ButlerResponse{
+		Message:    strings.Join(lines, "\n"),
+		Actions:    []ButlerAction{},
+		Confidence: 0.72,
+		Context:    context,
+		Metadata:   buildButlerMetadata(intent, context, hasFinanceAccess, "grounded_sql_fallback", "", "", fmt.Sprint(backendErr), backendErr),
+	}
+}
+
 func (a *App) tryGroundedCustomerFastPath(intent Intent, message string) (string, bool) {
 	return a.tryGroundedCustomerFastPathWithHint(intent, message, "")
+}
+
+func (a *App) tryGroundedTaskCreationFastPath(intent Intent, message string) (string, bool) {
+	if a == nil || a.db == nil {
+		return "", false
+	}
+
+	assigneeRef, taskDetails, matched := parseGroundedTaskCreationRequest(intent, message)
+	if !matched {
+		return "", false
+	}
+	if strings.TrimSpace(assigneeRef) == "" || strings.TrimSpace(taskDetails) == "" {
+		return "I can create that task, but I need both the assignee and the task details.", true
+	}
+
+	assignee := a.resolveEmployeeReference(assigneeRef)
+	if assignee == nil || strings.TrimSpace(assignee.EntityID) == "" {
+		return fmt.Sprintf("I understood that as a task creation request, but I could not resolve %s to an active employee.", assigneeRef), true
+	}
+
+	title := strings.TrimSpace(taskDetails)
+	if title == "" {
+		return "I understood the assignee, but the task title/details were blank after parsing the request.", true
+	}
+
+	taskType := "general"
+	if strings.Contains(strings.ToLower(taskDetails), "follow up") || strings.Contains(strings.ToLower(taskDetails), "follow-up") {
+		taskType = "follow_up"
+	}
+
+	var customerID *string
+	if customerRef := inferCustomerReferenceFromQuery(Intent{}, strings.ToLower(taskDetails)); strings.TrimSpace(customerRef) != "" {
+		if customerIDs, _ := a.resolveCustomerScope(customerRef); len(customerIDs) > 0 {
+			customerID = &customerIDs[0]
+		}
+	}
+
+	assigneeID := assignee.EntityID
+	createdTask, err := a.CreateCollaborativeTask(TaskItem{
+		Title:              title,
+		Description:        taskDetails,
+		TaskType:           taskType,
+		Priority:           "medium",
+		AssigneeEmployeeID: &assigneeID,
+		CustomerID:         customerID,
+	})
+	if err != nil {
+		return fmt.Sprintf("I understood that as a task request for %s, but I could not create it: %v", assignee.DisplayName, err), true
+	}
+
+	var notificationCount int64
+	_ = a.db.Model(&Notification{}).
+		Where("employee_id = ? AND source_type = ? AND source_id = ? AND notification_type = ?", assigneeID, "task", createdTask.ID, "task").
+		Count(&notificationCount).Error
+
+	response := fmt.Sprintf("Created the task %q for %s.", createdTask.Title, assignee.DisplayName)
+	if notificationCount > 0 {
+		response += " The assignment notification was queued as well."
+	} else {
+		response += " The task is created, but I could not confirm the assignment notification row yet."
+	}
+	if createdTask.CustomerID != nil && strings.TrimSpace(*createdTask.CustomerID) != "" {
+		response += fmt.Sprintf(" I also linked it to customer %s.", *createdTask.CustomerID)
+	}
+
+	return response, true
+}
+
+func (a *App) tryGroundedWorkFastPath(intent Intent, message string) (string, bool) {
+	if a == nil || a.db == nil {
+		return "", false
+	}
+
+	q := strings.ToLower(strings.TrimSpace(message))
+	if q == "" {
+		return "", false
+	}
+
+	workSignals := []string{
+		"task", "tasks", "workload", "notification", "notifications", "assigned",
+		"assignee", "my work", "team board", "blocked", "open task", "open tasks",
+	}
+	matchedSignal := false
+	for _, signal := range workSignals {
+		if strings.Contains(q, signal) {
+			matchedSignal = true
+			break
+		}
+	}
+	if !matchedSignal {
+		return "", false
+	}
+
+	if isSelfWorkReference(q) {
+		current, err := a.GetCurrentEmployeeContext()
+		if err == nil && strings.TrimSpace(current.EmployeeID) != "" {
+			displayName := firstNonEmpty(strings.TrimSpace(current.EmployeeName), "you")
+			return a.buildEmployeeTaskOverviewResponse(current.EmployeeID, displayName, q), true
+		}
+	}
+
+	employeeRef := inferEmployeeReferenceFromQuery(intent, message)
+	if employeeRef == "" {
+		return "", false
+	}
+
+	resolution := a.resolveEmployeeReference(employeeRef)
+	if resolution == nil || strings.TrimSpace(resolution.EntityID) == "" {
+		return "", false
+	}
+
+	return a.buildEmployeeTaskOverviewResponse(resolution.EntityID, resolution.DisplayName, q), true
+}
+
+func isSelfWorkReference(q string) bool {
+	selfSignals := []string{
+		" my task", " my tasks", " for me", "assigned to me", "task for me", "tasks for me",
+		"new task for me", "new tasks for me", "me today", "my work", "my workload",
+	}
+	padded := " " + strings.ToLower(strings.TrimSpace(q)) + " "
+	for _, signal := range selfSignals {
+		if strings.Contains(padded, signal) {
+			return true
+		}
+	}
+	return strings.Contains(padded, " tasks today ") || strings.Contains(padded, " task today ")
+}
+
+func (a *App) tryGroundedSupplierFastPath(intent Intent, message string) (string, bool) {
+	if a == nil || a.db == nil {
+		return "", false
+	}
+
+	q := strings.ToLower(strings.TrimSpace(message))
+	if q == "" {
+		return "", false
+	}
+
+	supplierSignals := []string{
+		"supplier", "suppliers", "buy from", "bought from", "purchase", "purchases",
+		"payment history", "supplier payment", "supplier payments", "issue", "issues",
+	}
+	matchedSignal := false
+	for _, signal := range supplierSignals {
+		if strings.Contains(q, signal) {
+			matchedSignal = true
+			break
+		}
+	}
+	if !matchedSignal {
+		return "", false
+	}
+
+	supplierRef := inferSupplierReferenceFromQuery(intent, message)
+	if supplierRef == "" {
+		return "", false
+	}
+
+	resolution := a.resolveSupplierReference(supplierRef)
+	if resolution == nil || strings.TrimSpace(resolution.EntityID) == "" {
+		return "", false
+	}
+
+	switch {
+	case strings.Contains(q, "payment history") || strings.Contains(q, "supplier payment"):
+		return a.buildSupplierPaymentHistoryResponse(resolution.EntityID, resolution.DisplayName), true
+	case strings.Contains(q, "issue"):
+		return a.buildSupplierIssueOverviewResponse(resolution.EntityID, resolution.DisplayName), true
+	case strings.Contains(q, "buy from") || strings.Contains(q, "bought from") || strings.Contains(q, "purchase"):
+		return a.buildSupplierPurchaseOverviewResponse(resolution.EntityID, resolution.DisplayName), true
+	default:
+		return "", false
+	}
 }
 
 func (a *App) tryGroundedCustomerFastPathWithHint(intent Intent, message, customerHint string) (string, bool) {
@@ -30,16 +594,16 @@ func (a *App) tryGroundedCustomerFastPathWithHint(intent Intent, message, custom
 		return fmt.Sprintf("Understood. I will treat those records as a single customer group (%s) for this chat and proceed with grouped data/actions.", displayName), true
 	}
 
+	if strings.Contains(q, "revenue projection") || strings.Contains(q, "revenue projections") || strings.Contains(q, "projected revenue") {
+		return a.buildRevenueProjectionResponse(), true
+	}
+
 	customerRef := inferCustomerReferenceFromQuery(intent, q)
 	if customerRef == "" && strings.TrimSpace(customerHint) != "" {
 		customerRef = strings.TrimSpace(customerHint)
 	}
 	if customerRef == "" {
 		return "", false
-	}
-
-	if strings.Contains(q, "revenue projection") || strings.Contains(q, "revenue projections") || strings.Contains(q, "projected revenue") {
-		return a.buildRevenueProjectionResponse(), true
 	}
 
 	customerIDs, displayName := a.resolveCustomerScope(customerRef)
@@ -52,6 +616,10 @@ func (a *App) tryGroundedCustomerFastPathWithHint(intent Intent, message, custom
 
 	if strings.Contains(q, "invoice") && (strings.Contains(q, "this quarter") || strings.Contains(q, "current quarter")) {
 		return a.buildCustomerQuarterInvoiceAndHandlerResponse(customerIDs, displayName, q), true
+	}
+
+	if strings.Contains(q, "note") || strings.Contains(q, "notes") {
+		return a.buildCustomerNotesResponse(customerIDs, displayName), true
 	}
 
 	if strings.Contains(q, "line item") || strings.Contains(q, "line items") || strings.Contains(q, "what we have sold") || strings.Contains(q, "what have we sold") || strings.Contains(q, "sold to them") || strings.Contains(q, "sold to") || strings.Contains(q, "equipment sold") || strings.Contains(q, "what sold") || strings.Contains(q, "products sold") {
@@ -71,6 +639,118 @@ func (a *App) tryGroundedCustomerFastPathWithHint(intent Intent, message, custom
 	}
 
 	return "", false
+}
+
+func inferEmployeeReferenceFromQuery(intent Intent, message string) string {
+	if strings.TrimSpace(intent.PersonName) != "" {
+		return strings.TrimSpace(intent.PersonName)
+	}
+
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(?:tasks?\s+assigned\s+to|assigned\s+to|workload\s+for|notifications?\s+for|tasks?\s+for)\s+([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,2})`),
+		regexp.MustCompile(`(?i)(?:notifications?\s+does|tasks?\s+does)\s+([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,2})\s+have`),
+		regexp.MustCompile(`(?i)\b([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,2})'s\s+(?:tasks?|notifications?)\b`),
+	}
+	for _, pattern := range patterns {
+		if m := pattern.FindStringSubmatch(message); len(m) > 1 {
+			return strings.TrimSpace(m[1])
+		}
+	}
+
+	return ""
+}
+
+func parseGroundedTaskCreationRequest(intent Intent, message string) (string, string, bool) {
+	original := strings.TrimSpace(message)
+	if original == "" {
+		return "", "", false
+	}
+
+	lower := strings.ToLower(original)
+	createSignals := []string{
+		"create a task",
+		"create task",
+		"add a task",
+		"add task",
+		"make a task",
+		"make task",
+		"assign a task",
+		"assign task",
+	}
+	matchedSignal := false
+	for _, signal := range createSignals {
+		if strings.Contains(lower, signal) {
+			matchedSignal = true
+			break
+		}
+	}
+	if !matchedSignal {
+		return "", "", false
+	}
+
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(?:can you|could you|please|buddy)?\s*(?:create|add|make)\s+(?:a\s+)?task\s+for\s+([A-Za-z][A-Za-z.\-\s]{0,40}?)\s+(?:to\s+)?(.+)`),
+		regexp.MustCompile(`(?i)(?:can you|could you|please|buddy)?\s*assign\s+(?:a\s+)?task\s+to\s+([A-Za-z][A-Za-z.\-\s]{0,40}?)\s+(?:to\s+)?(.+)`),
+	}
+	for _, pattern := range patterns {
+		if matches := pattern.FindStringSubmatch(original); len(matches) == 3 {
+			return strings.TrimSpace(matches[1]), sanitizeTaskCreationDetails(matches[2]), true
+		}
+	}
+
+	employeeRef := inferEmployeeReferenceFromQuery(intent, original)
+	if employeeRef == "" {
+		employeeRef = strings.TrimSpace(intent.PersonName)
+	}
+	if employeeRef == "" {
+		return "", "", true
+	}
+
+	employeePattern := regexp.MustCompile(`(?i)(?:for|to)\s+` + regexp.QuoteMeta(employeeRef) + `\s+(.*)$`)
+	if matches := employeePattern.FindStringSubmatch(original); len(matches) == 2 {
+		return employeeRef, sanitizeTaskCreationDetails(matches[1]), true
+	}
+
+	return employeeRef, "", true
+}
+
+func sanitizeTaskCreationDetails(details string) string {
+	cleaned := strings.TrimSpace(details)
+	if cleaned == "" {
+		return ""
+	}
+
+	trailingMarkers := []string{
+		"make sure",
+		"ensure",
+		"notify",
+		"notification",
+		"notifications",
+	}
+	lower := strings.ToLower(cleaned)
+	for _, marker := range trailingMarkers {
+		if idx := strings.Index(lower, marker); idx >= 0 {
+			cleaned = strings.TrimSpace(cleaned[:idx])
+			lower = strings.ToLower(cleaned)
+		}
+	}
+
+	for _, sep := range []string{".", "!", "?"} {
+		if idx := strings.Index(cleaned, sep); idx >= 0 {
+			cleaned = strings.TrimSpace(cleaned[:idx])
+		}
+	}
+
+	cleaned = strings.TrimSpace(strings.Trim(cleaned, " ,;:-"))
+	if cleaned == "" {
+		return ""
+	}
+
+	runes := []rune(cleaned)
+	if len(runes) > 0 && runes[0] >= 'a' && runes[0] <= 'z' {
+		runes[0] = runes[0] - 32
+	}
+	return string(runes)
 }
 
 func inferCustomerReferenceFromQuery(intent Intent, q string) string {
@@ -101,6 +781,48 @@ func inferCustomerReferenceFromQuery(intent Intent, q string) string {
 	}
 
 	return ""
+}
+
+func inferSupplierReferenceFromQuery(intent Intent, message string) string {
+	if candidate := strings.TrimSpace(intent.EntityName); candidate != "" {
+		lowerCandidate := strings.ToLower(candidate)
+		if !strings.Contains(lowerCandidate, "issue") &&
+			!strings.Contains(lowerCandidate, "payment") &&
+			!strings.Contains(lowerCandidate, "history") &&
+			!strings.Contains(lowerCandidate, "purchase") {
+			return candidate
+		}
+	}
+
+	q := strings.TrimSpace(message)
+	if q == "" {
+		return ""
+	}
+
+	re := regexp.MustCompile(`(?i)\b(?:about|from|for)\s+([^?]+)`)
+	m := re.FindStringSubmatch(q)
+	if len(m) != 2 {
+		return ""
+	}
+
+	candidate := strings.TrimSpace(m[1])
+	trimSuffixes := []string{
+		"payment history",
+		"payments",
+		"payment",
+		"issues",
+		"issue",
+		"purchase history",
+		"purchases",
+	}
+	for _, suffix := range trimSuffixes {
+		candidate = strings.TrimSpace(strings.TrimSuffix(strings.ToLower(candidate), suffix))
+	}
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return ""
+	}
+	return candidate
 }
 
 func (a *App) resolveCustomerScope(reference string) ([]string, string) {
@@ -172,6 +894,165 @@ func (a *App) resolveCustomerScope(reference string) ([]string, string) {
 		return nil, ""
 	}
 	return []string{resolution.EntityID}, firstNonEmpty(strings.TrimSpace(resolution.DisplayName), reference)
+}
+
+func (a *App) buildEmployeeTaskOverviewResponse(employeeID, employeeName, q string) string {
+	type taskRow struct {
+		Title       string
+		Status      string
+		Priority    string
+		TaskType    string
+		Description string
+		DueDate     *time.Time
+	}
+
+	var tasks []taskRow
+	a.db.Table("task_items").
+		Select("title, status, priority, task_type, description, due_date").
+		Where("assignee_employee_id = ?", employeeID).
+		Order("updated_at DESC, created_at DESC").
+		Limit(20).
+		Scan(&tasks)
+
+	openCount := 0
+	completedCount := 0
+	blockedCount := 0
+	overdueCount := 0
+	now := time.Now()
+	lines := make([]string, 0, minInt(5, len(tasks)))
+	for _, task := range tasks {
+		status := strings.ToLower(strings.TrimSpace(task.Status))
+		switch status {
+		case "done", "completed", "closed":
+			completedCount++
+		default:
+			openCount++
+		}
+		if status == "blocked" {
+			blockedCount++
+		}
+		if task.DueDate != nil && task.DueDate.Before(now) && status != "done" && status != "completed" && status != "closed" {
+			overdueCount++
+		}
+		if len(lines) < 5 {
+			line := fmt.Sprintf("- %s | %s | %s", strings.TrimSpace(task.Title), strings.TrimSpace(task.Status), strings.TrimSpace(task.Priority))
+			if task.DueDate != nil {
+				line += " | due " + task.DueDate.Format("2006-01-02")
+			}
+			lines = append(lines, line)
+		}
+	}
+
+	type notificationRow struct {
+		Title      string
+		Status     string
+		SourceType string
+		CreatedAt  time.Time
+	}
+	var notifications []notificationRow
+	a.db.Table("notifications").
+		Select("title, status, source_type, created_at").
+		Where("employee_id = ?", employeeID).
+		Order("created_at DESC").
+		Limit(20).
+		Scan(&notifications)
+
+	unreadNotifications := 0
+	notificationLines := make([]string, 0, 3)
+	for _, notification := range notifications {
+		if strings.EqualFold(strings.TrimSpace(notification.Status), "unread") {
+			unreadNotifications++
+		}
+		if len(notificationLines) < 3 {
+			notificationLines = append(notificationLines, fmt.Sprintf("- %s | %s | %s", strings.TrimSpace(notification.Title), strings.TrimSpace(notification.Status), notification.CreatedAt.Format("2006-01-02")))
+		}
+	}
+
+	if len(tasks) == 0 && len(notifications) == 0 {
+		return fmt.Sprintf("I checked the collaborative work records for %s and I cannot confirm any assigned tasks or notifications from current data.", employeeName)
+	}
+
+	builder := strings.Builder{}
+	builder.WriteString(fmt.Sprintf("%s currently has %d active task(s)", employeeName, openCount))
+	if completedCount > 0 {
+		builder.WriteString(fmt.Sprintf(", %d completed task(s)", completedCount))
+	}
+	builder.WriteString(fmt.Sprintf(", %d blocked task(s), and %d overdue task(s).", blockedCount, overdueCount))
+	builder.WriteString(fmt.Sprintf(" I also found %d unread notification(s).", unreadNotifications))
+
+	if len(lines) > 0 {
+		builder.WriteString("\n\nRecent assigned tasks:\n")
+		builder.WriteString(strings.Join(lines, "\n"))
+	}
+
+	if strings.Contains(q, "notification") && len(notificationLines) > 0 {
+		builder.WriteString("\n\nRecent notifications:\n")
+		builder.WriteString(strings.Join(notificationLines, "\n"))
+	}
+
+	return builder.String()
+}
+
+func (a *App) resolveCustomerRecordIDs(customerIDs []string) []string {
+	if len(customerIDs) == 0 {
+		return nil
+	}
+
+	type row struct {
+		ID string
+	}
+	var rows []row
+	a.db.Table("customers").
+		Select("id").
+		Where("customer_id IN ?", customerIDs).
+		Find(&rows)
+
+	recordIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row.ID) != "" {
+			recordIDs = append(recordIDs, strings.TrimSpace(row.ID))
+		}
+	}
+	return uniqueStrings(recordIDs)
+}
+
+func (a *App) buildCustomerNotesResponse(customerIDs []string, customerName string) string {
+	recordIDs := a.resolveCustomerRecordIDs(customerIDs)
+	if len(recordIDs) == 0 {
+		return fmt.Sprintf("I checked customer notes for %s and could not resolve a note record scope.", customerName)
+	}
+
+	type noteRow struct {
+		NoteType  string
+		Content   string
+		CreatedAt time.Time
+	}
+	var notes []noteRow
+	a.db.Table("entity_notes").
+		Select("note_type, content, created_at").
+		Where("entity_type = ? AND entity_id IN ?", "customer", recordIDs).
+		Order("created_at DESC").
+		Limit(10).
+		Scan(&notes)
+
+	if len(notes) == 0 {
+		return fmt.Sprintf("I checked notes for %s and found no recorded customer notes.", customerName)
+	}
+
+	lines := make([]string, 0, minInt(6, len(notes)))
+	for i, note := range notes {
+		if i >= 6 {
+			break
+		}
+		lines = append(lines, fmt.Sprintf("- %s | %s | %s",
+			note.CreatedAt.Format("2006-01-02"),
+			firstNonEmpty(strings.TrimSpace(note.NoteType), "general"),
+			strings.TrimSpace(note.Content),
+		))
+	}
+
+	return fmt.Sprintf("I found %d customer note(s) for %s.\n\nRecent notes:\n%s",
+		len(notes), customerName, strings.Join(lines, "\n"))
 }
 
 func (a *App) buildCustomerQuarterInvoiceAndHandlerResponse(customerIDs []string, customerName, q string) string {
@@ -357,14 +1238,14 @@ func (a *App) buildCustomerYearOffersResponse(customerIDs []string, customerName
 	end := time.Date(year, time.December, 31, 23, 59, 59, 0, time.Local)
 
 	type offerRow struct {
-		OfferNumber    string
-		QuotationDate  time.Time
-		Stage          string
-		TotalValueBHD  float64
-		QuoteType      string
-		IssuedBy       string
-		Attention      string
-		CreatedBy      string
+		OfferNumber   string
+		QuotationDate time.Time
+		Stage         string
+		TotalValueBHD float64
+		QuoteType     string
+		IssuedBy      string
+		Attention     string
+		CreatedBy     string
 	}
 
 	var offers []offerRow
@@ -567,6 +1448,174 @@ func (a *App) buildRevenueProjectionResponse() string {
 		runRateProjection,
 		blendedProjection,
 	)
+}
+
+func (a *App) buildSupplierPaymentHistoryResponse(supplierID, supplierName string) string {
+	type paymentRow struct {
+		PaymentDate   time.Time
+		AmountBHD     float64
+		PaymentMethod string
+		Reference     string
+		InvoiceNumber string
+	}
+	var payments []paymentRow
+	a.db.Table("supplier_payments").
+		Select("payment_date, amount_bhd, payment_method, reference, invoice_number").
+		Where("supplier_id = ?", supplierID).
+		Order("payment_date DESC").
+		Limit(12).
+		Scan(&payments)
+
+	type invoiceSummary struct {
+		Count         int64
+		TotalBHD      float64
+		PendingCount  int64
+		PendingAmount float64
+	}
+	var summary invoiceSummary
+	a.db.Table("supplier_invoices").
+		Select("COUNT(*) as count, COALESCE(SUM(total_bhd), 0) as total_bhd, SUM(CASE WHEN payment_status <> 'Paid' THEN 1 ELSE 0 END) as pending_count, COALESCE(SUM(CASE WHEN payment_status <> 'Paid' THEN total_bhd ELSE 0 END), 0) as pending_amount").
+		Where("supplier_id = ?", supplierID).
+		Scan(&summary)
+
+	if len(payments) == 0 && summary.Count == 0 {
+		return fmt.Sprintf("I checked supplier payment history for %s and found no recorded supplier invoices or payments.", supplierName)
+	}
+
+	lines := make([]string, 0, minInt(6, len(payments)))
+	totalPaid := 0.0
+	for i, payment := range payments {
+		totalPaid += payment.AmountBHD
+		if i >= 6 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- %s | %s | %.3f BHD | %s | %s",
+			payment.PaymentDate.Format("2006-01-02"),
+			firstNonEmpty(strings.TrimSpace(payment.InvoiceNumber), "no invoice ref"),
+			payment.AmountBHD,
+			firstNonEmpty(strings.TrimSpace(payment.PaymentMethod), "payment method n/a"),
+			firstNonEmpty(strings.TrimSpace(payment.Reference), "no reference"),
+		))
+	}
+
+	paymentText := "No supplier payment rows found."
+	if len(lines) > 0 {
+		paymentText = strings.Join(lines, "\n")
+	}
+
+	return fmt.Sprintf("Here is the supplier payment history for %s.\n\nRecorded supplier invoices: %d totaling %.3f BHD\nPending supplier invoices: %d totaling %.3f BHD\nRecent supplier payments totaled %.3f BHD in the sampled history.\n\nRecent payments:\n%s",
+		supplierName, summary.Count, summary.TotalBHD, summary.PendingCount, summary.PendingAmount, totalPaid, paymentText)
+}
+
+func (a *App) buildSupplierPurchaseOverviewResponse(supplierID, supplierName string) string {
+	type invoiceRow struct {
+		InvoiceNumber string
+		InvoiceDate   time.Time
+		TotalBHD      float64
+		Status        string
+	}
+	var invoices []invoiceRow
+	a.db.Table("supplier_invoices").
+		Select("invoice_number, invoice_date, total_bhd, status").
+		Where("supplier_id = ?", supplierID).
+		Order("invoice_date DESC").
+		Limit(12).
+		Scan(&invoices)
+
+	type lineRow struct {
+		Description string
+		Qty         float64
+		TotalBHD    float64
+	}
+	var lines []lineRow
+	a.db.Table("supplier_invoice_items").
+		Select("supplier_invoice_items.description, supplier_invoice_items.quantity as qty, COALESCE(supplier_invoice_items.total_bhd, supplier_invoice_items.total_price, 0) as total_bhd").
+		Joins("JOIN supplier_invoices ON supplier_invoices.id = supplier_invoice_items.supplier_invoice_id").
+		Where("supplier_invoices.supplier_id = ?", supplierID).
+		Order("supplier_invoices.invoice_date DESC").
+		Limit(20).
+		Scan(&lines)
+
+	if len(invoices) == 0 && len(lines) == 0 {
+		return fmt.Sprintf("I checked purchasing history for %s and found no recorded supplier invoices or line items.", supplierName)
+	}
+
+	total := 0.0
+	invoiceLines := make([]string, 0, minInt(5, len(invoices)))
+	for i, invoice := range invoices {
+		total += invoice.TotalBHD
+		if i >= 5 {
+			continue
+		}
+		invoiceLines = append(invoiceLines, fmt.Sprintf("- %s | %s | %.3f BHD | %s",
+			strings.TrimSpace(invoice.InvoiceNumber),
+			invoice.InvoiceDate.Format("2006-01-02"),
+			invoice.TotalBHD,
+			strings.TrimSpace(invoice.Status),
+		))
+	}
+
+	itemLines := make([]string, 0, minInt(6, len(lines)))
+	for i, line := range lines {
+		if i >= 6 {
+			break
+		}
+		itemLines = append(itemLines, fmt.Sprintf("- %s | qty %.3f | %.3f BHD",
+			firstNonEmpty(strings.TrimSpace(line.Description), "line item"),
+			line.Qty,
+			line.TotalBHD,
+		))
+	}
+
+	itemsText := "No supplier line items captured."
+	if len(itemLines) > 0 {
+		itemsText = strings.Join(itemLines, "\n")
+	}
+
+	return fmt.Sprintf("Here is what we have bought from %s.\n\nRecorded supplier invoices: %d totaling %.3f BHD\n\nRecent supplier invoices:\n%s\n\nRecent purchased line items:\n%s",
+		supplierName, len(invoices), total, strings.Join(invoiceLines, "\n"), itemsText)
+}
+
+func (a *App) buildSupplierIssueOverviewResponse(supplierID, supplierName string) string {
+	type issueRow struct {
+		OrderRef    string
+		Description string
+		Status      string
+		CostBHD     float64
+		CreatedAt   time.Time
+	}
+	var issues []issueRow
+	a.db.Table("supplier_issues").
+		Select("order_ref, description, status, cost_bhd, created_at").
+		Where("supplier_id = ?", supplierID).
+		Order("created_at DESC").
+		Limit(10).
+		Scan(&issues)
+
+	if len(issues) == 0 {
+		return fmt.Sprintf("I checked supplier issues for %s and found no active issue records.", supplierName)
+	}
+
+	openCount := 0
+	lines := make([]string, 0, minInt(6, len(issues)))
+	for i, issue := range issues {
+		if !strings.EqualFold(strings.TrimSpace(issue.Status), "resolved") && !strings.EqualFold(strings.TrimSpace(issue.Status), "closed") {
+			openCount++
+		}
+		if i >= 6 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- %s | %s | %.3f BHD | %s | %s",
+			firstNonEmpty(strings.TrimSpace(issue.OrderRef), "no order ref"),
+			firstNonEmpty(strings.TrimSpace(issue.Status), "unknown"),
+			issue.CostBHD,
+			issue.CreatedAt.Format("2006-01-02"),
+			strings.TrimSpace(issue.Description),
+		))
+	}
+
+	return fmt.Sprintf("I found %d supplier issue record(s) for %s, with %d still open.\n\nRecent issues:\n%s",
+		len(issues), supplierName, openCount, strings.Join(lines, "\n"))
 }
 
 func (a *App) tryGroundedOfferDraftFastPath(message, customerHint, productHint string) (string, []ButlerAction, bool) {

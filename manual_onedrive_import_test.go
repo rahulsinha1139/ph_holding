@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,16 +12,15 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func TestManualImport2026OneDrive(t *testing.T) {
-	rootPath := os.Getenv("ONEDRIVE_IMPORT_ROOT")
-	if rootPath == "" {
-		rootPath = "/Users/rahulsinha/Downloads/OneDrive_2026-03-31/Offers 2026"
+func TestManualImportOneDrive(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("ONEDRIVE_IMPORT_ROOT")) == "" {
+		t.Skip("set ONEDRIVE_IMPORT_ROOT to scan/import a OneDrive folder")
 	}
 
-	dbPath := os.Getenv("ONEDRIVE_IMPORT_DB")
-	if dbPath == "" {
-		dbPath = filepath.Join(".", "ph_holdings.db")
-	}
+	rootPath := defaultOneDriveImportRoot()
+	dbPath := resolveOneDriveImportDBPath()
+	importYear := resolveOneDriveImportYear(rootPath)
+	importSource := oneDriveOpportunitySource(importYear)
 
 	commitImport := os.Getenv("ONEDRIVE_IMPORT_COMMIT") == "1"
 	matchThreshold := 0.75
@@ -104,11 +103,11 @@ func TestManualImport2026OneDrive(t *testing.T) {
 	var orderCount int64
 	var invoiceCount int64
 
-	db.Model(&Opportunity{}).Where("year = ? AND source = ?", 2026, "2026_onedrive").Count(&oppCount)
-	db.Model(&Offer{}).Where("offer_number LIKE ? OR quotation_date >= ?", "EH-%", time.Date(2026, 1, 1, 0, 0, 0, 0, time.Local)).Count(&offerCount)
+	db.Model(&Opportunity{}).Where("year = ? AND source = ?", importYear, importSource).Count(&oppCount)
+	db.Model(&Offer{}).Where("offer_number LIKE ? OR quotation_date >= ?", "EH-%", time.Date(importYear, 1, 1, 0, 0, 0, 0, time.Local)).Count(&offerCount)
 	db.Model(&Order{}).Where("order_number LIKE ?", "IMP-%").Count(&orderCount)
 	db.Model(&Invoice{}).Where("invoice_number LIKE ? OR invoice_number LIKE ?", "PH%", "INV-%").Count(&invoiceCount)
 
-	t.Logf("import_summary attempted=%d succeeded=%d opportunities_2026_onedrive=%d imported_orders=%d imported_invoices=%d offers_seen=%d",
-		len(results), successCount, oppCount, orderCount, invoiceCount, offerCount)
+	t.Logf("import_summary year=%d source=%s attempted=%d succeeded=%d imported_opportunities=%d imported_orders=%d imported_invoices=%d offers_seen=%d",
+		importYear, importSource, len(results), successCount, oppCount, orderCount, invoiceCount, offerCount)
 }

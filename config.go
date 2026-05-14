@@ -24,7 +24,9 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -32,9 +34,33 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
+	_ "github.com/mattn/go-sqlite3"
 )
+
+const (
+	deploymentDatabaseReseedSettingKey = "deployment_database_reseed_stamp"
+	appDataDirName                     = "AsymmFlow-PH-Trading"
+	appDatabaseFileName                = "ph_holdings.db"
+	appMacBundleName                   = "AsymmFlowPHTrading.app"
+)
+
+var deploymentCollaborativeStateTables = []string{
+	"employees",
+	"employee_access_links",
+	"projects",
+	"project_members",
+	"task_items",
+	"task_comments",
+	"task_activity",
+	"notifications",
+	"notification_receipts",
+	"delete_approval_requests",
+	"employee_archive_requests",
+	"collaborative_pending_operations",
+}
 
 // ============================================================================
 // CONFIG STRUCTURE
@@ -180,6 +206,37 @@ func resolveConfiguredPath(configuredPath string) string {
 	return filepath.Clean(configuredPath)
 }
 
+func loadEnvFilesWithPrecedence(envLocations []string) []string {
+	originalEnv := make(map[string]struct{})
+	for _, pair := range os.Environ() {
+		key, _, ok := strings.Cut(pair, "=")
+		if ok && key != "" {
+			originalEnv[key] = struct{}{}
+		}
+	}
+
+	loaded := make([]string, 0, len(envLocations))
+	for i := len(envLocations) - 1; i >= 0; i-- {
+		loc := envLocations[i]
+		values, err := godotenv.Read(loc)
+		if err != nil {
+			continue
+		}
+		for key, value := range values {
+			if _, protected := originalEnv[key]; protected {
+				continue
+			}
+			_ = os.Setenv(key, value)
+		}
+		loaded = append(loaded, loc)
+	}
+
+	for left, right := 0, len(loaded)-1; left < right; left, right = left+1, right-1 {
+		loaded[left], loaded[right] = loaded[right], loaded[left]
+	}
+	return loaded
+}
+
 func packagedDatabasePath() string {
 	for _, baseDir := range executableSearchDirs() {
 		candidates := []string{
@@ -198,14 +255,657 @@ func packagedDatabasePath() string {
 func appDataDatabasePath() string {
 	if runtime.GOOS == "windows" {
 		if appData := os.Getenv("APPDATA"); appData != "" {
-			return filepath.Join(appData, "AsymmFlow", "ph_holdings.db")
+			return filepath.Join(appData, appDataDirName, appDatabaseFileName)
 		}
 		return ""
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "share", "AsymmFlow", "ph_holdings.db")
+		return filepath.Join(home, ".local", "share", appDataDirName, appDatabaseFileName)
 	}
 	return ""
+}
+
+type deploymentDatabaseProfile struct {
+	Path             string
+	Valid            bool
+	Customers        int64
+	Suppliers        int64
+	Orders           int64
+	Invoices         int64
+	Opportunities    int64
+	NamedLicenseKeys int64
+}
+
+type preservedLicenseActivation struct {
+	Key         string
+	Role        string
+	DisplayName string
+	DeviceHash  string
+	ActivatedAt string
+}
+
+func sqliteReadonlyDSN(path string) string {
+	return fmt.Sprintf("file:%s?mode=ro&_busy_timeout=5000", filepath.ToSlash(filepath.Clean(path)))
+}
+
+func readDeploymentDatabaseProfile(path string) deploymentDatabaseProfile {
+	profile := deploymentDatabaseProfile{Path: path}
+	if strings.TrimSpace(path) == "" || !isSQLiteDatabaseFile(path) {
+		return profile
+	}
+	db, err := sql.Open("sqlite3", sqliteReadonlyDSN(path))
+	if err != nil {
+		log.Printf("⚠️ Could not inspect database profile %s: %v", path, err)
+		return profile
+	}
+	defer db.Close()
+
+	profile.Valid = true
+	profile.Customers = sqliteTableCount(db, "customers", "deleted_at IS NULL")
+	profile.Suppliers = sqliteTableCount(db, "suppliers", "deleted_at IS NULL")
+	profile.Orders = sqliteTableCount(db, "orders", "")
+	profile.Invoices = sqliteTableCount(db, "invoices", "")
+	profile.Opportunities = sqliteTableCount(db, "opportunities", "")
+	profile.NamedLicenseKeys = sqliteTableCount(db, "license_keys", "COALESCE(display_name, '') <> ''")
+	return profile
+}
+
+func readDeploymentDatabaseSetting(dbPath, key string) string {
+	if strings.TrimSpace(dbPath) == "" || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	db, err := sql.Open("sqlite3", sqliteReadonlyDSN(dbPath))
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+
+	if sqliteTableCount(db, "settings", "") == 0 {
+		return ""
+	}
+
+	var value sql.NullString
+	err = db.QueryRow("SELECT value FROM settings WHERE key = ? AND deleted_at IS NULL LIMIT 1", key).Scan(&value)
+	if err != nil || !value.Valid {
+		return ""
+	}
+	return strings.TrimSpace(value.String)
+}
+
+func deploymentDatabaseCount(dbPath, tableName, condition string) int {
+	if strings.TrimSpace(dbPath) == "" || strings.TrimSpace(tableName) == "" {
+		return 0
+	}
+	db, err := sql.Open("sqlite3", sqliteReadonlyDSN(dbPath))
+	if err != nil {
+		return 0
+	}
+	defer db.Close()
+	return int(sqliteTableCount(db, tableName, condition))
+}
+
+func deploymentDatabaseMaxTimestamp(dbPath string, tableNames ...string) time.Time {
+	if strings.TrimSpace(dbPath) == "" {
+		return time.Time{}
+	}
+	db, err := sql.Open("sqlite3", sqliteReadonlyDSN(dbPath))
+	if err != nil {
+		return time.Time{}
+	}
+	defer db.Close()
+
+	var maxTime time.Time
+	for _, tableName := range tableNames {
+		tableName = strings.TrimSpace(tableName)
+		if !deploymentSafeIdentifier(tableName) || !deploymentSQLiteTableExists(db, tableName) {
+			continue
+		}
+		for _, columnName := range []string{"updated_at", "deleted_at"} {
+			if !deploymentSQLiteTableHasColumn(db, tableName, columnName) {
+				continue
+			}
+			ts := deploymentDatabaseMaxTimestampForColumn(db, tableName, columnName)
+			if ts.After(maxTime) {
+				maxTime = ts
+			}
+		}
+	}
+	return maxTime
+}
+
+func deploymentSQLiteTableExists(db *sql.DB, tableName string) bool {
+	if db == nil || strings.TrimSpace(tableName) == "" {
+		return false
+	}
+	var name string
+	err := db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1", tableName).Scan(&name)
+	return err == nil && name == tableName
+}
+
+func deploymentSQLiteTableHasColumn(db *sql.DB, tableName, columnName string) bool {
+	if db == nil || !deploymentSafeIdentifier(tableName) || strings.TrimSpace(columnName) == "" {
+		return false
+	}
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			continue
+		}
+		if strings.EqualFold(name, columnName) {
+			return true
+		}
+	}
+	return false
+}
+
+func deploymentDatabaseMaxTimestampForColumn(db *sql.DB, tableName, columnName string) time.Time {
+	if db == nil || !deploymentSafeIdentifier(tableName) || !deploymentSafeIdentifier(columnName) {
+		return time.Time{}
+	}
+	var raw sql.NullString
+	query := fmt.Sprintf("SELECT MAX(%s) FROM %s", columnName, tableName)
+	if err := db.QueryRow(query).Scan(&raw); err != nil || !raw.Valid {
+		return time.Time{}
+	}
+	if parsed, ok := parseDeploymentTimestamp(raw.String); ok {
+		return parsed
+	}
+	return time.Time{}
+}
+
+func parseDeploymentTimestamp(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05.999999999-07:00", "2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05"} {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func deploymentSafeIdentifier(identifier string) bool {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return false
+	}
+	for _, r := range identifier {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func runtimeHasNewerCollaborativeState(runtimeDBPath, packagedDBPath string) bool {
+	pendingOps := deploymentDatabaseCount(runtimeDBPath, "collaborative_pending_operations", "status IN ('pending', 'failed')")
+	if pendingOps > 0 {
+		return true
+	}
+
+	runtimeMax := deploymentDatabaseMaxTimestamp(runtimeDBPath, deploymentCollaborativeStateTables...)
+	if runtimeMax.IsZero() {
+		return false
+	}
+	packagedMax := deploymentDatabaseMaxTimestamp(packagedDBPath, deploymentCollaborativeStateTables...)
+	return packagedMax.IsZero() || runtimeMax.After(packagedMax)
+}
+
+func shouldRefreshRuntimeDatabase(runtimeDBPath, packagedDBPath string) bool {
+	if strings.TrimSpace(runtimeDBPath) == "" || strings.TrimSpace(packagedDBPath) == "" {
+		return false
+	}
+	if runtimeHasNewerCollaborativeState(runtimeDBPath, packagedDBPath) {
+		log.Printf("Skipping packaged database refresh because runtime collaborative state is newer than the packaged snapshot")
+		return false
+	}
+
+	packagedStamp := readDeploymentDatabaseSetting(packagedDBPath, deploymentDatabaseReseedSettingKey)
+	runtimeStamp := readDeploymentDatabaseSetting(runtimeDBPath, deploymentDatabaseReseedSettingKey)
+	if deploymentStampIsNewer(packagedStamp, runtimeStamp) {
+		return true
+	}
+
+	packagedCustomers := deploymentDatabaseCount(packagedDBPath, "customers", "deleted_at IS NULL")
+	runtimeCustomers := deploymentDatabaseCount(runtimeDBPath, "customers", "deleted_at IS NULL")
+	return packagedCustomers > 100 && runtimeCustomers < packagedCustomers
+}
+
+func deploymentStampIsNewer(packagedStamp, runtimeStamp string) bool {
+	packagedStamp = strings.TrimSpace(packagedStamp)
+	runtimeStamp = strings.TrimSpace(runtimeStamp)
+	if packagedStamp == "" {
+		return false
+	}
+	if runtimeStamp == "" {
+		return true
+	}
+	if strings.HasPrefix(runtimeStamp, "TEST_") && !strings.HasPrefix(packagedStamp, "TEST_") {
+		return true
+	}
+	return packagedStamp > runtimeStamp
+}
+
+func sqliteTableCount(db *sql.DB, tableName, whereClause string) int64 {
+	if db == nil || strings.TrimSpace(tableName) == "" {
+		return 0
+	}
+	var exists int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, tableName).Scan(&exists); err != nil || exists == 0 {
+		return 0
+	}
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", tableName)
+	if strings.TrimSpace(whereClause) != "" {
+		query += " WHERE " + whereClause
+	}
+	var count int64
+	if err := db.QueryRow(query).Scan(&count); err != nil {
+		log.Printf("⚠️ Could not count %s in deployment database profile: %v", tableName, err)
+		return 0
+	}
+	return count
+}
+
+func isDeploymentSeedRich(profile deploymentDatabaseProfile) bool {
+	if !profile.Valid {
+		return false
+	}
+	return profile.Customers >= 50 &&
+		(profile.Orders >= 10 || profile.Invoices >= 10 || profile.Opportunities >= 50)
+}
+
+func shouldReplaceAppDataDatabase(existing, packaged deploymentDatabaseProfile) bool {
+	if !isDeploymentSeedRich(packaged) {
+		return false
+	}
+	if !existing.Valid {
+		return true
+	}
+	// Empty or activation-only databases from failed first launches must not
+	// shadow the bundled company database.
+	if existing.Customers == 0 && existing.Orders == 0 && existing.Invoices == 0 && existing.Opportunities == 0 {
+		return true
+	}
+	if existing.Customers < 50 && packaged.Customers >= existing.Customers*3 {
+		return true
+	}
+	if existing.Orders == 0 && existing.Invoices == 0 && existing.Opportunities < 25 {
+		return true
+	}
+	// A stale client app-data database can contain enough rows to look "valid"
+	// while still missing the current deployment pipeline. The packaged
+	// deployment DB is authoritative when it is materially richer.
+	if packaged.Opportunities >= 100 && existing.Opportunities < packaged.Opportunities/2 {
+		return true
+	}
+	if packaged.Orders >= 50 && existing.Orders < packaged.Orders/2 && existing.Opportunities < packaged.Opportunities*3/4 {
+		return true
+	}
+	if deploymentProfileScore(existing)*4 < deploymentProfileScore(packaged)*3 {
+		return true
+	}
+	return false
+}
+
+func deploymentProfileScore(profile deploymentDatabaseProfile) int64 {
+	if !profile.Valid {
+		return 0
+	}
+	return profile.Customers +
+		profile.Suppliers +
+		profile.Orders*3 +
+		profile.Invoices*2 +
+		profile.Opportunities
+}
+
+func deploymentDatabaseReseedStamp() string {
+	return strings.TrimSpace(os.Getenv("ASYMMFLOW_DB_RESEED_STAMP"))
+}
+
+func appDataDatabaseHasReseedStamp(path, stamp string) bool {
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(stamp) == "" || !isSQLiteDatabaseFile(path) {
+		return false
+	}
+	db, err := sql.Open("sqlite3", sqliteReadonlyDSN(path))
+	if err != nil {
+		return false
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'settings'`).Scan(&count); err != nil || count == 0 {
+		return false
+	}
+
+	var value string
+	if err := db.QueryRow(`SELECT value FROM settings WHERE key = ? AND deleted_at IS NULL`, "deployment_database_reseed_stamp").Scan(&value); err != nil {
+		return false
+	}
+	return strings.TrimSpace(value) == stamp
+}
+
+func shouldForceDeploymentDatabaseReseed(appDataPath string) bool {
+	stamp := deploymentDatabaseReseedStamp()
+	return stamp != "" && !appDataDatabaseHasReseedStamp(appDataPath, stamp)
+}
+
+func markDeploymentDatabaseReseedStamp(path string) {
+	stamp := deploymentDatabaseReseedStamp()
+	if strings.TrimSpace(path) == "" || stamp == "" || !isSQLiteDatabaseFile(path) {
+		return
+	}
+	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_busy_timeout=5000", filepath.ToSlash(filepath.Clean(path))))
+	if err != nil {
+		log.Printf("⚠️ Could not open AppData database to mark deployment reseed stamp: %v", err)
+		return
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'settings'`).Scan(&count); err != nil || count == 0 {
+		return
+	}
+
+	id := "deployment-database-reseed-stamp"
+	_, err = db.Exec(`
+		INSERT INTO settings (
+			id, key, value, category, description, is_encrypted,
+			created_at, updated_at, version, created_by, deleted_at
+		)
+		VALUES (
+			?, 'deployment_database_reseed_stamp', ?, 'deployment',
+			'Last deployment stamp that replaced the local AppData database from the packaged seed',
+			0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, 'startup-reseed', NULL
+		)
+		ON CONFLICT(key) DO UPDATE SET
+			value = excluded.value,
+			category = excluded.category,
+			description = excluded.description,
+			is_encrypted = 0,
+			updated_at = CURRENT_TIMESTAMP,
+			deleted_at = NULL
+	`, id, stamp)
+	if err != nil {
+		log.Printf("⚠️ Could not mark deployment reseed stamp: %v", err)
+	}
+}
+
+func loadPreservedLicenseActivations(path string) []preservedLicenseActivation {
+	if strings.TrimSpace(path) == "" || !isSQLiteDatabaseFile(path) {
+		return nil
+	}
+	db, err := sql.Open("sqlite3", sqliteReadonlyDSN(path))
+	if err != nil {
+		return nil
+	}
+	defer db.Close()
+
+	if sqliteTableCount(db, "license_keys", "") == 0 {
+		return nil
+	}
+
+	rows, err := db.Query(`
+		SELECT key, role, COALESCE(display_name, ''), COALESCE(device_hash, ''), COALESCE(CAST(activated_at AS TEXT), '')
+		FROM license_keys
+		WHERE activated = 1
+		  AND COALESCE(device_hash, '') <> ''
+		  AND role <> 'developer'
+		  AND key NOT LIKE 'PH-DEV-%'
+	`)
+	if err != nil {
+		log.Printf("⚠️ Could not read existing license activations before database reseed: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var activations []preservedLicenseActivation
+	for rows.Next() {
+		var activation preservedLicenseActivation
+		if err := rows.Scan(&activation.Key, &activation.Role, &activation.DisplayName, &activation.DeviceHash, &activation.ActivatedAt); err == nil {
+			activations = append(activations, activation)
+		}
+	}
+	return activations
+}
+
+func restorePreservedLicenseActivations(path string, activations []preservedLicenseActivation) {
+	if len(activations) == 0 || strings.TrimSpace(path) == "" || !isSQLiteDatabaseFile(path) {
+		return
+	}
+	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_busy_timeout=5000", filepath.ToSlash(filepath.Clean(path))))
+	if err != nil {
+		log.Printf("⚠️ Could not reopen reseeded database for license activation restore: %v", err)
+		return
+	}
+	defer db.Close()
+
+	for _, activation := range activations {
+		if strings.TrimSpace(activation.Key) == "" || strings.TrimSpace(activation.DeviceHash) == "" {
+			continue
+		}
+		result, err := db.Exec(`
+			UPDATE license_keys
+			SET activated = 1,
+			    activated_at = COALESCE(NULLIF(?, ''), CURRENT_TIMESTAMP),
+			    device_hash = ?,
+			    display_name = COALESCE(NULLIF(display_name, ''), ?)
+			WHERE key = ?
+		`, activation.ActivatedAt, activation.DeviceHash, activation.DisplayName, activation.Key)
+		if err != nil {
+			log.Printf("⚠️ Could not restore activation for %s: %v", activation.DisplayName, err)
+			continue
+		}
+		if rows, _ := result.RowsAffected(); rows == 0 && activation.Role != "" {
+			_, err = db.Exec(`
+				INSERT INTO license_keys (key, role, display_name, device_hash, activated, activated_at, notes, created_by)
+				VALUES (?, ?, ?, ?, 1, COALESCE(NULLIF(?, ''), CURRENT_TIMESTAMP), 'Preserved during deployment database reseed', 'startup-reseed')
+			`, activation.Key, activation.Role, activation.DisplayName, activation.DeviceHash, activation.ActivatedAt)
+			if err != nil {
+				log.Printf("⚠️ Could not insert preserved activation for %s: %v", activation.DisplayName, err)
+			}
+		}
+	}
+	log.Printf("🔑 Restored %d existing license activation(s) after database reseed", len(activations))
+}
+
+func backupExistingAppDataDatabase(path string) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	backupPath := fmt.Sprintf("%s.reseed-backup-%s", path, time.Now().Format("20060102_150405"))
+	if err := copyFileContents(path, backupPath, 0600); err != nil {
+		log.Printf("⚠️ Could not back up existing AppData database before reseed: %v", err)
+		return
+	}
+	log.Printf("🧷 Backed up existing AppData database before reseed: %s", backupPath)
+}
+
+func copyFileContents(src, dst string, perm os.FileMode) error {
+	source, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		return err
+	}
+	destination, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(destination, source); err != nil {
+		destination.Close()
+		return err
+	}
+	if err := destination.Sync(); err != nil {
+		destination.Close()
+		return err
+	}
+	return destination.Close()
+}
+
+func seedAppDataDatabaseFromPackaged(appDataPath, packagedPath string) bool {
+	if strings.TrimSpace(appDataPath) == "" || strings.TrimSpace(packagedPath) == "" {
+		return false
+	}
+	appendStartupDiagnostic("DB RESEED: evaluating appData=%s packaged=%s stamp=%s", appDataPath, packagedPath, deploymentDatabaseReseedStamp())
+	var preservedActivations []preservedLicenseActivation
+	preserveActivations := preserveLicenseActivationsOnReseed()
+	if _, err := os.Stat(appDataPath); err == nil {
+		if !isSQLiteDatabaseFile(appDataPath) {
+			log.Printf("⚠️ Existing AppData database failed SQLite header validation; reseeding from packaged database: %s", appDataPath)
+		} else {
+			existingProfile := readDeploymentDatabaseProfile(appDataPath)
+			packagedProfile := readDeploymentDatabaseProfile(packagedPath)
+			forceReseed := shouldForceDeploymentDatabaseReseed(appDataPath)
+			if !forceReseed && !shouldReplaceAppDataDatabase(existingProfile, packagedProfile) {
+				log.Printf("📂 Database path (AppData existing): %s", appDataPath)
+				return true
+			}
+			if forceReseed {
+				log.Printf("⚠️ Deployment database reseed requested for stamp %s; replacing AppData database from packaged seed", deploymentDatabaseReseedStamp())
+			} else {
+				log.Printf(
+					"⚠️ Existing AppData database appears incomplete (customers=%d orders=%d invoices=%d opportunities=%d); reseeding from packaged database (customers=%d orders=%d invoices=%d opportunities=%d)",
+					existingProfile.Customers,
+					existingProfile.Orders,
+					existingProfile.Invoices,
+					existingProfile.Opportunities,
+					packagedProfile.Customers,
+					packagedProfile.Orders,
+					packagedProfile.Invoices,
+					packagedProfile.Opportunities,
+				)
+			}
+			if preserveActivations {
+				preservedActivations = loadPreservedLicenseActivations(appDataPath)
+			} else {
+				log.Printf("🔑 License activation flush requested during database reseed")
+			}
+			backupExistingAppDataDatabase(appDataPath)
+		}
+	} else if !os.IsNotExist(err) {
+		log.Printf("⚠️ Could not stat AppData database %s: %v", appDataPath, err)
+		return false
+	}
+
+	if !isSQLiteDatabaseFile(packagedPath) {
+		log.Printf("⚠️ Packaged database failed SQLite header validation: %s", packagedPath)
+		return false
+	}
+
+	if err := copySQLiteSeedAtomically(packagedPath, appDataPath); err != nil {
+		appendStartupDiagnostic("DB RESEED: copy failed: %v", err)
+		log.Printf("⚠️ Could not seed AppData database from packaged seed %s: %v", packagedPath, err)
+		return false
+	}
+	markDeploymentDatabaseReseedStamp(appDataPath)
+	if preserveActivations {
+		restorePreservedLicenseActivations(appDataPath, preservedActivations)
+	}
+	appendStartupDiagnostic("DB RESEED: success appData=%s", appDataPath)
+	log.Printf("📂 Database path (seeded AppData from packaged database): %s", appDataPath)
+	return true
+}
+
+func preserveLicenseActivationsOnReseed() bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("ASYMMFLOW_FLUSH_LICENSE_ON_RESEED")))
+	return raw != "1" && raw != "true" && raw != "yes" && raw != "on"
+}
+
+func isSQLiteDatabaseFile(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	header := make([]byte, 16)
+	if _, err := io.ReadFull(file, header); err != nil {
+		return false
+	}
+	return string(header) == "SQLite format 3\x00"
+}
+
+func copySQLiteSeedAtomically(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		return fmt.Errorf("create app data database directory: %w", err)
+	}
+
+	tmpPath := dst + ".tmp"
+	_ = os.Remove(tmpPath)
+
+	source, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	destination, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(destination, source); err != nil {
+		destination.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := destination.Sync(); err != nil {
+		destination.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := destination.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	if !isSQLiteDatabaseFile(tmpPath) {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("copied seed failed SQLite header validation")
+	}
+	_ = os.Remove(dst + "-wal")
+	_ = os.Remove(dst + "-shm")
+	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("remove existing AppData database before reseed: %w", err)
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	_ = os.Remove(dst + "-wal")
+	_ = os.Remove(dst + "-shm")
+	if err := os.Chmod(dst, 0600); err != nil {
+		log.Printf("⚠️ Could not restrict AppData database permissions for %s: %v", dst, err)
+	}
+	return nil
+}
+
+func isLegacyPackagedDatabasePin(configuredPath, resolvedPath string) bool {
+	cleanConfigured := filepath.ToSlash(filepath.Clean(strings.TrimSpace(configuredPath)))
+	if cleanConfigured != "data/ph_holdings.db" {
+		return false
+	}
+	packaged := packagedDatabasePath()
+	return packaged != "" && filepath.Clean(resolvedPath) == filepath.Clean(packaged)
 }
 
 // getDatabasePath returns the database path with proper precedence
@@ -218,26 +918,45 @@ func getDatabasePath() string {
 	}
 	if envPath := strings.TrimSpace(os.Getenv("DATABASE_PATH")); envPath != "" {
 		resolved := resolveConfiguredPath(envPath)
+		if isLegacyPackagedDatabasePin(envPath, resolved) {
+			if appDataPath := appDataDatabasePath(); seedAppDataDatabaseFromPackaged(appDataPath, resolved) {
+				log.Printf("📂 DATABASE_PATH points at packaged seed; using persistent AppData DB instead: %s", appDataPath)
+				return appDataPath
+			}
+		}
 		log.Printf("📂 Database path from DATABASE_PATH: %s -> %s", envPath, resolved)
 		return resolved
 	}
 
-	// Priority 2: Existing machine-level application database.
-	// This preserves the user's activated license and local data across rebuilds,
-	// package refreshes, and app bundle replacements.
+	packagedPath := packagedDatabasePath()
+
+	// Priority 2: Existing machine-level application database, but only after
+	// comparing it against the packaged seed. A stale app-data DB from an older
+	// install must not shadow a richer deployment database.
 	appDataPath := appDataDatabasePath()
 	if appDataPath != "" {
 		if _, err := os.Stat(appDataPath); err == nil {
+			if packagedPath != "" {
+				if seedAppDataDatabaseFromPackaged(appDataPath, packagedPath) {
+					return appDataPath
+				}
+				log.Printf("⚠️ Existing AppData DB could not be validated against packaged seed; using packaged DB: %s", packagedPath)
+				return packagedPath
+			}
 			log.Printf("📂 Database path (AppData existing): %s", appDataPath)
 			return appDataPath
 		}
 	}
 
-	// Priority 3: Packaged database beside the executable/app bundle.
-	// Use this for first-run or portable deployments when no machine database exists yet.
-	if packaged := packagedDatabasePath(); packaged != "" {
-		log.Printf("📂 Database path (packaged app): %s", packaged)
-		return packaged
+	// Priority 3: Seed the machine-level application database from the packaged
+	// database on first run. The packaged DB is a seed, not the live writable DB,
+	// so rebuilds and app bundle replacements do not erase local bank/OCR data.
+	if packagedPath != "" {
+		if appDataPath != "" && seedAppDataDatabaseFromPackaged(appDataPath, packagedPath) {
+			return appDataPath
+		}
+		log.Printf("📂 Database path (packaged app): %s", packagedPath)
+		return packagedPath
 	}
 
 	// Priority 4: Executable directory (for portable deployment)
@@ -293,24 +1012,20 @@ func LoadConfig() (*Config, error) {
 	// Current directory remains useful in development.
 	envLocations = append(envLocations, ".env")
 
-	// Platform data directory: ~/.local/share/AsymmFlow/ (production fallback)
+	// Platform data directory: ~/.local/share/AsymmFlow-PH-Trading/ (production fallback)
 	if homeDir, err := os.UserHomeDir(); err == nil {
 		envLocations = append(envLocations,
-			filepath.Join(homeDir, ".local", "share", "AsymmFlow", ".env"),
+			filepath.Join(homeDir, ".local", "share", appDataDirName, ".env"),
 		)
 	}
 
-	envLoaded := false
-	for _, loc := range envLocations {
-		if err := godotenv.Load(loc); err == nil {
-			log.Printf("✓ Loaded configuration from %s", loc)
-			envLoaded = true
-			break
-		}
-	}
-
-	if !envLoaded {
+	loadedEnvFiles := loadEnvFilesWithPrecedence(envLocations)
+	if len(loadedEnvFiles) == 0 {
 		log.Println("Note: No .env file found, using environment variables only")
+	} else {
+		for _, loc := range loadedEnvFiles {
+			log.Printf("✓ Loaded configuration from %s", loc)
+		}
 	}
 
 	// Build config with defaults

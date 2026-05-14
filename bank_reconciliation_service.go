@@ -9,6 +9,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -83,6 +84,11 @@ func (a *App) CreateBankStatement(statement *BankStatement) error {
 		}
 		statement.Status = normalizedStatus
 	}
+	if strings.TrimSpace(statement.Division) == "" {
+		statement.Division = a.resolveBankAccountDivision(statement.BankAccountID)
+	} else {
+		statement.Division = normalizeDivisionName(statement.Division)
+	}
 
 	if err := a.db.Create(statement).Error; err != nil {
 		log.Printf("CreateBankStatement error: %v", err)
@@ -116,6 +122,12 @@ func (a *App) UpdateBankStatement(id string, updates map[string]interface{}) err
 	if err := normalizeBankStatementUpdates(updates); err != nil {
 		return err
 	}
+	if bankAccountID, ok := updates["bank_account_id"].(string); ok && strings.TrimSpace(bankAccountID) != "" {
+		updates["division"] = a.resolveBankAccountDivision(bankAccountID)
+	}
+	if division, ok := updates["division"].(string); ok && strings.TrimSpace(division) != "" {
+		updates["division"] = normalizeDivisionName(division)
+	}
 
 	result := a.db.Model(&BankStatement{}).Where("id = ?", id).Updates(updates)
 	if result.Error != nil {
@@ -132,6 +144,9 @@ func (a *App) UpdateBankStatement(id string, updates map[string]interface{}) err
 
 // DeleteBankStatement soft-deletes a statement
 func (a *App) DeleteBankStatement(id string) error {
+	if ok, err := a.guardDeleteOrRequest("finance:delete", "bank_statement", id, "Bank statement"); !ok {
+		return err
+	}
 	if err := a.requirePermission("finance:delete"); err != nil {
 		return err
 	}
@@ -214,14 +229,63 @@ func (a *App) UpdateBankStatementLine(lineID string, updates map[string]interfac
 	if err != nil {
 		return err
 	}
-	if err := ensureBankStatementMutable(*statement, "edit statement lines"); err != nil {
-		return err
+	if isFinalBankStatementStatus(statement.Status) {
+		var line BankStatementLine
+		if err := a.db.First(&line, "id = ?", lineID).Error; err != nil {
+			return fmt.Errorf("line not found: %w", err)
+		}
+		if statement.Status != bankStatementStatusReconciled || !line.IsMatched {
+			if err := ensureBankStatementMutable(*statement, "edit statement lines"); err != nil {
+				return err
+			}
+		}
 	}
 
-	result := a.db.Model(&BankStatementLine{}).Where("id = ?", lineID).Updates(updates)
-	if result.Error != nil {
-		log.Printf("UpdateBankStatementLine error: %v", result.Error)
+	var originalLine BankStatementLine
+	editedMatchedLine := false
+
+	err = a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&originalLine, "id = ?", lineID).Error; err != nil {
+			return fmt.Errorf("line not found: %w", err)
+		}
+
+		sanitizedUpdates, err := sanitizeBankStatementLineUpdates(originalLine, updates)
+		if err != nil {
+			return err
+		}
+		if len(sanitizedUpdates) == 0 {
+			return nil
+		}
+
+		if originalLine.IsMatched {
+			if err := clearBankStatementLineMatchTx(tx, lineID); err != nil {
+				return err
+			}
+			editedMatchedLine = true
+		}
+
+		if err := tx.Model(&BankStatementLine{}).Where("id = ?", lineID).Updates(sanitizedUpdates).Error; err != nil {
+			return fmt.Errorf("failed to update line: %w", err)
+		}
+
+		return refreshBankStatementRollupTx(tx, originalLine.BankStatementID)
+	})
+	if err != nil {
+		log.Printf("UpdateBankStatementLine error: %v", err)
 		return fmt.Errorf("operation failed. Please try again or contact support")
+	}
+
+	if editedMatchedLine {
+		previousMatch := originalLine.MatchedInvoiceIDs
+		if previousMatch == "" {
+			previousMatch = originalLine.MatchedPaymentID
+		}
+		a.LogReconciliationAction(originalLine.BankStatementID, &lineID, "UNMATCH",
+			map[string]interface{}{
+				"previous_match": previousMatch,
+				"reason":         "Line edited during OCR review",
+			},
+			a.getCurrentUserID(), false, 1.0, "Line edited during OCR review")
 	}
 
 	return nil
@@ -244,44 +308,61 @@ func (a *App) CreateBankStatementLine(statementID string, line map[string]interf
 		return nil, err
 	}
 
-	// Get next line number
-	var maxLineNum int
-	a.db.Model(&BankStatementLine{}).Where("bank_statement_id = ?", statementID).
-		Select("COALESCE(MAX(line_number), 0)").Scan(&maxLineNum)
-
-	parseFloat := func(v interface{}) float64 {
-		switch val := v.(type) {
-		case float64:
-			return val
-		case string:
-			f, _ := strconv.ParseFloat(strings.ReplaceAll(val, ",", ""), 64)
-			return f
+	var newLine BankStatementLine
+	err = a.db.Transaction(func(tx *gorm.DB) error {
+		var maxLineNum int
+		if err := tx.Model(&BankStatementLine{}).Where("bank_statement_id = ?", statementID).
+			Select("COALESCE(MAX(line_number), 0)").Scan(&maxLineNum).Error; err != nil {
+			return fmt.Errorf("failed to determine next line number: %w", err)
 		}
-		return 0
-	}
 
-	newLine := BankStatementLine{
-		Base:            Base{ID: uuid.New().String()},
-		BankStatementID: statementID,
-		LineNumber:      maxLineNum + 1,
-		Description:     fmt.Sprintf("%v", line["description"]),
-		Reference:       fmt.Sprintf("%v", line["reference"]),
-		Debit:           parseFloat(line["debit"]),
-		Credit:          parseFloat(line["credit"]),
-		Balance:         parseFloat(line["balance"]),
-		MatchType:       "Unmatched",
-	}
+		debit, err := parseBankStatementAmountValue(line["debit"])
+		if err != nil {
+			return err
+		}
+		credit, err := parseBankStatementAmountValue(line["credit"])
+		if err != nil {
+			return err
+		}
+		balance, err := parseBankStatementAmountValue(line["balance"])
+		if err != nil {
+			return err
+		}
+		if err := validateBankStatementAmounts(debit, credit); err != nil {
+			return err
+		}
 
-	if dateStr, ok := line["transaction_date"].(string); ok && dateStr != "" {
-		newLine.TransactionDate = parseDate(dateStr)
-		newLine.ValueDate = newLine.TransactionDate
-	} else {
-		newLine.TransactionDate = time.Now()
-		newLine.ValueDate = time.Now()
-	}
+		transactionDate, err := parseBankStatementDateValue(line["transaction_date"])
+		if err != nil {
+			return err
+		}
+		description := strings.TrimSpace(fmt.Sprintf("%v", line["description"]))
+		if description == "" {
+			return fmt.Errorf("description is required")
+		}
 
-	if err := a.db.Create(&newLine).Error; err != nil {
-		return nil, fmt.Errorf("failed to create line: %w", err)
+		newLine = BankStatementLine{
+			Base:            Base{ID: uuid.New().String()},
+			BankStatementID: statementID,
+			LineNumber:      maxLineNum + 1,
+			TransactionDate: transactionDate,
+			ValueDate:       transactionDate,
+			Description:     description,
+			Reference:       strings.TrimSpace(fmt.Sprintf("%v", line["reference"])),
+			Debit:           debit,
+			Credit:          credit,
+			Balance:         balance,
+			MatchType:       "Unmatched",
+		}
+
+		if err := tx.Create(&newLine).Error; err != nil {
+			return fmt.Errorf("failed to create line: %w", err)
+		}
+
+		return refreshBankStatementRollupTx(tx, statementID)
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	log.Printf("➕ Bank statement line created: %s in statement %s", newLine.ID, statementID)
@@ -291,6 +372,9 @@ func (a *App) CreateBankStatementLine(statementID string, line map[string]interf
 // DeleteBankStatementLine soft-deletes a statement line
 // SECURITY: Audit log before deletion (financial transaction)
 func (a *App) DeleteBankStatementLine(lineID string) error {
+	if ok, err := a.guardDeleteOrRequest("finance:delete", "bank_statement_line", lineID, "Bank statement line"); !ok {
+		return err
+	}
 	if err := a.requirePermission("finance:delete"); err != nil {
 		return err
 	}
@@ -298,12 +382,36 @@ func (a *App) DeleteBankStatementLine(lineID string) error {
 		return fmt.Errorf("database not initialized")
 	}
 
-	// Get line details for audit log
-	line, statement, err := a.getBankStatementForLine(lineID)
+	_, statement, err := a.getBankStatementForLine(lineID)
 	if err != nil {
 		return err
 	}
 	if err := ensureBankStatementMutable(*statement, "delete statement lines"); err != nil {
+		return err
+	}
+
+	var line BankStatementLine
+	err = a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&line, "id = ?", lineID).Error; err != nil {
+			return fmt.Errorf("line not found: %w", err)
+		}
+
+		if err := tx.Model(&PayrollPayout{}).
+			Where("bank_statement_line_id = ?", lineID).
+			Updates(map[string]interface{}{
+				"bank_statement_line_id": nil,
+				"updated_at":             time.Now(),
+			}).Error; err != nil {
+			return fmt.Errorf("failed to unlink payroll payout from deleted line: %w", err)
+		}
+
+		if err := tx.Delete(&BankStatementLine{}, "id = ?", lineID).Error; err != nil {
+			return fmt.Errorf("failed to delete line: %w", err)
+		}
+
+		return refreshBankStatementRollupTx(tx, line.BankStatementID)
+	})
+	if err != nil {
 		return err
 	}
 
@@ -330,18 +438,223 @@ func (a *App) DeleteBankStatementLine(lineID string) error {
 		)
 	}
 
-	result := a.db.Delete(&BankStatementLine{}, "id = ?", lineID)
-	if result.Error != nil {
-		return fmt.Errorf("failed to delete line: %w", result.Error)
+	log.Printf("🗑️ Bank statement line deleted: %s", lineID)
+	return nil
+}
+
+func sanitizeBankStatementLineUpdates(existing BankStatementLine, updates map[string]interface{}) (map[string]interface{}, error) {
+	sanitized := make(map[string]interface{})
+
+	for key, value := range updates {
+		switch key {
+		case "transaction_date":
+			transactionDate, err := parseBankStatementDateValue(value)
+			if err != nil {
+				return nil, err
+			}
+			sanitized["transaction_date"] = transactionDate
+			sanitized["value_date"] = transactionDate
+		case "description":
+			description := strings.TrimSpace(fmt.Sprintf("%v", value))
+			if description == "" {
+				return nil, fmt.Errorf("description is required")
+			}
+			sanitized["description"] = description
+		case "reference":
+			sanitized["reference"] = strings.TrimSpace(fmt.Sprintf("%v", value))
+		case "debit", "credit", "balance":
+			amount, err := parseBankStatementAmountValue(value)
+			if err != nil {
+				return nil, err
+			}
+			sanitized[key] = amount
+		}
 	}
 
-	log.Printf("🗑️ Bank statement line deleted: %s", lineID)
+	debit := existing.Debit
+	if value, ok := sanitized["debit"].(float64); ok {
+		debit = value
+	}
+	credit := existing.Credit
+	if value, ok := sanitized["credit"].(float64); ok {
+		credit = value
+	}
+
+	if err := validateBankStatementAmounts(debit, credit); err != nil {
+		return nil, err
+	}
+
+	return sanitized, nil
+}
+
+func parseBankStatementAmountValue(value interface{}) (float64, error) {
+	switch val := value.(type) {
+	case nil:
+		return 0, nil
+	case float64:
+		return roundBHD(val), nil
+	case float32:
+		return roundBHD(float64(val)), nil
+	case int:
+		return float64(val), nil
+	case int64:
+		return float64(val), nil
+	case string:
+		trimmed := strings.TrimSpace(val)
+		if trimmed == "" {
+			return 0, nil
+		}
+		parsed, err := strconv.ParseFloat(strings.ReplaceAll(trimmed, ",", ""), 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid amount: %q", val)
+		}
+		return roundBHD(parsed), nil
+	default:
+		return 0, fmt.Errorf("invalid amount value")
+	}
+}
+
+func parseBankStatementDateValue(value interface{}) (time.Time, error) {
+	switch val := value.(type) {
+	case time.Time:
+		if val.IsZero() {
+			return time.Time{}, fmt.Errorf("transaction date is required")
+		}
+		return val, nil
+	case string:
+		trimmed := strings.TrimSpace(val)
+		if trimmed == "" {
+			return time.Time{}, fmt.Errorf("transaction date is required")
+		}
+		parsed := parseDate(trimmed)
+		if parsed.IsZero() {
+			return time.Time{}, fmt.Errorf("invalid transaction date")
+		}
+		return parsed, nil
+	default:
+		return time.Time{}, fmt.Errorf("invalid transaction date")
+	}
+}
+
+func validateBankStatementAmounts(debit, credit float64) error {
+	if debit < 0 || credit < 0 {
+		return fmt.Errorf("debit and credit must be non-negative")
+	}
+	if debit == 0 && credit == 0 {
+		return fmt.Errorf("either debit or credit must be non-zero")
+	}
+	if debit > 0 && credit > 0 {
+		return fmt.Errorf("cannot have both debit and credit on the same line")
+	}
+	return nil
+}
+
+func clearBankStatementLineMatchTx(tx *gorm.DB, lineID string) error {
+	if err := tx.Where("bank_statement_line_id = ?", lineID).Delete(&BankLinePaymentAllocation{}).Error; err != nil {
+		return fmt.Errorf("failed to clear bank line allocations: %w", err)
+	}
+
+	if err := tx.Model(&PayrollPayout{}).
+		Where("bank_statement_line_id = ?", lineID).
+		Updates(map[string]interface{}{
+			"bank_statement_line_id": nil,
+			"updated_at":             time.Now(),
+		}).Error; err != nil {
+		return fmt.Errorf("failed to unlink payroll payout from bank line: %w", err)
+	}
+
+	return tx.Model(&BankStatementLine{}).Where("id = ?", lineID).Updates(map[string]interface{}{
+		"is_matched":          false,
+		"match_type":          "Unmatched",
+		"match_confidence":    0,
+		"matched_invoice_ids": "",
+		"matched_payment_id":  "",
+		"matched_expense_id":  nil,
+		"matched_journal_id":  "",
+	}).Error
+}
+
+func refreshBankStatementRollupTx(tx *gorm.DB, statementID string) error {
+	var statement BankStatement
+	if err := tx.First(&statement, "id = ?", statementID).Error; err != nil {
+		return fmt.Errorf("statement not found: %w", err)
+	}
+
+	var rollup struct {
+		TotalDebits  float64
+		TotalCredits float64
+		DebitCount   int64
+		CreditCount  int64
+	}
+
+	if err := tx.Model(&BankStatementLine{}).
+		Select(`
+			COALESCE(SUM(debit), 0) as total_debits,
+			COALESCE(SUM(credit), 0) as total_credits,
+			COALESCE(SUM(CASE WHEN debit > 0 THEN 1 ELSE 0 END), 0) as debit_count,
+			COALESCE(SUM(CASE WHEN credit > 0 THEN 1 ELSE 0 END), 0) as credit_count
+		`).
+		Where("bank_statement_id = ?", statementID).
+		Scan(&rollup).Error; err != nil {
+		return fmt.Errorf("failed to calculate statement totals: %w", err)
+	}
+
+	expectedClosing := roundBHD(statement.OpeningBalance + rollup.TotalCredits - rollup.TotalDebits)
+	discrepancy := roundBHD(math.Abs(expectedClosing - statement.ClosingBalance))
+	isValid := discrepancy <= 0.001
+
+	updateMap := map[string]interface{}{
+		"total_debits":       roundBHD(rollup.TotalDebits),
+		"total_credits":      roundBHD(rollup.TotalCredits),
+		"debit_count":        int(rollup.DebitCount),
+		"credit_count":       int(rollup.CreditCount),
+		"balance_verified":   isValid,
+		"discrepancy_amount": discrepancy,
+	}
+	if statement.Status == "Reconciled" || statement.Status == "Verified" {
+		updateMap["status"] = "InProgress"
+		updateMap["reconciled_at"] = nil
+		updateMap["reconciled_by"] = ""
+	}
+
+	if err := tx.Model(&BankStatement{}).Where("id = ?", statementID).Updates(updateMap).Error; err != nil {
+		return fmt.Errorf("failed to update statement totals: %w", err)
+	}
+
 	return nil
 }
 
 // =============================================================================
 // CASH POSITION SSOT
 // =============================================================================
+
+type CashPositionAccount struct {
+	BankAccountID        string    `json:"bank_account_id"`
+	Division             string    `json:"division"`
+	BankName             string    `json:"bank_name"`
+	AccountName          string    `json:"account_name"`
+	AccountNumber        string    `json:"account_number"`
+	Currency             string    `json:"currency"`
+	CurrentBalance       float64   `json:"current_balance"`
+	CurrentBalanceBHD    float64   `json:"current_balance_bhd"`
+	LastStatementDate    time.Time `json:"last_statement_date"`
+	LastStatementNumber  string    `json:"last_statement_number"`
+	HasStatement         bool      `json:"has_statement"`
+	IsCurrentStatement   bool      `json:"is_current_statement"`
+	StatementPeriodLabel string    `json:"statement_period_label"`
+	Notice               string    `json:"notice"`
+}
+
+type CashPositionSnapshot struct {
+	Accounts              []CashPositionAccount `json:"accounts"`
+	TotalBHD              float64               `json:"total_bhd"`
+	TotalEUR              float64               `json:"total_eur"`
+	CashBalanceBHD        float64               `json:"cash_balance_bhd"`
+	LatestStatementPeriod string                `json:"latest_statement_period"`
+	Notices               []string              `json:"notices"`
+	StaleAccounts         []string              `json:"stale_accounts"`
+	AsOf                  time.Time             `json:"as_of"`
+}
 
 // GetCashPosition returns real-time cash position for all bank accounts
 func (a *App) GetCashPosition() (map[string]interface{}, error) {
@@ -352,59 +665,152 @@ func (a *App) GetCashPosition() (map[string]interface{}, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	type AccountPosition struct {
-		BankAccountID     string    `json:"bank_account_id"`
-		BankName          string    `json:"bank_name"`
-		AccountNumber     string    `json:"account_number"`
-		Currency          string    `json:"currency"`
-		CurrentBalance    float64   `json:"current_balance"`
-		LastStatementDate time.Time `json:"last_statement_date"`
-	}
-
-	var positions []AccountPosition
-
-	// Use the latest active statement balance per account for finance widgets.
-	err := a.db.Raw(`
-		SELECT
-			ba.id as bank_account_id,
-			ba.bank_name,
-			ba.account_number,
-			ba.currency,
-			COALESCE(bs.closing_balance, 0) as current_balance,
-			COALESCE(bs.period_end, ba.created_at) as last_statement_date
-		FROM company_bank_accounts ba
-		LEFT JOIN (
-			SELECT bank_account_id, closing_balance, period_end,
-				ROW_NUMBER() OVER (PARTITION BY bank_account_id ORDER BY period_end DESC) as rn
-			FROM bank_statements
-			WHERE status IN ('Imported', 'InProgress', 'Reconciled', 'Verified')
-		) bs ON bs.bank_account_id = ba.id AND bs.rn = 1
-		WHERE ba.is_active = 1
-		ORDER BY ba.display_order
-	`).Scan(&positions).Error
-
+	snapshot, err := a.computeCashPositionSnapshot()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get cash position: %w", err)
 	}
 
-	// Calculate totals by currency
-	totalBHD := 0.0
-	totalEUR := 0.0
+	return map[string]interface{}{
+		"accounts":                snapshot.Accounts,
+		"total_bhd":               snapshot.TotalBHD,
+		"total_eur":               snapshot.TotalEUR,
+		"cash_balance_bhd":        snapshot.CashBalanceBHD,
+		"latest_statement_period": snapshot.LatestStatementPeriod,
+		"notices":                 snapshot.Notices,
+		"stale_accounts":          snapshot.StaleAccounts,
+		"as_of":                   snapshot.AsOf,
+	}, nil
+}
 
-	for _, p := range positions {
-		if p.Currency == "BHD" {
-			totalBHD = roundBHD(totalBHD + p.CurrentBalance)
-		} else if p.Currency == "EUR" {
-			totalEUR = roundBHD(totalEUR + p.CurrentBalance)
+func (a *App) computeCashPositionSnapshot() (*CashPositionSnapshot, error) {
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	var accounts []CompanyBankAccount
+	if err := a.db.Where("is_active = ?", true).
+		Order("division ASC, display_order ASC, bank_name ASC").
+		Find(&accounts).Error; err != nil {
+		return nil, err
+	}
+
+	statuses := []string{"Imported", "InProgress", "In Progress", "Reconciled", "Verified"}
+	positions := make([]CashPositionAccount, 0, len(accounts))
+	latestByDivision := make(map[string]time.Time)
+	var latestOverall time.Time
+
+	for _, account := range accounts {
+		division := normalizeDivisionName(account.Division)
+		if division == "" {
+			division = "PH Trading"
+		}
+
+		position := CashPositionAccount{
+			BankAccountID: account.ID,
+			Division:      division,
+			BankName:      account.BankName,
+			AccountName:   account.AccountName,
+			AccountNumber: account.AccountNumber,
+			Currency:      strings.ToUpper(strings.TrimSpace(account.Currency)),
+		}
+		if position.Currency == "" {
+			position.Currency = "BHD"
+		}
+
+		var statement BankStatement
+		err := a.db.Where("bank_account_id = ? AND status IN ?", account.ID, statuses).
+			Order("period_end DESC, updated_at DESC, created_at DESC").
+			First(&statement).Error
+		if err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, err
+			}
+			position.Notice = fmt.Sprintf("No statement imported for %s.", formatCashAccountName(position))
+			positions = append(positions, position)
+			continue
+		}
+
+		rate := normalizeExchangeRateToBHD(position.Currency, account.BookingRate)
+		position.CurrentBalance = roundBHD(statement.ClosingBalance)
+		position.CurrentBalanceBHD = roundBHD(statement.ClosingBalance * rate)
+		position.LastStatementDate = statement.PeriodEnd
+		position.LastStatementNumber = statement.StatementNumber
+		position.HasStatement = true
+		position.StatementPeriodLabel = formatCashStatementMonth(statement.PeriodEnd)
+		positions = append(positions, position)
+
+		if statement.PeriodEnd.After(latestByDivision[division]) {
+			latestByDivision[division] = statement.PeriodEnd
+		}
+		if statement.PeriodEnd.After(latestOverall) {
+			latestOverall = statement.PeriodEnd
 		}
 	}
 
-	return map[string]interface{}{
-		"accounts":  positions,
-		"total_bhd": totalBHD,
-		"total_eur": totalEUR,
-		"as_of":     time.Now(),
-	}, nil
+	snapshot := &CashPositionSnapshot{
+		Accounts:              positions,
+		LatestStatementPeriod: formatCashStatementMonth(latestOverall),
+		AsOf:                  time.Now(),
+	}
+
+	for i := range snapshot.Accounts {
+		account := &snapshot.Accounts[i]
+		if !account.HasStatement {
+			snapshot.Notices = append(snapshot.Notices, account.Notice)
+			snapshot.StaleAccounts = append(snapshot.StaleAccounts, formatCashAccountName(*account))
+			continue
+		}
+
+		latestForDivision := latestByDivision[account.Division]
+		account.IsCurrentStatement = sameCashStatementMonth(account.LastStatementDate, latestForDivision)
+		if !account.IsCurrentStatement {
+			account.Notice = fmt.Sprintf("%s latest statement is %s; latest imported month for %s is %s.",
+				formatCashAccountName(*account),
+				formatCashStatementMonth(account.LastStatementDate),
+				account.Division,
+				formatCashStatementMonth(latestForDivision),
+			)
+			snapshot.Notices = append(snapshot.Notices, account.Notice)
+			snapshot.StaleAccounts = append(snapshot.StaleAccounts, formatCashAccountName(*account))
+		}
+
+		if account.Currency == "EUR" {
+			snapshot.TotalEUR = roundBHD(snapshot.TotalEUR + account.CurrentBalance)
+		}
+		snapshot.TotalBHD = roundBHD(snapshot.TotalBHD + account.CurrentBalanceBHD)
+	}
+	snapshot.CashBalanceBHD = snapshot.TotalBHD
+
+	return snapshot, nil
+}
+
+func sameCashStatementMonth(a, b time.Time) bool {
+	if a.IsZero() || b.IsZero() {
+		return false
+	}
+	return a.Year() == b.Year() && a.Month() == b.Month()
+}
+
+func formatCashStatementMonth(value time.Time) string {
+	if value.IsZero() {
+		return "no statement"
+	}
+	return value.Format("Jan 2006")
+}
+
+func formatCashAccountName(account CashPositionAccount) string {
+	parts := []string{strings.TrimSpace(account.BankName)}
+	if strings.TrimSpace(account.AccountName) != "" {
+		parts = append(parts, strings.TrimSpace(account.AccountName))
+	}
+	if strings.TrimSpace(account.AccountNumber) != "" {
+		parts = append(parts, strings.TrimSpace(account.AccountNumber))
+	}
+	name := strings.Join(parts, " ")
+	if name == "" {
+		return "Bank account"
+	}
+	return name
 }
 
 // GetCashPositionByAccount returns cash position for a specific account
@@ -420,7 +826,7 @@ func (a *App) GetCashPositionByAccount(bankAccountID string) (float64, error) {
 	err := a.db.Raw(`
 		SELECT COALESCE(closing_balance, 0)
 		FROM bank_statements
-		WHERE bank_account_id = ? AND status IN ('Imported', 'InProgress', 'Reconciled', 'Verified')
+		WHERE bank_account_id = ? AND status IN ('Imported', 'InProgress', 'In Progress', 'Reconciled', 'Verified')
 		ORDER BY period_end DESC
 		LIMIT 1
 	`, bankAccountID).Scan(&balance).Error
@@ -636,7 +1042,7 @@ func (a *App) GetReconciliationSummary(statementID string) (map[string]interface
 		MatchedAmount float64
 	}
 	a.db.Model(&BankStatementLine{}).
-		Select("COALESCE(SUM(debit), 0) as total_debits, COALESCE(SUM(credit), 0) as total_credits, COALESCE(SUM(CASE WHEN is_matched THEN CASE WHEN debit > 0 THEN debit ELSE credit END ELSE 0 END), 0) as matched_amount").
+		Select("COALESCE(SUM(debit), 0) as total_debits, COALESCE(SUM(credit), 0) as total_credits, COALESCE(SUM(CASE WHEN is_matched THEN debit + credit ELSE 0 END), 0) as matched_amount").
 		Where("bank_statement_id = ?", statementID).
 		Scan(&amounts)
 

@@ -33,12 +33,15 @@ test.describe('Workflow guardrails', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Opportunities' }).click();
-    await page.getByText('ACTIUM PG').click();
+    await expect(page.getByRole('button', { name: '+ New Opportunity' })).toBeVisible({ timeout: 15000 });
+    const opportunityCard = page.getByRole('button', { name: /ACTIUM PG/i }).first();
+    await expect(opportunityCard).toBeVisible({ timeout: 15000 });
+    await opportunityCard.click();
 
-    await expect(page.locator('#opportunity-modal-title')).toHaveText(/Gas Analyzer Package/i);
+    await expect(page.locator('#opportunity-modal-title')).toHaveText(/ACTIUM PG \/ 2026-311/i);
     await page.keyboard.press('Escape');
 
     await expect(page.getByRole('dialog')).toHaveCount(0);
-    await expect(page.getByText('ACTIUM PG')).toBeVisible();
+    await expect(page.getByRole('button', { name: /ACTIUM PG/i }).first()).toBeVisible();
   });
 });

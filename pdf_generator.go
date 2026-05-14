@@ -68,24 +68,24 @@ type InvoiceData struct {
 	CurrencySymbol string  // "B.D" or "BHD"
 
 	// Additional fields
-	SupplierRef     string // Supplier reference
+	SupplierRef    string // Supplier reference
 	OtherReferences string // Other references
-	DespatchDoc     string // Despatch document number
-	DespatchMethod  string // How goods are despatched
-	PlaceOfSupply   string // Place of supply (Kingdom of Bahrain)
+	DespatchDoc    string // Despatch document number
+	DespatchMethod string // How goods are despatched
+	PlaceOfSupply  string // Place of supply (Kingdom of Bahrain)
 }
 
 // TemplateZoneConfig represents zone positioning from JSON config
 type TemplateZoneConfig struct {
-	Name        string                        `json:"name"`
-	XMM         float64                       `json:"x_mm"`
-	YMM         float64                       `json:"y_mm"`
-	WidthMM     float64                       `json:"width_mm"`
-	HeightMM    float64                       `json:"height_mm"`
-	Purpose     string                        `json:"purpose"`
-	Description string                        `json:"description"`
+	Name        string                       `json:"name"`
+	XMM         float64                      `json:"x_mm"`
+	YMM         float64                      `json:"y_mm"`
+	WidthMM     float64                      `json:"width_mm"`
+	HeightMM    float64                      `json:"height_mm"`
+	Purpose     string                       `json:"purpose"`
+	Description string                       `json:"description"`
 	Anchors     map[string]map[string]float64 `json:"anchors"`
-	Columns     []ColumnConfig                `json:"columns,omitempty"`
+	Columns     []ColumnConfig               `json:"columns,omitempty"`
 }
 
 // ColumnConfig for table columns
@@ -97,8 +97,8 @@ type ColumnConfig struct {
 
 // TemplateLayoutConfig is the root config structure
 type TemplateLayoutConfig struct {
-	TemplateName string `json:"template_name"`
-	TemplateFile string `json:"template_file"`
+	TemplateName string                    `json:"template_name"`
+	TemplateFile string                    `json:"template_file"`
 	PageSize     struct {
 		WidthMM  float64 `json:"width_mm"`
 		HeightMM float64 `json:"height_mm"`
@@ -121,10 +121,10 @@ type ContentBox struct {
 // DefaultContentBox returns standard content box with margins
 func DefaultContentBox() ContentBox {
 	return ContentBox{
-		X:      0.05, // 5% from left
-		Y:      0.08, // 8% from bottom
-		Width:  0.90, // 90% width
-		Height: 0.84, // 84% height (leaves room for header/footer)
+		X:      0.05,  // 5% from left
+		Y:      0.08,  // 8% from bottom
+		Width:  0.90,  // 90% width
+		Height: 0.84,  // 84% height (leaves room for header/footer)
 	}
 }
 
@@ -139,7 +139,6 @@ type PDFGenerator struct {
 	arabicShaper   *ArabicShaper
 	pageWidth      float64 // A4 = 595 points
 	pageHeight     float64 // A4 = 842 points
-	renderErr      error
 }
 
 // NewPDFGenerator creates a new PDF generator instance with multi-language support
@@ -225,17 +224,14 @@ func (g *PDFGenerator) normalizedToAbsolute(u, v float64) (x, y float64) {
 
 // drawTextShaped draws text with proper shaping for Arabic/RTL
 func (g *PDFGenerator) drawTextShaped(text string, x, y float64, langCode string) {
-	if g.renderErr != nil {
-		return
-	}
 	if g.langPack.IsRTL(langCode) && IsArabicText(text) {
 		// Shape Arabic text for proper glyph rendering
 		shaped := g.arabicShaper.ShapeForPDF(text)
 		g.pdf.SetXY(x, y)
-		g.mustCell(shaped)
+		g.pdf.Cell(nil, shaped)
 	} else {
 		g.pdf.SetXY(x, y)
-		g.mustCell(text)
+		g.pdf.Cell(nil, text)
 	}
 }
 
@@ -312,20 +308,22 @@ func (g *PDFGenerator) loadLanguageFonts(langCode string) error {
 		},
 	}
 
+	// Get font paths for this language
 	paths, exists := fontPaths[langCode]
 	if !exists {
+		// Fallback to English fonts
 		paths = fontPaths["en"]
 	}
 
+	// Try to load font
 	fontLoaded := false
 	for _, fontPath := range paths {
-		if !fileExists(fontPath) {
-			continue
-		}
-		if err := g.pdf.AddTTFFont(pack.FontFamily, fontPath); err == nil {
-			if err := g.pdf.SetFont(pack.FontFamily, "", 10); err == nil {
+		if fileExists(fontPath) {
+			err := g.pdf.AddTTFFont(pack.FontFamily, fontPath)
+			if err == nil {
+				g.pdf.SetFont(pack.FontFamily, "", 10)
 				fontLoaded = true
-				fmt.Printf("Loaded font for %s: %s\n", pack.Name, fontPath)
+				fmt.Printf("✓ Loaded font for %s: %s\n", pack.Name, fontPath)
 				break
 			}
 		}
@@ -340,8 +338,6 @@ func (g *PDFGenerator) loadLanguageFonts(langCode string) error {
 
 // Generate creates the PDF invoice with multi-language support
 func (g *PDFGenerator) Generate(data *InvoiceData, outputPath string) error {
-	g.renderErr = nil
-
 	// Default to English if no language specified
 	if data.Language == "" {
 		data.Language = "en"
@@ -358,7 +354,12 @@ func (g *PDFGenerator) Generate(data *InvoiceData, outputPath string) error {
 
 	// Add letterhead as background image (if exists)
 	if g.letterheadPath != "" && fileExists(g.letterheadPath) {
-		g.mustImage(g.letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+		// Draw letterhead at full page size
+		// A4 = 595 x 842 points (at 72 DPI)
+		imgErr := g.pdf.Image(g.letterheadPath, 0, 0, &gopdf.Rect{W: 595, H: 842})
+		if imgErr != nil {
+			fmt.Printf("Warning: Could not load letterhead image: %v\n", imgErr)
+		}
 	}
 
 	// Draw invoice header (TAX INVOICE)
@@ -380,16 +381,13 @@ func (g *PDFGenerator) Generate(data *InvoiceData, outputPath string) error {
 	g.drawAmountInWords(data)
 
 	// Save PDF to file
-	if g.renderErr != nil {
-		return g.renderErr
-	}
 	return g.pdf.WritePdf(outputPath)
 }
 
 // drawHeader draws the "TAX INVOICE" header with language support
 func (g *PDFGenerator) drawHeader(data *InvoiceData) {
 	pack := g.langPack.Get(data.Language)
-	g.mustSetFont(pack.FontFamily, "", 16)
+	g.pdf.SetFont(pack.FontFamily, "", 16)
 
 	headerText := g.langPack.Translate(data.Language, "invoice")
 
@@ -413,7 +411,7 @@ func (g *PDFGenerator) drawHeader(data *InvoiceData) {
 // drawCompanyInfo draws PH TRADING W.L.L information with language support
 func (g *PDFGenerator) drawCompanyInfo(data *InvoiceData) {
 	pack := g.langPack.Get(data.Language)
-	g.mustSetFont(pack.FontFamily, "", 10)
+	g.pdf.SetFont(pack.FontFamily, "", 10)
 
 	isRTL := g.langPack.IsRTL(data.Language)
 
@@ -441,50 +439,50 @@ func (g *PDFGenerator) drawCompanyInfo(data *InvoiceData) {
 
 	// Company name (always in English/original)
 	g.pdf.SetXY(companyX, companyY)
-	g.mustCell("P H TRADING W.L.L")
+	g.pdf.Cell(nil, "P H TRADING W.L.L")
 
 	// Address lines
 	g.pdf.SetXY(companyX, companyY+10)
-	g.mustCell("Flat/Shop No.91, Building 198")
+	g.pdf.Cell(nil, "Flat/Shop No.91, Building 198")
 
 	g.pdf.SetXY(companyX, companyY+17)
-	g.mustCell("Road/Street 2803, AL SEEF, Block 428")
+	g.pdf.Cell(nil, "Road/Street 2803, AL SEEF, Block 428")
 
 	g.pdf.SetXY(companyX, companyY+24)
-	g.mustCell("Bahrain")
+	g.pdf.Cell(nil, "Bahrain")
 
 	// TRN
 	g.pdf.SetXY(companyX, companyY+35)
-	g.mustCell(fmt.Sprintf("%s: %s", g.langPack.Translate(data.Language, "trn"), data.TRN))
+	g.pdf.Cell(nil, fmt.Sprintf("%s: %s", g.langPack.Translate(data.Language, "trn"), data.TRN))
 
 	// Invoice number and date (right side)
 	g.pdf.SetXY(invNoLabelX, invNoLabelY)
-	g.mustCell(g.langPack.Translate(data.Language, "invoiceNo"))
+	g.pdf.Cell(nil, g.langPack.Translate(data.Language, "invoiceNo"))
 	g.pdf.SetXY(invNoValueX, invNoValueY)
-	g.mustCell(data.InvoiceNumber)
+	g.pdf.Cell(nil, data.InvoiceNumber)
 
 	g.pdf.SetXY(invNoLabelX, invNoLabelY+10)
-	g.mustCell(g.langPack.Translate(data.Language, "dated"))
+	g.pdf.Cell(nil, g.langPack.Translate(data.Language, "dated"))
 	g.pdf.SetXY(invNoValueX, invNoValueY+10)
-	g.mustCell(g.langPack.FormatDate(data.Language, data.InvoiceDate))
+	g.pdf.Cell(nil, g.langPack.FormatDate(data.Language, data.InvoiceDate))
 
 	// Delivery Note
 	g.pdf.SetXY(invNoLabelX, invNoLabelY+20)
-	g.mustCell(g.langPack.Translate(data.Language, "deliveryNote"))
+	g.pdf.Cell(nil, g.langPack.Translate(data.Language, "deliveryNote"))
 	g.pdf.SetXY(invNoValueX, invNoValueY+20)
-	g.mustCell(data.DeliveryNote)
+	g.pdf.Cell(nil, data.DeliveryNote)
 
 	// Payment Terms
 	g.pdf.SetXY(invNoLabelX, invNoLabelY+30)
-	g.mustCell(g.langPack.Translate(data.Language, "paymentTerms"))
+	g.pdf.Cell(nil, g.langPack.Translate(data.Language, "paymentTerms"))
 	g.pdf.SetXY(invNoValueX, invNoValueY+30)
-	g.mustCell(data.PaymentTerms)
+	g.pdf.Cell(nil, data.PaymentTerms)
 }
 
 // drawBuyerInfo draws buyer information section
 func (g *PDFGenerator) drawBuyerInfo(data *InvoiceData) {
 	pack := g.langPack.Get(data.Language)
-	g.mustSetFont(pack.FontFamily, "", 10)
+	g.pdf.SetFont(pack.FontFamily, "", 10)
 
 	// Try zone-based positioning
 	var buyerX, buyerY float64 = 50, 180
@@ -499,42 +497,42 @@ func (g *PDFGenerator) drawBuyerInfo(data *InvoiceData) {
 
 	// "Buyer" label
 	g.pdf.SetXY(buyerX, buyerY)
-	g.mustCell(g.langPack.Translate(data.Language, "buyer"))
+	g.pdf.Cell(nil, g.langPack.Translate(data.Language, "buyer"))
 
 	// Buyer name
 	g.pdf.SetXY(buyerX, buyerY+10)
-	g.mustCell(data.BuyerName)
+	g.pdf.Cell(nil, data.BuyerName)
 
 	// Buyer address
 	g.pdf.SetXY(buyerX, buyerY+18)
-	g.mustCell(fmt.Sprintf("%s, Building %s", data.BuyerBuilding, data.BuyerBuilding))
+	g.pdf.Cell(nil, fmt.Sprintf("%s, Building %s", data.BuyerBuilding, data.BuyerBuilding))
 
 	g.pdf.SetXY(buyerX, buyerY+25)
-	g.mustCell(fmt.Sprintf("Road/Street %s, Town: %s, Block %s", data.BuyerRoad, data.BuyerTown, data.BuyerBlock))
+	g.pdf.Cell(nil, fmt.Sprintf("Road/Street %s, Town: %s, Block %s", data.BuyerRoad, data.BuyerTown, data.BuyerBlock))
 
 	g.pdf.SetXY(buyerX, buyerY+32)
-	g.mustCell(fmt.Sprintf("Country: %s", data.BuyerCountry))
+	g.pdf.Cell(nil, fmt.Sprintf("Country: %s", data.BuyerCountry))
 
 	// Buyer TRN
 	g.pdf.SetXY(buyerX, buyerY+40)
-	g.mustCell(fmt.Sprintf("%s: %s", g.langPack.Translate(data.Language, "trn"), data.BuyerTRN))
+	g.pdf.Cell(nil, fmt.Sprintf("%s: %s", g.langPack.Translate(data.Language, "trn"), data.BuyerTRN))
 
 	// Right side - Order details
 	g.pdf.SetXY(orderX, orderY)
-	g.mustCell(g.langPack.Translate(data.Language, "buyerOrderNo"))
+	g.pdf.Cell(nil, g.langPack.Translate(data.Language, "buyerOrderNo"))
 	g.pdf.SetXY(orderX+55, orderY)
-	g.mustCell(data.BuyerOrderNo)
+	g.pdf.Cell(nil, data.BuyerOrderNo)
 
 	g.pdf.SetXY(orderX, orderY+10)
-	g.mustCell(g.langPack.Translate(data.Language, "dated"))
+	g.pdf.Cell(nil, g.langPack.Translate(data.Language, "dated"))
 	g.pdf.SetXY(orderX+55, orderY+10)
-	g.mustCell(g.langPack.FormatDate(data.Language, data.BuyerOrderDate))
+	g.pdf.Cell(nil, g.langPack.FormatDate(data.Language, data.BuyerOrderDate))
 }
 
 // drawItemsTable draws the line items table
 func (g *PDFGenerator) drawItemsTable(data *InvoiceData) {
 	startY := 280.0
-	g.mustSetFont("dejavu", "", 8)
+	g.pdf.SetFont("dejavu", "", 8)
 
 	// Table headers
 	headers := []string{"Sl No.", "Description", "Qty", "Rate", "Annual", "Monthly", "VAT%", "Taxable", "VAT", "Total"}
@@ -544,41 +542,41 @@ func (g *PDFGenerator) drawItemsTable(data *InvoiceData) {
 	// Draw header row
 	for i, header := range headers {
 		g.pdf.SetXY(colX[i], startY)
-		g.mustCell(header)
+		g.pdf.Cell(nil, header)
 	}
 
 	// Draw line items
 	currentY := startY + 15
 	for _, item := range data.Items {
 		g.pdf.SetXY(colX[0], currentY)
-		g.mustCell(fmt.Sprintf("%d", item.SlNo))
+		g.pdf.Cell(nil, fmt.Sprintf("%d", item.SlNo))
 
 		g.pdf.SetXY(colX[1], currentY)
-		g.mustCell(truncateText(item.Description, 35))
+		g.pdf.Cell(nil, truncateText(item.Description, 35))
 
 		g.pdf.SetXY(colX[2], currentY)
-		g.mustCell(formatNumber(item.Quantity))
+		g.pdf.Cell(nil, formatNumber(item.Quantity))
 
 		g.pdf.SetXY(colX[3], currentY)
-		g.mustCell(formatMoney(item.Rate))
+		g.pdf.Cell(nil, formatMoney(item.Rate))
 
 		g.pdf.SetXY(colX[4], currentY)
-		g.mustCell(formatMoney(item.AnnualTotal))
+		g.pdf.Cell(nil, formatMoney(item.AnnualTotal))
 
 		g.pdf.SetXY(colX[5], currentY)
-		g.mustCell(formatMoney(item.MonthlyAmount))
+		g.pdf.Cell(nil, formatMoney(item.MonthlyAmount))
 
 		g.pdf.SetXY(colX[6], currentY)
-		g.mustCell(fmt.Sprintf("%.0f%%", item.VATPercent))
+		g.pdf.Cell(nil, fmt.Sprintf("%.0f%%", item.VATPercent))
 
 		g.pdf.SetXY(colX[7], currentY)
-		g.mustCell(formatMoney(item.TaxableValue))
+		g.pdf.Cell(nil, formatMoney(item.TaxableValue))
 
 		g.pdf.SetXY(colX[8], currentY)
-		g.mustCell(formatMoney(item.VAT))
+		g.pdf.Cell(nil, formatMoney(item.VAT))
 
 		g.pdf.SetXY(colX[9], currentY)
-		g.mustCell(formatMoney(item.Total))
+		g.pdf.Cell(nil, formatMoney(item.Total))
 
 		currentY += 15
 	}
@@ -587,7 +585,7 @@ func (g *PDFGenerator) drawItemsTable(data *InvoiceData) {
 // drawTotals draws the totals section at bottom with language support
 func (g *PDFGenerator) drawTotals(data *InvoiceData) {
 	pack := g.langPack.Get(data.Language)
-	g.mustSetFont(pack.FontFamily, "", 10)
+	g.pdf.SetFont(pack.FontFamily, "", 10)
 
 	// Use zone-based or normalized positioning
 	var labelX, valueX, startY float64
@@ -602,24 +600,24 @@ func (g *PDFGenerator) drawTotals(data *InvoiceData) {
 	// Subtotal
 	g.drawTextShaped(g.langPack.Translate(data.Language, "subtotal"), labelX, startY, data.Language)
 	g.pdf.SetXY(valueX, startY)
-	g.mustCell(g.formatMoneyWithLang(data.Language, data.Subtotal))
+	g.pdf.Cell(nil, g.formatMoneyWithLang(data.Language, data.Subtotal))
 
 	// Output VAT
 	g.drawTextShaped(g.langPack.Translate(data.Language, "outputVAT"), labelX, startY+15, data.Language)
 	g.pdf.SetXY(valueX, startY+15)
-	g.mustCell(g.formatMoneyWithLang(data.Language, data.TotalVAT))
+	g.pdf.Cell(nil, g.formatMoneyWithLang(data.Language, data.TotalVAT))
 
 	// Grand Total
-	g.mustSetFont(pack.FontFamily, "", 12)
+	g.pdf.SetFont(pack.FontFamily, "", 12)
 	g.drawTextShaped(g.langPack.Translate(data.Language, "grandTotal"), labelX, startY+35, data.Language)
 	g.pdf.SetXY(valueX, startY+35)
-	g.mustCell(g.formatMoneyWithLang(data.Language, data.GrandTotal))
+	g.pdf.Cell(nil, g.formatMoneyWithLang(data.Language, data.GrandTotal))
 }
 
 // drawAmountInWords draws amount in words section with language support
 func (g *PDFGenerator) drawAmountInWords(data *InvoiceData) {
 	pack := g.langPack.Get(data.Language)
-	g.mustSetFont(pack.FontFamily, "", 9)
+	g.pdf.SetFont(pack.FontFamily, "", 9)
 
 	// Use normalized positioning
 	labelX, startY := g.normalizedToAbsolute(0.05, 0.12)
@@ -627,43 +625,16 @@ func (g *PDFGenerator) drawAmountInWords(data *InvoiceData) {
 	g.drawTextShaped(g.langPack.Translate(data.Language, "amountInWords"), labelX, startY, data.Language)
 
 	g.pdf.SetXY(labelX, startY+15)
-	g.mustCell(numberToWords(data.GrandTotal) + " " + g.langPack.Translate(data.Language, "only"))
+	g.pdf.Cell(nil, numberToWords(data.GrandTotal)+" "+g.langPack.Translate(data.Language, "only"))
 
 	g.drawTextShaped(g.langPack.Translate(data.Language, "vatInWords"), labelX, startY+35, data.Language)
 
 	g.pdf.SetXY(labelX, startY+50)
-	g.mustCell(numberToWords(data.TotalVAT) + " " + g.langPack.Translate(data.Language, "only"))
+	g.pdf.Cell(nil, numberToWords(data.TotalVAT)+" "+g.langPack.Translate(data.Language, "only"))
 
 	// E. & O.E (Errors and Omissions Excepted)
 	eoeX, _ := g.normalizedToAbsolute(0.85, 0.12)
 	g.drawTextShaped(g.langPack.Translate(data.Language, "eoe"), eoeX, startY, data.Language)
-}
-
-func (g *PDFGenerator) mustSetFont(family, style string, size interface{}) {
-	if g.renderErr != nil {
-		return
-	}
-	if err := g.pdf.SetFont(family, style, size); err != nil {
-		g.renderErr = fmt.Errorf("failed to set PDF font %s: %w", family, err)
-	}
-}
-
-func (g *PDFGenerator) mustCell(text string) {
-	if g.renderErr != nil {
-		return
-	}
-	if err := g.pdf.Cell(nil, text); err != nil {
-		g.renderErr = fmt.Errorf("failed to write PDF cell: %w", err)
-	}
-}
-
-func (g *PDFGenerator) mustImage(path string, x, y float64, rect *gopdf.Rect) {
-	if g.renderErr != nil {
-		return
-	}
-	if err := g.pdf.Image(path, x, y, rect); err != nil {
-		g.renderErr = fmt.Errorf("failed to render PDF image %s: %w", path, err)
-	}
 }
 
 // Helper functions

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,10 @@ type Employee struct {
 	EmergencyContact  string     `gorm:"type:varchar(500)" json:"emergency_contact"`
 	Notes             string     `gorm:"type:text" json:"notes"`
 	IsActive          bool       `gorm:"index;default:true" json:"is_active"`
+	ArchivedAt        *time.Time `json:"archived_at"`
+	ArchivedBy        string     `gorm:"size:36" json:"archived_by"`
+	ArchiveReason     string     `gorm:"type:text" json:"archive_reason"`
+	ArchiveRequestID  string     `gorm:"size:36" json:"archive_request_id"`
 
 	ManagerName string `gorm:"-" json:"manager_name,omitempty"`
 }
@@ -214,6 +219,8 @@ func (a *App) EnsureCollaborativeFoundation() error {
 		&ProjectMember{},
 		&Notification{},
 		&NotificationReceipt{},
+		&DeleteApprovalRequest{},
+		&EmployeeArchiveRequest{},
 		&TaskItem{},
 		&TaskComment{},
 		&TaskActivity{},
@@ -291,8 +298,10 @@ func (a *App) seedEmployeesFromLicenseKeys() error {
 			if link.UserID != "" {
 				updates["user_id"] = link.UserID
 			}
-			if err := a.db.Model(&existing).Updates(updates).Error; err != nil {
-				return fmt.Errorf("failed to update employee access link for %q: %w", name, err)
+			if employeeAccessLinkNeedsUpdate(existing, updates) {
+				if err := a.db.Model(&existing).Updates(updates).Error; err != nil {
+					return fmt.Errorf("failed to update employee access link for %q: %w", name, err)
+				}
 			}
 			continue
 		}
@@ -303,6 +312,33 @@ func (a *App) seedEmployeesFromLicenseKeys() error {
 	}
 
 	return nil
+}
+
+func employeeAccessLinkNeedsUpdate(existing EmployeeAccessLink, updates map[string]interface{}) bool {
+	for key, value := range updates {
+		switch key {
+		case "device_id":
+			if existing.DeviceID != fmt.Sprint(value) {
+				return true
+			}
+		case "access_status":
+			if existing.AccessStatus != fmt.Sprint(value) {
+				return true
+			}
+		case "is_primary":
+			boolValue, ok := value.(bool)
+			if !ok || existing.IsPrimary != boolValue {
+				return true
+			}
+		case "user_id":
+			if existing.UserID != fmt.Sprint(value) {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) generateEmployeeCode() (string, error) {
@@ -421,7 +457,7 @@ func (a *App) GetCurrentEmployeeContext() (CurrentEmployeeContext, error) {
 
 		name := strings.TrimSpace(license.DisplayName)
 		if name != "" {
-			if err := a.db.Where("LOWER(full_name) = LOWER(?)", name).First(&employee).Error; err == nil {
+			if employee, err := a.findEmployeeByDisplayName(name); err == nil {
 				return CurrentEmployeeContext{
 					EmployeeID:   employee.ID,
 					EmployeeName: employee.FullName,
@@ -432,14 +468,196 @@ func (a *App) GetCurrentEmployeeContext() (CurrentEmployeeContext, error) {
 				}, nil
 			}
 		}
+
+		if fallback, fallbackErr := a.ensureEmployeeContextForLicense(license); fallbackErr == nil {
+			return fallback, nil
+		} else {
+			log.Printf("⚠️ Failed to auto-resolve employee context for active license: %v", fallbackErr)
+		}
 	}
 
 	return ctx, fmt.Errorf("employee context not resolved")
 }
 
+func (a *App) findEmployeeByDisplayName(name string) (Employee, error) {
+	var employee Employee
+	name = strings.TrimSpace(name)
+	if a.db == nil {
+		return employee, fmt.Errorf("database not initialized")
+	}
+	if name == "" {
+		return employee, gorm.ErrRecordNotFound
+	}
+
+	if err := a.db.
+		Where("deleted_at IS NULL AND is_active = ? AND (LOWER(full_name) = LOWER(?) OR LOWER(preferred_name) = LOWER(?) OR LOWER(employee_code) = LOWER(?))", true, name, name, name).
+		Order("full_name ASC").
+		First(&employee).Error; err == nil {
+		return employee, nil
+	} else if err != gorm.ErrRecordNotFound {
+		return employee, err
+	}
+
+	normalizedTarget := normalizeEmployeeLookupName(name)
+	if normalizedTarget == "" {
+		return employee, gorm.ErrRecordNotFound
+	}
+
+	var employees []Employee
+	if err := a.db.
+		Where("deleted_at IS NULL AND is_active = ?", true).
+		Order("full_name ASC").
+		Find(&employees).Error; err != nil {
+		return employee, err
+	}
+	for _, candidate := range employees {
+		if normalizeEmployeeLookupName(candidate.FullName) == normalizedTarget ||
+			normalizeEmployeeLookupName(candidate.PreferredName) == normalizedTarget ||
+			normalizeEmployeeLookupName(candidate.EmployeeCode) == normalizedTarget {
+			return candidate, nil
+		}
+	}
+
+	return employee, gorm.ErrRecordNotFound
+}
+
+func normalizeEmployeeLookupName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
+}
+
+func (a *App) ensureEmployeeContextForLicense(license *LicenseKey) (CurrentEmployeeContext, error) {
+	ctx := CurrentEmployeeContext{}
+	if a.db == nil {
+		return ctx, fmt.Errorf("database not initialized")
+	}
+	if license == nil || strings.TrimSpace(license.Key) == "" {
+		return ctx, fmt.Errorf("active license is unavailable")
+	}
+
+	name := strings.TrimSpace(license.DisplayName)
+	if name == "" && a.currentUser != nil {
+		name = firstNonEmptyCollaboration(a.currentUser.DisplayName, a.currentUser.FullName, a.currentUser.Username, a.currentUser.Email)
+	}
+	if name == "" && a.authManager != nil {
+		a.authManager.mu.RLock()
+		profile := a.authManager.Profile
+		a.authManager.mu.RUnlock()
+		if profile != nil {
+			name = firstNonEmptyCollaboration(profile.DisplayName, profile.UserPrincipalName, profile.Mail)
+		}
+	}
+	if name == "" {
+		switch strings.ToLower(strings.TrimSpace(license.Role)) {
+		case "admin", "management", "manager":
+			name = "Administrator"
+		case "sales":
+			name = "Sales User"
+		case "operations":
+			name = "Operations User"
+		default:
+			name = "AsymmFlow User"
+		}
+	}
+
+	employee, err := a.findEmployeeByDisplayName(name)
+	if err != nil {
+		if err != gorm.ErrRecordNotFound {
+			return ctx, fmt.Errorf("failed to lookup fallback employee: %w", err)
+		}
+
+		code, codeErr := a.generateEmployeeCode()
+		if codeErr != nil {
+			return ctx, codeErr
+		}
+
+		employee = Employee{
+			Base:             Base{CreatedBy: "system"},
+			EmployeeCode:     code,
+			FullName:         name,
+			PreferredName:    firstToken(name),
+			Department:       inferDepartmentFromRole(license.Role),
+			JobTitle:         strings.Title(strings.TrimSpace(license.Role)),
+			EmploymentStatus: "active",
+			IsActive:         true,
+		}
+		if employee.JobTitle == "" {
+			employee.JobTitle = "User"
+		}
+
+		if err := a.db.Create(&employee).Error; err != nil {
+			return ctx, fmt.Errorf("failed to create fallback employee: %w", err)
+		}
+	}
+
+	link, err := a.buildAccessLinkForLicense(employee.ID, *license)
+	if err != nil {
+		return ctx, err
+	}
+	if link.UserID == "" {
+		link.UserID = a.currentUserID
+	}
+
+	var existing EmployeeAccessLink
+	if err := a.db.Where("employee_id = ? AND license_key = ?", employee.ID, license.Key).First(&existing).Error; err == nil {
+		updates := map[string]interface{}{
+			"device_id":     link.DeviceID,
+			"access_status": "active",
+			"is_primary":    true,
+		}
+		if link.UserID != "" {
+			updates["user_id"] = link.UserID
+		}
+		if err := a.db.Model(&existing).Updates(updates).Error; err != nil {
+			return ctx, fmt.Errorf("failed to update fallback employee access link: %w", err)
+		}
+		link = existing
+		link.DeviceID = firstNonEmptyCollaboration(updates["device_id"].(string), existing.DeviceID)
+		if userID, ok := updates["user_id"].(string); ok && userID != "" {
+			link.UserID = userID
+		}
+	} else if err == gorm.ErrRecordNotFound {
+		if err := a.db.Create(&link).Error; err != nil {
+			return ctx, fmt.Errorf("failed to create fallback employee access link: %w", err)
+		}
+	} else {
+		return ctx, fmt.Errorf("failed to lookup fallback employee access link: %w", err)
+	}
+
+	log.Printf("✅ Auto-resolved employee context %s for active license role %s", employee.FullName, license.Role)
+	return CurrentEmployeeContext{
+		EmployeeID:   employee.ID,
+		EmployeeName: employee.FullName,
+		LicenseKey:   license.Key,
+		LicenseRole:  license.Role,
+		DeviceID:     link.DeviceID,
+		UserID:       link.UserID,
+		ResolvedBy:   "license_auto",
+		Permissions:  rolePermissions[license.Role],
+	}, nil
+}
+
+func firstNonEmptyCollaboration(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func (a *App) CreateEmployeeProfile(employee Employee) (Employee, error) {
 	if err := a.requirePermission("hr:create"); err != nil {
 		return Employee{}, err
+	}
+	if !a.currentSessionHasAdminRoleOnly() {
+		return Employee{}, fmt.Errorf("only admin can add employee profiles")
 	}
 	if a.db == nil {
 		return Employee{}, fmt.Errorf("database not initialized")
@@ -524,6 +742,66 @@ func (a *App) ListEmployeeProfiles(activeOnly bool) ([]Employee, error) {
 	return employees, nil
 }
 
+func (a *App) GetPreparedByOptions() ([]string, error) {
+	if err := a.requirePermission("offers:create"); err != nil {
+		if editErr := a.requirePermission("offers:edit"); editErr != nil {
+			if costingErr := a.requirePermission("costing:read"); costingErr != nil {
+				return nil, err
+			}
+		}
+	}
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	names := map[string]struct{}{}
+	addName := func(name string) {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+
+	for _, name := range defaultPHOfferSignatureNames() {
+		addName(name)
+	}
+
+	for _, name := range []string{
+		"Rahul",
+		"Daniel",
+		"Periyasamy N",
+		"Clinton",
+		"Support",
+		"Sales Test",
+	} {
+		addName(name)
+	}
+
+	var employees []Employee
+	if err := a.db.Order("full_name ASC").Find(&employees).Error; err != nil {
+		return nil, fmt.Errorf("failed to list prepared-by employee options: %w", err)
+	}
+	for _, employee := range employees {
+		addName(employee.FullName)
+		addName(employee.PreferredName)
+	}
+
+	var licenses []LicenseKey
+	if err := a.db.Where("display_name IS NOT NULL AND TRIM(display_name) != ''").Order("display_name ASC").Find(&licenses).Error; err != nil {
+		return nil, fmt.Errorf("failed to list prepared-by license options: %w", err)
+	}
+	for _, license := range licenses {
+		addName(license.DisplayName)
+	}
+
+	options := make([]string, 0, len(names))
+	for name := range names {
+		options = append(options, name)
+	}
+	sort.Strings(options)
+	return options, nil
+}
+
 func (a *App) UpdateEmployeeProfile(employee Employee) (Employee, error) {
 	if err := a.requirePermission("hr:update"); err != nil {
 		return Employee{}, err
@@ -554,6 +832,12 @@ func (a *App) UpdateEmployeeProfile(employee Employee) (Employee, error) {
 	}
 	if employee.EmployeeCode == "" {
 		employee.EmployeeCode = existing.EmployeeCode
+	}
+	if existing.IsActive && !employee.IsActive {
+		return Employee{}, fmt.Errorf("employee removal requires RequestEmployeeArchive and second admin approval")
+	}
+	if !strings.EqualFold(existing.EmploymentStatus, "archived") && strings.EqualFold(employee.EmploymentStatus, "archived") {
+		return Employee{}, fmt.Errorf("employee archive status requires RequestEmployeeArchive and second admin approval")
 	}
 
 	updates := map[string]interface{}{
@@ -622,6 +906,15 @@ func (a *App) SetEmployeeEmploymentState(employeeID string, isActive bool, emplo
 			employmentStatus = "active"
 		} else {
 			employmentStatus = "inactive"
+		}
+	}
+	normalizedStatus := strings.ToLower(employmentStatus)
+	if !isActive {
+		if !a.currentSessionHasAdminRoleOnly() {
+			return Employee{}, fmt.Errorf("only admin can change employee active state")
+		}
+		if normalizedStatus == "archived" || normalizedStatus == "removed" || normalizedStatus == "inactive" {
+			return Employee{}, fmt.Errorf("employee removal requires RequestEmployeeArchive and second admin approval")
 		}
 	}
 
@@ -1531,6 +1824,9 @@ func (a *App) UpdateCollaborativeTask(task TaskItem) (TaskItem, error) {
 }
 
 func (a *App) DeleteCollaborativeTask(taskID string) error {
+	if ok, err := a.guardDeleteOrRequest("tasks:delete", "collaborative_task", taskID, "Task"); !ok {
+		return err
+	}
 	if err := a.requirePermission("tasks:delete"); err != nil {
 		return err
 	}
@@ -1864,7 +2160,7 @@ func (a *App) ReassignCollaborativeTask(taskID, assigneeEmployeeID string) error
 	}
 	_ = a.createTaskActivity(task.ID, current.EmployeeID, "reassigned", detail, meta)
 
-	if assigneeEmployeeID != "" && assigneeEmployeeID != current.EmployeeID {
+	if assigneeEmployeeID != "" {
 		a.createTaskNotification(assigneeEmployeeID, task, current.EmployeeName, "assigned")
 	}
 	if previousAssigneeID != "" && previousAssigneeID != current.EmployeeID && previousAssigneeID != assigneeEmployeeID {
@@ -1948,7 +2244,7 @@ func (a *App) UpdateCollaborativeTaskDueDate(taskID, dueDateISO string) error {
 }
 
 func (a *App) AddCollaborativeTaskComment(taskID, body string) (TaskComment, error) {
-	if err := a.requirePermission("tasks:update"); err != nil {
+	if err := a.requirePermission("tasks:view"); err != nil {
 		return TaskComment{}, err
 	}
 	if a.db == nil {

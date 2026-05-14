@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -129,6 +130,7 @@ func (a *App) RecordPayment(invoiceID string, amount float64, method string, dat
 		Reference:      reference,
 		DaysToPayment:  daysToPayment,
 		IdempotencyKey: idempotencyKey,
+		Division:       normalizeDivisionName(invoice.Division),
 	}
 
 	// Create payment
@@ -245,6 +247,9 @@ func (a *App) GetAllPayments(limit, offset int) ([]Payment, error) {
 
 // DeletePayment reverses a payment by deleting it and restoring invoice balance
 func (a *App) DeletePayment(id string) error {
+	if ok, err := a.guardDeleteOrRequest("payments:delete", "payment", id, "Customer payment"); !ok {
+		return err
+	}
 	if err := a.requirePermission("payments:delete"); err != nil {
 		return err
 	}
@@ -312,6 +317,38 @@ func (a *App) DeletePayment(id string) error {
 	if err != nil {
 		tx.Rollback()
 		return newError("DB_UPDATE_FAILED", "Failed to update invoice", err.Error())
+	}
+
+	if payment.ReceiptID != nil && strings.TrimSpace(*payment.ReceiptID) != "" {
+		var receipt CustomerReceipt
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&receipt, "id = ?", strings.TrimSpace(*payment.ReceiptID)).Error; err == nil {
+			if err := tx.Where("payment_id = ?", payment.ID).Delete(&CustomerReceiptAllocation{}).Error; err != nil {
+				tx.Rollback()
+				return newError("DB_DELETE_FAILED", "Failed to delete receipt allocation", err.Error())
+			}
+			nextApplied := roundBHD(receipt.AppliedAmountBHD - payment.AmountBHD)
+			if nextApplied < 0 {
+				nextApplied = 0
+			}
+			nextUnapplied := roundBHD(receipt.AmountBHD - nextApplied)
+			nextStatus := "OnAccount"
+			if nextApplied > 0 && nextUnapplied > 0 {
+				nextStatus = "PartiallyApplied"
+			} else if nextApplied >= receipt.AmountBHD-0.001 {
+				nextStatus = "Applied"
+				nextUnapplied = 0
+			}
+			if err := tx.Model(&receipt).Updates(map[string]interface{}{
+				"applied_amount_bhd":   nextApplied,
+				"unapplied_amount_bhd": nextUnapplied,
+				"status":               nextStatus,
+				"updated_by":           a.getCurrentUserID(),
+				"updated_at":           time.Now(),
+			}).Error; err != nil {
+				tx.Rollback()
+				return newError("DB_UPDATE_FAILED", "Failed to update receipt balance", err.Error())
+			}
+		}
 	}
 
 	// Commit transaction
@@ -572,6 +609,7 @@ func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 		tx.Rollback()
 		return nil, newError("INVOICE_NOT_FOUND", "Linked invoice not found", err.Error())
 	}
+	payment.Division = normalizeDivisionName(invoice.Division)
 
 	// P2 FIX: Reject payments on closed workflow invoices while still allowing edits on settled invoices.
 	if customerInvoiceClosedWorkflowStatuses[invoice.Status] {

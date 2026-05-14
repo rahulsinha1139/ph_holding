@@ -1,697 +1,260 @@
-// ═══════════════════════════════════════════════════════════════════════════
-// OFFER / QUOTATION PDF GENERATION SERVICE
-//
-// MISSION: Generate professional quotations on PH Trading letterhead matching
-//          the company's exact format from reference PDF "44 ARLA TECHNICAL AND COMMERCIAL OFFER"
-//
-// FORMAT:
-//   PAGE 1 - QUOTATION:
-//     - PH Trading letterhead background (full page template)
-//     - Header: "Quotation" title (top right)
-//     - Left block: PH Trading W.L.L contact info
-//     - Right metadata: Date, Quote #, Valid Until, Customer ID, Issued by
-//     - "Attention" section with contact details
-//     - "Your Reference" line
-//     - Introduction paragraph
-//     - Line items table: Sr. No. | Description | Unit cost | Qty | Amount (BHD)
-//     - Totals: SUBTOTAL, DISCOUNT, VAT 10%, TOTAL (BHD)
-//
-//   PAGE 2 - TERMS AND CONDITIONS:
-//     - Same letterhead on every page
-//     - "Terms and Conditions" header
-//     - Bullet points with exact terms from reference
-//     - Sign-off with issuer details
-//     - "Thank you for your business!" footer
-//
-//   PAGE 3+ - ANNEXURE-1 (if needed):
-//     - Detailed order codes/specifications table
-//
-// OUTPUTS:
-//   - Offer PDFs: exports/offers/Offer_<number>.pdf
-//
-// ═══════════════════════════════════════════════════════════════════════════
-
 package main
 
 import (
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
+	"math"
 	"strings"
 	"time"
-
-	"github.com/jung-kurt/gofpdf"
 )
 
-// ============================================================================
-// OFFER / QUOTATION PDF GENERATION
-// ============================================================================
-
-// GenerateOfferPDF creates a professional quotation on PH Trading letterhead
+// GenerateOfferPDF renders a saved offer through the same quotation PDF
+// pipeline used by the costing sheet export, so page order and styling cannot drift.
 func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	if err := a.requirePermission("offers:view"); err != nil {
 		return "", err
 	}
-
-	if offerID == "" {
+	if strings.TrimSpace(offerID) == "" {
 		return "", fmt.Errorf("offer ID is required")
 	}
-
-	log.Printf("📄 Generating offer/quotation PDF: offerID=%s", offerID)
-
 	if a.db == nil {
 		return "", fmt.Errorf("database not initialized")
 	}
 
-	// 1. Fetch offer with items from database
+	log.Printf("📄 Generating canonical offer PDF: offerID=%s", offerID)
+
 	var offer Offer
 	if err := a.db.Preload("Items").First(&offer, "id = ?", offerID).Error; err != nil {
 		return "", fmt.Errorf("failed to fetch offer: %w", err)
 	}
 
-	// Validate offer has items - with diagnostic for FK relationship issues
 	if len(offer.Items) == 0 {
-		// Diagnostic: Check raw count vs Preload result
 		var rawItemCount int64
 		a.db.Model(&OfferItem{}).Where("offer_id = ?", offerID).Count(&rawItemCount)
-
 		if rawItemCount > 0 {
-			// FK relationship broken - load items manually
 			log.Printf("⚠️ Preload failed for offer %s (raw count: %d). Loading items manually.", offerID, rawItemCount)
 			var items []OfferItem
 			a.db.Where("offer_id = ?", offerID).Find(&items)
 			offer.Items = items
 		}
-
-		// Final check after manual load attempt
 		if len(offer.Items) == 0 {
-			return "", fmt.Errorf("This offer has no line items. Please add items via the Costing Sheet before generating a PDF. Go to Costing → select RFQ → add items → Save as Offer")
+			return "", fmt.Errorf("this offer has no line items; add items via the costing sheet before generating a PDF")
 		}
 	}
 
-	// Validate discount range
 	if offer.DiscountPercent < 0 || offer.DiscountPercent > 100 {
 		return "", fmt.Errorf("invalid discount percentage: %.2f (must be 0-100)", offer.DiscountPercent)
 	}
 
-	// 2. Fetch customer details for contact info
 	var customer CustomerMaster
-	if err := a.db.First(&customer, "id = ?", offer.CustomerID).Error; err != nil {
-		log.Printf("⚠️ Could not fetch customer details: %v", err)
-		// Continue with offer.CustomerName fallback
+	if strings.TrimSpace(offer.CustomerID) != "" {
+		if err := a.db.First(&customer, "id = ?", offer.CustomerID).Error; err != nil {
+			log.Printf("⚠️ Could not fetch customer details for offer %s: %v", offer.OfferNumber, err)
+		}
 	}
 
-	// 3. Get primary customer contact if available
 	var customerContact CustomerContact
-	a.db.Where("customer_id = ? AND is_primary_contact = ?", offer.CustomerID, true).First(&customerContact)
-	if customerContact.ID == "" {
-		// Fallback to any contact
-		a.db.Where("customer_id = ?", offer.CustomerID).First(&customerContact)
-	}
-
-	// 4. Create PDF with letterhead
-	pdf := gofpdf.New("P", "mm", "A4", "")
-	pdf.SetAutoPageBreak(true, 35) // Bottom margin: 35mm to avoid letterhead footer
-	pdf.SetTopMargin(50)           // Start content below letterhead header
-	pdf.SetLeftMargin(18)
-	pdf.SetRightMargin(18)
-
-	// Set header function so letterhead appears on ALL pages
-	imgPath := a.letterheadImagePath()
-	pdf.SetHeaderFuncMode(func() {
-		fileInfo, err := os.Stat(imgPath)
-		if err == nil && fileInfo.Size() <= 10*1024*1024 { // 10MB max
-			opt := gofpdf.ImageOptions{ImageType: "PNG", ReadDpi: true}
-			pdf.ImageOptions(imgPath, 0, 0, 210, 297, false, opt, 0, "")
-		} else if err == nil && fileInfo.Size() > 10*1024*1024 {
-			log.Printf("⚠️ Letterhead file too large (%d bytes), using fallback", fileInfo.Size())
-			addLetterheadFallback(pdf)
-		} else {
-			// Fallback: simple text header if image not found
-			addLetterheadFallback(pdf)
-		}
-	}, true) // true = allow content to overlap the header area
-
-	// ========================================================================
-	// PAGE 1 - QUOTATION
-	// ========================================================================
-	pdf.AddPage()
-
-	// Position for content start (below letterhead logo area)
-	pdf.SetY(52)
-
-	// Centered document title
-	pdf.SetFont("Helvetica", "B", 20)
-	pdf.SetTextColor(29, 29, 31)
-	quoteTitle := "Quotation"
-	if offer.QuoteType != "" {
-		quoteTitle = offer.QuoteType
-	}
-	pdf.CellFormat(0, 10, quoteTitle, "", 0, "C", false, 0, "")
-	pdf.Ln(12)
-
-	// Metadata block (2 columns)
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(80, 80, 80)
-
-	// Right column: Quote metadata
-	y := pdf.GetY()
-	rightX := 105.0
-
-	pdf.SetXY(rightX, y)
-	pdf.Cell(35, 5, "Date:")
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(0, 5, offer.QuotationDate.Format("02 Jan 2006"))
-
-	pdf.SetXY(rightX, y+6)
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(80, 80, 80)
-	pdf.Cell(35, 5, "Quote #:")
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(0, 5, sanitizeForPDF(offer.OfferNumber))
-
-	pdf.SetXY(rightX, y+12)
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(80, 80, 80)
-	pdf.Cell(35, 5, "Quote Valid Until:")
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(0, 5, offer.ValidityDate.Format("02 Jan 2006"))
-
-	pdf.SetXY(rightX, y+18)
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(80, 80, 80)
-	pdf.Cell(35, 5, "Customer ID:")
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(29, 29, 31)
-	customerIDDisplay := customer.CustomerCode
-	if customerIDDisplay == "" {
-		customerIDDisplay = customer.CustomerID
-	}
-	pdf.Cell(0, 5, sanitizeForPDF(customerIDDisplay))
-
-	pdf.SetXY(rightX, y+24)
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(80, 80, 80)
-	pdf.Cell(35, 5, "Issued by:")
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(29, 29, 31)
-	issuedBy := offer.IssuedBy
-	if issuedBy == "" {
-		issuedBy = "Sales Team"
-	}
-	pdf.Cell(0, 5, sanitizeForPDF(issuedBy))
-
-	pdf.SetY(y + 36)
-	pdf.Ln(4)
-
-	// Attention section
-	pdf.SetFont("Helvetica", "B", 10)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(0, 6, "Attention")
-	pdf.Ln(7)
-
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(60, 60, 60)
-
-	// Attention person (use from offer, or fallback to customer contact)
-	attentionPerson := offer.AttentionPerson
-	if attentionPerson == "" && customerContact.ContactName != "" {
-		attentionPerson = customerContact.ContactName
-	}
-	if attentionPerson != "" {
-		pdf.Cell(0, 5, sanitizeForPDF(attentionPerson))
-		pdf.Ln(5)
-	}
-
-	// Company name
-	attentionCompany := offer.AttentionCompany
-	if attentionCompany == "" {
-		attentionCompany = customer.BusinessName
-	}
-	if attentionCompany != "" {
-		pdf.SetFont("Helvetica", "B", 9)
-		pdf.Cell(0, 5, sanitizeForPDF(attentionCompany))
-		pdf.Ln(5)
-	}
-
-	// Phone
-	attentionPhone := offer.AttentionPhone
-	if attentionPhone == "" && customerContact.Phone != "" {
-		attentionPhone = customerContact.Phone
-	}
-	if attentionPhone != "" {
-		pdf.SetFont("Helvetica", "", 9)
-		pdf.Cell(0, 5, "Phone: "+sanitizeForPDF(attentionPhone))
-		pdf.Ln(5)
-	}
-
-	// Address
-	attentionAddress := offer.AttentionAddress
-	if attentionAddress == "" {
-		// Build from customer master
-		addressParts := []string{}
-		if customer.AddressLine1 != "" {
-			addressParts = append(addressParts, customer.AddressLine1)
-		}
-		if customer.City != "" {
-			addressParts = append(addressParts, customer.City)
-		}
-		if customer.Country != "" {
-			addressParts = append(addressParts, customer.Country)
-		}
-		attentionAddress = strings.Join(addressParts, ", ")
-	}
-	if attentionAddress != "" {
-		pdf.SetFont("Helvetica", "", 9)
-		pdf.MultiCell(0, 5, sanitizeForPDF(attentionAddress), "", "", false)
-	}
-
-	pdf.Ln(4)
-
-	// Your Reference line - use MultiCell for long references to prevent overlap
-	if offer.CustomerReference != "" {
-		pdf.SetFont("Helvetica", "B", 9)
-		pdf.SetTextColor(80, 80, 80)
-		pdf.Cell(30, 5, "Your Reference:")
-		pdf.SetFont("Helvetica", "", 9)
-		pdf.SetTextColor(60, 60, 60)
-		currentX := pdf.GetX()
-		currentY := pdf.GetY()
-		pdf.SetXY(currentX, currentY)
-		pdf.MultiCell(0, 5, sanitizeForPDF(offer.CustomerReference), "", "", false)
-		pdf.Ln(2)
-	}
-
-	pdf.Ln(2)
-
-	// Introduction paragraph
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(40, 40, 40)
-	introPara := "Dear Sir,\n\nWe appreciate your interest in our products and services. We are pleased to submit our quotation as detailed below. We trust that you will find our offer competitive and look forward to your valued order."
-	pdf.MultiCell(0, 5, introPara, "", "", false)
-	pdf.Ln(6)
-
-	// Line items table
-	drawOfferTableHeader := func() {
-		pdf.SetFont("Helvetica", "B", 9)
-		pdf.SetTextColor(255, 255, 255)
-		pdf.SetFillColor(29, 29, 31)
-		pdf.CellFormat(12, 7, "Sr. No.", "1", 0, "C", true, 0, "")
-		pdf.CellFormat(92, 7, "Item Description, Long Code*", "1", 0, "C", true, 0, "")
-		pdf.CellFormat(22, 7, "Unit cost", "1", 0, "C", true, 0, "")
-		pdf.CellFormat(15, 7, "Qty", "1", 0, "C", true, 0, "")
-		pdf.CellFormat(33, 7, "Amount (BHD)", "1", 0, "C", true, 0, "")
-		pdf.Ln(7)
-		pdf.SetFont("Helvetica", "", 8)
-		pdf.SetTextColor(29, 29, 31)
-	}
-	drawOfferTableHeader()
-
-	// Column widths (must match header widths above)
-	colSrNo := 12.0
-	colDesc := 92.0
-	colUnit := 22.0
-	colQty := 15.0
-	colAmt := 33.0
-	lineHeight := 4.0
-	minRowHeight := 6.0
-
-	subtotal := 0.0
-	for i, item := range offer.Items {
-		lineNum := i + 1
-		description := sanitizeForPDF(item.Description)
-		if item.ProductCode != "" {
-			productCode := sanitizeForPDF(item.ProductCode)
-			if len(productCode) > 50 {
-				productCode = productCode[:47] + "..."
-			}
-			description = description + "\n" + productCode
-		}
-		// Long Code is shown only on Annexure page (not page 1)
-		// Previously rendered here, moved to Annexure for cleaner front page
-		lineTotal := item.UnitPrice * item.Quantity
-		subtotal += lineTotal
-
-		// Pre-calculate the height needed for description text using SplitText
-		lines := pdf.SplitText(description, colDesc)
-		rowHeight := float64(len(lines)) * lineHeight
-		if rowHeight < minRowHeight {
-			rowHeight = minRowHeight
-		}
-
-		if pdf.GetY()+rowHeight > 255 {
-			pdf.AddPage()
-			pdf.SetY(52)
-			drawOfferTableHeader()
-		}
-
-		// Store starting position for the row
-		startX := pdf.GetX()
-		startY := pdf.GetY()
-
-		// Render Sr. No. cell with calculated row height
-		pdf.CellFormat(colSrNo, rowHeight, fmt.Sprintf("%d", lineNum), "1", 0, "C", false, 0, "")
-
-		// Render Description cell using MultiCell (wraps text)
-		descX := pdf.GetX()
-		pdf.MultiCell(colDesc, lineHeight, description, "1", "L", false)
-		multiCellEndY := pdf.GetY()
-
-		// If MultiCell used less height than rowHeight, draw remaining border
-		if multiCellEndY-startY < rowHeight {
-			// Fill the gap with an empty bordered cell to complete the row border
-			pdf.SetXY(descX, multiCellEndY)
-			pdf.CellFormat(colDesc, rowHeight-(multiCellEndY-startY), "", "LRB", 0, "L", false, 0, "")
-		}
-
-		// Move back to startY for the remaining columns, positioned after Sr.No + Desc
-		pdf.SetXY(startX+colSrNo+colDesc, startY)
-
-		// Render remaining cells with the full calculated row height
-		pdf.CellFormat(colUnit, rowHeight, fmt.Sprintf("%.3f", item.UnitPrice), "1", 0, "R", false, 0, "")
-		pdf.CellFormat(colQty, rowHeight, fmt.Sprintf("%.0f", item.Quantity), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(colAmt, rowHeight, fmt.Sprintf("%.3f", lineTotal), "1", 0, "R", false, 0, "")
-
-		// Move to next row at the correct Y position
-		pdf.SetXY(startX, startY+rowHeight)
-	}
-
-	pdf.Ln(3)
-
-	// Totals Section (right-aligned)
-	totalsX := 136.0
-	totalsLabelW := 30.0
-	totalsValueW := 34.0
-
-	// Subtotal
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(80, 80, 80)
-	pdf.SetXY(totalsX, pdf.GetY())
-	pdf.CellFormat(totalsLabelW, 6, "SUBTOTAL:", "", 0, "L", false, 0, "")
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.CellFormat(totalsValueW, 6, fmt.Sprintf("%.3f BHD", subtotal), "", 0, "R", false, 0, "")
-	pdf.Ln(7)
-
-	// Discount (if applicable)
-	discount := 0.0
-	if offer.DiscountPercent > 0 {
-		discount = subtotal * (offer.DiscountPercent / 100.0)
-		pdf.SetFont("Helvetica", "", 9)
-		pdf.SetTextColor(80, 80, 80)
-		pdf.SetXY(totalsX, pdf.GetY())
-		pdf.CellFormat(totalsLabelW, 6, fmt.Sprintf("DISCOUNT (%.1f%%):", offer.DiscountPercent), "", 0, "L", false, 0, "")
-		pdf.SetFont("Helvetica", "B", 9)
-		pdf.SetTextColor(29, 29, 31)
-		pdf.CellFormat(totalsValueW, 6, fmt.Sprintf("-%.3f BHD", discount), "", 0, "R", false, 0, "")
-		pdf.Ln(7)
-	}
-
-	// VAT (dynamic rate, default 10%)
-	subtotalAfterDiscount := subtotal - discount
-	vatPercent := offer.VatRate
-	if vatPercent == 0 && subtotalAfterDiscount > 0 {
-		vatPercent = 10.0 // Default to 10% only for legacy offers without explicit VatRate
-	}
-	vatAmount := subtotalAfterDiscount * (vatPercent / 100.0)
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(80, 80, 80)
-	pdf.SetXY(totalsX, pdf.GetY())
-	pdf.CellFormat(totalsLabelW, 6, fmt.Sprintf("VAT %.0f%%:", vatPercent), "", 0, "L", false, 0, "")
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.CellFormat(totalsValueW, 6, fmt.Sprintf("%.3f BHD", vatAmount), "", 0, "R", false, 0, "")
-	pdf.Ln(7)
-
-	// Grand Total (bold, larger)
-	grandTotal := subtotalAfterDiscount + vatAmount
-	pdf.SetFont("Helvetica", "B", 11)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.SetXY(totalsX, pdf.GetY())
-	pdf.CellFormat(totalsLabelW, 7, "TOTAL (BHD):", "", 0, "L", false, 0, "")
-	pdf.SetFont("Helvetica", "B", 11)
-	pdf.CellFormat(totalsValueW, 7, fmt.Sprintf("%.3f BHD", grandTotal), "", 0, "R", false, 0, "")
-	pdf.Ln(10)
-
-	// ========================================================================
-	// PAGE 2 - TERMS AND CONDITIONS
-	// ========================================================================
-	pdf.AddPage()
-
-	pdf.SetY(52)
-	pdf.SetFont("Helvetica", "B", 14)
-	pdf.SetTextColor(0, 120, 80) // Green header
-	pdf.Cell(0, 8, "Terms and Conditions")
-	pdf.Ln(10)
-
-	// Terms bullets
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(40, 40, 40)
-
-	terms := []string{
-		"Offer for complete delivery: Prices valid for full order alone.",
-		fmt.Sprintf("Payment Terms: %s", offer.PaymentTerms),
-		"Warranty: Against Manufacturing Defects (12 months from date of delivery)",
-		"Order Cancellation: Charges applicable according to OEM terms",
-		fmt.Sprintf("Delivery time: Approx. %s; exact period confirmed after order placement.", offer.DeliveryWeeks),
-		fmt.Sprintf("Delivery Terms: %s", offer.DeliveryTerms),
-		"Installation: Excluded / not in our scope",
-		"Commissioning: Excluded / not in our scope",
-		"Testing: Excluded / not in our scope",
-		"Test Certificate: Additional charges applicable as per OEM terms",
-		"Certificate of Origin: Additional charges applicable as per OEM terms",
-		fmt.Sprintf("Country of origin: %s", offer.CountryOfOrigin),
-		"Certificate of Conformity: Additional charges applicable as per OEM terms",
-		"Please check Annexure 1 for detailed Long Code(s)",
-		"This proposal is subject to general terms and conditions of delivery and sales as per OEM.",
-		"We have chosen our instruments according to the specifications given. However, we recommend that all technical details be reviewed and approved by your technical team before order placement.",
-	}
-
-	for _, term := range terms {
-		pdf.SetX(20)
-		pdf.Cell(5, 5, "-") // Use ASCII hyphen for PDF compatibility
-		pdf.SetX(26)
-		pdf.MultiCell(0, 5, sanitizeForPDF(term), "", "", false)
-		pdf.Ln(2)
-	}
-
-	pdf.Ln(4)
-
-	// Confidentiality statement
-	pdf.SetFont("Helvetica", "I", 9)
-	pdf.SetTextColor(100, 100, 100)
-	pdf.Cell(0, 5, "This quotation is confidential.")
-	pdf.Ln(10)
-
-	// Sign-off
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(40, 40, 40)
-	pdf.Cell(0, 5, "Best Regards,")
-	pdf.Ln(6)
-
-	pdf.SetFont("Helvetica", "B", 10)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(0, 5, sanitizeForPDF(issuedBy))
-	pdf.Ln(5)
-
-	pdf.SetFont("Helvetica", "", 9)
-	pdf.SetTextColor(60, 60, 60)
-	pdf.Cell(0, 5, "Sales Executive")
-	pdf.Ln(5)
-
-	if offer.ContactPhone != "" {
-		pdf.Cell(0, 5, "Mob: "+sanitizeForPDF(offer.ContactPhone))
-		pdf.Ln(5)
-	}
-
-	pdf.Cell(0, 5, "Email: sales@phtrading.com")
-	pdf.Ln(5)
-
-	pdf.SetFont("Helvetica", "B", 9)
-	pdf.Cell(0, 5, "PH TRADING WLL")
-	pdf.Ln(10)
-
-	// Thank you footer
-	pdf.SetFont("Helvetica", "B", 10)
-	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(0, 5, "Thank you for your business!")
-
-	// ========================================================================
-	// PAGE 3+ - ANNEXURE-1 (if detailed specs needed)
-	// ========================================================================
-	// Check if any items have detailed specs/codes that need annexure
-	hasDetailedSpecs := false
-	for _, item := range offer.Items {
-		if item.LongCode != "" || item.DetailedDescription != "" {
-			hasDetailedSpecs = true
-			break
+	if strings.TrimSpace(offer.CustomerID) != "" {
+		a.db.Where("customer_id = ? AND is_primary_contact = ?", offer.CustomerID, true).First(&customerContact)
+		if customerContact.ID == "" {
+			a.db.Where("customer_id = ?", offer.CustomerID).First(&customerContact)
 		}
 	}
 
-	if hasDetailedSpecs {
-		pdf.AddPage()
-		pdf.SetY(52)
-
-		pdf.SetFont("Helvetica", "B", 14)
-		pdf.SetTextColor(29, 29, 31)
-		pdf.Cell(0, 8, "ANNEXURE- 1")
-		pdf.Ln(10)
-
-		pdf.SetFont("Helvetica", "", 9)
-		pdf.SetTextColor(60, 60, 60)
-		pdf.Cell(0, 5, "Detailed Long Codes and Specifications")
-		pdf.Ln(8)
-
-		// Annexure table
-		pdf.SetFont("Helvetica", "B", 9)
-		pdf.SetTextColor(255, 255, 255)
-		pdf.SetFillColor(29, 29, 31)
-
-		pdf.CellFormat(15, 7, "Item", "1", 0, "C", true, 0, "")
-		pdf.CellFormat(20, 7, "QTY", "1", 0, "C", true, 0, "")
-		pdf.CellFormat(139, 7, "Order code / Description", "1", 0, "C", true, 0, "")
-		pdf.Ln(7)
-
-		pdf.SetFont("Helvetica", "", 8)
-		pdf.SetTextColor(29, 29, 31)
-
-		wrapAnnexureText := func(text string, width float64) []string {
-			text = strings.ReplaceAll(text, "\r\n", "\n")
-			text = strings.ReplaceAll(text, "\r", "\n")
-			var wrapped []string
-			for _, paragraph := range strings.Split(text, "\n") {
-				if paragraph == "" {
-					wrapped = append(wrapped, "")
-					continue
-				}
-				lines := pdf.SplitText(paragraph, width)
-				if len(lines) == 0 {
-					wrapped = append(wrapped, "")
-					continue
-				}
-				wrapped = append(wrapped, lines...)
-			}
-			return wrapped
-		}
-
-		drawAnnexureHeader := func() {
-			pdf.SetFont("Helvetica", "B", 9)
-			pdf.SetTextColor(255, 255, 255)
-			pdf.SetFillColor(29, 29, 31)
-			pdf.CellFormat(15, 7, "Item", "1", 0, "C", true, 0, "")
-			pdf.CellFormat(20, 7, "QTY", "1", 0, "C", true, 0, "")
-			pdf.CellFormat(139, 7, "Order code / Description", "1", 0, "C", true, 0, "")
-			pdf.Ln(7)
-			pdf.SetFont("Helvetica", "", 8)
-			pdf.SetTextColor(29, 29, 31)
-		}
-
-		descLineHeight := 4.5
-		minAnnexureRowHeight := 7.0
-
-		for i, item := range offer.Items {
-			// Only include items that have LongCode or DetailedDescription
-			if item.LongCode == "" && item.DetailedDescription == "" {
-				continue
-			}
-			lineNum := i + 1
-
-			// Build full specification
-			fullSpec := ""
-			if item.Equipment != "" {
-				fullSpec = sanitizeForPDF(item.Equipment)
-			} else {
-				fullSpec = sanitizeForPDF(item.Description)
-			}
-			if item.ProductCode != "" {
-				fullSpec = fullSpec + "\nModel: " + sanitizeForPDF(item.ProductCode)
-			}
-			if item.LongCode != "" {
-				fullSpec = fullSpec + "\nLong Code: " + sanitizeForPDF(item.LongCode)
-			}
-			if item.DetailedDescription != "" {
-				fullSpec = fullSpec + "\n\n" + sanitizeForPDF(item.DetailedDescription)
-			}
-
-			descLines := wrapAnnexureText(fullSpec, 139)
-			rowHeight := float64(len(descLines)) * descLineHeight
-			if rowHeight < minAnnexureRowHeight {
-				rowHeight = minAnnexureRowHeight
-			}
-
-			if pdf.GetY()+rowHeight > 255 {
-				pdf.AddPage()
-				pdf.SetY(52)
-				drawAnnexureHeader()
-			}
-
-			startX := pdf.GetX()
-			startY := pdf.GetY()
-			pdf.CellFormat(15, rowHeight, fmt.Sprintf("%d", lineNum), "1", 0, "C", false, 0, "")
-			pdf.CellFormat(20, rowHeight, fmt.Sprintf("%.0f PC", item.Quantity), "1", 0, "C", false, 0, "")
-
-			descX := pdf.GetX()
-			pdf.MultiCell(139, descLineHeight, fullSpec, "1", "L", false)
-			descEndY := pdf.GetY()
-			if descEndY-startY < rowHeight {
-				pdf.SetXY(descX, descEndY)
-				pdf.CellFormat(139, rowHeight-(descEndY-startY), "", "LRB", 0, "L", false, 0, "")
-			}
-
-			pdf.SetXY(startX, startY+rowHeight)
+	var linkedOpportunity Opportunity
+	if err := a.db.Select("folder_number, title, eh_ref").Where("offer_id = ?", offer.ID).First(&linkedOpportunity).Error; err == nil {
+		offer.FolderNumber = linkedOpportunity.FolderNumber
+		offer.ProjectName = linkedOpportunity.Title
+		if strings.TrimSpace(offer.CustomerReference) == "" {
+			offer.CustomerReference = linkedOpportunity.EHRef
 		}
 	}
 
-	// ========================================================================
-	// PAGE NUMBERS (on all pages, positioned above letterhead footer)
-	// ========================================================================
-	// Disable auto-break before writing page numbers to prevent blank trailing page
-	pdf.SetAutoPageBreak(false, 0)
-	totalPages := pdf.PageCount()
-	for i := 1; i <= totalPages; i++ {
-		pdf.SetPage(i)
-		pdf.SetY(270) // Just above the letterhead footer area
-		pdf.SetFont("Helvetica", "I", 7)
-		pdf.SetTextColor(160, 160, 160)
-		footerTitle := "Quotation"
-		if offer.QuoteType != "" {
-			footerTitle = offer.QuoteType
+	exportData := buildCostingExportDataFromOffer(offer, customer, customerContact)
+	if scope := normaliseCostingAttachmentScope(offer.AttachmentScopeID); scope != "" {
+		attachments, err := a.listCostingSheetAttachmentsByScope(scope)
+		if err != nil {
+			return "", err
 		}
-		pdf.CellFormat(0, 5, fmt.Sprintf("%s %s  |  Page %d of %d  |  PH Trading W.L.L.", footerTitle, offer.OfferNumber, i, totalPages), "", 0, "C", false, 0, "")
+		exportData.AttachmentScopeID = scope
+		exportData.Attachments = attachments
+	}
+	filePath, err := a.exportCostingToPDF(exportData, "Quotation")
+	if err != nil {
+		return "", err
 	}
 
-	// ========================================================================
-	// SAVE PDF
-	// ========================================================================
-	// Combined filename: {SystemNumber}_{UserReference}.pdf
-	cleanOfferNum := sanitizeFilename(offer.OfferNumber)
-	userRef := ""
-	if offer.CustomerReference != "" {
-		userRef = sanitizeFilename(offer.CustomerReference)
-	}
-	filename := cleanOfferNum
-	if userRef != "" {
-		filename = fmt.Sprintf("%s_%s", cleanOfferNum, userRef)
-	}
-	filename = fmt.Sprintf("Offer_%s.pdf", filename)
-
-	docYear := offer.QuotationDate.Year()
-	if docYear <= 0 {
-		docYear = time.Now().Year()
-	}
-	saveDir := a.getExportDir("customer", offer.CustomerName, "Quotation", docYear)
-	filePath := filepath.Join(saveDir, filename)
-
-	if err := pdf.OutputFileAndClose(filePath); err != nil {
-		return "", fmt.Errorf("failed to save offer PDF: %w", err)
-	}
-
-	log.Printf("✅ Offer PDF generated: %s", filePath)
+	log.Printf("✅ Canonical offer PDF generated: %s", filePath)
 	return filePath, nil
 }
 
-// sanitizeFilename is defined in reports.go (shared helper)
+func buildCostingExportDataFromOffer(offer Offer, customer CustomerMaster, customerContact CustomerContact) CostingExportData {
+	quotationDate := offer.QuotationDate
+	if quotationDate.IsZero() {
+		quotationDate = time.Now()
+	}
+
+	subtotal := 0.0
+	lineItems := make([]CostingExportLineItem, 0, len(offer.Items))
+	for i, item := range offer.Items {
+		qty := item.Quantity
+		if qty <= 0 {
+			qty = 1
+		}
+		unitPrice := item.UnitPrice
+		lineTotal := item.TotalPrice
+		if lineTotal <= 0 {
+			lineTotal = unitPrice * qty
+		}
+		if unitPrice <= 0 && qty > 0 {
+			unitPrice = lineTotal / qty
+		}
+		subtotal += lineTotal
+
+		equipment := strings.TrimSpace(item.Equipment)
+		if equipment == "" {
+			equipment = strings.TrimSpace(item.Description)
+		}
+		model := firstNonEmptyString(strings.TrimSpace(item.Model), strings.TrimSpace(item.ProductCode))
+
+		lineItems = append(lineItems, CostingExportLineItem{
+			SlNo:                firstPositiveInt(item.LineNumber, i+1),
+			Equipment:           equipment,
+			Model:               model,
+			LongCode:            item.LongCode,
+			Specification:       item.Specification,
+			DetailedDescription: item.DetailedDescription,
+			Currency:            firstNonEmptyString(item.Currency, "BHD"),
+			Quantity:            int(math.Round(qty)),
+			FOB:                 item.FOB,
+			Freight:             item.Freight,
+			TotalCost:           item.TotalCost,
+			MarginPercent:       item.MarginPercent,
+			MarkupPercent:       item.MarginPercent,
+			SuggestedPrice:      unitPrice,
+			TotalPrice:          lineTotal,
+			ExchangeRate:        item.ExchangeRate,
+			FobBHD:              item.FobBHD,
+			FreightBHD:          item.FreightBHD,
+			Insurance:           item.Insurance,
+			CustomsPercent:      item.CustomsPercent,
+			CustomsBHD:          item.CustomsBHD,
+			HandlingPercent:     item.HandlingPercent,
+			HandlingBHD:         item.HandlingBHD,
+			FinancePercent:      item.FinancePercent,
+			FinanceBHD:          item.FinanceBHD,
+			OtherCosts:          item.OtherCosts,
+			UserPrice:           item.UserPrice,
+			UserPriceSet:        item.UserPriceSet,
+		})
+	}
+
+	discount := 0.0
+	if offer.DiscountPercent > 0 {
+		discount = subtotal * (offer.DiscountPercent / 100)
+	}
+	netAmount := subtotal - discount
+	vatRate := offer.VatRate
+	vat := netAmount * (vatRate / 100)
+	grandTotal := netAmount + vat
+
+	terms := strings.TrimSpace(offer.TermsAndConditions)
+	if terms == "" {
+		terms = defaultOfferTermsAndConditions(vatRate)
+	}
+
+	customerName := firstNonEmptyString(strings.TrimSpace(offer.CustomerName), strings.TrimSpace(customer.BusinessName), strings.TrimSpace(offer.AttentionCompany))
+	contactPerson := firstNonEmptyString(strings.TrimSpace(offer.AttentionPerson), strings.TrimSpace(customerContact.ContactName))
+	subject := firstNonEmptyString(strings.TrimSpace(offer.Subject), strings.TrimSpace(offer.ProjectName), strings.TrimSpace(offer.CustomerReference), strings.TrimSpace(offer.FolderNumber), customerName)
+	body := firstNonEmptyString(
+		strings.TrimSpace(offer.Body),
+		"We thank you for the opportunity and are pleased to submit our techno-commercial offer for your review. Please find our pricing and scope below.",
+	)
+	quoteType := firstNonEmptyString(strings.TrimSpace(offer.QuoteType), "Quotation")
+
+	return CostingExportData{
+		Division:           normalizeDivisionName(offer.Division),
+		Date:               quotationDate.Format("2006-01-02"),
+		PreparedBy:         strings.TrimSpace(offer.IssuedBy),
+		CustomerName:       customerName,
+		ContactPerson:      contactPerson,
+		RfqReference:       strings.TrimSpace(offer.CustomerReference),
+		FolderNumber:       strings.TrimSpace(offer.FolderNumber),
+		CostingId:          offerNumberWithRevision(offer.OfferNumber, offer.RevisionNumber),
+		Subject:            subject,
+		EstDelivery:        strings.TrimSpace(offer.DeliveryWeeks),
+		DeliveryTerms:      strings.TrimSpace(offer.DeliveryTerms),
+		PaymentTerms:       strings.TrimSpace(offer.PaymentTerms),
+		CountryOfOrigin:    strings.TrimSpace(offer.CountryOfOrigin),
+		CocCoo:             strings.TrimSpace(offer.CocCoo),
+		TestCertificate:    strings.TrimSpace(offer.TestCertificate),
+		Installation:       strings.TrimSpace(offer.Installation),
+		Commissioning:      strings.TrimSpace(offer.Commissioning),
+		Testing:            strings.TrimSpace(offer.Testing),
+		QuoteType:          quoteType,
+		VatRate:            vatRate,
+		PlaceOfSupply:      "Kingdom of Bahrain",
+		TaxCategory:        "Standard",
+		CustomerTRN:        strings.TrimSpace(customer.TRN),
+		Body:               body,
+		LineItems:          lineItems,
+		Subtotal:           subtotal,
+		Discount:           discount,
+		NetAmount:          netAmount,
+		VAT:                vat,
+		GrandTotal:         grandTotal,
+		TotalCost:          sumOfferItemCost(offer.Items),
+		Profit:             grandTotal - sumOfferItemCost(offer.Items),
+		ProfitPercent:      percentageOrZero(grandTotal-sumOfferItemCost(offer.Items), grandTotal),
+		ProjectName:        strings.TrimSpace(offer.ProjectName),
+		TermsAndConditions: terms,
+	}
+}
+
+func defaultOfferTermsAndConditions(vatRate float64) string {
+	return fmt.Sprintf(`1. QUOTATION VALIDITY
+This quotation is valid for thirty (30) days from the date of issue.
+
+2. PRICES
+All prices are in Bahraini Dinars (BHD) unless otherwise stated. Prices are exclusive of VAT (%.0f%%) which will be added to the invoice.
+
+3. PAYMENT TERMS
+As per the payment terms specified in this quotation. Late payments may incur interest charges.
+
+4. DELIVERY
+Delivery times are estimates and subject to manufacturer's confirmation. PH Trading shall not be liable for delays beyond our control.
+
+5. WARRANTY
+All products carry the manufacturer's standard warranty. Extended warranty options are available upon request.
+
+6. INSTALLATION & COMMISSIONING
+Installation and commissioning services are available at additional cost unless included in the quotation.
+
+7. FORCE MAJEURE
+PH Trading shall not be liable for failure to perform due to causes beyond reasonable control.
+
+8. GOVERNING LAW
+This quotation is governed by the laws of the Kingdom of Bahrain.`, vatRate)
+}
+
+func firstPositiveInt(value, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func sumOfferItemCost(items []OfferItem) float64 {
+	total := 0.0
+	for _, item := range items {
+		total += item.TotalCost
+	}
+	return total
+}
+
+func percentageOrZero(part, total float64) float64 {
+	if total == 0 {
+		return 0
+	}
+	return (part / total) * 100
+}

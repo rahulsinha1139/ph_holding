@@ -226,7 +226,10 @@
   }
 
   function formatCurrency(value: number): string {
-    return (value || 0).toFixed(3);
+    return Number(value || 0).toLocaleString('en-US', {
+      minimumFractionDigits: 3,
+      maximumFractionDigits: 3
+    });
   }
 
   onMount(loadProfile);

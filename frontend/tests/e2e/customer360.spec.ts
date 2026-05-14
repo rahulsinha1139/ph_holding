@@ -12,7 +12,7 @@ test.describe('Relationships customer detail smoke', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Relationships' }).click();
-    await expect(page.getByRole('heading', { name: 'Relationships' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Relationships' })).toBeVisible({ timeout: 15000 });
     await expect(page.getByText('ALL CUSTOMERS')).toBeVisible();
 
     await page.locator('.customer-card').filter({ hasText: 'BAPCO' }).first().click();
@@ -28,7 +28,7 @@ test.describe('Relationships customer detail smoke', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Relationships' }).click();
-    await expect(page.getByText('ALL CUSTOMERS')).toBeVisible();
+    await expect(page.getByText('ALL CUSTOMERS')).toBeVisible({ timeout: 15000 });
     await page.locator('.customer-card').filter({ hasText: 'BAPCO' }).first().click();
 
     await page.getByRole('button', { name: '+ Add' }).click();

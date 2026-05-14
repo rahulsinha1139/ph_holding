@@ -1,15 +1,16 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { onDestroy, onMount } from "svelte";
     import { toast } from "$lib/stores/toasts";
     import { permissions } from '$lib/stores/authContext';
+    $: permissionList = Array.isArray($permissions) ? $permissions : [];
     $: canView =
-        $permissions.includes('*') ||
-        $permissions.includes('costing:read') ||
-        $permissions.includes('costing:*') ||
-        $permissions.includes('offers:view') ||
-        $permissions.includes('offers:create') ||
-        $permissions.includes('rfq:view') ||
-        $permissions.includes('orders:view');
+        permissionList.includes('*') ||
+        permissionList.includes('costing:read') ||
+        permissionList.includes('costing:*') ||
+        permissionList.includes('offers:view') ||
+        permissionList.includes('offers:create') ||
+        permissionList.includes('rfq:view') ||
+        permissionList.includes('orders:view');
     import WabiSpinner from "../components/ui/WabiSpinner.svelte";
     import Button from "../components/ui/Button.svelte";
     import Card from "../components/ui/Card.svelte";
@@ -27,17 +28,24 @@
         SaveCostingAsOffer,
         CreateCostingSheet,
         UpdateCostingSheet,
-        DeleteCostingSheet,
         GetCostingsByRFQ,
         SetActiveCostingRevision,
         CloneCostingAsNewRevision,
         GetSettings,
+        GetPreparedByOptions,
+        AttachCostingSheetFileWithDialog,
+        ListCostingSheetAttachments,
+        DeleteCostingSheetAttachment,
+        OpenCostingSheetAttachment,
     } from "../../../wailsjs/go/main/App";
 
     const dispatch = createEventDispatcher();
+    const COSTING_DRAFT_STORAGE_KEY = 'asymmflow.costingSheet.unsavedDraft.v2';
+    const COSTING_DRAFT_RESTORE_PAUSED_KEY = 'asymmflow.costingSheet.restorePaused.v1';
 
     // Props
     export let embedded = false;
+    export let active = true;
 
     // State
     let loading = true;
@@ -48,6 +56,8 @@
     let previewOpportunities: any[] = [];
     let selectedOpportunityId: string = '';
     let selectedOpportunity: any = null;
+    let sourceOfferId = '';
+    let sourceOfferNumber = '';
     let showCostingForm = false;
     let calculating = false;
     let saving = false;
@@ -64,6 +74,13 @@
     let loadingRevisions = false;
     let isDirty = false; // Track unsaved changes
     let showAdvancedHeader = false; // Toggle for compliance/certificate fields
+    let suppressDraftPersistence = false;
+    let lastPersistedDraftJSON = '';
+    let hasStoredDraft = false;
+    let showBackWarning = false;
+    let attachmentScopeId = '';
+    let costingAttachments: any[] = [];
+    let attachmentLoading = false;
 
     function parseYear(value: any): number {
         const numericYear = Number(value);
@@ -116,25 +133,44 @@
         if (!productDetails) return [];
         try {
             const parsed = JSON.parse(productDetails);
-            if (Array.isArray(parsed)) return parsed;
-            if (parsed && typeof parsed === 'object') return [parsed];
+            const items = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === 'object' ? [parsed] : []);
+            return items.filter((item: any) => !isSyntheticSeedItem(item));
         } catch {
             return [];
         }
-        return [];
+    }
+
+    function isSyntheticSeedItem(item: any): boolean {
+        const values = [
+            item?.description,
+            item?.equipment,
+            item?.name,
+            item?.part_number,
+            item?.model,
+            item?.product_code,
+        ];
+        return values.some((value) => /^line item\s+\d+\s*-?$/i.test(String(value || '').trim()));
     }
 
     function mapSeedItemsToCosting(seedItems: any[]): LineItem[] {
         const mapped = seedItems.slice(0, 10).map((seedItem: any) => {
             const item = createNewLineItem();
+            const quantity = Number(seedItem.quantity) || 1;
+            const explicitBHDUnitPrice = Number(seedItem.unit_price_bhd) || 0;
+            const totalPrice = Number(seedItem.total_price) || 0;
+            const foreignUnitPrice = Number(seedItem.unit_price) || (totalPrice > 0 ? totalPrice / quantity : 0);
+            const currency = explicitBHDUnitPrice > 0 ? 'BHD' : String(seedItem.currency || 'BHD').trim().toUpperCase();
+            const currencyRate = currencyOptions.find((option) => option.code === currency)?.rate || 1.0;
+
             item.equipment = seedItem.description || seedItem.equipment || seedItem.name || '';
             item.model = seedItem.part_number || seedItem.model || seedItem.product_code || seedItem.sku || '';
             item.longCode = seedItem.long_code || '';
             item.specification = seedItem.specification || '';
             item.detailedDescription = seedItem.detailed_description || '';
-            item.quantity = Number(seedItem.quantity) || 1;
-            item.currency = seedItem.currency || 'BHD';
-            item.fobForeign = Number(seedItem.unit_price_bhd || seedItem.unit_price || 0) || 0;
+            item.quantity = quantity;
+            item.currency = currencyOptions.some((option) => option.code === currency) ? currency : 'BHD';
+            item.exchangeRate = item.currency === 'BHD' ? 1.0 : currencyRate;
+            item.fobForeign = explicitBHDUnitPrice || foreignUnitPrice || 0;
             return item;
         }).filter((item: LineItem) => item.equipment || item.model || item.detailedDescription);
 
@@ -150,7 +186,19 @@
     }
 
     function getOpportunityDisplayReference(opp: any): string {
-        return opp?.folder_number || opp?.rfq_number || opp?.eh_ref || "Manual";
+        return opp?.rfq_ref || opp?.eh_ref || opp?.folder_number || opp?.rfq_number || "Manual";
+    }
+
+    function getOpportunityUserReference(opp: any): string {
+        return String(opp?.rfq_ref || opp?.eh_ref || opp?.customer_reference || opp?.rfqReference || opp?.folder_number || opp?.rfq_number || '').trim();
+    }
+
+    function getOpportunityFolderReference(opp: any): string {
+        return String(opp?.folder_number || (opp?._source === 'rfq' ? opp?.rfq_number : '') || '').trim();
+    }
+
+    function getSelectedOpportunityRecordId(): string {
+        return selectedOpportunity?._source === 'pipeline' ? String(selectedOpportunity.id || '') : '';
     }
 
     function getOpportunityValue(opp: any): number {
@@ -171,33 +219,48 @@
     // ========================================
     // HEADER SECTION - Matches Excel "Costing Sheet" header
     // ========================================
-    let header = {
-        division: 'PH Trading',
-        date: new Date().toISOString().split('T')[0],
-        preparedBy: '',
-        customerId: '',
-        customerName: '',
-        contactPerson: '',
-        rfqReference: '',
-        folderNumber: '',
-        costingId: '',
-        subject: '',
-        quoteType: 'Quotation',
-        estDelivery: '5-7 weeks',
-        deliveryTerms: 'DAP Bahrain at your store or PH Trading',
-        paymentTerms: '30 days from Date of Delivery',
-        orderType: 'General',
-        countryOfOrigin: 'DE',
-        cocCoo: 'No',
-        testCertificate: 'Additional charges applicable as per OEM terms',
-        installation: 'No',
-        commissioning: 'No',
-        testing: 'No',
-        // VAT/Tax compliance fields (Bahrain NBR)
-        placeOfSupply: 'Kingdom of Bahrain',
-        taxCategory: 'Standard',
-        customerTRN: '',
+    const defaultDeliveryTermsForDivision = (division: string) =>
+        division === 'AHS Trading' ? 'DAP Bahrain at your store or AHS Trading' : 'DAP Bahrain at your store or PH Trading';
+
+    const normaliseDeliveryTermsForDivision = (deliveryTerms: string, division: string) => {
+        const trimmed = (deliveryTerms || '').trim();
+        if (!trimmed || trimmed === 'DAP Bahrain at your store or PH Trading' || trimmed === 'DAP Bahrain at your store or AHS Trading') {
+            return defaultDeliveryTermsForDivision(division);
+        }
+        return trimmed;
     };
+
+    function createDefaultHeader(division = 'PH Trading') {
+        return {
+            division,
+            date: new Date().toISOString().split('T')[0],
+            preparedBy: '',
+            customerId: '',
+            customerName: '',
+            contactPerson: '',
+            rfqReference: '',
+            folderNumber: '',
+            costingId: '',
+            subject: '',
+            quoteType: 'Quotation',
+            estDelivery: '5-7 weeks',
+            deliveryTerms: defaultDeliveryTermsForDivision(division),
+            paymentTerms: '30 days from Date of Delivery',
+            orderType: 'General',
+            countryOfOrigin: 'DE',
+            cocCoo: 'No',
+            testCertificate: 'Additional charges applicable as per OEM terms',
+            installation: 'No',
+            commissioning: 'No',
+            testing: 'No',
+            // VAT/Tax compliance fields (Bahrain NBR)
+            placeOfSupply: 'Kingdom of Bahrain',
+            taxCategory: 'Standard',
+            customerTRN: '',
+        };
+    }
+
+    let header = createDefaultHeader();
 
     const defaultQuotationBody = `We thank you for the opportunity and are pleased to submit our techno-commercial offer for your review.
 
@@ -206,16 +269,37 @@ Please find our pricing and scope below. We trust the proposal meets your requir
 
     // Division options (sister companies)
     const divisionOptions = ['PH Trading', 'AHS Trading'];
-
+    let lastAppliedDivision = header.division;
     // Staff list for "Prepared By" dropdown
     const staffList = [
-        { name: 'Stanley Vaz', title: 'COO', phone: '+973 3662 3662', email: 'stanley.vaz@platinumholdings.com.bh' },
-        { name: 'Abhie Kore', title: 'Business Head', phone: '+973 3677 1513', email: 'abhi.kore@platinumholdings.com.bh' },
-        { name: 'V.M. Sundar', title: 'Manager', phone: '+973 3826 0157', email: 'vm.sundar@platinumholdings.com.bh' },
-        { name: 'Ebin Chacko', title: 'Technical Sales Engineer', phone: '+973 3641 8072', email: 'ebin.chacko@platinumholdings.com.bh' },
-        { name: 'Periyasamy N', title: 'Technical Sales Engineer', phone: '', email: '' },
-        { name: 'Ramya Baskaran', title: 'Sales Support', phone: '+973 3889 0513', email: 'support@platinumholdings.com.bh' },
+        { name: 'EBIN CHACKO', title: 'Technical Sales Engineer', phone: '+973 36418072', email: 'ebin.chacko@platinumholdings.com.bh' },
+        { name: 'Periyasamy Neelakandan', title: 'Assistant Sales Manager', phone: '+973 34128132', email: 'periyasamy.n@platinumholdings.com.bh' },
+        { name: 'V.M.Sundar', title: 'Business Development Manager', phone: '+973 38260157', email: 'vm.sundar@platinumholdings.com.bh' },
+        { name: 'RAMYA BASKARAN', title: '', phone: '+973 38890513', email: 'support@platinumholdings.com.bh' },
+        { name: 'STANLEY VAZ', title: 'Chief Operating Officer', phone: '+973 36623662', email: '' },
+        { name: 'Abhie Kore', title: 'General Manager', phone: '+973 36771513', email: '' },
     ];
+    let preparedByOptions: string[] = staffList.map((staff) => staff.name);
+
+    function mergePreparedByNames(...groups: Array<Array<string | null | undefined>>): string[] {
+        const seen = new Set<string>();
+        const names: string[] = [];
+        for (const group of groups) {
+            for (const rawName of group) {
+                const name = String(rawName || '').trim();
+                if (name && !seen.has(name.toLowerCase())) {
+                    seen.add(name.toLowerCase());
+                    names.push(name);
+                }
+            }
+        }
+        return names;
+    }
+
+    $: preparedBySelectOptions = mergePreparedByNames(
+        preparedByOptions,
+        header.preparedBy ? [header.preparedBy] : []
+    );
 
     // Dropdown options from Excel "Code" sheet
     const deliveryOptions = [
@@ -224,6 +308,7 @@ Please find our pricing and scope below. We trust the proposal meets your requir
     ];
     const deliveryTermsOptions = [
         'DAP Bahrain at your store or PH Trading',
+        'DAP Bahrain at your store or AHS Trading',
         'Ex-Works (EXW)',
         'Free Carrier (FCA)',
         'Delivered Duty Paid (DDP)',
@@ -257,7 +342,7 @@ Please find our pricing and scope below. We trust the proposal meets your requir
     ];
     const currencyOptions = [
         { code: 'BHD', rate: 1.0 },
-        { code: 'EUR', rate: 0.44 },
+        { code: 'EUR', rate: 0.45 },
         { code: 'USD', rate: 0.376 },
         { code: 'GBP', rate: 0.52 },
         { code: 'CHF', rate: 0.43 },
@@ -376,6 +461,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     function addLineItem() {
         if (lineItems.length < 10) {
             lineItems = [...lineItems, createNewLineItem()];
+            calculateAll();
         } else {
             toast.warning('Maximum 10 line items allowed');
         }
@@ -386,6 +472,16 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             lineItems = lineItems.filter((_, i) => i !== index);
             calculateAll();
         }
+    }
+
+    function toFiniteNumber(value: unknown, fallback = 0): number {
+        if (value === null || value === undefined || value === '') return fallback;
+        const numeric = typeof value === 'number' ? value : Number(value);
+        return Number.isFinite(numeric) ? numeric : fallback;
+    }
+
+    function nonNegativeNumber(value: unknown, fallback = 0): number {
+        return Math.max(0, toFiniteNumber(value, fallback));
     }
 
     // Issue #7: Copy first item's costs to all subsequent items
@@ -413,7 +509,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     // Issue #12: Filter out empty line items for validation/export
     function getValidLineItems(): LineItem[] {
         return lineItems.filter(item =>
-            item.equipment?.trim() || item.fobForeign > 0
+            item.equipment?.trim() || nonNegativeNumber(item.fobForeign) > 0
         );
     }
 
@@ -423,13 +519,20 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     function calculateLineItem(item: LineItem): LineItem {
         // Get exchange rate from currency
         const curr = currencyOptions.find(c => c.code === item.currency);
-        if (!(item.exchangeRate > 0)) {
-            item.exchangeRate = curr?.rate || 0.44;
-        }
+        item.exchangeRate = toFiniteNumber(item.exchangeRate, curr?.rate || 0.45);
+        if (!(item.exchangeRate > 0)) item.exchangeRate = curr?.rate || 0.45;
+        item.quantity = Math.max(1, toFiniteNumber(item.quantity, 1));
+        item.fobForeign = nonNegativeNumber(item.fobForeign);
+        item.insurance = nonNegativeNumber(item.insurance);
+        item.customsPercent = nonNegativeNumber(item.customsPercent, 5);
+        item.handlingPercent = nonNegativeNumber(item.handlingPercent, 4);
+        item.financePercent = nonNegativeNumber(item.financePercent, 1);
+        item.otherCosts = nonNegativeNumber(item.otherCosts);
+        item.userPrice = nonNegativeNumber(item.userPrice);
 
         // FOB and Freight in BHD
         item.fobBHD = item.fobForeign * item.exchangeRate;
-        item.freightPercent = Math.max(0, Number(item.freightPercent) || 0);
+        item.freightPercent = nonNegativeNumber(item.freightPercent);
         item.freightForeign = item.fobForeign * (item.freightPercent / 100);
         item.freightBHD = item.freightForeign * item.exchangeRate;
 
@@ -452,7 +555,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         item.totalCost = item.landedCost + item.handlingBHD + item.financeBHD + item.otherCosts;
 
         // MARKUP CALCULATION
-        item.marginPercent = Math.max(0, Number(item.marginPercent) || 0);
+        item.marginPercent = nonNegativeNumber(item.marginPercent);
         item.sellingPrice = item.totalCost * (1 + item.marginPercent / 100);
 
         // Profit amount from markup for display
@@ -472,25 +575,201 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         return item;
     }
 
-    function calculateAll() {
+    function recalculateLineItems() {
         lineItems = lineItems.map(item => calculateLineItem(item));
         lineItems = [...lineItems]; // Trigger reactivity
+    }
+
+    function calculateAll() {
+        recalculateLineItems();
+        markDirty();
+    }
+
+    function buildCostingDraftPayload() {
+        return {
+            schemaVersion: 2,
+            savedAt: new Date().toISOString(),
+            showCostingForm,
+            selectedOpportunityId,
+            selectedOpportunity,
+            sourceOfferId,
+            sourceOfferNumber,
+            attachmentScopeId,
+            selectedRevisionId: selectedRevision?.id || null,
+            currentCostingId,
+            header: { ...header },
+            lineItems: lineItems.map((item) => ({ ...item })),
+            discount,
+            hiddenCharges,
+            vatRate,
+            quotationBody,
+            termsAndConditions,
+            attachments: serialiseCostingAttachments(true),
+        };
+    }
+
+    function persistCostingDraft() {
+        if (suppressDraftPersistence || !showCostingForm || typeof localStorage === 'undefined') {
+            return;
+        }
+        try {
+            const draftJSON = JSON.stringify(buildCostingDraftPayload());
+            if (draftJSON !== lastPersistedDraftJSON) {
+                localStorage.setItem(COSTING_DRAFT_STORAGE_KEY, draftJSON);
+                lastPersistedDraftJSON = draftJSON;
+            }
+            hasStoredDraft = true;
+        } catch (err) {
+            console.warn('Failed to persist costing draft:', err);
+        }
+    }
+
+    function clearCostingDraft() {
+        if (typeof localStorage !== 'undefined') {
+            localStorage.removeItem(COSTING_DRAFT_STORAGE_KEY);
+        }
+        if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.removeItem(COSTING_DRAFT_RESTORE_PAUSED_KEY);
+        }
+        lastPersistedDraftJSON = '';
+        hasStoredDraft = false;
+    }
+
+    function refreshStoredDraftState() {
+        hasStoredDraft = typeof localStorage !== 'undefined' && Boolean(localStorage.getItem(COSTING_DRAFT_STORAGE_KEY));
+    }
+
+    function pauseDraftRestoreForSession() {
+        if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.setItem(COSTING_DRAFT_RESTORE_PAUSED_KEY, '1');
+        }
+    }
+
+    function resumeDraftRestoreForSession() {
+        if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.removeItem(COSTING_DRAFT_RESTORE_PAUSED_KEY);
+        }
+    }
+
+    function isDraftRestorePausedForSession() {
+        return typeof sessionStorage !== 'undefined' && sessionStorage.getItem(COSTING_DRAFT_RESTORE_PAUSED_KEY) === '1';
+    }
+
+    function markDirty() {
+        if (suppressDraftPersistence) return;
         isDirty = true;
+        persistCostingDraft();
+    }
+
+    function restoreLocalCostingDraft(payload: any) {
+        resumeDraftRestoreForSession();
+        suppressDraftPersistence = true;
+        try {
+            const draftHeader = payload?.header || {};
+            const draftDivision = draftHeader.division || header.division || 'PH Trading';
+            header = {
+                ...createDefaultHeader(draftDivision),
+                ...draftHeader,
+                deliveryTerms: normaliseDeliveryTermsForDivision(draftHeader.deliveryTerms || '', draftDivision),
+            };
+            selectedOpportunityId = String(payload?.selectedOpportunityId || '');
+            selectedOpportunity = opportunities.find((opp: any) => String(opp.id) === selectedOpportunityId) || payload?.selectedOpportunity || null;
+            sourceOfferId = String(payload?.sourceOfferId || '');
+            sourceOfferNumber = String(payload?.sourceOfferNumber || '');
+            attachmentScopeId = resolveAttachmentScope(payload);
+            costingAttachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
+            selectedRevision = null;
+            currentCostingId = payload?.currentCostingId || null;
+            rfqCostings = [];
+            lineItems = Array.isArray(payload?.lineItems) && payload.lineItems.length > 0
+                ? payload.lineItems.map((item: any, index: number) => normalisePersistedLineItem(item, index))
+                : [createNewLineItem()];
+            discount = Number(payload?.discount ?? 0) || 0;
+            hiddenCharges = Number(payload?.hiddenCharges ?? 0) || 0;
+            vatRate = Number(payload?.vatRate ?? vatRate) || vatRate;
+            quotationBody = payload?.quotationBody || defaultQuotationBody;
+            termsAndConditions = payload?.termsAndConditions || termsAndConditions;
+            showCostingForm = true;
+            recalculateLineItems();
+            void loadCostingAttachments(attachmentScopeId);
+        } finally {
+            suppressDraftPersistence = false;
+        }
+        isDirty = true;
+        persistCostingDraft();
+        toast.info('Restored an unsaved costing draft from this device.');
+    }
+
+    function maybeRestoreLocalCostingDraft() {
+        if (showCostingForm || typeof localStorage === 'undefined') return;
+        const draftJSON = localStorage.getItem(COSTING_DRAFT_STORAGE_KEY);
+        hasStoredDraft = Boolean(draftJSON);
+        if (!draftJSON) return;
+        if (isDraftRestorePausedForSession()) return;
+        try {
+            const payload = JSON.parse(draftJSON);
+            if (payload?.schemaVersion) {
+                lastPersistedDraftJSON = draftJSON;
+                restoreLocalCostingDraft(payload);
+            }
+        } catch (err) {
+            console.warn('Discarding unreadable costing draft:', err);
+            clearCostingDraft();
+        }
+    }
+
+    function resumeStoredCostingDraft() {
+        if (typeof localStorage === 'undefined') return;
+        const draftJSON = localStorage.getItem(COSTING_DRAFT_STORAGE_KEY);
+        if (!draftJSON) {
+            refreshStoredDraftState();
+            toast.warning('No saved costing draft found on this device.');
+            return;
+        }
+        try {
+            const payload = JSON.parse(draftJSON);
+            if (!payload?.schemaVersion) {
+                throw new Error('Draft format is not supported');
+            }
+            lastPersistedDraftJSON = draftJSON;
+            restoreLocalCostingDraft(payload);
+        } catch (err) {
+            console.warn('Discarding unreadable costing draft:', err);
+            clearCostingDraft();
+            isDirty = false;
+            toast.warning('That saved costing draft could not be reopened and was discarded.');
+        }
+    }
+
+    function discardStoredCostingDraft() {
+        clearCostingDraft();
+        isDirty = false;
+        toast.success('Saved costing draft discarded.');
+    }
+
+    function handleBeforeUnload(event: BeforeUnloadEvent) {
+        if (!isDirty) return;
+        persistCostingDraft();
+        event.preventDefault();
+        event.returnValue = 'You have unsaved costing changes. Save them or discard the draft before closing.';
     }
 
     // Summary calculations
-    $: subtotal = lineItems.reduce((sum, item) => sum + item.totalSuggestedPrice, 0);
+    $: subtotal = lineItems.reduce((sum, item) => sum + toFiniteNumber(item.totalSuggestedPrice), 0);
     let discount = 0;
     let hiddenCharges = 0;
-    $: netAmount = subtotal - discount;
-    $: vat = netAmount * (vatRate / 100);
+    $: effectiveDiscount = nonNegativeNumber(discount);
+    $: effectiveHiddenCharges = nonNegativeNumber(hiddenCharges);
+    $: effectiveVatRate = Math.min(100, nonNegativeNumber(vatRate, 10));
+    $: netAmount = Math.max(0, subtotal - effectiveDiscount);
+    $: vat = netAmount * (effectiveVatRate / 100);
     $: grandTotal = netAmount + vat;
-    $: totalCost = lineItems.reduce((sum, item) => sum + (item.totalCost * item.quantity), 0) + hiddenCharges;
+    $: totalCost = lineItems.reduce((sum, item) => sum + (toFiniteNumber(item.totalCost) * Math.max(1, toFiniteNumber(item.quantity, 1))), 0) + effectiveHiddenCharges;
     $: profit = netAmount - totalCost;
     $: profitPercent = netAmount > 0 ? (profit / netAmount) * 100 : 0;
 
     // Keep T&C VAT label in sync when user changes VAT rate
-    $: termsAndConditions = termsAndConditions.replace(/VAT \(\d+\.?\d*%\)/, `VAT (${vatRate}%)`);
+    $: termsAndConditions = termsAndConditions.replace(/VAT \(\d+\.?\d*%\)/, `VAT (${effectiveVatRate}%)`);
 
     // ========================================
     // DATA LOADING
@@ -498,15 +777,20 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     async function loadData() {
         loading = true;
         try {
-            const [c, s, rfqs, pipeline, settingsResult] = await Promise.all([
+            const [c, s, rfqs, pipeline, settingsResult, preparedByResult] = await Promise.all([
                 ListCustomers(500, 0),
                 GetCostingSheets(20).catch(() => []),
                 GetRFQs(200, 0).catch(() => []),
                 GetPipelineOpportunities(500, 0).catch(() => []),
                 GetSettings().catch(() => null),
+                GetPreparedByOptions().catch(() => []),
             ]);
             customers = c || [];
             costingSheets = s || [];
+            preparedByOptions = mergePreparedByNames(
+                staffList.map((staff) => staff.name),
+                (preparedByResult || []).map((name: any) => String(name || ''))
+            );
             const pipelineNormalized = (pipeline || []).map(normalizePipelineOpportunity);
             const liveRfqs = (rfqs || [])
                 .filter((rfq: any) => String(rfq?.rfq_number || '').trim())
@@ -565,18 +849,39 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                 console.warn('Using default supplier options:', e);
             }
 
+            let restoredLaunchPayload = false;
             const pendingCostingOpportunity = sessionStorage.getItem('asymmflow.pendingCostingOpportunity');
             if (pendingCostingOpportunity) {
                 try {
                     const pending = JSON.parse(pendingCostingOpportunity);
-                    const match = opportunities.find((opp: any) => String(opp.id) === String(pending?.id));
+                    const match = findOpportunityFromPendingLaunch(pending);
                     if (match) {
+                        restoredLaunchPayload = true;
                         selectedOpportunityId = String(match.id);
                         await handleOpportunitySelect();
+                    } else {
+                        toast.warning('Could not reopen that opportunity in costing. Please select it from the list.');
                     }
                 } finally {
                     sessionStorage.removeItem('asymmflow.pendingCostingOpportunity');
                 }
+            }
+
+            const pendingCostingOffer = sessionStorage.getItem('asymmflow.pendingCostingOffer');
+            if (pendingCostingOffer) {
+                try {
+                    const pending = JSON.parse(pendingCostingOffer);
+                    restoredLaunchPayload = true;
+                    restoreOfferCostingPayload(pending);
+                } finally {
+                    sessionStorage.removeItem('asymmflow.pendingCostingOffer');
+                }
+            }
+
+            if (!restoredLaunchPayload && active) {
+                maybeRestoreLocalCostingDraft();
+            } else {
+                refreshStoredDraftState();
             }
         } catch (err) {
             console.error('Failed to load data:', err);
@@ -590,14 +895,21 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         if (!selectedOpportunityId) {
             showCostingForm = false;
             selectedOpportunity = null;
+            sourceOfferId = '';
+            sourceOfferNumber = '';
             rfqCostings = [];
             selectedRevision = null;
             currentCostingId = null;
+            attachmentScopeId = '';
+            costingAttachments = [];
             return;
         }
 
+        resumeDraftRestoreForSession();
         selectedOpportunity = opportunities.find(o => String(o.id) === selectedOpportunityId);
         if (selectedOpportunity) {
+            sourceOfferId = '';
+            sourceOfferNumber = '';
             let restoredRevision = false;
             if (isRFQOpportunity(selectedOpportunity)) {
                 restoredRevision = await loadRevisionsForRFQ(Number(selectedOpportunity.id));
@@ -607,29 +919,37 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                 currentCostingId = null;
             }
 
-            // Pre-fill header from opportunity data
+            // Pre-fill the commercial header from the selected opportunity, including
+            // the user-facing reference so it survives the costing -> offer flow.
             const customerName = selectedOpportunity.client || selectedOpportunity.customer || '';
             const projectName = selectedOpportunity.project || selectedOpportunity.project_name || '';
-            const opportunityReference = getOpportunityDisplayReference(selectedOpportunity);
+            const opportunityReference = getOpportunityUserReference(selectedOpportunity);
+            const opportunityFolder = getOpportunityFolderReference(selectedOpportunity);
+            const opportunitySubject = selectedOpportunity.title || selectedOpportunity.project_name || selectedOpportunity.project || '';
+            const formattedOpportunitySubject = opportunitySubject
+                ? `Sub: ${String(opportunitySubject).replace(/^Sub:\s*/i, '').trim()}`
+                : '';
 
             // Find matching customer in customers list
-            const matchedCustomer = customers.find(c =>
-                c.business_name?.toLowerCase() === customerName.toLowerCase() ||
-                c.name?.toLowerCase() === customerName.toLowerCase()
-            );
+            const matchedCustomer = findMatchingCustomerByName(customerName);
 
             if (!restoredRevision) {
-                header.customerName = customerName;
-                header.customerId = matchedCustomer?.id || '';
-                header.contactPerson = matchedCustomer?.contact_person || matchedCustomer?.primary_contact || '';
-                header.rfqReference = opportunityReference;
-
-                // Generate folder number and costing ID
-                const year = String(parseYear(selectedOpportunity.year || selectedOpportunity.created_at)).slice(-2);
-                const num = costingSheets.length + 1; // Sequential based on existing sheets
-                header.folderNumber = opportunityReference !== 'Manual' ? opportunityReference : `${num}-${year}`;
-                header.costingId = `Offer ${num}-${year} ${customerName.split(' ')[0] || 'New'}`;
-                header.subject = projectName ? `Sub: ${projectName}` : `Sub: ${header.customerName || customerName}`;
+                const nextDivision = selectedOpportunity.division || header.division || 'PH Trading';
+                header = {
+                    ...header,
+                    customerName: matchedCustomer?.business_name || customerName,
+                    customerId: matchedCustomer?.id || '',
+                    contactPerson: matchedCustomer?.contact_person || matchedCustomer?.primary_contact || '',
+                    rfqReference: opportunityReference,
+                    folderNumber: opportunityFolder,
+                    costingId: opportunityReference || opportunityFolder,
+                    subject: formattedOpportunitySubject,
+                    division: nextDivision,
+                    deliveryTerms: normaliseDeliveryTermsForDivision(header.deliveryTerms, nextDivision),
+                };
+                attachmentScopeId = resolveAttachmentScope();
+                costingAttachments = [];
+                void loadCostingAttachments(attachmentScopeId);
             }
 
             // ========================================
@@ -640,12 +960,14 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
 
                 if (seedItems.length > 0) {
                     lineItems = mapSeedItemsToCosting(seedItems);
+                    calculateAll();
                     toast.success(`Loaded ${lineItems.length} line items from opportunity`);
                 } else if (selectedOpportunity._source === 'pipeline') {
                     try {
                         const linkedItems = await GetOpportunityLineItems(String(selectedOpportunity.id));
                         if (Array.isArray(linkedItems) && linkedItems.length > 0) {
                             lineItems = mapSeedItemsToCosting(linkedItems);
+                            calculateAll();
                             toast.success(`Loaded ${lineItems.length} line items from linked opportunity data`);
                         } else {
                             lineItems = [createNewLineItem()];
@@ -661,6 +983,9 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             }
 
             showCostingForm = true;
+            if (!restoredRevision) {
+                markDirty();
+            }
             toast.success(`Loaded opportunity: ${projectName}`);
         }
     }
@@ -726,7 +1051,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                 newCosting = await CloneCostingAsNewRevision(sourceId, header.preparedBy || 'System');
             } else {
                 // Create from current form data
-                const itemsJSON = JSON.stringify(buildExportData());
+                const itemsJSON = JSON.stringify(sanitiseCostingForSyncedPersistence(buildExportData()));
                 newCosting = await CreateCostingSheet(Number(selectedOpportunity.id), itemsJSON, header.preparedBy || 'System');
             }
 
@@ -759,51 +1084,127 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     function handleCustomerChange() {
         const customer = customers.find(c => c.id === header.customerId);
         if (customer) {
-            header.customerName = customer.business_name || '';
-            header.contactPerson = customer.contact_person || '';
-            // Generate folder number and costing ID
-            const year = new Date().getFullYear().toString().slice(-2);
-            const num = costingSheets.length + 1; // Sequential based on existing sheets
-            header.folderNumber = `${num}-${year}`;
-            header.costingId = `Offer ${num}-${year} ${header.customerName.split(' ')[0]}`;
-            header.subject = header.customerName ? `Sub: ${header.customerName}` : '';
+            header = {
+                ...header,
+                customerName: customer.business_name || customer.name || '',
+                contactPerson: customer.contact_person || customer.primary_contact || '',
+            };
+            markDirty();
         }
+    }
+
+    function normalizeCustomerName(value: string) {
+        return (value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    }
+
+    function normalizePartyLookupName(value: string) {
+        return normalizeCustomerName(value)
+            .replace(/&/g, ' and ')
+            .replace(/[^a-z0-9]+/g, ' ')
+            .replace(/\b(wll|llc|bsc|ltd|limited|company|co|with|liability)\b/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function namesRepresentSameParty(a: string, b: string) {
+        const left = normalizePartyLookupName(a);
+        const right = normalizePartyLookupName(b);
+        if (!left || !right) return false;
+        if (left === right) return true;
+        return left.length >= 8 && right.length >= 8 && (left.includes(right) || right.includes(left));
+    }
+
+    function findMatchingCustomerByName(customerName: string) {
+        const normalizedName = normalizePartyLookupName(customerName);
+        if (!normalizedName) return null;
+        return customers.find((c: any) => {
+            const names = [
+                c.business_name,
+                c.name,
+                c.customer_name,
+                c.customer_id,
+                c.customer_code,
+            ];
+            return names.some((candidate) => namesRepresentSameParty(String(candidate || ''), customerName));
+        }) || null;
+    }
+
+    function findOpportunityFromPendingLaunch(pending: any) {
+        const pendingId = String(pending?.id || '').trim();
+        const pendingReference = String(pending?.rfq_ref || pending?.eh_ref || pending?.folder_number || pending?.rfq_number || '').trim();
+        const pendingCustomer = String(pending?.customer_name || pending?.client || pending?.customer || '').trim();
+        return opportunities.find((opp: any) => {
+            const oppId = String(opp?.id || '').trim();
+            const oppReference = getOpportunityUserReference(opp);
+            if (pendingId && oppId === pendingId) return true;
+            if (pendingReference && oppReference && oppReference === pendingReference) return true;
+            return Boolean(pendingCustomer && namesRepresentSameParty(opp?.client || opp?.customer || opp?.customer_name || '', pendingCustomer));
+        }) || null;
+    }
+
+    function resolveCustomerForCostingPayload(customerId: string, customerName: string) {
+        const byId = customerId ? customers.find((c: any) => c.id === customerId) : null;
+        if (byId) {
+            return {
+                customerId: byId.id,
+                customerName: byId.business_name || customerName || '',
+            };
+        }
+
+        const byName = findMatchingCustomerByName(customerName);
+
+        return {
+            customerId: byName?.id || customerId || '',
+            customerName: byName?.business_name || customerName || '',
+        };
     }
 
     function startNewCosting() {
         // Start a blank costing without opportunity
+        resumeDraftRestoreForSession();
         selectedOpportunityId = '';
         selectedOpportunity = null;
+        sourceOfferId = '';
+        sourceOfferNumber = '';
         showCostingForm = true;
         // Reset header
-        header = {
-            division: 'PH Trading',
-            date: new Date().toISOString().split('T')[0],
-            preparedBy: '',
-            customerId: '',
-            customerName: '',
-            contactPerson: '',
-            rfqReference: '',
-            folderNumber: '',
-            costingId: '',
-            subject: '',
-            quoteType: 'Quotation',
-            estDelivery: '5-7 weeks',
-            deliveryTerms: 'DAP Bahrain at your store or PH Trading',
-            paymentTerms: '30 days from Date of Delivery',
-            orderType: 'General',
-            countryOfOrigin: 'DE',
-            cocCoo: 'No',
-            testCertificate: 'Additional charges applicable as per OEM terms',
-            installation: 'No',
-            commissioning: 'No',
-            testing: 'No',
-            placeOfSupply: 'Kingdom of Bahrain',
-            taxCategory: 'Standard',
-            customerTRN: '',
-        };
+        header = createDefaultHeader();
         lineItems = [createNewLineItem()];
         quotationBody = defaultQuotationBody;
+        attachmentScopeId = createDraftAttachmentScope();
+        costingAttachments = [];
+        isDirty = true;
+        persistCostingDraft();
+    }
+
+    function returnToCostingList() {
+        if (isDirty) {
+            persistCostingDraft();
+            toast.info('Costing draft saved on this device. Resume it from the Costing page when needed.');
+        }
+        showBackWarning = false;
+        showCostingForm = false;
+        selectedOpportunityId = '';
+        selectedOpportunity = null;
+        selectedRevision = null;
+        currentCostingId = null;
+        rfqCostings = [];
+        attachmentScopeId = '';
+        costingAttachments = [];
+        refreshStoredDraftState();
+        if (hasStoredDraft) {
+            pauseDraftRestoreForSession();
+        }
+        dispatch('navigate', { screen: 'opportunities', tab: 'costing' });
+    }
+
+    function handleBackToOpportunities() {
+        if (isDirty) {
+            persistCostingDraft();
+            showBackWarning = true;
+            return;
+        }
+        returnToCostingList();
     }
 
     function handleCurrencyChange(index: number) {
@@ -817,12 +1218,160 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     }
 
     // Format currency
-    function formatBHD(val: number): string {
-        return val.toFixed(3) + ' BHD';
+    function formatBHD(val: unknown): string {
+        return toFiniteNumber(val).toLocaleString('en-US', {
+            minimumFractionDigits: 3,
+            maximumFractionDigits: 3
+        }) + ' BHD';
     }
 
-    function formatPercent(val: number): string {
-        return val.toFixed(0) + '%';
+    function formatPercent(val: unknown): string {
+        return toFiniteNumber(val).toFixed(0) + '%';
+    }
+
+    function formatNumber(val: unknown, decimals = 0): string {
+        return toFiniteNumber(val).toLocaleString('en-US', {
+            minimumFractionDigits: decimals,
+            maximumFractionDigits: decimals
+        });
+    }
+
+    function formatFileSize(bytes: unknown): string {
+        const size = toFiniteNumber(bytes);
+        if (size >= 1024 * 1024) {
+            return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+        }
+        if (size >= 1024) {
+            return `${(size / 1024).toFixed(0)} KB`;
+        }
+        return `${size.toFixed(0)} B`;
+    }
+
+    function serialiseCostingAttachment(attachment: any, includeLocalPath = false) {
+        const safeAttachment: any = {
+            id: attachment.id,
+            scope_id: attachment.scope_id,
+            costing_number: attachment.costing_number,
+            file_name: attachment.file_name,
+            file_ext: attachment.file_ext,
+            mime_type: attachment.mime_type,
+            file_size: attachment.file_size,
+            file_hash: attachment.file_hash,
+            storage_mode: attachment.storage_mode || 'database',
+            notes: attachment.notes,
+            uploaded_by: attachment.uploaded_by,
+            created_at: attachment.created_at,
+        };
+        if (includeLocalPath && safeAttachment.storage_mode === 'local_file') {
+            safeAttachment.local_path = attachment.local_path;
+        }
+        return safeAttachment;
+    }
+
+    function serialiseCostingAttachments(includeLocalPath = false) {
+        return costingAttachments.map((attachment) => serialiseCostingAttachment(attachment, includeLocalPath));
+    }
+
+    function sanitiseCostingForSyncedPersistence(data: any) {
+        return {
+            ...data,
+            attachments: (data.attachments || [])
+                .filter((attachment: any) => (attachment.storage_mode || 'database') !== 'local_file')
+                .map((attachment: any) => serialiseCostingAttachment(attachment, false)),
+        };
+    }
+
+    function createDraftAttachmentScope(): string {
+        const randomPart = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        return `draft-${randomPart}`;
+    }
+
+    function resolveAttachmentScope(fallbackPayload: any = null): string {
+        const existing = String(
+            attachmentScopeId ||
+            fallbackPayload?.attachmentScopeId ||
+            fallbackPayload?.attachment_scope_id ||
+            ''
+        ).trim();
+        if (existing) return existing;
+
+        const reference = String(
+            header.costingId ||
+            header.rfqReference ||
+            header.folderNumber ||
+            sourceOfferId ||
+            selectedRevision?.id ||
+            currentCostingId ||
+            selectedOpportunityId ||
+            ''
+        ).trim();
+        if (reference) {
+            return `costing-${reference.replace(/[^A-Za-z0-9_.:-]+/g, '-')}`;
+        }
+        return createDraftAttachmentScope();
+    }
+
+    async function loadCostingAttachments(scope = attachmentScopeId) {
+        const resolvedScope = String(scope || '').trim();
+        if (!resolvedScope) {
+            costingAttachments = [];
+            return;
+        }
+        try {
+            costingAttachments = await ListCostingSheetAttachments(resolvedScope) || [];
+        } catch (err) {
+            console.warn('Failed to load costing attachments:', err);
+            costingAttachments = [];
+        }
+    }
+
+    async function handleAttachDatasheet() {
+        attachmentScopeId = resolveAttachmentScope();
+        attachmentLoading = true;
+        try {
+            const attached = await AttachCostingSheetFileWithDialog(
+                attachmentScopeId,
+                header.costingId || header.rfqReference || header.folderNumber || sourceOfferNumber || 'Costing Sheet',
+                header.customerName || selectedOpportunity?.customer_name || selectedOpportunity?.customer || '',
+                ''
+            );
+            if (attached) {
+                await loadCostingAttachments(attachmentScopeId);
+                markDirty();
+                toast.success(attached.storage_mode === 'local_file'
+                    ? 'Large PDF stored locally and will be bundled when printing.'
+                    : 'Technical datasheet attached.');
+            }
+        } catch (err) {
+            toast.danger('Failed to attach datasheet: ' + String(err));
+        } finally {
+            attachmentLoading = false;
+        }
+    }
+
+    async function handleOpenAttachment(attachmentId: string) {
+        try {
+            await OpenCostingSheetAttachment(attachmentId);
+        } catch (err) {
+            toast.danger('Failed to open attachment: ' + String(err));
+        }
+    }
+
+    async function handleDeleteAttachment(attachmentId: string) {
+        if (!attachmentId || attachmentLoading) return;
+        attachmentLoading = true;
+        try {
+            await DeleteCostingSheetAttachment(attachmentId);
+            costingAttachments = costingAttachments.filter((attachment) => attachment.id !== attachmentId);
+            markDirty();
+            toast.success('Attachment removed.');
+        } catch (err) {
+            toast.danger('Failed to remove attachment: ' + String(err));
+        } finally {
+            attachmentLoading = false;
+        }
     }
 
     function normalisePersistedLineItem(item: any, index: number) {
@@ -841,8 +1390,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         return {
             ...createNewLineItem(),
             slNo: item.slNo || item.sl_no || index + 1,
-            equipment: item.equipment || '',
-            model: item.model || '',
+            equipment: item.equipment || item.description || '',
+            model: item.model || item.product_code || item.product_id || '',
             serialNumber: item.serialNumber || item.serial_number || '',
             longCode: item.longCode || item.long_code || '',
             specification: item.specification || '',
@@ -875,6 +1424,12 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     function restoreCostingPayload(revision: any, parsed: any) {
         const payload = Array.isArray(parsed) ? { lineItems: parsed } : (parsed || {});
         const persistedLineItems = Array.isArray(payload.lineItems) ? payload.lineItems : [];
+        sourceOfferId = String(payload.offerId || payload.offer_id || '');
+        sourceOfferNumber = String(payload.offerNumber || payload.offer_number || '');
+        const resolvedCustomer = resolveCustomerForCostingPayload(
+            payload.customerId || payload.customer_id || header.customerId,
+            payload.customerName || payload.customer_name || header.customerName,
+        );
 
         lineItems = persistedLineItems.length > 0
             ? persistedLineItems.map((item: any, index: number) => normalisePersistedLineItem(item, index))
@@ -885,14 +1440,15 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             division: payload.division || header.division,
             date: payload.date || header.date,
             preparedBy: payload.preparedBy || revision.created_by || header.preparedBy,
-            customerName: payload.customerName || header.customerName,
+            customerName: resolvedCustomer.customerName || header.customerName,
             contactPerson: payload.contactPerson || header.contactPerson,
+            customerId: resolvedCustomer.customerId || header.customerId,
             rfqReference: payload.rfqReference || header.rfqReference,
             folderNumber: payload.folderNumber || header.folderNumber,
             costingId: payload.costingId || header.costingId,
             subject: payload.subject || header.subject,
             estDelivery: payload.estDelivery || header.estDelivery,
-            deliveryTerms: payload.deliveryTerms || header.deliveryTerms,
+            deliveryTerms: normaliseDeliveryTermsForDivision(payload.deliveryTerms || header.deliveryTerms, payload.division || header.division),
             paymentTerms: payload.paymentTerms || header.paymentTerms,
             orderType: payload.orderType || header.orderType,
             countryOfOrigin: payload.countryOfOrigin || header.countryOfOrigin,
@@ -913,25 +1469,52 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         quotationBody = payload.body || defaultQuotationBody;
         termsAndConditions = payload.termsAndConditions || termsAndConditions;
         currentCostingId = revision.id || null;
-        calculateAll();
+        attachmentScopeId = resolveAttachmentScope(payload);
+        costingAttachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+        void loadCostingAttachments(attachmentScopeId);
+        recalculateLineItems();
+        isDirty = false;
+    }
+
+    function restoreOfferCostingPayload(payload: any) {
+        selectedOpportunityId = '';
+        selectedOpportunity = null;
+        rfqCostings = [];
+        selectedRevision = null;
+        currentCostingId = null;
+        restoreCostingPayload({ id: null, created_by: payload.preparedBy || '' }, payload);
+        showCostingForm = true;
+        markDirty();
+        toast.success(`Loaded ${payload.offerNumber || 'offer'} into the costing sheet`);
     }
 
     // ========================================
     // EXPORT FUNCTIONS
     // ========================================
     function buildExportData() {
+        recalculateLineItems();
+        const opportunityReference = getOpportunityUserReference(selectedOpportunity);
+        const rfqReference = header.rfqReference || opportunityReference;
+        const folderNumber = header.folderNumber || getOpportunityFolderReference(selectedOpportunity);
+        const costingId = header.costingId || rfqReference || folderNumber;
+        attachmentScopeId = resolveAttachmentScope();
+
         return {
             division: header.division,
+            source: sourceOfferId ? 'offer' : '',
+            offerId: sourceOfferId,
+            offerNumber: sourceOfferNumber,
             date: header.date,
             preparedBy: header.preparedBy,
+            customerId: header.customerId,
             customerName: header.customerName,
             contactPerson: header.contactPerson,
-            rfqReference: header.rfqReference,
-            folderNumber: header.folderNumber,
-            costingId: header.costingId,
+            rfqReference,
+            folderNumber,
+            costingId,
             subject: header.subject,
             estDelivery: header.estDelivery,
-            deliveryTerms: header.deliveryTerms,
+            deliveryTerms: normaliseDeliveryTermsForDivision(header.deliveryTerms, header.division),
             paymentTerms: header.paymentTerms,
             orderType: header.orderType,
             countryOfOrigin: header.countryOfOrigin,
@@ -941,9 +1524,12 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             commissioning: header.commissioning,
             testing: header.testing,
             lineItems: getValidLineItems().map((item, i) => {
-                const effectivePrice = item.userPriceSet && item.userPrice > 0
-                    ? item.userPrice
-                    : item.suggestedPriceUnit;
+                const quantity = Math.max(1, toFiniteNumber(item.quantity, 1));
+                const userPrice = nonNegativeNumber(item.userPrice);
+                const suggestedPriceUnit = nonNegativeNumber(item.suggestedPriceUnit);
+                const effectivePrice = item.userPriceSet && userPrice > 0
+                    ? userPrice
+                    : suggestedPriceUnit;
                 return {
                     slNo: i + 1,
                     // supplier removed - invoices link to suppliers instead
@@ -955,46 +1541,49 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     specification: item.specification || '',
                     detailedDescription: item.detailedDescription || '',
                     currency: item.currency,
-                    quantity: item.quantity,
-                    fob: item.fobForeign,
-                    freight: item.freightForeign,
-                    freightPercent: item.freightPercent,
-                    totalCost: item.totalCost,
-                    marginPercent: item.marginPercent,
-                    markupPercent: item.marginPercent,
+                    quantity,
+                    fob: nonNegativeNumber(item.fobForeign),
+                    freight: nonNegativeNumber(item.freightForeign),
+                    freightPercent: nonNegativeNumber(item.freightPercent),
+                    totalCost: nonNegativeNumber(item.totalCost),
+                    marginPercent: nonNegativeNumber(item.marginPercent),
+                    markupPercent: nonNegativeNumber(item.marginPercent),
                     suggestedPrice: effectivePrice,
-                    totalPrice: item.totalSuggestedPrice,
+                    totalPrice: effectivePrice * quantity,
                     // Full cost breakdown for persistence
-                    exchangeRate: item.exchangeRate,
-                    fobBHD: item.fobBHD,
-                    freightBHD: item.freightBHD,
-                    insurance: item.insurance,
-                    customsPercent: item.customsPercent,
-                    customsBHD: item.customsBHD,
-                    handlingPercent: item.handlingPercent,
-                    handlingBHD: item.handlingBHD,
-                    financePercent: item.financePercent,
-                    financeBHD: item.financeBHD,
-                    otherCosts: item.otherCosts,
-                    userPrice: item.userPrice,
-                    userPriceSet: item.userPriceSet,
+                    exchangeRate: toFiniteNumber(item.exchangeRate, 1),
+                    fobBHD: nonNegativeNumber(item.fobBHD),
+                    freightBHD: nonNegativeNumber(item.freightBHD),
+                    insurance: nonNegativeNumber(item.insurance),
+                    customsPercent: nonNegativeNumber(item.customsPercent),
+                    customsBHD: nonNegativeNumber(item.customsBHD),
+                    handlingPercent: nonNegativeNumber(item.handlingPercent),
+                    handlingBHD: nonNegativeNumber(item.handlingBHD),
+                    financePercent: nonNegativeNumber(item.financePercent),
+                    financeBHD: nonNegativeNumber(item.financeBHD),
+                    otherCosts: nonNegativeNumber(item.otherCosts),
+                    userPrice,
+                    userPriceSet: item.userPriceSet && userPrice > 0,
                 };
             }),
-            subtotal: subtotal,
-            discount: discount,
-            netAmount: netAmount,
-            vat: vat,
-            grandTotal: grandTotal,
-            totalCost: totalCost,
-            profit: profit,
-            profitPercent: profitPercent,
+            subtotal: toFiniteNumber(subtotal),
+            discount: effectiveDiscount,
+            netAmount: toFiniteNumber(netAmount),
+            vat: toFiniteNumber(vat),
+            grandTotal: toFiniteNumber(grandTotal),
+            totalCost: toFiniteNumber(totalCost),
+            profit: toFiniteNumber(profit),
+            profitPercent: toFiniteNumber(profitPercent),
             opportunityId: getSelectedRFQId(),
-            projectName: selectedOpportunity?.project || selectedOpportunity?.project_name || '',
+            opportunityRecordId: getSelectedOpportunityRecordId(),
+            projectName: selectedOpportunity?.title || selectedOpportunity?.project_name || selectedOpportunity?.project || '',
             body: quotationBody,
             termsAndConditions: termsAndConditions,
+            attachmentScopeId,
+            attachments: serialiseCostingAttachments(true),
             quoteType: header.quoteType || 'Quotation',
-            vatRate: vatRate,
-            hiddenCharges: hiddenCharges,
+            vatRate: effectiveVatRate,
+            hiddenCharges: effectiveHiddenCharges,
             // VAT/Tax compliance
             placeOfSupply: header.placeOfSupply || 'Kingdom of Bahrain',
             taxCategory: header.taxCategory || 'Standard',
@@ -1049,57 +1638,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     }
 
     let savingOffer = false;
-    let deletingCosting = false;
     let currentCostingId: number | null = null;
-
-    const sectionFieldId = (section: string, field: string) => `costing-${section}-${field}`;
-    const lineItemFieldId = (index: number, field: string) => `costing-line-${index}-${field}`;
-    const costBreakdownFieldId = (index: number, field: string) => `costing-cost-${index}-${field}`;
-
-    function handleRevisionKeydown(event: KeyboardEvent, rev: any) {
-        if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            selectRevision(rev);
-        }
-    }
-
-    // Phase 5: Delete costing sheet handler
-    async function handleDeleteCosting() {
-        const rfqId = getSelectedRFQId();
-        if (!rfqId) {
-            toast.warning('No costing sheet to delete');
-            return;
-        }
-
-        const confirmed = confirm('Are you sure you want to delete this costing sheet? This cannot be undone.');
-        if (!confirmed) return;
-
-        deletingCosting = true;
-        try {
-            // Try to find the costing sheet ID linked to this RFQ
-            const sheet = costingSheets.find(s => Number(s.RFQID) === rfqId);
-            if (sheet?.ID) {
-                await DeleteCostingSheet(sheet.ID);
-                toast.success('Costing sheet deleted');
-                // Navigate back to opportunity selection
-                showCostingForm = false;
-                selectedOpportunityId = '';
-                selectedOpportunity = null;
-                await loadData();
-            } else {
-                // No saved costing sheet yet - just clear the form
-                showCostingForm = false;
-                selectedOpportunityId = '';
-                selectedOpportunity = null;
-                toast.info('Form cleared (no saved costing)');
-            }
-        } catch (err) {
-            console.error('Failed to delete costing:', err);
-            toast.danger('Failed to delete: ' + String(err));
-        } finally {
-            deletingCosting = false;
-        }
-    }
 
     async function handleSaveAsOffer() {
         if (savingOffer) return; // Prevent double-click
@@ -1121,11 +1660,11 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     if (selectedRevision?.id || currentCostingId) {
                         await UpdateCostingSheet(selectedRevision?.id || currentCostingId, {
                             ...selectedRevision,
-                            items: JSON.stringify(persistedCosting),
+                            items: JSON.stringify(sanitiseCostingForSyncedPersistence(persistedCosting)),
                             created_by: header.preparedBy || 'System',
                         } as any);
                     } else {
-                        const saved = await CreateCostingSheet(rfqId, JSON.stringify(persistedCosting), header.preparedBy || 'System');
+                        const saved = await CreateCostingSheet(rfqId, JSON.stringify(sanitiseCostingForSyncedPersistence(persistedCosting)), header.preparedBy || 'System');
                         currentCostingId = saved?.id || null;
                     }
                 } catch (err) {
@@ -1138,11 +1677,21 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             const data = buildExportData();
             const offer = await SaveCostingAsOffer(data as any);
             if (offer) {
-                toast.success(`Offer ${offer.offer_number} created! View it in Sales Hub - Offers`);
+                const actionText = sourceOfferId ? 'updated' : 'created';
+                toast.success(`Offer ${offer.offer_number} ${actionText}! View it in Sales Hub - Offers`);
 
                 // Refresh recent sheets list
                 costingSheets = await GetCostingSheets(20).catch(() => []);
 
+                showCostingForm = false;
+                selectedOpportunityId = '';
+                selectedOpportunity = null;
+                selectedRevision = null;
+                currentCostingId = null;
+                sourceOfferId = '';
+                sourceOfferNumber = '';
+                isDirty = false;
+                clearCostingDraft();
                 dispatch('navigate', { screen: 'opportunities', tab: 'offers' });
             }
         } catch (err) {
@@ -1154,12 +1703,17 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     }
 
     onMount(() => {
+        window.addEventListener('beforeunload', handleBeforeUnload);
         if (!canView) {
             loading = false;
         }
     });
 
-    $: if (canView && !hasLoadedInitialData) {
+    onDestroy(() => {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+    });
+
+    $: if (canView && active && !hasLoadedInitialData) {
         hasLoadedInitialData = true;
         void loadData();
     }
@@ -1174,9 +1728,6 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         <div class="header-actions">
             <Button variant="secondary" on:click={loadData}>Refresh</Button>
             {#if showCostingForm}
-                <Button variant="danger" on:click={handleDeleteCosting} disabled={deletingCosting}>
-                    {deletingCosting ? 'Deleting...' : 'Delete'}
-                </Button>
                 <Button variant="secondary" on:click={handleExportExcel} disabled={exporting}>
                     {exporting ? 'Exporting...' : 'Export Excel'}
                 </Button>
@@ -1203,10 +1754,26 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     <p class="selector-description">
                         Select an opportunity to create a costing sheet. Customer details will be pre-filled automatically.
                     </p>
+                    {#if hasStoredDraft}
+                        <div class="draft-recovery-panel">
+                            <div>
+                                <span class="field-label">Saved Draft</span>
+                                <p>Unsaved costing draft saved on this device.</p>
+                            </div>
+                            <div class="draft-recovery-actions">
+                                <Button variant="secondary" size="sm" on:click={resumeStoredCostingDraft}>
+                                    Resume Draft
+                                </Button>
+                                <Button variant="danger" size="sm" on:click={discardStoredCostingDraft}>
+                                    Discard
+                                </Button>
+                            </div>
+                        </div>
+                    {/if}
                     <div class="selector-grid">
                         <div class="form-group selector-dropdown">
-                            <label for={sectionFieldId('selector', 'opportunity')}>Opportunity / RFQ</label>
-                            <select id={sectionFieldId('selector', 'opportunity')} bind:value={selectedOpportunityId} on:change={handleOpportunitySelect} class="input">
+                            <span class="field-label">Opportunity / RFQ</span>
+                            <select bind:value={selectedOpportunityId} on:change={handleOpportunitySelect} class="input">
                                 <option value="">-- Select an Opportunity --</option>
                                 {#each opportunities as opp}
                                     <option value={String(opp.id)}>
@@ -1258,10 +1825,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         {:else}
             <!-- Back Button and Selected Opportunity Info -->
             <div class="selected-opportunity-bar">
-                <Button variant="ghost" on:click={() => {
-                    if (isDirty && !confirm('You have unsaved changes. Leave anyway?')) return;
-                    showCostingForm = false; selectedOpportunityId = ''; selectedOpportunity = null; isDirty = false;
-                }}>
+                <Button variant="ghost" on:click={handleBackToOpportunities}>
                     Back to Opportunities
                 </Button>
                 {#if selectedOpportunity}
@@ -1280,6 +1844,38 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                 {/if}
             </div>
 
+            {#if showBackWarning}
+                <div
+                    class="modal-backdrop costing-backdrop"
+                    role="button"
+                    tabindex="0"
+                    on:click|self={() => (showBackWarning = false)}
+                    on:keydown={(event) => {
+                        if (event.currentTarget !== event.target) return;
+                        if (event.key === 'Escape') {
+                            event.preventDefault();
+                            showBackWarning = false;
+                        }
+                    }}
+                >
+                    <section class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="costing-back-title">
+                        <span class="confirm-kicker">Unsaved Changes</span>
+                        <h2 id="costing-back-title">Leave this costing sheet?</h2>
+                        <p>
+                            Your changes have not been saved as an offer yet. A local draft will be kept on this device so it can be resumed from the Costing page.
+                        </p>
+                        <div class="confirm-actions">
+                            <Button variant="secondary" on:click={() => (showBackWarning = false)}>
+                                Stay on Sheet
+                            </Button>
+                            <Button variant="warning" on:click={returnToCostingList}>
+                                Keep Draft & Go Back
+                            </Button>
+                        </div>
+                    </section>
+                </div>
+            {/if}
+
             <!-- Revision Selector (Feature D - only show if RFQ selected) -->
             {#if isRFQOpportunity(selectedOpportunity) && rfqCostings.length > 0}
                 <Card title="Costing Revisions">
@@ -1290,7 +1886,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 class:active={rev.is_active}
                                 class:selected={selectedRevision?.id === rev.id}
                                 on:click={() => selectRevision(rev)}
-                                on:keydown={(event) => handleRevisionKeydown(event, rev)}
+                                on:keydown={(event) => (event.key === 'Enter' || event.key === ' ') && selectRevision(rev)}
                                 role="button"
                                 tabindex="0"
                             >
@@ -1333,7 +1929,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                 </Card>
             {/if}
 
-        <div class="costing-layout">
+        <div class="costing-layout" on:input={markDirty} on:change={markDirty}>
             <!-- Left: Costing Form -->
             <div class="main-form">
                 <!-- Header Section -->
@@ -1341,8 +1937,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     <!-- Row 1: Core fields always visible -->
                     <div class="header-row-3col tight">
                         <div class="field-group">
-                            <label for={sectionFieldId('header', 'customer')}>Customer *</label>
-                            <select id={sectionFieldId('header', 'customer')} bind:value={header.customerId} on:change={handleCustomerChange} class="input">
+                            <span class="field-label">Customer *</span>
+                            <select bind:value={header.customerId} on:change={handleCustomerChange} class="input">
                                 <option value="">Select customer...</option>
                                 {#each customers as c}
                                     <option value={c.id}>{c.business_name}</option>
@@ -1350,37 +1946,37 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             </select>
                         </div>
                         <div class="field-group">
-                            <label for={sectionFieldId('header', 'contact-person')}>Contact Person</label>
-                            <input id={sectionFieldId('header', 'contact-person')} type="text" bind:value={header.contactPerson} class="input" placeholder="Name" />
+                            <span class="field-label">Contact Person</span>
+                            <input type="text" bind:value={header.contactPerson} class="input" placeholder="Name" />
                         </div>
                         <div class="field-group">
-                            <label for={sectionFieldId('header', 'rfq-reference')}>RFQ Reference</label>
-                            <input id={sectionFieldId('header', 'rfq-reference')} type="text" bind:value={header.rfqReference} class="input" placeholder="RFQ / Enquiry ref" />
+                            <span class="field-label">RFQ Reference</span>
+                            <input type="text" bind:value={header.rfqReference} class="input" placeholder="RFQ / Enquiry ref" />
                         </div>
                     </div>
 
                     <!-- Row 2: Document + commercial -->
                     <div class="header-row-6col tight">
                         <div class="field-group">
-                            <label for={sectionFieldId('header', 'division')}>Division</label>
-                            <select id={sectionFieldId('header', 'division')} bind:value={header.division} class="input-sm">
+                            <span class="field-label">Division</span>
+                            <select bind:value={header.division} class="input-sm">
                                 {#each divisionOptions as div}<option value={div}>{div}</option>{/each}
                             </select>
                         </div>
                         <div class="field-group">
-                            <label for={sectionFieldId('header', 'date')}>Date</label>
-                            <input id={sectionFieldId('header', 'date')} type="date" bind:value={header.date} class="input-sm" />
+                            <span class="field-label">Date</span>
+                            <input type="date" bind:value={header.date} class="input-sm" />
                         </div>
                         <div class="field-group">
-                            <label for={sectionFieldId('header', 'prepared-by')}>Prepared By</label>
-                            <select id={sectionFieldId('header', 'prepared-by')} bind:value={header.preparedBy} class="input-sm">
+                            <span class="field-label">Prepared By</span>
+                            <select bind:value={header.preparedBy} class="input-sm">
                                 <option value="">Select...</option>
-                                {#each staffList as staff}<option value={staff.name}>{staff.name}</option>{/each}
+                                {#each preparedBySelectOptions as staffName}<option value={staffName}>{staffName}</option>{/each}
                             </select>
                         </div>
                         <div class="field-group">
-                            <label for={sectionFieldId('header', 'doc-type')}>Doc Type</label>
-                            <select id={sectionFieldId('header', 'doc-type')} bind:value={header.quoteType} class="input-sm">
+                            <span class="field-label">Doc Type</span>
+                            <select bind:value={header.quoteType} class="input-sm">
                                 <option value="Quotation">Quotation</option>
                                 <option value="Budgetary Quote">Budgetary Quote</option>
                                 <option value="Budgetary Estimate">Budgetary Est.</option>
@@ -1389,47 +1985,82 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             </select>
                         </div>
                         <div class="field-group">
-                            <label for={sectionFieldId('header', 'folder-number')}>Folder No.</label>
-                            <input id={sectionFieldId('header', 'folder-number')} type="text" bind:value={header.folderNumber} class="input-sm" placeholder="42-26" />
+                            <span class="field-label">Folder No.</span>
+                            <input type="text" bind:value={header.folderNumber} class="input-sm" placeholder="Enter folder no." />
                         </div>
                         <div class="field-group">
-                            <label for={sectionFieldId('header', 'costing-id')}>Costing ID</label>
-                            <input id={sectionFieldId('header', 'costing-id')} type="text" bind:value={header.costingId} class="input-sm" placeholder="Auto" />
+                            <span class="field-label">Costing ID</span>
+                            <input type="text" bind:value={header.costingId} class="input-sm" placeholder="Enter costing ID" />
                         </div>
                     </div>
 
                     <!-- Row 3: Terms (always visible - needed for every quote) -->
                     <div class="header-row-3col tight">
                         <div class="field-group">
-                            <label for={sectionFieldId('header', 'payment-terms')}>Payment Terms</label>
-                            <select id={sectionFieldId('header', 'payment-terms')} bind:value={header.paymentTerms} class="input-sm">
+                            <span class="field-label">Payment Terms</span>
+                            <select bind:value={header.paymentTerms} class="input-sm">
                                 {#each paymentTermsOptions as opt}<option value={opt}>{opt}</option>{/each}
                             </select>
                         </div>
                         <div class="field-group">
-                            <label for={sectionFieldId('header', 'delivery-terms')}>Delivery Terms</label>
-                            <select id={sectionFieldId('header', 'delivery-terms')} bind:value={header.deliveryTerms} class="input-sm">
+                            <span class="field-label">Delivery Terms</span>
+                            <select bind:value={header.deliveryTerms} class="input-sm">
                                 {#each deliveryTermsOptions as opt}<option value={opt}>{opt}</option>{/each}
                             </select>
                         </div>
                         <div class="field-group">
-                            <label for={sectionFieldId('header', 'estimated-delivery')}>Est. Delivery</label>
-                            <select id={sectionFieldId('header', 'estimated-delivery')} bind:value={header.estDelivery} class="input-sm">
+                            <span class="field-label">Est. Delivery</span>
+                            <select bind:value={header.estDelivery} class="input-sm">
                                 {#each deliveryOptions as opt}<option value={opt}>{opt}</option>{/each}
                             </select>
                         </div>
                     </div>
                     <div class="header-row-3col tight">
                         <div class="field-group full-span">
-                            <label for={sectionFieldId('header', 'subject')}>Subject</label>
-                            <input id={sectionFieldId('header', 'subject')} type="text" bind:value={header.subject} class="input-sm" placeholder="Subject line for customer PDF" />
+                            <span class="field-label">Subject</span>
+                            <input type="text" bind:value={header.subject} class="input-sm" placeholder="Subject line for customer PDF" />
                         </div>
                     </div>
                     <div class="header-row-3col tight">
                         <div class="field-group full-span">
-                            <label for={sectionFieldId('header', 'pdf-body')}>PDF Body</label>
-                            <textarea id={sectionFieldId('header', 'pdf-body')} bind:value={quotationBody} class="input-sm textarea-sm" rows="4" placeholder="Opening body / cover note shown before the line items"></textarea>
+                            <span class="field-label">PDF Body</span>
+                            <textarea bind:value={quotationBody} class="input-sm textarea-sm" rows="4" placeholder="Opening body / cover note shown before the line items"></textarea>
                         </div>
+                    </div>
+
+                    <div class="technical-attachments">
+                        <div class="attachments-header">
+                            <div>
+                                <span class="field-label">Technical Datasheets</span>
+                            </div>
+                            <Button
+                                variant="secondary"
+                                size="sm"
+                                on:click={handleAttachDatasheet}
+                                disabled={attachmentLoading}
+                                aria-label="Attach PDF, JPG, JPEG, or PNG datasheet"
+                            >
+                                {attachmentLoading ? 'Attaching...' : '+ Attach File'}
+                            </Button>
+                        </div>
+                        {#if costingAttachments.length > 0}
+                            <div class="attachment-list">
+                                {#each costingAttachments as attachment}
+                                    <div class="attachment-row">
+                                        <div>
+                                            <strong>{attachment.file_name}</strong>
+                                            <span>{(attachment.storage_mode || 'database') === 'local_file' ? 'LOCAL PDF' : String(attachment.file_ext || '').toUpperCase()} · {formatFileSize(attachment.file_size)}</span>
+                                        </div>
+                                        <div class="attachment-actions">
+                                            <button on:click={() => handleOpenAttachment(attachment.id)}>Open</button>
+                                            <button class="danger" on:click={() => handleDeleteAttachment(attachment.id)} disabled={attachmentLoading}>Remove</button>
+                                        </div>
+                                    </div>
+                                {/each}
+                            </div>
+                        {:else}
+                            <p class="attachments-empty">No datasheets attached yet.</p>
+                        {/if}
                     </div>
 
                     <!-- Expandable: Compliance & certificates -->
@@ -1441,54 +2072,54 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     <div class="advanced-section">
                         <div class="header-row-6col tight">
                             <div class="field-group">
-                                <label for={sectionFieldId('advanced', 'order-type')}>Order Type</label>
-                                <select id={sectionFieldId('advanced', 'order-type')} bind:value={header.orderType} class="input-sm">
+                                <span class="field-label">Order Type</span>
+                                <select bind:value={header.orderType} class="input-sm">
                                     {#each orderTypeOptions as opt}<option value={opt}>{opt}</option>{/each}
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label for={sectionFieldId('advanced', 'origin')}>Origin</label>
-                                <select id={sectionFieldId('advanced', 'origin')} bind:value={header.countryOfOrigin} class="input-sm">
+                                <span class="field-label">Origin</span>
+                                <select bind:value={header.countryOfOrigin} class="input-sm">
                                     {#each countryOptions as opt}<option value={opt.code}>{opt.code}</option>{/each}
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label for={sectionFieldId('advanced', 'coc-coo')}>COC/COO</label>
-                                <select id={sectionFieldId('advanced', 'coc-coo')} bind:value={header.cocCoo} class="input-sm">
+                                <span class="field-label">COC/COO</span>
+                                <select bind:value={header.cocCoo} class="input-sm">
                                     {#each certificateOptions as opt}<option value={opt}>{opt}</option>{/each}
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label for={sectionFieldId('advanced', 'test-certificate')}>Test Cert</label>
-                                <select id={sectionFieldId('advanced', 'test-certificate')} bind:value={header.testCertificate} class="input-sm">
+                                <span class="field-label">Test Cert</span>
+                                <select bind:value={header.testCertificate} class="input-sm">
                                     {#each certificateOptions as opt}<option value={opt}>{opt}</option>{/each}
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label for={sectionFieldId('advanced', 'installation')}>Install</label>
-                                <select id={sectionFieldId('advanced', 'installation')} bind:value={header.installation} class="input-sm">
+                                <span class="field-label">Install</span>
+                                <select bind:value={header.installation} class="input-sm">
                                     <option value="Yes">Yes</option><option value="No">No</option>
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label for={sectionFieldId('advanced', 'commissioning')}>Commission</label>
-                                <select id={sectionFieldId('advanced', 'commissioning')} bind:value={header.commissioning} class="input-sm">
+                                <span class="field-label">Commission</span>
+                                <select bind:value={header.commissioning} class="input-sm">
                                     <option value="Yes">Yes</option><option value="No">No</option>
                                 </select>
                             </div>
                         </div>
                         <div class="header-row-3col tight">
                             <div class="field-group">
-                                <label for={sectionFieldId('advanced', 'place-of-supply')}>Place of Supply</label>
-                                <select id={sectionFieldId('advanced', 'place-of-supply')} bind:value={header.placeOfSupply} class="input-sm">
+                                <span class="field-label">Place of Supply</span>
+                                <select bind:value={header.placeOfSupply} class="input-sm">
                                     <option value="Kingdom of Bahrain">Kingdom of Bahrain</option>
                                     <option value="GCC">GCC Member State</option>
                                     <option value="Export">Export (Outside GCC)</option>
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label for={sectionFieldId('advanced', 'tax-category')}>Tax Category</label>
-                                <select id={sectionFieldId('advanced', 'tax-category')} bind:value={header.taxCategory} class="input-sm">
+                                <span class="field-label">Tax Category</span>
+                                <select bind:value={header.taxCategory} class="input-sm">
                                     <option value="Standard">Standard Rate (10%)</option>
                                     <option value="Zero-rated">Zero-rated</option>
                                     <option value="Exempt">Exempt</option>
@@ -1496,8 +2127,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 </select>
                             </div>
                             <div class="field-group">
-                                <label for={sectionFieldId('advanced', 'customer-trn')}>Customer TRN</label>
-                                <input id={sectionFieldId('advanced', 'customer-trn')} type="text" bind:value={header.customerTRN} class="input-sm" placeholder="Tax Reg. Number" />
+                                <span class="field-label">Customer TRN</span>
+                                <input type="text" bind:value={header.customerTRN} class="input-sm" placeholder="Tax Reg. Number" />
                             </div>
                         </div>
                     </div>
@@ -1513,28 +2144,28 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         <div class="line-row-top">
                             <span class="sl-no">{i + 1}</span>
                             <div class="field-inline">
-                                <label for={lineItemFieldId(i, 'equipment')}>Equipment</label>
-                                <input id={lineItemFieldId(i, 'equipment')} type="text" bind:value={item.equipment} class="input-sm" placeholder="Product name" />
+                                <span class="field-label">Equipment</span>
+                                <input type="text" bind:value={item.equipment} class="input-sm" placeholder="Product name" />
                             </div>
                             <div class="field-inline">
-                                <label for={lineItemFieldId(i, 'model')}>Model</label>
-                                <input id={lineItemFieldId(i, 'model')} type="text" bind:value={item.model} class="input-sm" placeholder="Model #" />
+                                <span class="field-label">Model</span>
+                                <input type="text" bind:value={item.model} class="input-sm" placeholder="Model #" />
                             </div>
                             <div class="field-inline compact">
-                                <label for={lineItemFieldId(i, 'quantity')}>Qty</label>
-                                <input id={lineItemFieldId(i, 'quantity')} type="number" bind:value={item.quantity} class="input-sm qty" min="1" on:change={calculateAll} />
+                                <span class="field-label">Qty</span>
+                                <input type="number" bind:value={item.quantity} class="input-sm qty" min="1" on:change={calculateAll} />
                             </div>
                             <div class="field-inline compact">
-                                <label for={lineItemFieldId(i, 'currency')}>Currency</label>
-                                <select id={lineItemFieldId(i, 'currency')} bind:value={item.currency} class="input-sm" on:change={() => handleCurrencyChange(i)}>
+                                <span class="field-label">Currency</span>
+                                <select bind:value={item.currency} class="input-sm" on:change={() => handleCurrencyChange(i)}>
                                     {#each currencyOptions as c}
                                         <option value={c.code}>{c.code}</option>
                                     {/each}
                                 </select>
                             </div>
                             <div class="field-inline exchange-rate">
-                                <label for={lineItemFieldId(i, 'exchange-rate')}>Exch. Rate</label>
-                                <input id={lineItemFieldId(i, 'exchange-rate')} type="number" bind:value={item.exchangeRate} class="input-sm money" step="0.0001" min="0.0001" on:change={calculateAll} />
+                                <span class="field-label">Exch. Rate</span>
+                                <input type="number" bind:value={item.exchangeRate} class="input-sm money" step="0.0001" min="0.0001" on:change={calculateAll} />
                             </div>
                             {#if lineItems.length > 1}
                                 <button class="btn-remove" on:click={() => removeLineItem(i)} title="Remove item" aria-label={`Remove line item ${i + 1}`}>×</button>
@@ -1546,29 +2177,28 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         <!-- Line 2: Pricing -->
                         <div class="line-row-pricing">
                             <div class="field-inline">
-                                <label for={lineItemFieldId(i, 'fob')}>Unit Price (FOB)</label>
-                                <input id={lineItemFieldId(i, 'fob')} type="number" bind:value={item.fobForeign} class="input-sm money" step="0.001" on:change={calculateAll} placeholder="0.000" />
+                                <span class="field-label">Unit Price (FOB)</span>
+                                <input type="number" bind:value={item.fobForeign} class="input-sm money" step="0.001" on:change={calculateAll} placeholder="0.000" />
                             </div>
                             <div class="field-inline">
-                                <label for={lineItemFieldId(i, 'freight-percent')}>Freight %</label>
-                                <input id={lineItemFieldId(i, 'freight-percent')} type="number" bind:value={item.freightPercent} class="input-sm money" step="0.01" min="0" on:change={calculateAll} placeholder="0.00" />
+                                <span class="field-label">Freight %</span>
+                                <input type="number" bind:value={item.freightPercent} class="input-sm money" step="0.01" min="0" on:input={() => isDirty = true} on:change={calculateAll} placeholder="0.00" />
                             </div>
                             <div class="field-inline">
-                                <label for={lineItemFieldId(i, 'misc-cost')}>Misc Cost</label>
-                                <input id={lineItemFieldId(i, 'misc-cost')} type="number" bind:value={item.otherCosts} class="input-sm money" step="0.001" min="0" on:change={calculateAll} placeholder="0.000" title="Miscellaneous costs (internal)" />
+                                <span class="field-label">Misc Cost</span>
+                                <input type="number" bind:value={item.otherCosts} class="input-sm money" step="0.001" min="0" on:change={calculateAll} placeholder="0.000" title="Internal extra cost added before margin" />
                             </div>
                             <div class="field-inline">
-                                <label for={lineItemFieldId(i, 'quote-price')}>Quote Price</label>
+                                <span class="field-label">Quote Price / Unit (BHD)</span>
                                 <input
-                                    id={lineItemFieldId(i, 'quote-price')}
                                     type="number"
                                     class="input-sm money sell-price"
                                     class:user-overridden={item.userPriceSet && item.userPrice > 0}
                                     step="0.001"
-                                    placeholder={item.suggestedPriceUnit.toFixed(0)}
+                                    placeholder={`Auto ${formatNumber(item.suggestedPriceUnit, 0)}`}
                                     bind:value={item.userPrice}
-                                    on:input={() => { item.userPriceSet = item.userPrice > 0; calculateAll(); }}
-                                    title="Enter selling price (suggested: {item.suggestedPriceUnit.toFixed(3)})"
+                                    on:input={() => { item.userPriceSet = nonNegativeNumber(item.userPrice) > 0; calculateAll(); }}
+                                    title={`Optional unit selling price override. Leave blank or 0 to use the suggested price: ${formatBHD(item.suggestedPriceUnit)}`}
                                 />
                             </div>
                             <div class="line-total">
@@ -1609,20 +2239,20 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             </div>
                             <div class="cost-row">
                                 <div class="cost-input">
-                                    <label for={costBreakdownFieldId(i, 'customs-percent')}>Customs %</label>
-                                    <input id={costBreakdownFieldId(i, 'customs-percent')} type="number" bind:value={item.customsPercent} class="input-xs" on:change={calculateAll} />
+                                    <span class="field-label">Customs %</span>
+                                    <input type="number" bind:value={item.customsPercent} class="input-xs" on:change={calculateAll} />
                                 </div>
                                 <div class="cost-input">
-                                    <label for={costBreakdownFieldId(i, 'handling-percent')}>Handling %</label>
-                                    <input id={costBreakdownFieldId(i, 'handling-percent')} type="number" bind:value={item.handlingPercent} class="input-xs" on:change={calculateAll} />
+                                    <span class="field-label">Handling %</span>
+                                    <input type="number" bind:value={item.handlingPercent} class="input-xs" on:change={calculateAll} />
                                 </div>
                                 <div class="cost-input">
-                                    <label for={costBreakdownFieldId(i, 'finance-percent')}>Finance %</label>
-                                    <input id={costBreakdownFieldId(i, 'finance-percent')} type="number" bind:value={item.financePercent} class="input-xs" on:change={calculateAll} />
+                                    <span class="field-label">Finance %</span>
+                                    <input type="number" bind:value={item.financePercent} class="input-xs" on:change={calculateAll} />
                                 </div>
                                 <div class="cost-input">
-                                    <label for={costBreakdownFieldId(i, 'markup-percent')}>Markup %</label>
-                                    <input id={costBreakdownFieldId(i, 'markup-percent')} type="number" bind:value={item.marginPercent} class="input-xs" min="0" max="99" on:change={calculateAll} />
+                                    <span class="field-label">Markup %</span>
+                                    <input type="number" bind:value={item.marginPercent} class="input-xs" min="0" max="99" on:change={calculateAll} />
                                 </div>
                                 <div class="cost-input">
                                     <span class="field-label">Total Cost</span>
@@ -1667,16 +2297,16 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         </div>
                         <div class="summary-row">
                             <span>Discount</span>
-                            <input type="number" bind:value={discount} class="input-sm money" step="0.001" on:change={calculateAll} />
+                            <input type="number" bind:value={discount} class="input-sm money" step="0.001" min="0" on:input={() => isDirty = true} on:change={calculateAll} />
                         </div>
                         <div class="summary-row">
                             <span title="Additional charges not shown on quotation">Hidden Charges</span>
-                            <input type="number" bind:value={hiddenCharges} class="input-sm money" step="0.001" />
+                            <input type="number" bind:value={hiddenCharges} class="input-sm money" step="0.001" min="0" on:input={() => isDirty = true} />
                         </div>
                         <div class="summary-row vat-row">
                             <div class="vat-control">
                                 <span>VAT</span>
-                                <input type="number" bind:value={vatRate} class="vat-input" min="0" max="100" step="0.5" />
+                                <input type="number" bind:value={vatRate} class="vat-input" min="0" max="100" step="0.5" on:input={() => isDirty = true} />
                                 <span>%</span>
                             </div>
                             <span class="money">{formatBHD(vat)}</span>
@@ -1697,6 +2327,10 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             <div class="profit-item">
                                 <span class="label">PH Cost</span>
                                 <span class="value">{formatBHD(totalCost)}</span>
+                            </div>
+                            <div class="profit-item muted">
+                                <span class="label">Internal Hidden Charges</span>
+                                <span class="value">{formatBHD(effectiveHiddenCharges)}</span>
                             </div>
                             <div class="profit-item highlight">
                                 <span class="label">Profit</span>
@@ -1855,7 +2489,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         grid-column: 1 / -1;
     }
 
-    .field-group label {
+    .field-group .field-label {
         font-size: 10px;
         font-weight: 600;
         color: var(--text-secondary, #6b7280);
@@ -1888,6 +2522,93 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         line-height: 1.4;
     }
 
+    .technical-attachments {
+        margin: 10px 0 8px;
+        padding: 12px;
+        border: 1px solid var(--border-subtle, #e5e7eb);
+        border-radius: 6px;
+        background: var(--surface-elevated, #f8fafc);
+    }
+
+    .attachments-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 10px;
+    }
+
+    .attachments-empty {
+        margin: 3px 0 0;
+        color: var(--text-secondary, #6b7280);
+        font-size: 12px;
+        line-height: 1.4;
+    }
+
+    .attachment-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .attachment-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 10px;
+        border: 1px solid var(--border-subtle, #e5e7eb);
+        border-radius: 6px;
+        background: var(--surface-base, #fff);
+    }
+
+    .attachment-row strong {
+        display: block;
+        max-width: 520px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+        color: var(--text-primary, #111827);
+    }
+
+    .attachment-row span {
+        display: block;
+        margin-top: 2px;
+        font-size: 11px;
+        color: var(--text-secondary, #6b7280);
+    }
+
+    .attachment-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+    }
+
+    .attachment-actions button {
+        min-height: 28px;
+        padding: 4px 10px;
+        border: 1px solid var(--border-subtle, #e5e7eb);
+        border-radius: 5px;
+        background: var(--surface-base, #fff);
+        color: var(--text-primary, #111827);
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+    }
+
+    .attachment-actions button.danger {
+        color: #b91c1c;
+        background: #fef2f2;
+        border-color: #fee2e2;
+    }
+
+    .attachment-actions button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+    }
+
     .expand-toggle {
         background: none;
         border: none;
@@ -1915,7 +2636,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         gap: 4px;
     }
 
-    .form-group label {
+    .form-group .field-label {
         font-size: 11px;
         color: var(--text-secondary);
         text-transform: uppercase;
@@ -1988,7 +2709,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     /* Line Items */
     .line-items-header {
         display: grid;
-        /* Sl No | Equipment | Model | Qty | Currency | Unit Price | Freight | Misc Cost | Suggested Price | Total (BHD) | Remove */
+        /* Sl No | Equipment | Model | Qty | Currency | Unit Price | Freight | Misc Cost | Quote Price | Total (BHD) | Remove */
         grid-template-columns: 35px 2fr 120px 45px 60px 80px 70px 70px 85px 90px 28px;
         gap: 8px;
         padding: 8px 10px;
@@ -2038,7 +2759,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         min-width: 132px;
     }
 
-    .field-inline label {
+    .field-inline .field-label {
         font-size: 9px;
         font-weight: 600;
         color: var(--text-tertiary, #9ca3af);
@@ -2243,7 +2964,6 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         gap: 4px;
     }
 
-    .cost-input label,
     .cost-input .field-label {
         font-size: 10px;
         color: var(--text-muted);
@@ -2343,6 +3063,10 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         background: var(--brand-indigo-tint);
     }
 
+    .profit-item.muted {
+        background: rgba(15, 23, 42, 0.04);
+    }
+
     .profit-item .label {
         display: block;
         font-size: 10px;
@@ -2414,6 +3138,33 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         color: var(--text-secondary);
         font-size: 14px;
         margin: 0 0 20px;
+    }
+
+    .draft-recovery-panel {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 16px;
+        margin-bottom: 20px;
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--brand-indigo);
+        border-radius: var(--border-radius-sm);
+        background: var(--surface-elevated);
+    }
+
+    .draft-recovery-panel p {
+        margin: 4px 0 0;
+        color: var(--text-secondary);
+        font-size: 13px;
+        line-height: 1.4;
+    }
+
+    .draft-recovery-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
     }
 
     .selector-grid {
@@ -2582,6 +3333,57 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         font-style: italic;
     }
 
+    .costing-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 1200;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(15, 23, 42, 0.36);
+    }
+
+    .confirm-card {
+        width: min(440px, 100%);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--border-radius);
+        box-shadow: var(--shadow-xl, 0 24px 60px rgba(15, 23, 42, 0.22));
+        padding: 24px;
+    }
+
+    .confirm-kicker {
+        display: block;
+        color: #b45309;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+    }
+
+    .confirm-card h2 {
+        margin: 0 0 10px;
+        font-size: 20px;
+        line-height: 1.25;
+        color: var(--text-primary);
+    }
+
+    .confirm-card p {
+        margin: 0;
+        color: var(--text-secondary);
+        font-size: 14px;
+        line-height: 1.6;
+    }
+
+    .confirm-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 22px;
+    }
+
     @media (max-width: 1200px) {
         .costing-layout {
             grid-template-columns: 1fr;
@@ -2616,6 +3418,13 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     }
 
     /* Remove any parent container hover effects that cause visual dance */
+    .line-item-row:hover {
+        transform: none !important;
+        transition: none !important;
+        border-left-color: var(--brand-indigo, #6366f1);
+        background: transparent !important;
+    }
+
     .cost-breakdown:hover {
         transform: none !important;
         transition: none !important;

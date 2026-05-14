@@ -119,10 +119,6 @@ func repairCustomerCode(businessName string) string {
 	return fmt.Sprintf("CUST-%s", customerBusinessPrefix(businessName, 6))
 }
 
-func businessCustomerIDFromRecord(customer CustomerMaster) string {
-	return prepareCustomerForIdentityRepair(customer, time.Now()).CustomerID
-}
-
 func customerBusinessPrefix(name string, limit int) string {
 	name = strings.ToUpper(name)
 	builder := strings.Builder{}

@@ -13,22 +13,22 @@ func TestParseCostingSheet_CustomerCostingLayout(t *testing.T) {
 	f.SetSheetName("Sheet1", "Customer Costing")
 
 	values := map[string]interface{}{
-		"B2": 46096,
-		"D2": "EH 45-26",
-		"F2": "7-9 weeks",
-		"B3": "Ebin Chacko",
-		"D3": "EH 45-26",
-		"F3": "Delivered Duty Paid (DDP)",
-		"B4": "ALUMINIUM BAHRAIN B.S.C.(C)",
-		"D4": "Choose Contact Person",
-		"F4": "General",
-		"A5": "Reference",
-		"B5": "Email",
-		"D5": "60 days from Date of Delivery",
-		"F5": "DE",
-		"A7": "Supplier",
-		"A8": "Equipment",
-		"A9": "Model",
+		"B2":  46096,
+		"D2":  "EH 45-26",
+		"F2":  "7-9 weeks",
+		"B3":  "Ebin Chacko",
+		"D3":  "EH 45-26",
+		"F3":  "Delivered Duty Paid (DDP)",
+		"B4":  "ALUMINIUM BAHRAIN B.S.C.(C)",
+		"D4":  "Choose Contact Person",
+		"F4":  "General",
+		"A5":  "Reference",
+		"B5":  "Email",
+		"D5":  "60 days from Date of Delivery",
+		"F5":  "DE",
+		"A7":  "Supplier",
+		"A8":  "Equipment",
+		"A9":  "Model",
 		"A10": "Specification / Order Code",
 		"A11": "Currency",
 		"B11": "Quantity",
@@ -325,7 +325,7 @@ func TestParseCostingSheet_UsesModelWhenEquipmentPlaceholder(t *testing.T) {
 	}
 }
 
-func TestParseCostingSheet_CreatesGenericItemForNumericOnlyColumn(t *testing.T) {
+func TestParseCostingSheet_SkipsNumericOnlyTemplateColumn(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "numeric_only.xlsx")
 	f := excelize.NewFile()
 	f.SetSheetName("Sheet1", "Customer Costing")
@@ -402,14 +402,11 @@ func TestParseCostingSheet_CreatesGenericItemForNumericOnlyColumn(t *testing.T) 
 		t.Fatalf("ParseCostingSheet failed: %v", err)
 	}
 
-	if len(data.LineItems) != 1 {
-		t.Fatalf("expected 1 line item, got %d", len(data.LineItems))
+	if len(data.LineItems) != 0 {
+		t.Fatalf("expected numeric-only template column to be skipped, got %d line items", len(data.LineItems))
 	}
-	if data.LineItems[0].Equipment != "Line Item 1" {
-		t.Fatalf("expected generic equipment fallback, got %q", data.LineItems[0].Equipment)
-	}
-	if data.LineItems[0].TotalSuggestedBHD != 44003 {
-		t.Fatalf("expected line total 44003, got %.3f", data.LineItems[0].TotalSuggestedBHD)
+	if data.Totals.Subtotal != 48403.3 {
+		t.Fatalf("expected subtotal to remain available, got %.3f", data.Totals.Subtotal)
 	}
 }
 

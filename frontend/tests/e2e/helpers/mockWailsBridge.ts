@@ -2,6 +2,11 @@ import type { Page } from '@playwright/test';
 
 type MockWailsBridgeOptions = {
   butlerResponse?: string;
+  notificationReadDelayMs?: number;
+  collaborativeDataReadyAfterRefreshCount?: number;
+  taskDetailsReadyAfterRefreshCount?: number;
+  projectContextDelayMs?: number;
+  currentEmployeeRole?: string;
 };
 
 export async function installMockWailsBridge(page: Page, options: MockWailsBridgeOptions = {}) {
@@ -10,6 +15,9 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
     const MESSAGE_STORE_ID = '__ph_e2e_butler_messages__';
     const ACTIVE_CONVERSATION_KEY = 'butler_active_conversation_id';
     const WORKFLOW_STATE_KEY = '__ph_e2e_workflow_state__';
+    (window as any).__wailsFileDropCallbacks = [];
+    (window as any).__wailsOCRCalls = [];
+    (window as any).__wailsDocumentSaveCalls = [];
 
     const now = () => new Date().toISOString();
     const safeJson = (value: string | null, fallback: any) => {
@@ -234,11 +242,73 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
         {
           id: 'inv-1',
           invoice_number: 'INV-2026-001',
+          customer_id: 'cust-1',
           customer_name: 'BAPCO',
+          invoice_date: '2026-03-10',
+          due_date: '2026-04-09',
+          subtotal_bhd: 500,
           grand_total_bhd: 500,
+          outstanding_bhd: 500,
+          total_supplier_cost_bhd: 300,
           status: 'Sent',
+          division: 'PH Trading',
         },
       ],
+      payments: [],
+      customerReceipts: [
+        {
+          id: 'receipt-1',
+          receipt_number: 'RCT-2026-0001',
+          customer_id: 'cust-1',
+          customer_name: 'BAPCO',
+          receipt_date: '2026-03-22',
+          amount_bhd: 500,
+          applied_amount_bhd: 0,
+          unapplied_amount_bhd: 500,
+          payment_method: 'Bank Transfer',
+          reference: 'RCT-500',
+          status: 'OnAccount',
+          division: 'PH Trading',
+          created_at: now(),
+        },
+      ],
+      expenseEntries: [
+        {
+          id: 'exp-1',
+          entry_number: 'EXP-2026-0001',
+          expense_date: '2026-03-12',
+          description: 'Office supplies regression expense',
+          category_id: 'cat-office',
+          category_name: 'Office Supplies',
+          amount: 75,
+          total_amount: 75,
+          currency: 'BHD',
+          status: 'approved',
+          payment_status: 'unpaid',
+          division: 'PH Trading',
+        },
+        {
+          id: 'exp-locked',
+          entry_number: 'EXP-2026-LOCKED',
+          expense_date: '2026-03-13',
+          description: 'Posted locked expense',
+          category_id: 'cat-office',
+          category_name: 'Office Supplies',
+          amount: 40,
+          total_amount: 40,
+          currency: 'BHD',
+          status: 'posted',
+          payment_status: 'paid',
+          division: 'PH Trading',
+        },
+      ],
+      expenseCategories: [
+        { id: 'cat-office', name: 'Office Supplies', code: 'OFFICE', is_active: true, default_tax_rate: 0 },
+      ],
+      expenseVendors: [],
+      recurringExpenses: [],
+      bankExpenseCandidates: [],
+      journalEntries: [],
       bankAccounts: [
         {
           id: 'bank-1',
@@ -281,7 +351,158 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
           extracted_customer: '',
           extracted_invoices: '',
         },
+        {
+          id: 'line-2',
+          bank_statement_id: 'stmt-1',
+          line_number: 2,
+          transaction_date: '2026-03-22',
+          description: 'Customer receipt - BAPCO',
+          reference: 'RCT-500',
+          debit: 0,
+          credit: 500,
+          balance: -4866.894,
+          transaction_type: 'Customer Receipt',
+          is_matched: false,
+          match_type: 'Unmatched',
+          match_confidence: 0,
+          extracted_customer: 'BAPCO',
+          extracted_invoices: 'INV-2026-001',
+        },
       ],
+      employeeProfiles: [
+        {
+          id: 'emp-admin',
+          employee_code: 'EMP-001',
+          full_name: 'Developer Admin',
+          department: 'Management',
+          job_title: 'Administrator',
+          is_active: true,
+        },
+        {
+          id: 'emp-peri',
+          employee_code: 'EMP-002',
+          full_name: 'Peri',
+          department: 'Operations',
+          job_title: 'Project Coordinator',
+          is_active: true,
+        },
+      ],
+      employeeAccessLinks: [
+        {
+          id: 'access-admin',
+          employee_id: 'emp-admin',
+          employee_name: 'Developer Admin',
+          license_key: 'PH-ADM-E2E001',
+          user_id: 'e2e-user',
+          device_id: 'device-e2e',
+          device_name: 'E2E Device',
+          access_status: 'active',
+          is_primary: true,
+        },
+      ],
+      licenseKeys: [
+        {
+          id: 'license-admin',
+          key: 'PH-ADM-E2E001',
+          role: 'admin',
+          display_name: 'Developer Admin',
+          activated: true,
+          device_hash: 'device-e2e',
+        },
+        {
+          id: 'license-new',
+          key: 'PH-STF-OPEN01',
+          role: 'staff',
+          display_name: 'Open Staff',
+          activated: false,
+        },
+      ],
+      employeeArchiveRequests: [],
+      collaborativeProjects: [
+        {
+          id: 'proj-1',
+          name: 'Butler Rollout',
+          project_type: 'internal',
+          description: 'Regression project used for E2E task routing coverage.',
+          status: 'active',
+        },
+      ],
+      collaborativeProjectMembers: [
+        {
+          id: 'project-member-1',
+          project_id: 'proj-1',
+          employee_id: 'emp-peri',
+          employee_name: 'Peri',
+          project_name: 'Butler Rollout',
+          role: 'Member',
+          allocation_percent: 100,
+          is_active: true,
+          joined_at: now(),
+        },
+      ],
+      collaborativeTasks: [
+        {
+          id: 'task-1',
+          title: 'Review salary expense forecast',
+          description: 'Confirm this month\'s HR and payroll forecast.',
+          task_type: 'internal',
+          status: 'open',
+          priority: 'high',
+          project_id: 'proj-1',
+          creator_employee_id: 'emp-admin',
+          assignee_employee_id: 'emp-peri',
+          creator_name: 'Developer Admin',
+          assignee_name: 'Peri',
+          due_date: '2026-04-20T09:00:00.000Z',
+        },
+      ],
+      collaborativeTaskComments: [
+        {
+          id: 'task-comment-1',
+          task_id: 'task-1',
+          employee_id: 'emp-admin',
+          employee_name: 'Developer Admin',
+          body: 'Please sanity-check the payroll assumptions before sign-off.',
+          created_at: now(),
+        },
+      ],
+      opportunityComments: [],
+      rfqComments: [],
+      collaborativeTaskActivity: [
+        {
+          id: 'task-activity-1',
+          task_id: 'task-1',
+          employee_id: 'emp-admin',
+          employee_name: 'Developer Admin',
+          activity_type: 'created',
+          detail: 'Task created for regression coverage.',
+          metadata_json: '{}',
+          created_at: now(),
+        },
+      ],
+      notificationFeed: [
+        {
+          id: 'notif-task-1',
+          notification_type: 'task',
+          title: 'Task assigned',
+          message: 'Review salary expense forecast has been assigned to you.',
+          status: 'unread',
+          source_type: 'task',
+          source_id: 'task-1',
+          action_route: 'work',
+          action_payload: JSON.stringify({
+            action: 'open_task',
+            task_id: 'task-1',
+            task_title: 'Review salary expense forecast',
+            project_name: 'Butler Rollout',
+            actor_name: 'Developer Admin',
+          }),
+          created_at: now(),
+          read_at: null,
+          employee_id: 'emp-peri',
+        },
+      ],
+      collaborativeWorkspaceRefreshCount: 0,
       purchaseOrders: [
         {
           id: 'po-1',
@@ -325,12 +546,18 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
       costingSheets: [],
       nextRFQId: 2,
       nextOfferId: 2,
+      nextReceiptId: 2,
+      nextPaymentId: 1,
       nextPOId: 8,
     });
     const readWorkflowState = () => safeJson(window.localStorage.getItem(WORKFLOW_STATE_KEY), defaultWorkflowState());
     const writeWorkflowState = (value: any) => {
       window.localStorage.setItem(WORKFLOW_STATE_KEY, JSON.stringify(value));
     };
+    const collaborativeDataReady = (state: any) =>
+      Number(state.collaborativeWorkspaceRefreshCount || 0) >= Number(opts.collaborativeDataReadyAfterRefreshCount ?? 2);
+    const taskDetailsReady = (state: any) =>
+      Number(state.collaborativeWorkspaceRefreshCount || 0) >= Number(opts.taskDetailsReadyAfterRefreshCount ?? 3);
     const buildCustomerDashboard = (state: any) => {
       const customers = state.customers || [];
       const topCustomers = [...customers]
@@ -408,6 +635,211 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
 
       return explicitPayments;
     };
+    const deriveCustomerPayments = (state: any) => state.payments || [];
+    const withinRange = (dateValue: any, start?: string, end?: string) => {
+      const date = String(dateValue || '').slice(0, 10);
+      if (!date) return false;
+      if (start && date < String(start).slice(0, 10)) return false;
+      if (end && date > String(end).slice(0, 10)) return false;
+      return true;
+    };
+    const matchesDivision = (item: any, division?: string) => !division || String(item?.division || 'PH Trading') === String(division);
+    const buildOperationalLedger = (state: any, filter: any = {}) => {
+      const start = filter.start_date || '2026-01-01';
+      const end = filter.end_date || '2026-12-31';
+      const sourceType = String(filter.source_type || '');
+      const includeSource = (source: string) => !sourceType || sourceType === source;
+      const rows: any[] = [];
+
+      if (includeSource('CUSTOMER_INVOICE')) {
+        (state.customerInvoices || []).forEach((invoice: any) => {
+          if (!withinRange(invoice.invoice_date || invoice.created_at || now(), start, end) || !matchesDivision(invoice, filter.division)) return;
+          if (filter.customer_id && String(invoice.customer_id || '') !== String(filter.customer_id)) return;
+          rows.push({
+            id: `invoice:${invoice.id}`,
+            source_type: 'CUSTOMER_INVOICE',
+            source_id: invoice.id,
+            source_number: invoice.invoice_number,
+            entry_date: String(invoice.invoice_date || now()).slice(0, 10),
+            party_id: invoice.customer_id,
+            party_name: invoice.customer_name,
+            party_type: 'Customer',
+            description: 'Customer invoice',
+            debit_bhd: Number(invoice.grand_total_bhd || 0),
+            credit_bhd: 0,
+            status: invoice.status || 'Sent',
+            division: invoice.division || 'PH Trading',
+          });
+        });
+      }
+      if (includeSource('CUSTOMER_RECEIPT')) {
+        (state.customerReceipts || []).forEach((receipt: any) => {
+          if (!withinRange(receipt.receipt_date || now(), start, end) || !matchesDivision(receipt, filter.division)) return;
+          if (filter.customer_id && String(receipt.customer_id || '') !== String(filter.customer_id)) return;
+          rows.push({
+            id: `receipt:${receipt.id}`,
+            source_type: 'CUSTOMER_RECEIPT',
+            source_id: receipt.id,
+            source_number: receipt.receipt_number,
+            entry_date: String(receipt.receipt_date || now()).slice(0, 10),
+            party_id: receipt.customer_id,
+            party_name: receipt.customer_name,
+            party_type: 'Customer',
+            description: Number(receipt.unapplied_amount_bhd || 0) > 0 ? 'Customer receipt - on account' : 'Customer receipt',
+            debit_bhd: 0,
+            credit_bhd: Number(receipt.amount_bhd || 0),
+            status: receipt.status || 'Applied',
+            division: receipt.division || 'PH Trading',
+          });
+        });
+      }
+      if (includeSource('CUSTOMER_PAYMENT')) {
+        deriveCustomerPayments(state).filter((payment: any) => !payment.receipt_id).forEach((payment: any) => {
+          if (!withinRange(payment.payment_date || now(), start, end) || !matchesDivision(payment, filter.division)) return;
+          const invoice = (state.customerInvoices || []).find((item: any) => String(item.id) === String(payment.invoice_id));
+          if (filter.customer_id && String(invoice?.customer_id || '') !== String(filter.customer_id)) return;
+          rows.push({
+            id: `payment:${payment.id}`,
+            source_type: 'CUSTOMER_PAYMENT',
+            source_id: payment.id,
+            source_number: payment.reference || payment.invoice_number,
+            entry_date: String(payment.payment_date || now()).slice(0, 10),
+            party_id: invoice?.customer_id || '',
+            party_name: invoice?.customer_name || payment.customer_name || 'Customer',
+            party_type: 'Customer',
+            description: 'Customer payment',
+            debit_bhd: 0,
+            credit_bhd: Number(payment.amount_bhd || 0),
+            status: payment.status || 'Received',
+            division: payment.division || invoice?.division || 'PH Trading',
+          });
+        });
+      }
+      if (includeSource('SUPPLIER_INVOICE')) {
+        (state.supplierInvoices || []).forEach((invoice: any) => {
+          if (!withinRange(invoice.invoice_date || now(), start, end) || !matchesDivision(invoice, filter.division)) return;
+          if (filter.supplier_id && String(invoice.supplier_id || '') !== String(filter.supplier_id)) return;
+          rows.push({
+            id: `supplier_invoice:${invoice.id}`,
+            source_type: 'SUPPLIER_INVOICE',
+            source_id: invoice.id,
+            source_number: invoice.invoice_number,
+            entry_date: String(invoice.invoice_date || now()).slice(0, 10),
+            party_id: invoice.supplier_id,
+            party_name: invoice.supplier_name,
+            party_type: 'Supplier',
+            description: 'Supplier invoice',
+            debit_bhd: 0,
+            credit_bhd: Number(invoice.total_bhd || 0),
+            status: invoice.payment_status || invoice.status,
+            division: invoice.division || 'PH Trading',
+          });
+        });
+      }
+      if (includeSource('SUPPLIER_PAYMENT')) {
+        deriveSupplierPayments(state).forEach((payment: any) => {
+          if (!withinRange(payment.payment_date || now(), start, end) || !matchesDivision(payment, filter.division)) return;
+          if (filter.supplier_id && String(payment.supplier_id || '') !== String(filter.supplier_id)) return;
+          rows.push({
+            id: `supplier_payment:${payment.id}`,
+            source_type: 'SUPPLIER_PAYMENT',
+            source_id: payment.id,
+            source_number: payment.reference || payment.invoice_number,
+            entry_date: String(payment.payment_date || now()).slice(0, 10),
+            party_id: payment.supplier_id,
+            party_name: payment.supplier_name,
+            party_type: 'Supplier',
+            description: 'Supplier settlement',
+            debit_bhd: Number(payment.amount_bhd || 0),
+            credit_bhd: 0,
+            status: 'Paid',
+            division: payment.division || 'PH Trading',
+          });
+        });
+      }
+      if (includeSource('EXPENSE')) {
+        (state.expenseEntries || []).forEach((expense: any) => {
+          if (!withinRange(expense.expense_date || now(), start, end) || !matchesDivision(expense, filter.division)) return;
+          if (!['approved', 'posted', 'paid'].includes(String(expense.status || '').toLowerCase())) return;
+          rows.push({
+            id: `expense:${expense.id}`,
+            source_type: 'EXPENSE',
+            source_id: expense.id,
+            source_number: expense.entry_number,
+            entry_date: String(expense.expense_date || now()).slice(0, 10),
+            party_id: expense.vendor_id || expense.category_id,
+            party_name: expense.vendor_name || expense.category_name || 'Expense',
+            party_type: 'Expense',
+            description: expense.description,
+            debit_bhd: Number(expense.total_amount || 0),
+            credit_bhd: 0,
+            status: expense.payment_status || expense.status,
+            division: expense.division || 'PH Trading',
+          });
+        });
+      }
+
+      rows.sort((a, b) => String(a.entry_date).localeCompare(String(b.entry_date)) || String(a.source_number).localeCompare(String(b.source_number)));
+      let balance = 0;
+      rows.forEach((row) => {
+        balance += Number(row.debit_bhd || 0) - Number(row.credit_bhd || 0);
+        row.balance_bhd = Math.round(balance * 1000) / 1000;
+      });
+      return rows;
+    };
+    const buildProfitLoss = (state: any, filter: any = {}) => {
+      const start = filter.start_date || '2026-01-01';
+      const end = filter.end_date || '2026-12-31';
+      const invoices = (state.customerInvoices || []).filter((invoice: any) =>
+        withinRange(invoice.invoice_date || now(), start, end) &&
+        matchesDivision(invoice, filter.division) &&
+        ['Sent', 'Paid', 'PartiallyPaid', 'Overdue'].includes(String(invoice.status || 'Sent'))
+      );
+      const expenses = (state.expenseEntries || []).filter((expense: any) =>
+        withinRange(expense.expense_date || now(), start, end) &&
+        matchesDivision(expense, filter.division) &&
+        ['approved', 'posted', 'paid'].includes(String(expense.status || '').toLowerCase())
+      );
+      const revenue = invoices.reduce((sum: number, invoice: any) => sum + Number(invoice.subtotal_bhd || invoice.grand_total_bhd || 0), 0);
+      const cogs = invoices.reduce((sum: number, invoice: any) => sum + Number(invoice.total_supplier_cost_bhd || 0), 0);
+      const expenseTotal = expenses.reduce((sum: number, expense: any) => sum + Number(expense.total_amount || 0), 0);
+      return {
+        start_date: start,
+        end_date: end,
+        division: filter.division || 'PH Trading',
+        revenue_bhd: revenue,
+        cogs_bhd: cogs,
+        gross_profit_bhd: revenue - cogs,
+        gross_margin_percent: revenue > 0 ? ((revenue - cogs) / revenue) * 100 : 0,
+        expenses_bhd: expenseTotal,
+        net_income_bhd: revenue - cogs - expenseTotal,
+        net_margin_percent: revenue > 0 ? ((revenue - cogs - expenseTotal) / revenue) * 100 : 0,
+        invoice_count: invoices.length,
+        expense_count: expenses.length,
+        expense_breakdown: [{ account_name: 'Office Supplies', balance: expenseTotal }],
+      };
+    };
+    const buildBalanceSheet = (state: any, asOfDate?: string, division?: string) => {
+      const asOf = asOfDate || '2026-12-31';
+      const receipts = (state.customerReceipts || []).filter((receipt: any) => withinRange(receipt.receipt_date || now(), undefined, asOf) && matchesDivision(receipt, division));
+      const payments = deriveCustomerPayments(state).filter((payment: any) => !payment.receipt_id && withinRange(payment.payment_date || now(), undefined, asOf) && matchesDivision(payment, division));
+      const invoices = (state.customerInvoices || []).filter((invoice: any) => withinRange(invoice.invoice_date || now(), undefined, asOf) && matchesDivision(invoice, division));
+      const expenses = (state.expenseEntries || []).filter((expense: any) => withinRange(expense.expense_date || now(), undefined, asOf) && matchesDivision(expense, division));
+      const cash = receipts.reduce((sum: number, receipt: any) => sum + Number(receipt.amount_bhd || 0), 0) + payments.reduce((sum: number, payment: any) => sum + Number(payment.amount_bhd || 0), 0);
+      const ar = invoices.reduce((sum: number, invoice: any) => sum + Number(invoice.outstanding_bhd || 0), 0);
+      const credits = receipts.reduce((sum: number, receipt: any) => sum + Number(receipt.unapplied_amount_bhd || 0), 0);
+      const expenseLiability = expenses.filter((expense: any) => String(expense.payment_status || '').toLowerCase() !== 'paid').reduce((sum: number, expense: any) => sum + Number(expense.total_amount || 0), 0);
+      return {
+        as_of_date: asOf,
+        division: division || 'PH Trading',
+        cash_bhd: cash,
+        accounts_receivable_bhd: ar,
+        customer_credits_bhd: credits,
+        accounts_payable_bhd: 0,
+        expense_liability_bhd: expenseLiability,
+        net_position_bhd: cash + ar - credits - expenseLiability,
+      };
+    };
     const buildCustomerProfile = (customer: any) => {
       if (!customer) return null;
       return {
@@ -441,8 +873,9 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
         'Closing Balance 1,500.000',
       ].join('\n'),
       extractedData: {
-        bank_name: 'Ahli United Bank',
-        account_number: '123456789',
+        bank_account_id: 'bank-1',
+        bank_name: 'National Bank of Bahrain',
+        account_number: '99570076',
         opening_balance: '1,000.000',
         closing_balance: '1,500.000',
         period_start: '2026-03-01',
@@ -450,8 +883,9 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
         line_items: [],
       },
       extracted_data: {
-        bank_name: 'Ahli United Bank',
-        account_number: '123456789',
+        bank_account_id: 'bank-1',
+        bank_name: 'National Bank of Bahrain',
+        account_number: '99570076',
         opening_balance: '1,000.000',
         closing_balance: '1,500.000',
         period_start: '2026-03-01',
@@ -525,6 +959,13 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
 
     const defaultVoid = () => Promise.resolve();
     const defaultValue = (value: any) => Promise.resolve(value);
+    const delayedValue = (value: any, delayMs = 0) => new Promise((resolve) => {
+      if (delayMs <= 0) {
+        resolve(value);
+        return;
+      }
+      window.setTimeout(() => resolve(value), delayMs);
+    });
 
     const app = new Proxy({}, {
       get(_, prop) {
@@ -558,7 +999,7 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
             case 'GetDashboardStats':
               return defaultValue({
                 total_revenue: 12000,
-                revenue_meta: 'Smoke test FY2026',
+                revenue_meta: 'Smoke test YTD 2026',
                 month_growth: 1.8,
                 activity_year: 2026,
                 active_rfqs: readWorkflowState().rfqs.length + readWorkflowState().pipeline.length,
@@ -569,12 +1010,34 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
                 active_customers: readWorkflowState().customers.length,
                 win_rate: 64.2,
               });
+            case 'GetMonthlyRevenueByCustomer':
+              return defaultValue([
+                { customer_id: 'cust-1', customer_name: 'BAPCO UPSTREAM W.L.L', revenue: 275000, invoice_count: 9 },
+                { customer_id: 'cust-2', customer_name: 'AL EZZEL OPERATION AND MAINTENANCE COMPANY W.L.L', revenue: 188000, invoice_count: 6 },
+                { customer_id: 'cust-3', customer_name: 'SEAPEAK BAHRAIN OPERATIONS W.L.L', revenue: 74000, invoice_count: 3 },
+              ]);
+            case 'GetDashboardPipelineByStageYTD':
+              return defaultValue([
+                { stage: 'Qualified', count: 5, value: 320000, color: '#3E8F47' },
+                { stage: 'Won', count: 3, value: 125000, color: '#2F8F4E' },
+                { stage: 'Lost', count: 2, value: 45000, color: '#C94B4B' },
+              ]);
+            case 'GetDashboardARAgingReportYTD':
+              return defaultValue({
+                current: 0,
+                days_30: 0,
+                days_60: 0,
+                days_90: 0,
+                days_120_plus: 200,
+                total: 200,
+              });
             case 'ListFollowUps':
               return defaultValue([]);
             case 'GetCRMCustomerDashboard':
             case 'GetCRMCustomerDashboardByYear':
               return defaultValue(buildCustomerDashboard(readWorkflowState()));
             case 'ListCustomers':
+            case 'GetAllCustomers':
               return defaultValue(readWorkflowState().customers);
             case 'GetCustomerFullProfile': {
               const state = readWorkflowState();
@@ -665,6 +1128,31 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
               writeWorkflowState(state);
               return defaultValue(rfq);
             }
+            case 'CreateRFQWithReference': {
+              const [customer, project, reference, value, notes] = args;
+              const state = readWorkflowState();
+              const rfq = {
+                id: state.nextRFQId,
+                client: String(customer),
+                customer: String(customer),
+                project: String(project),
+                project_name: String(project),
+                status: 'New',
+                stage: 'New',
+                value: Number(value) || 0,
+                notes: String(notes || ''),
+                comment: String(notes || ''),
+                owner_notes: String(notes || ''),
+                rfq_ref: String(reference || ''),
+                eh_ref: String(reference || ''),
+                created_at: now(),
+                rfq_number: `RFQ-2026-${String(state.nextRFQId).padStart(3, '0')}`,
+              };
+              state.nextRFQId += 1;
+              state.rfqs.unshift(rfq);
+              writeWorkflowState(state);
+              return defaultValue(rfq);
+            }
             case 'GetPipelineOpportunities':
               return defaultValue(readWorkflowState().pipeline);
             case 'GetOpportunityLineItems': {
@@ -704,6 +1192,330 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
             }
             case 'GetCurrentUserRole':
               return defaultValue('admin');
+            case 'GetCurrentEmployeeContext':
+              return defaultValue({
+                employee_id: 'emp-admin',
+                employee_name: 'Developer Admin',
+                license_key: 'PH-ADM-E2E001',
+                license_role: opts.currentEmployeeRole || 'admin',
+                device_id: 'device-e2e',
+                user_id: 'e2e-user',
+                resolved_by: 'user',
+                permissions: ['*'],
+              });
+            case 'ListEmployeeProfiles': {
+              const state = readWorkflowState();
+              return defaultValue(state.employeeProfiles || []);
+            }
+            case 'CreateEmployeeProfile': {
+              const state = readWorkflowState();
+              const payload = args[0] || {};
+              const employee = {
+                id: `emp-created-${Date.now()}`,
+                employee_code: `EMP-${String((state.employeeProfiles || []).length + 1).padStart(3, '0')}`,
+                full_name: String(payload.full_name || '').trim(),
+                preferred_name: String(payload.preferred_name || payload.full_name || '').trim().split(/\s+/)[0],
+                email: String(payload.email || ''),
+                phone: String(payload.phone || ''),
+                department: String(payload.department || ''),
+                job_title: String(payload.job_title || ''),
+                employment_status: 'active',
+                is_active: true,
+                created_at: now(),
+                updated_at: now(),
+              };
+              state.employeeProfiles = [employee, ...(state.employeeProfiles || [])];
+              writeWorkflowState(state);
+              return defaultValue(employee);
+            }
+            case 'UpdateEmployeeProfile': {
+              const state = readWorkflowState();
+              const payload = args[0] || {};
+              const employee = (state.employeeProfiles || []).find((item: any) => String(item.id) === String(payload.id));
+              if (!employee) {
+                return Promise.reject(new Error('Employee not found'));
+              }
+              Object.assign(employee, payload, { updated_at: now() });
+              writeWorkflowState(state);
+              return defaultValue(employee);
+            }
+            case 'SetEmployeeEmploymentState': {
+              const state = readWorkflowState();
+              const [employeeID, isActive, status] = args;
+              const employee = (state.employeeProfiles || []).find((item: any) => String(item.id) === String(employeeID));
+              if (!employee) {
+                return Promise.reject(new Error('Employee not found'));
+              }
+              employee.is_active = Boolean(isActive);
+              employee.employment_status = String(status || (isActive ? 'active' : 'inactive'));
+              employee.updated_at = now();
+              writeWorkflowState(state);
+              return defaultValue(employee);
+            }
+            case 'ReassignEmployeeManager': {
+              const state = readWorkflowState();
+              const [employeeID, managerEmployeeID] = args;
+              const employee = (state.employeeProfiles || []).find((item: any) => String(item.id) === String(employeeID));
+              if (!employee) {
+                return Promise.reject(new Error('Employee not found'));
+              }
+              employee.manager_employee_id = String(managerEmployeeID || '');
+              employee.manager_name = (state.employeeProfiles || []).find((item: any) => String(item.id) === String(managerEmployeeID))?.full_name || '';
+              writeWorkflowState(state);
+              return defaultValue(employee);
+            }
+            case 'ListEmployeeAccessLinks': {
+              const state = readWorkflowState();
+              return defaultValue(state.employeeAccessLinks || []);
+            }
+            case 'ListLicenseKeys': {
+              const state = readWorkflowState();
+              return defaultValue(state.licenseKeys || []);
+            }
+            case 'CreateEmployeeAccessLink':
+            case 'ReassignEmployeeLicenseAccess': {
+              const state = readWorkflowState();
+              const employeeID = String(args[0]?.employee_id || args[0] || '');
+              const licenseKey = String(args[0]?.license_key || args[1] || '');
+              const employee = (state.employeeProfiles || []).find((item: any) => String(item.id) === employeeID);
+              if (!employee) {
+                return Promise.reject(new Error('Employee not found'));
+              }
+              const link = {
+                id: `access-${Date.now()}`,
+                employee_id: employeeID,
+                employee_name: employee.full_name,
+                license_key: licenseKey,
+                user_id: String(args[0]?.user_id || ''),
+                device_id: '',
+                device_name: '',
+                access_status: 'active',
+                is_primary: true,
+              };
+              state.employeeAccessLinks = [link, ...(state.employeeAccessLinks || [])];
+              writeWorkflowState(state);
+              return defaultValue(link);
+            }
+            case 'RequestEmployeeArchive': {
+              const state = readWorkflowState();
+              const [employeeID, reason] = args;
+              const employee = (state.employeeProfiles || []).find((item: any) => String(item.id) === String(employeeID));
+              if (!employee) {
+                return Promise.reject(new Error('Employee not found'));
+              }
+              const request = {
+                id: `archive-${Date.now()}`,
+                employee_id: employee.id,
+                employee_name: employee.full_name,
+                requested_by: 'emp-admin',
+                requested_by_name: 'Developer Admin',
+                reason: String(reason || ''),
+                status: 'approved',
+                required_approvals: 1,
+                first_approved_by: 'emp-admin',
+                first_approved_by_name: 'Developer Admin',
+                first_approved_at: now(),
+                review_notes: 'Archived by admin',
+                created_at: now(),
+              };
+              employee.is_active = false;
+              employee.employment_status = 'archived';
+              employee.archive_request_id = request.id;
+              employee.archive_reason = request.reason;
+              employee.archived_at = now();
+              employee.archived_by = 'emp-admin';
+              state.employeeArchiveRequests = [request, ...(state.employeeArchiveRequests || [])];
+              writeWorkflowState(state);
+              return defaultValue(request);
+            }
+            case 'ReviewEmployeeArchiveRequest': {
+              const state = readWorkflowState();
+              const [requestID, decision, notes] = args;
+              const request = (state.employeeArchiveRequests || []).find((item: any) => String(item.id) === String(requestID));
+              if (!request) {
+                return Promise.reject(new Error('Employee archive request not found'));
+              }
+              request.status = decision === 'approve' ? 'approved' : 'rejected';
+              request.review_notes = String(notes || '');
+              if (decision === 'approve') {
+                request.second_approved_by = 'emp-admin';
+                request.second_approved_by_name = 'Developer Admin';
+                request.second_approved_at = now();
+                const employee = (state.employeeProfiles || []).find((item: any) => String(item.id) === String(request.employee_id));
+                if (employee) {
+                  employee.is_active = false;
+                  employee.employment_status = 'archived';
+                  employee.archive_request_id = request.id;
+                  employee.archive_reason = request.reason;
+                  employee.archived_at = now();
+                }
+              }
+              state.notificationFeed = (state.notificationFeed || []).map((notification: any) =>
+                String(notification.source_id) === String(requestID)
+                  ? { ...notification, status: 'read', read_at: now() }
+                  : notification
+              );
+              writeWorkflowState(state);
+              return defaultValue(request);
+            }
+            case 'ListEmployeeContributionSummaries': {
+              const state = readWorkflowState();
+              const tasks = state.collaborativeTasks || [];
+              return defaultValue((state.employeeProfiles || []).map((employee: any) => {
+                const employeeTasks = tasks.filter((task: any) => String(task.assignee_employee_id || '') === String(employee.id));
+                const completed = employeeTasks.filter((task: any) => String(task.status || '') === 'completed').length;
+                return {
+                  employee_id: employee.id,
+                  employee_code: employee.employee_code,
+                  employee_name: employee.full_name,
+                  department: employee.department,
+                  job_title: employee.job_title,
+                  employment_status: employee.employment_status || 'active',
+                  is_active: employee.is_active !== false,
+                  active_project_count: (state.collaborativeProjectMembers || []).filter((member: any) => String(member.employee_id) === String(employee.id)).length,
+                  active_task_count: employeeTasks.filter((task: any) => !['completed', 'archived'].includes(String(task.status || ''))).length,
+                  completed_task_count: completed,
+                  blocked_task_count: employeeTasks.filter((task: any) => String(task.status || '') === 'blocked').length,
+                  overdue_task_count: 0,
+                  completion_rate: employeeTasks.length > 0 ? completed / employeeTasks.length : 0,
+                };
+              }));
+            }
+            case 'ListCollaborativeProjects': {
+              const state = readWorkflowState();
+              return defaultValue(collaborativeDataReady(state) ? (state.collaborativeProjects || []) : []);
+            }
+            case 'CreateCollaborativeProject': {
+              const state = readWorkflowState();
+              const payload = args[0] || {};
+              const project = {
+                id: `proj-created-${Date.now()}`,
+                name: String(payload.name || '').trim(),
+                project_type: String(payload.project_type || 'internal'),
+                description: String(payload.description || ''),
+                status: 'active',
+                owner_employee_id: 'emp-peri',
+                owner_name: 'Peri',
+                created_at: now(),
+                updated_at: now(),
+              };
+              state.collaborativeProjects = [project, ...(state.collaborativeProjects || [])];
+              writeWorkflowState(state);
+              return defaultValue(project);
+            }
+            case 'ListMyCollaborativeTasks': {
+              const state = readWorkflowState();
+              return defaultValue(collaborativeDataReady(state) ? (state.collaborativeTasks || []) : []);
+            }
+            case 'ListCollaborativeTeamTasks': {
+              const state = readWorkflowState();
+              return defaultValue(collaborativeDataReady(state) ? (state.collaborativeTasks || []) : []);
+            }
+            case 'ListCollaborativeProjectTasks': {
+              const state = readWorkflowState();
+              const projectID = String(args[0] || '');
+              const tasks = collaborativeDataReady(state)
+                ? (state.collaborativeTasks || []).filter((task: any) => String(task.project_id) === projectID)
+                : [];
+              return delayedValue(tasks, Number(opts.projectContextDelayMs || 0));
+            }
+            case 'ListCollaborativeProjectMembers': {
+              const state = readWorkflowState();
+              const projectID = String(args[0] || '');
+              if (!collaborativeDataReady(state)) {
+                return delayedValue([], Number(opts.projectContextDelayMs || 0));
+              }
+              const members = (state.collaborativeProjectMembers || []).filter((member: any) => String(member.project_id) === projectID);
+              return delayedValue(members, Number(opts.projectContextDelayMs || 0));
+            }
+            case 'AddCollaborativeProjectMember': {
+              const state = readWorkflowState();
+              const [projectID, employeeID, role] = args;
+              const project = (state.collaborativeProjects || []).find((item: any) => String(item.id) === String(projectID));
+              const employee = (state.employeeProfiles || []).find((item: any) => String(item.id) === String(employeeID));
+              if (!project || !employee) {
+                return Promise.reject(new Error('Project or employee not found'));
+              }
+              const member = {
+                id: `project-member-${Date.now()}`,
+                project_id: project.id,
+                employee_id: employee.id,
+                employee_name: employee.full_name,
+                project_name: project.name,
+                role: String(role || 'Member'),
+                allocation_percent: 100,
+                is_active: true,
+                joined_at: now(),
+              };
+              state.collaborativeProjectMembers = [member, ...(state.collaborativeProjectMembers || [])];
+              writeWorkflowState(state);
+              return defaultValue(member);
+            }
+            case 'ListCollaborativeProjectActivity': {
+              const state = readWorkflowState();
+              if (!collaborativeDataReady(state)) {
+                return delayedValue([], Number(opts.projectContextDelayMs || 0));
+              }
+              const activity = (state.collaborativeTaskActivity || []).filter((item: any) => {
+                const task = (state.collaborativeTasks || []).find((candidate: any) => String(candidate.id) === String(item.task_id));
+                return String(task?.project_id || '') === String(args[0] || '');
+              });
+              return delayedValue(activity, Number(opts.projectContextDelayMs || 0));
+            }
+            case 'GetCollaborativeTask': {
+              const state = readWorkflowState();
+              const taskID = String(args[0] || '');
+              const task = (state.collaborativeTasks || []).find((item: any) => String(item.id) === taskID);
+              if (!task || !taskDetailsReady(state)) {
+                return Promise.reject(new Error('task not found'));
+              }
+              return defaultValue(task);
+            }
+            case 'ListCollaborativeTaskComments': {
+              const state = readWorkflowState();
+              if (!taskDetailsReady(state)) {
+                return Promise.reject(new Error('task not found'));
+              }
+              return defaultValue((state.collaborativeTaskComments || []).filter((item: any) => String(item.task_id) === String(args[0] || '')));
+            }
+            case 'ListCollaborativeTaskActivity': {
+              const state = readWorkflowState();
+              if (!taskDetailsReady(state)) {
+                return Promise.reject(new Error('task not found'));
+              }
+              return defaultValue((state.collaborativeTaskActivity || []).filter((item: any) => String(item.task_id) === String(args[0] || '')));
+            }
+            case 'ListNotificationFeed': {
+              const state = readWorkflowState();
+              const limit = Number(args[0] || 50);
+              const unreadOnly = Boolean(args[1]);
+              const feed = (state.notificationFeed || []).filter((item: any) => !unreadOnly || item.status !== 'read');
+              return defaultValue(feed.slice(0, limit));
+            }
+            case 'GetUnreadNotificationsCount': {
+              const state = readWorkflowState();
+              return defaultValue((state.notificationFeed || []).filter((item: any) => item.status !== 'read').length);
+            }
+            case 'MarkNotificationAsRead': {
+              const state = readWorkflowState();
+              const notification = (state.notificationFeed || []).find((item: any) => String(item.id) === String(args[0] || ''));
+              return new Promise((resolve) => {
+                window.setTimeout(() => {
+                  if (notification) {
+                    notification.status = 'read';
+                    notification.read_at = now();
+                    writeWorkflowState(state);
+                  }
+                  resolve(undefined);
+                }, Number(opts.notificationReadDelayMs || 0));
+              });
+            }
+            case 'RefreshCollaborativeWorkspace': {
+              const state = readWorkflowState();
+              state.collaborativeWorkspaceRefreshCount = Number(state.collaborativeWorkspaceRefreshCount || 0) + 1;
+              writeWorkflowState(state);
+              return defaultVoid();
+            }
             case 'GetSettings':
               return defaultValue({ defaultVatRate: 10, defaultMargin: 20 });
             case 'GetCostingSheets':
@@ -739,22 +1551,76 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
             case 'PickFile':
               return defaultValue('/tmp/ph-holdings-smoke/bank-statement.pdf');
             case 'ProcessDocumentWithOCR':
+              (window as any).__wailsOCRCalls.push({
+                filePath: args[0],
+                docType: args[1],
+              });
               return defaultValue(mockOCRResult);
             case 'AnalyzeDocumentWithButler':
               return defaultValue(mockButlerInsight);
             case 'SaveDocumentToEntity':
+              (window as any).__wailsDocumentSaveCalls.push({
+                fileName: args[0],
+                filePath: args[1],
+                documentType: args[2],
+                extractedText: args[3],
+                confidence: args[4],
+                processingTimeMs: args[5],
+                engine: args[6],
+                extractedDataJSON: args[7],
+              });
               return defaultValue({ routed: true, entity_id: 'ocr-doc-1' });
             case 'SaveOCRDocument':
             case 'UpdateRFQStage':
             case 'GetPurchaseOrdersByOrder':
             case 'GetRFQTraceability':
               return defaultVoid();
-            case 'GetRFQComments':
-            case 'GetOpportunityComments':
-              return defaultValue([]);
-            case 'AddRFQComment':
-            case 'AddOpportunityComment':
+            case 'GetRFQComments': {
+              const state = readWorkflowState();
+              return defaultValue((state.rfqComments || []).filter((item: any) => String(item.rfq_id) === String(args[0])));
+            }
+            case 'GetOpportunityComments': {
+              const state = readWorkflowState();
+              return defaultValue((state.opportunityComments || []).filter((item: any) => String(item.opportunity_id) === String(args[0])));
+            }
+            case 'AddRFQComment': {
+              const [rfqId, comment, visibility] = args;
+              const state = readWorkflowState();
+              state.rfqComments = state.rfqComments || [];
+              state.rfqComments.unshift({
+                id: `rfq-comment-${Date.now()}`,
+                rfq_id: String(rfqId),
+                comment: String(comment || ''),
+                content: String(comment || ''),
+                visibility: String(visibility || ''),
+                created_by: 'Developer',
+                created_at: now(),
+              });
+              writeWorkflowState(state);
               return defaultVoid();
+            }
+            case 'AddOpportunityComment': {
+              const [opportunityId, comment] = args;
+              const state = readWorkflowState();
+              state.opportunityComments = state.opportunityComments || [];
+              state.opportunityComments.unshift({
+                id: `opportunity-comment-${Date.now()}`,
+                opportunity_id: String(opportunityId),
+                comment: String(comment || ''),
+                content: String(comment || ''),
+                created_by: 'Developer',
+                created_at: now(),
+              });
+              writeWorkflowState(state);
+              return defaultVoid();
+            }
+            case 'DeleteOpportunityComment': {
+              const commentId = String(args[0] || '');
+              const state = readWorkflowState();
+              state.opportunityComments = (state.opportunityComments || []).filter((item: any) => String(item.id) !== commentId);
+              writeWorkflowState(state);
+              return defaultVoid();
+            }
             case 'CreateCostingSheet':
             case 'UpdateCostingSheet':
               return defaultVoid();
@@ -892,6 +1758,184 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
               const state = readWorkflowState();
               return defaultValue((state.customerInvoices || []).filter((item: any) => String(item.status) === String(args[0])));
             }
+            case 'ListCustomerInvoices':
+              return defaultValue(readWorkflowState().customerInvoices || []);
+            case 'GetAllPayments':
+              return defaultValue(deriveCustomerPayments(readWorkflowState()));
+            case 'ListCustomerReceipts':
+              return defaultValue(readWorkflowState().customerReceipts || []);
+            case 'GetCustomerReceiptAllocations':
+              return defaultValue([]);
+            case 'CreateCustomerReceipt': {
+              const [payload] = args;
+              const state = readWorkflowState();
+              const receiptDate = String(payload?.receipt_date || now()).slice(0, 10);
+              let invoice = null;
+              if (payload?.invoice_id) {
+                invoice = (state.customerInvoices || []).find((item: any) => String(item.id) === String(payload.invoice_id));
+                if (!invoice) {
+                  return Promise.reject(new Error('Invoice not found'));
+                }
+              }
+              let customer = null;
+              if (invoice) {
+                customer = (state.customers || []).find((item: any) => String(item.id) === String(invoice.customer_id));
+              } else if (payload?.customer_id) {
+                customer = findCustomer(state, String(payload.customer_id));
+              }
+              const amount = Number(payload?.amount_bhd || 0);
+              const receipt = {
+                id: `receipt-${state.nextReceiptId || 1}`,
+                receipt_number: `RCT-2026-${String(state.nextReceiptId || 1).padStart(4, '0')}`,
+                customer_id: invoice?.customer_id || payload?.customer_id || customer?.id || '',
+                customer_name: invoice?.customer_name || payload?.customer_name || customer?.business_name || 'Customer',
+                receipt_date: receiptDate,
+                amount_bhd: amount,
+                applied_amount_bhd: invoice ? amount : 0,
+                unapplied_amount_bhd: invoice ? 0 : amount,
+                payment_method: payload?.payment_method || 'Bank Transfer',
+                reference: payload?.reference || '',
+                status: invoice ? 'Applied' : 'OnAccount',
+                division: payload?.division || invoice?.division || 'PH Trading',
+                notes: payload?.notes || '',
+                created_at: now(),
+              };
+              state.nextReceiptId = Number(state.nextReceiptId || 1) + 1;
+              state.customerReceipts = [receipt, ...(state.customerReceipts || [])];
+              if (invoice) {
+                invoice.outstanding_bhd = Math.max(0, Number(invoice.outstanding_bhd || invoice.grand_total_bhd || 0) - amount);
+                invoice.status = invoice.outstanding_bhd <= 0 ? 'Paid' : 'PartiallyPaid';
+                const payment = {
+                  id: `pay-${state.nextPaymentId || 1}`,
+                  invoice_id: invoice.id,
+                  invoice_number: invoice.invoice_number,
+                  customer_name: invoice.customer_name,
+                  amount_bhd: amount,
+                  payment_date: receiptDate,
+                  payment_method: receipt.payment_method,
+                  reference: receipt.reference,
+                  receipt_id: receipt.id,
+                  days_to_payment: 0,
+                  status: 'Received',
+                  division: receipt.division,
+                  created_at: now(),
+                };
+                state.nextPaymentId = Number(state.nextPaymentId || 1) + 1;
+                state.payments = [payment, ...(state.payments || [])];
+              }
+              writeWorkflowState(state);
+              return defaultValue(receipt);
+            }
+            case 'ApplyCustomerReceiptToInvoice':
+              return defaultValue({ id: `alloc-${Date.now()}`, allocated_amount_bhd: Number(args[2] || 0), status: 'Applied' });
+            case 'RecordPayment': {
+              const [invoiceId, amountRaw, method, paymentDate, reference] = args;
+              const state = readWorkflowState();
+              const invoice = (state.customerInvoices || []).find((item: any) => String(item.id) === String(invoiceId));
+              if (!invoice) {
+                return Promise.reject(new Error('Invoice not found'));
+              }
+              const amount = Number(amountRaw || 0);
+              const payment = {
+                id: `pay-${state.nextPaymentId || 1}`,
+                invoice_id: invoice.id,
+                invoice_number: invoice.invoice_number,
+                customer_name: invoice.customer_name,
+                amount_bhd: amount,
+                payment_date: String(paymentDate || now()).slice(0, 10),
+                payment_method: method || 'Bank Transfer',
+                reference: reference || '',
+                days_to_payment: 0,
+                status: 'Received',
+                division: invoice.division || 'PH Trading',
+                created_at: now(),
+              };
+              state.nextPaymentId = Number(state.nextPaymentId || 1) + 1;
+              state.payments = [payment, ...(state.payments || [])];
+              invoice.outstanding_bhd = Math.max(0, Number(invoice.outstanding_bhd || invoice.grand_total_bhd || 0) - amount);
+              invoice.status = invoice.outstanding_bhd <= 0 ? 'Paid' : 'PartiallyPaid';
+              writeWorkflowState(state);
+              return defaultValue(payment);
+            }
+            case 'GetPayment': {
+              const state = readWorkflowState();
+              return defaultValue((state.payments || []).find((item: any) => String(item.id) === String(args[0])) || null);
+            }
+            case 'UpdatePayment': {
+              const [paymentId, payload] = args;
+              const state = readWorkflowState();
+              const payment = (state.payments || []).find((item: any) => String(item.id) === String(paymentId));
+              if (!payment) {
+                return Promise.reject(new Error('Payment not found'));
+              }
+              Object.assign(payment, payload || {});
+              writeWorkflowState(state);
+              return defaultValue(payment);
+            }
+            case 'DeletePayment': {
+              const state = readWorkflowState();
+              state.payments = (state.payments || []).filter((item: any) => String(item.id) !== String(args[0]));
+              writeWorkflowState(state);
+              return defaultVoid();
+            }
+            case 'GetOperationalLedger':
+              return defaultValue(buildOperationalLedger(readWorkflowState(), args[0] || {}));
+            case 'GetCustomerLedger':
+              return defaultValue(buildOperationalLedger(readWorkflowState(), { customer_id: args[0], start_date: args[1], end_date: args[2] }));
+            case 'GetSupplierLedger':
+              return defaultValue(buildOperationalLedger(readWorkflowState(), { supplier_id: args[0], start_date: args[1], end_date: args[2] }));
+            case 'GetExpenseLedger':
+              return defaultValue(buildOperationalLedger(readWorkflowState(), { ...(args[0] || {}), source_type: 'EXPENSE' }));
+            case 'GetOperationalProfitLoss':
+              return defaultValue(buildProfitLoss(readWorkflowState(), args[0] || {}));
+            case 'GetOperationalBalanceSheet':
+              return defaultValue(buildBalanceSheet(readWorkflowState(), args[0], args[1]));
+            case 'GetJournalEntries':
+              return defaultValue(readWorkflowState().journalEntries || []);
+            case 'ListExpenseCategories':
+              return defaultValue(readWorkflowState().expenseCategories || []);
+            case 'ListExpenseVendors':
+              return defaultValue(readWorkflowState().expenseVendors || []);
+            case 'ListRecurringExpenses':
+              return defaultValue(readWorkflowState().recurringExpenses || []);
+            case 'ListBankExpenseCandidates':
+              return defaultValue(readWorkflowState().bankExpenseCandidates || []);
+            case 'ListUnreconciledPayrollPayouts':
+              return defaultValue(readWorkflowState().payrollPayouts || []);
+            case 'ListExpenseDashboardSummary': {
+              const entries = readWorkflowState().expenseEntries || [];
+              return defaultValue({
+                total_drafts: entries.filter((entry: any) => String(entry.status || '') === 'draft').length,
+                total_submitted: entries.filter((entry: any) => String(entry.status || '') === 'submitted').length,
+                total_approved_unpaid: entries.filter((entry: any) => ['approved', 'posted'].includes(String(entry.status || '')) && String(entry.payment_status || '') !== 'paid').length,
+                total_recurring: 0,
+                month_to_date_spend: entries.reduce((sum: number, entry: any) => sum + Number(entry.total_amount || 0), 0),
+                upcoming_commitments: entries.filter((entry: any) => String(entry.payment_status || '') !== 'paid').reduce((sum: number, entry: any) => sum + Number(entry.total_amount || 0), 0),
+              });
+            }
+            case 'ListExpenseEntries': {
+              const state = readWorkflowState();
+              const status = String(args[0] || '').toLowerCase();
+              const includePaid = Boolean(args[1]);
+              return defaultValue((state.expenseEntries || []).filter((entry: any) => {
+                if (status && String(entry.status || '').toLowerCase() !== status) return false;
+                if (!includePaid && String(entry.payment_status || '').toLowerCase() === 'paid') return false;
+                return true;
+              }));
+            }
+            case 'DeleteExpenseEntry': {
+              const state = readWorkflowState();
+              const entry = (state.expenseEntries || []).find((item: any) => String(item.id) === String(args[0]));
+              if (!entry) {
+                return Promise.reject(new Error('Expense entry not found'));
+              }
+              if (['posted', 'paid'].includes(String(entry.status || '').toLowerCase()) || String(entry.payment_status || '').toLowerCase() === 'paid') {
+                return Promise.reject(new Error('posted or paid expenses cannot be deleted'));
+              }
+              state.expenseEntries = (state.expenseEntries || []).filter((item: any) => String(item.id) !== String(args[0]));
+              writeWorkflowState(state);
+              return defaultVoid();
+            }
             case 'GetActiveBankAccounts':
               return defaultValue((readWorkflowState().bankAccounts || []).filter((item: any) => item.is_active !== false));
             case 'GetAllBankAccounts':
@@ -919,13 +1963,27 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
               line.is_matched = true;
               line.match_type = 'Manual';
               line.match_confidence = 1;
-              if (entityType === 'SUPPLIER_PAYMENT') {
+              if (entityType === 'SUPPLIER_PAYMENT' || entityType === 'CUSTOMER_PAYMENT' || entityType === 'CUSTOMER_RECEIPT') {
                 line.matched_payment_id = String(entityId);
               } else if (entityType === 'SUPPLIER_INVOICE') {
                 line.matched_payment_ids = String(entityId);
               } else if (entityType === 'CUSTOMER_INVOICE') {
                 line.matched_invoice_ids = String(entityId);
               }
+              writeWorkflowState(state);
+              return defaultVoid();
+            }
+            case 'CreateSplitAllocation': {
+              const [lineId, allocations] = args;
+              const state = readWorkflowState();
+              const line = (state.bankStatementLines || []).find((item: any) => String(item.id) === String(lineId));
+              if (!line) {
+                return Promise.reject(new Error('Bank statement line not found'));
+              }
+              line.is_matched = true;
+              line.match_type = 'Split';
+              line.match_confidence = 1;
+              line.matched_invoice_ids = JSON.stringify((allocations || []).map((item: any) => `${item.allocation_type}:${item.entity_id}`));
               writeWorkflowState(state);
               return defaultVoid();
             }
@@ -962,8 +2020,12 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
       get(_, prop) {
         switch (String(prop)) {
           case 'EventsOn':
-          case 'OnFileDrop':
             return () => () => {};
+          case 'OnFileDrop':
+            return (callback: Function, useDropTarget = true) => {
+              (window as any).__wailsFileDropCallbacks.push({ callback, useDropTarget });
+              return () => {};
+            };
           case 'EventsOff':
           case 'OnFileDropOff':
           case 'EventsOffAll':

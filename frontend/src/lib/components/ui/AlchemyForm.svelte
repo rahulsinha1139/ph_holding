@@ -1,17 +1,26 @@
 <script>
+    import { createEventDispatcher } from "svelte";
+
     export let entity_name = "";
     export let fields = [];
+
+    const dispatch = createEventDispatcher();
 
     // Generate unique IDs for accessibility
     function getFieldId(field, index) {
         return `alchemy-field-${entity_name.toLowerCase().replace(/\s+/g, '-')}-${field.Label.toLowerCase().replace(/\s+/g, '-')}-${index}`;
+    }
+
+    function handleSubmit(event) {
+        const data = Object.fromEntries(new FormData(event.currentTarget));
+        dispatch("save", { entity_name, data });
     }
 </script>
 
 <div class="bg-[var(--bg-color)] border border-[var(--border-color)] p-6 rounded-lg shadow-sm h-full">
     <h3 class="text-xl font-serif mb-6 pb-2 border-b border-[var(--border-color)] opacity-80">{entity_name}</h3>
 
-    <form on:submit|preventDefault class="flex flex-wrap gap-4">
+    <form on:submit|preventDefault={handleSubmit} class="flex flex-wrap gap-4">
         {#each fields as field, index}
             {@const fieldId = getFieldId(field, index)}
             <div style="width: {field.Width === '100%' ? '100%' : `calc(${field.Width} - 16px)`}; min-width: 250px;" class="flex-grow">
@@ -20,6 +29,7 @@
                 {#if field.Type === 'text' || field.Type === 'string'}
                     <input
                         id={fieldId}
+                        name={field.Label}
                         type="text"
                         placeholder={field.Placeholder}
                         aria-label={field.Label}
@@ -28,6 +38,7 @@
                 {:else if field.Type === 'number'}
                      <input
                         id={fieldId}
+                        name={field.Label}
                         type="number"
                         placeholder={field.Placeholder}
                         aria-label={field.Label}
@@ -36,6 +47,7 @@
                 {:else if field.Type === 'enum'}
                      <select
                         id={fieldId}
+                        name={field.Label}
                         aria-label={field.Label}
                         class="w-full bg-[var(--bg-color)] border border-[var(--border-color)] rounded p-2 text-sm focus:border-[var(--accent-color)] focus:outline-none transition-colors"
                      >

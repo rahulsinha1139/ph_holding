@@ -3,6 +3,7 @@
     import {
         AddOpportunityComment,
         AddRFQComment,
+        DeleteOpportunityComment,
         GetCurrentUserRole,
         GetOpportunityComments,
         GetOpportunityLineItems,
@@ -10,13 +11,12 @@
         GetRFQ,
         GetRFQComments,
         GetRFQTraceability,
-        UpdateOpportunityDetails,
-        UpdateOpportunityStage,
-        UpdateRFQNotes,
+        UpdateOpportunityStageWithVersion,
         UpdateRFQStage,
     } from "../../../wailsjs/go/main/App";
     import { devLog } from "$lib/utils/devLog";
     import { toast } from "$lib/stores/toasts";
+    import { permissions } from "$lib/stores/authContext";
 
     interface LineItem {
         description?: string;
@@ -48,6 +48,7 @@
     export let quickCaptures: any[] = [];
     export let loading = false;
     export let error = "";
+    $: quickCaptures;
 
     const dispatch = createEventDispatcher();
 
@@ -64,7 +65,8 @@
     ];
 
     const pipelineStageOptions = ["New", "Qualified", "Proposal", "Quoted", "Won", "Lost", "On Hold"];
-    const managementRoles = new Set(["admin", "manager", "management"]);
+    const managementRoles = new Set(["admin", "administrator", "manager", "management", "developer"]);
+    const adminRoles = new Set(["admin", "administrator", "developer"]);
 
     let activeTab: "details" | "purchase-orders" = "details";
     let purchaseOrders: PurchaseOrder[] = [];
@@ -75,14 +77,12 @@
     let comments: any[] = [];
     let newComment = "";
     let addingComment = false;
+    let deletingCommentId = "";
     let updatingStage = false;
-    let savingNotes = false;
     let currentUserRole = "";
     let lastLoadedOpportunityKey = "";
     let lastLoadedTabKey = "";
     let offerLineItems: any[] = [];
-    let editableNotes = "";
-    let editableManagementNotes = "";
 
     function parseProductDetails(productDetails?: string): LineItem[] {
         if (!productDetails) return [];
@@ -101,9 +101,22 @@
         : parseProductDetails(opportunity?.product_details);
     $: isPipelineOpportunity = opportunity?._source === "pipeline" || typeof opportunity?.id === "string";
     $: currentStageOptions = isPipelineOpportunity ? pipelineStageOptions : rfqStageOptions;
+    $: currentStageValue = opportunity?.stage || opportunity?.status || currentStageOptions[0];
     $: canViewManagementComments = managementRoles.has((currentUserRole || "").toLowerCase());
-    $: notesDirty = editableNotes !== (opportunity?.notes || opportunity?.comment || "");
-    $: managementNotesDirty = editableManagementNotes !== (opportunity?.owner_notes || "");
+    $: canDeleteManagementComments = adminRoles.has((currentUserRole || "").toLowerCase());
+    $: activePermissions = Array.isArray($permissions) ? $permissions : [];
+
+    function hasPermission(permission: string, roleValue = currentUserRole, permissionValues = activePermissions): boolean {
+        const role = (roleValue || "").toLowerCase();
+        if (adminRoles.has(role)) return true;
+        if (managementRoles.has(role) && permission !== "comments:delete") return true;
+        const permissionList = Array.isArray(permissionValues) ? permissionValues : [];
+        if (permissionList.includes("*") || permissionList.includes(permission)) return true;
+        const [resource] = permission.split(":");
+        return permissionList.includes(`${resource}:*`);
+    }
+    $: canEditOffers = hasPermission("offers:edit", currentUserRole, activePermissions);
+    $: canCreateOffers = hasPermission("offers:create", currentUserRole, activePermissions);
 
     const formatter = new Intl.NumberFormat("en-BH", {
         style: "currency",
@@ -189,16 +202,43 @@
         if (!opportunity?.id) return;
 
         try {
+            let loadedComments: any[] = [];
             if (isPipelineOpportunity) {
                 if (!canViewManagementComments) return;
-                comments = (await GetOpportunityComments(String(opportunity.id))) || [];
+                loadedComments = (await GetOpportunityComments(String(opportunity.id))) || [];
+                comments = mergeLegacyNotesIntoComments(loadedComments);
                 return;
             }
-            comments = (await GetRFQComments(Number(opportunity.id))) || [];
+            loadedComments = (await GetRFQComments(Number(opportunity.id))) || [];
+            comments = mergeLegacyNotesIntoComments(loadedComments);
         } catch (err) {
             devLog.error("Failed to load comments:", err);
             comments = [];
         }
+    }
+
+    function mergeLegacyNotesIntoComments(loadedComments: any[]) {
+        const merged = [...loadedComments];
+        const legacyEntries = [
+            opportunity?.notes || opportunity?.comment,
+            opportunity?.owner_notes,
+        ]
+            .map((value) => String(value || "").trim())
+            .filter(Boolean);
+
+        for (const legacyComment of legacyEntries) {
+            const exists = merged.some((comment) => String(comment.comment || comment.content || "").trim() === legacyComment);
+            if (!exists) {
+                merged.unshift({
+                    id: `legacy-${merged.length}`,
+                    comment: legacyComment,
+                    created_by: "Legacy note",
+                    created_at: opportunity?.updated_at || opportunity?.created_at || "",
+                });
+            }
+        }
+
+        return merged;
     }
 
     async function handleAddComment() {
@@ -222,6 +262,28 @@
         }
     }
 
+    function canDeleteComment(comment: any) {
+        const id = String(comment?.id || "");
+        return isPipelineOpportunity && canDeleteManagementComments && id && !id.startsWith("legacy-");
+    }
+
+    async function handleDeleteComment(comment: any) {
+        const commentId = String(comment?.id || "");
+        if (!canDeleteComment(comment)) return;
+
+        deletingCommentId = commentId;
+        try {
+            await DeleteOpportunityComment(commentId);
+            await loadComments();
+            toast.success("Comment deleted");
+        } catch (err) {
+            devLog.error("Failed to delete comment:", err);
+            toast.danger(`Failed to delete comment: ${(err as any)?.message || err}`);
+        } finally {
+            deletingCommentId = "";
+        }
+    }
+
     async function handleStageChange(event: Event) {
         const newStage = (event.target as HTMLSelectElement).value;
         if (!opportunity?.id || !newStage) return;
@@ -229,63 +291,46 @@
         updatingStage = true;
         try {
             if (isPipelineOpportunity) {
-                await UpdateOpportunityStage(String(opportunity.id), newStage);
+                const updated = await UpdateOpportunityStageWithVersion(String(opportunity.id), newStage, Number(opportunity.version || 0));
+                opportunity = { ...opportunity, ...updated, stage: updated?.stage || newStage, status: updated?.stage || newStage };
             } else {
                 await UpdateRFQStage(Number(opportunity.id), newStage);
+                opportunity = { ...opportunity, stage: newStage, status: newStage };
             }
-            opportunity = { ...opportunity, stage: newStage, status: newStage };
             dispatch("updated");
             toast.success(`Stage updated to ${newStage}`);
         } catch (err) {
             devLog.error("Failed to update stage:", err);
-            toast.danger("Failed to update stage");
+            const message = String((err as any)?.message || err || "Failed to update stage");
+            if (message.toLowerCase().includes("version")) {
+                toast.warning("This opportunity was updated elsewhere. Refreshing before you try again.");
+                dispatch("updated");
+            } else {
+                toast.danger("Failed to update stage");
+            }
         } finally {
             updatingStage = false;
-        }
-    }
-
-    async function handleSaveNotes() {
-        if (!opportunity?.id) return;
-
-        savingNotes = true;
-        try {
-            if (isPipelineOpportunity) {
-                await UpdateOpportunityDetails(String(opportunity.id), editableNotes, editableManagementNotes);
-                opportunity = {
-                    ...opportunity,
-                    comment: editableNotes,
-                    owner_notes: editableManagementNotes,
-                };
-            } else {
-                const updated = await UpdateRFQNotes(Number(opportunity.id), editableNotes);
-                opportunity = {
-                    ...opportunity,
-                    ...updated,
-                    notes: updated?.notes ?? editableNotes,
-                };
-            }
-            dispatch("updated");
-            toast.success("Notes updated");
-        } catch (err) {
-            devLog.error("Failed to update notes:", err);
-            toast.danger("Failed to update notes");
-        } finally {
-            savingNotes = false;
         }
     }
 
     function handleCreateCosting() {
         if (!opportunity?.id) return;
 
-        sessionStorage.setItem("asymmflow.pendingCostingOpportunity", JSON.stringify({
+        const pendingPayload = {
             id: String(opportunity.id),
             customer_name: opportunity.client || opportunity.customer || "",
             folder_number: opportunity.folder_number || opportunity.rfq_number || "",
+            rfq_ref: opportunity.rfq_ref || opportunity.eh_ref || "",
             title: opportunity.project || opportunity.project_name || opportunity.title || "",
-        }));
+        };
+        sessionStorage.setItem("asymmflow.pendingCostingOpportunity", JSON.stringify(pendingPayload));
 
+        dispatch("createCosting", {
+            opportunity,
+            pendingPayload,
+        });
         window.dispatchEvent(new CustomEvent("navigateToScreen", {
-            detail: { screen: "costing" }
+            detail: { screen: "opportunities", tab: "costing" }
         }));
     }
 
@@ -321,8 +366,6 @@
         lastLoadedTabKey = "";
         activeTab = "details";
         purchaseOrders = [];
-        editableNotes = opportunity?.notes || opportunity?.comment || "";
-        editableManagementNotes = opportunity?.owner_notes || "";
         void loadComments();
         void loadOpportunityLineItems();
         void refreshOpportunityData();
@@ -356,9 +399,9 @@
                     <span class="reference-pill">{opportunity.folder_number || opportunity.rfq_number || "Opportunity"}</span>
                     <select
                         class="stage-select"
-                        value={opportunity.stage || opportunity.status || currentStageOptions[0]}
+                        value={currentStageValue}
                         on:change={handleStageChange}
-                        disabled={updatingStage}
+                        disabled={updatingStage || !canEditOffers}
                     >
                         {#each currentStageOptions as stage}
                             <option value={stage}>{stage}</option>
@@ -369,9 +412,11 @@
                 <p class="subtitle">{opportunity.client || opportunity.customer || "Unknown Customer"}</p>
             </div>
             <div class="header-actions">
-                <button class="comment-btn" on:click={handleCreateCosting}>
-                    Create Costing Sheet
-                </button>
+                {#if canCreateOffers}
+                    <button class="comment-btn" on:click={handleCreateCosting}>
+                        Create Costing Sheet
+                    </button>
+                {/if}
                 <div class="value">{formatter.format(opportunity.value || opportunity.revenue_bhd || 0)}</div>
             </div>
         </header>
@@ -384,47 +429,6 @@
                 </div>
             {/each}
         </section>
-
-        <section class="notes-grid">
-            <div class="note-card">
-                <div class="note-card-header">
-                    <p class="mono">Notes</p>
-                    {#if notesDirty}
-                        <span class="note-status">Unsaved</span>
-                    {/if}
-                </div>
-                <textarea
-                    class="note-editor"
-                    bind:value={editableNotes}
-                    rows="4"
-                    placeholder="Add notes for this opportunity..."
-                />
-            </div>
-            {#if isPipelineOpportunity && canViewManagementComments}
-                <div class="note-card">
-                    <div class="note-card-header">
-                        <p class="mono">Management Notes</p>
-                        {#if managementNotesDirty}
-                            <span class="note-status">Unsaved</span>
-                        {/if}
-                    </div>
-                    <textarea
-                        class="note-editor"
-                        bind:value={editableManagementNotes}
-                        rows="4"
-                        placeholder="Add internal management notes..."
-                    />
-                </div>
-            {/if}
-        </section>
-
-        {#if notesDirty || managementNotesDirty}
-            <div class="note-actions">
-                <button class="comment-btn" on:click={handleSaveNotes} disabled={savingNotes}>
-                    {savingNotes ? "Saving..." : "Save Notes"}
-                </button>
-            </div>
-        {/if}
 
         <div class="tabs-nav">
             <button class="tab-btn" class:active={activeTab === "details"} on:click={() => (activeTab = "details")}>
@@ -535,18 +539,6 @@
             {#if isPipelineOpportunity && !canViewManagementComments}
                 <p class="muted">Management comments are visible to manager and admin roles.</p>
             {:else}
-                <div class="comment-input">
-                    <textarea
-                        bind:value={newComment}
-                        placeholder={isPipelineOpportunity ? "Add a management comment..." : "Add a comment..."}
-                        class="comment-textarea"
-                        rows="3"
-                    />
-                    <button class="comment-btn" on:click={handleAddComment} disabled={!newComment.trim() || addingComment}>
-                        {addingComment ? "Posting..." : "Post"}
-                    </button>
-                </div>
-
                 <div class="comment-list">
                     {#if comments.length === 0}
                         <p class="muted">No comments yet.</p>
@@ -555,13 +547,39 @@
                             <div class="comment-item">
                                 <div class="comment-header">
                                     <span class="comment-author">{comment.created_by || "User"}</span>
-                                    <span class="comment-time">{formatDateTime(comment.created_at)}</span>
+                                    <div class="comment-meta">
+                                        <span class="comment-time">{formatDateTime(comment.created_at)}</span>
+                                        {#if canDeleteComment(comment)}
+                                            <button
+                                                class="comment-delete"
+                                                on:click={() => handleDeleteComment(comment)}
+                                                disabled={deletingCommentId === String(comment.id)}
+                                                title="Delete comment"
+                                            >
+                                                {deletingCommentId === String(comment.id) ? "Deleting..." : "Delete"}
+                                            </button>
+                                        {/if}
+                                    </div>
                                 </div>
                                 <p class="comment-text">{comment.comment || comment.content}</p>
                             </div>
                         {/each}
                     {/if}
                 </div>
+
+                {#if (!isPipelineOpportunity && canEditOffers) || (isPipelineOpportunity && canViewManagementComments)}
+                    <div class="comment-input">
+                        <textarea
+                            bind:value={newComment}
+                            placeholder="Add a comment..."
+                            class="comment-textarea"
+                            rows="3"
+                        />
+                        <button class="comment-btn" on:click={handleAddComment} disabled={!newComment.trim() || addingComment}>
+                            {addingComment ? "Posting..." : "Post"}
+                        </button>
+                    </div>
+                {/if}
             {/if}
         </section>
     {:else}
@@ -665,8 +683,7 @@
         color: var(--text-muted);
     }
 
-    .info-grid,
-    .notes-grid {
+    .info-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
         gap: 0.85rem;
@@ -674,42 +691,12 @@
     }
 
     .info-card,
-    .note-card,
     .po-card,
     .comment-item {
         padding: 1rem;
         border-radius: 16px;
         background: rgba(248, 250, 252, 0.9);
         border: 1px solid rgba(15, 23, 42, 0.06);
-    }
-
-    .note-card-header,
-    .note-actions {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.75rem;
-    }
-
-    .note-status {
-        font-size: 0.72rem;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--text-muted);
-    }
-
-    .note-editor {
-        width: 100%;
-        min-height: 110px;
-        resize: vertical;
-        border: 1px solid rgba(15, 23, 42, 0.12);
-        border-radius: 14px;
-        padding: 0.85rem 0.95rem;
-        font: inherit;
-        line-height: 1.55;
-        color: var(--text-primary);
-        background: rgba(255, 255, 255, 0.92);
-        box-sizing: border-box;
     }
 
     .tabs-nav {
@@ -816,7 +803,7 @@
 
     .comment-input {
         align-items: stretch;
-        margin-bottom: 0.9rem;
+        margin-top: 0.9rem;
     }
 
     .comment-textarea {
@@ -835,6 +822,26 @@
 
     .comment-author {
         font-weight: 700;
+    }
+
+    .comment-meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .comment-delete {
+        border: none;
+        background: transparent;
+        color: #b91c1c;
+        cursor: pointer;
+        font-weight: 700;
+        padding: 0.1rem 0.2rem;
+    }
+
+    .comment-delete:disabled {
+        color: var(--text-muted);
+        cursor: wait;
     }
 
     .comment-text {

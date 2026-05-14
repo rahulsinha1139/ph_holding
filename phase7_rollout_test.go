@@ -225,3 +225,70 @@ func TestRerunPhase7FollowUpBackfillDoesNotDuplicateMigratedTasks(t *testing.T) 
 		t.Fatalf("expected exactly 1 migrated task after rerun, got %d", len(tasks))
 	}
 }
+
+func TestEnsurePhase7RolloutRepairsStaleFollowUpBackfillMarker(t *testing.T) {
+	app := newPhase7TestApp(t)
+
+	employee := Employee{
+		FullName:         "Abhie Admin",
+		EmployeeCode:     "EMP-001",
+		EmploymentStatus: "active",
+		IsActive:         true,
+	}
+	if err := app.db.Create(&employee).Error; err != nil {
+		t.Fatalf("failed to seed employee: %v", err)
+	}
+
+	followUp := FollowUpTask{
+		Base: Base{
+			CreatedAt: time.Now().Add(-24 * time.Hour),
+			UpdatedAt: time.Now().Add(-24 * time.Hour),
+			CreatedBy: "legacy-user-1",
+		},
+		Title:    "Legacy task with stale marker",
+		Status:   "pending",
+		Priority: "medium",
+	}
+	if err := app.db.Create(&followUp).Error; err != nil {
+		t.Fatalf("failed to seed follow-up task: %v", err)
+	}
+
+	legacyID := followUp.ID
+	softDeletedTask := TaskItem{
+		Base: Base{
+			CreatedAt: time.Now().Add(-2 * time.Hour),
+			UpdatedAt: time.Now().Add(-2 * time.Hour),
+			DeletedAt: gorm.DeletedAt{Time: time.Now().Add(-time.Hour), Valid: true},
+		},
+		Title:             "Soft-deleted migrated task",
+		TaskType:          "customer_followup",
+		LegacyFollowUpID:  &legacyID,
+		Status:            "blocked",
+		Priority:          "medium",
+		CreatorEmployeeID: employee.ID,
+	}
+	if err := app.db.Unscoped().Create(&softDeletedTask).Error; err != nil {
+		t.Fatalf("failed to seed stale soft-deleted task: %v", err)
+	}
+	if err := app.db.Create(&Setting{Key: phase7FollowUpBackfillSetting, Value: "2026-04-08T08:38:42Z"}).Error; err != nil {
+		t.Fatalf("failed to seed stale completion setting: %v", err)
+	}
+	if err := app.db.Create(&Setting{Key: phase7FollowUpBackfillCount, Value: "1"}).Error; err != nil {
+		t.Fatalf("failed to seed stale count setting: %v", err)
+	}
+
+	if err := app.EnsurePhase7Rollout(); err != nil {
+		t.Fatalf("EnsurePhase7Rollout failed: %v", err)
+	}
+
+	var activeTasks []TaskItem
+	if err := app.db.Where("legacy_follow_up_id = ?", followUp.ID).Find(&activeTasks).Error; err != nil {
+		t.Fatalf("failed to load active migrated tasks: %v", err)
+	}
+	if len(activeTasks) != 1 {
+		t.Fatalf("expected one active migrated task to be recreated, got %d", len(activeTasks))
+	}
+	if activeTasks[0].ID == softDeletedTask.ID {
+		t.Fatal("expected repair to create a fresh active task instead of reusing the soft-deleted row")
+	}
+}

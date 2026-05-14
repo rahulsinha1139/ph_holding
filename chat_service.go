@@ -94,6 +94,9 @@ var butlerActionTypeAlias = map[string]string{
 	"createsupplier":          "create",
 	"daily_briefing":          "daily_briefing",
 	"dailybriefing":           "daily_briefing",
+	"clarify":                 "clarify",
+	"clarification":           "clarify",
+	"choose":                  "clarify",
 	"open":                    "open",
 	"navigate":                "navigate",
 	"analyze":                 "analyze",
@@ -176,6 +179,9 @@ var butlerActionValidationRules = map[string][]string{
 		"target",
 	},
 	"daily_briefing": {
+		"target",
+	},
+	"clarify": {
 		"target",
 	},
 }
@@ -458,50 +464,66 @@ func isDailyBriefingRequest(message string) bool {
 		strings.Contains(normalized, "give me a briefing")
 }
 
-// requiresFinancePrivilege enforces the finance gate only for truly finance-sensitive asks.
-// Some sales/operations prompts can be misclassified as "financial" due wording like "sold" or "quarter".
+// requiresFinancePrivilege enforces the finance gate for sensitive commercial asks.
+// Sales users can still ask operational questions about RFQs/offers/orders/items, but
+// money, margin, payment, cash, AR/AP, and pipeline-value answers stay manager/admin only.
 func requiresFinancePrivilege(intent Intent, message string) bool {
-	if intent.Domain != "financial" && intent.Domain != "risk" {
-		return false
-	}
-
 	normalized := strings.ToLower(strings.TrimSpace(message))
 	if normalized == "" {
+		return intent.Domain == "financial" || intent.Domain == "risk"
+	}
+
+	sensitiveSignals := []string{
+		" ar ", " a/r", " ap ", " a/p", "accounts receivable", "accounts payable",
+		"aging", "bank", "balance", "bhd", "cash", "cashflow", "cash flow",
+		"collection", "credit", "dso", "expense", "financial", "gross", "income",
+		"invoice amount", "invoice total", "margin", "money", "net", "outstanding",
+		"paid", "payable", "payment", "pipeline value", "profit", "profitability",
+		"receivable", "revenue", "salary", "slow payer", "total sales", "turnover",
+		"unpaid", "value of", "weighted pipeline",
+	}
+	hasSensitiveSignal := containsButlerFinanceSignal(normalized, sensitiveSignals)
+
+	salesSafeSignals := []string{
+		"draft email", "email", "follow up", "follow-up", "item", "items", "model",
+		"order status", "offer", "quotation", "quote", "rfq", "serial", "service due",
+		"delivery status", "product",
+	}
+	hasSalesSafeSignal := containsButlerFinanceSignal(normalized, salesSafeSignals)
+
+	if hasSensitiveSignal {
 		return true
 	}
 
-	opsSignals := []string{
-		"equipment sold",
-		"what was sold",
-		"sold to",
-		"what equipment",
-		"last quarter",
-		"last 2 quarter",
-		"last 2 quarters",
-		"last two quarter",
-		"last two quarters",
-		"opportunity",
-		"opportunities",
-		"pipeline",
-		"rfq",
-		"offer",
-		"quotation",
-		"order status",
-		"deliver",
-		"service due",
-		"invoices this quarter",
-		"invoices this year",
-		"invoice status",
-		"invoice for",
-		"invoices for",
-	}
-	for _, signal := range opsSignals {
-		if strings.Contains(normalized, signal) {
-			return false
-		}
+	if hasSalesSafeSignal {
+		return false
 	}
 
-	return true
+	if intent.Domain == "financial" || intent.Domain == "risk" {
+		return true
+	}
+
+	return false
+}
+
+func containsButlerFinanceSignal(normalized string, signals []string) bool {
+	padded := " " + normalized + " "
+	for _, signal := range signals {
+		signal = strings.ToLower(strings.TrimSpace(signal))
+		if signal == "" {
+			continue
+		}
+		if strings.Contains(signal, " ") || strings.Contains(signal, "/") {
+			if strings.Contains(normalized, signal) {
+				return true
+			}
+			continue
+		}
+		if strings.Contains(padded, " "+signal+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 // prepareButlerConversation ensures the conversation exists and persists the trigger message.
@@ -555,6 +577,7 @@ func (a *App) prepareButlerConversation(conversationID, title, message string) (
 // persistButlerAssistantMessage stores the assistant response and updates conversation activity.
 func (a *App) persistButlerAssistantMessage(conversationID, content string, tokensUsed int, actions []ButlerAction, responseMetadata *ButlerResponseMetadata) {
 	normalizedActions := normalizeButlerActionList(actions)
+	normalizedContent := normalizeAssistantMessageContent(content, normalizedActions)
 	messageType, actionType, actionTarget, actionStatus, actionData, actionLabel := classifyActionMetadata(normalizedActions)
 	richActionPayload := hydrateActionMetadataPayload(normalizedActions)
 	actionSummary := buildActionMetadataSummary(richActionPayload)
@@ -575,7 +598,7 @@ func (a *App) persistButlerAssistantMessage(conversationID, content string, toke
 	persistenceMetadata["action_summary"] = actionSummary
 	persistenceMetadata["action_contract"] = map[string]interface{}{
 		"version":         butlerActionMetadataContractVersion,
-		"supported_types": []string{"navigate", "fetch", "analyze", "update", "approve", "reject", "create", "open", "daily_briefing"},
+		"supported_types": []string{"navigate", "fetch", "analyze", "update", "approve", "reject", "create", "open", "daily_briefing", "clarify"},
 		"supported_targets": []string{
 			"purchase_order",
 			"order",
@@ -589,6 +612,7 @@ func (a *App) persistButlerAssistantMessage(conversationID, content string, toke
 			"customer",
 			"report",
 			"daily_briefing",
+			"butler_prompt",
 		},
 		"status_constraints": butlerStatusConstraintMap,
 		"required_fields_by_type": map[string][]string{
@@ -610,6 +634,7 @@ func (a *App) persistButlerAssistantMessage(conversationID, content string, toke
 			"navigate":       {"target"},
 			"open":           {"target"},
 			"daily_briefing": {"target"},
+			"clarify":        {"target", "prompt"},
 		},
 		"requires_context_key": "entity_id|id|offer_id|order_id|purchase_order_id|supplier_invoice_id|costing_sheet_id|stock_adjustment_id|customer_id|follow_up_id|rfq_id|invoice_id",
 	}
@@ -632,7 +657,7 @@ func (a *App) persistButlerAssistantMessage(conversationID, content string, toke
 	assistantMsg := ChatMessage{
 		ConversationID: conversationID,
 		Role:           "assistant",
-		Content:        content,
+		Content:        normalizedContent,
 		TokensUsed:     tokensUsed,
 		MessageType:    messageType,
 		ActionType:     actionType,
@@ -648,6 +673,113 @@ func (a *App) persistButlerAssistantMessage(conversationID, content string, toke
 	}
 
 	a.db.Model(&Conversation{}).Where("id = ?", conversationID).Update("last_msg_at", time.Now())
+}
+
+func normalizeAssistantMessageContent(content string, actions []ButlerAction) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed != "" {
+		return trimmed
+	}
+
+	if summary := summarizeButlerActions(actions); summary != "" {
+		return summary
+	}
+
+	return "I processed your request, but I do not have a replay-safe text response for this turn."
+}
+
+func summarizeButlerActions(actions []ButlerAction) string {
+	normalized := normalizeButlerActionList(actions)
+	if len(normalized) == 0 {
+		return ""
+	}
+
+	labels := make([]string, 0, len(normalized))
+	seen := make(map[string]struct{})
+	for _, action := range normalized {
+		label := strings.TrimSpace(action.Label)
+		if label == "" {
+			label = inferActionLabel(action.Type, action.Target)
+		}
+		if label == "" {
+			continue
+		}
+		if _, exists := seen[label]; exists {
+			continue
+		}
+		seen[label] = struct{}{}
+		labels = append(labels, label)
+		if len(labels) == 3 {
+			break
+		}
+	}
+
+	if len(labels) == 0 {
+		return ""
+	}
+	if len(labels) == 1 {
+		return fmt.Sprintf("I prepared a suggested action: %s.", labels[0])
+	}
+
+	return fmt.Sprintf("I prepared %d suggested actions: %s.", len(normalized), strings.Join(labels, "; "))
+}
+
+func extractStoredButlerActions(msg ChatMessage) []ButlerAction {
+	if strings.TrimSpace(msg.ActionMetadata) != "" {
+		var persisted struct {
+			Actions []struct {
+				Type   string      `json:"type"`
+				Target string      `json:"target"`
+				Label  string      `json:"label"`
+				Data   interface{} `json:"data"`
+			} `json:"actions"`
+		}
+		if err := json.Unmarshal([]byte(msg.ActionMetadata), &persisted); err == nil && len(persisted.Actions) > 0 {
+			actions := make([]ButlerAction, 0, len(persisted.Actions))
+			for _, action := range persisted.Actions {
+				actions = append(actions, ButlerAction{
+					Type:   action.Type,
+					Target: action.Target,
+					Label:  action.Label,
+					Data:   action.Data,
+				})
+			}
+			return normalizeButlerActionList(actions)
+		}
+	}
+
+	if strings.TrimSpace(msg.ActionType) != "" || strings.TrimSpace(msg.ActionTarget) != "" || strings.TrimSpace(msg.ActionLabel) != "" {
+		return normalizeButlerActionList([]ButlerAction{{
+			Type:   msg.ActionType,
+			Target: msg.ActionTarget,
+			Label:  msg.ActionLabel,
+		}})
+	}
+
+	return nil
+}
+
+func replaySafeChatMessageContent(msg ChatMessage) string {
+	trimmed := strings.TrimSpace(msg.Content)
+	if trimmed != "" {
+		return trimmed
+	}
+	if msg.Role != "assistant" {
+		return ""
+	}
+	return normalizeAssistantMessageContent("", extractStoredButlerActions(msg))
+}
+
+func buildReplayMessage(msg ChatMessage) (map[string]interface{}, bool) {
+	content := replaySafeChatMessageContent(msg)
+	if content == "" {
+		return nil, false
+	}
+
+	return map[string]interface{}{
+		"role":    msg.Role,
+		"content": content,
+	}, true
 }
 
 func classifyActionMetadata(actions []ButlerAction) (string, string, string, string, string, string) {
@@ -670,7 +802,7 @@ func classifyActionMetadata(actions []ButlerAction) (string, string, string, str
 		switch aType {
 		case "approve", "reject":
 			needsApproval = true
-		case "create", "create_offer_draft", "create_follow_up", "create_followup", "analyze", "fetch", "navigate", "open", "update", "daily_briefing":
+		case "create", "create_offer_draft", "create_follow_up", "create_followup", "analyze", "fetch", "navigate", "open", "update", "daily_briefing", "clarify":
 			hasWorkflow = true
 		case "create_offer", "create_order", "create_stock_adjustment":
 			hasWorkflow = true
@@ -967,7 +1099,7 @@ func hydrateActionMetadataPayload(actions []ButlerAction) []map[string]interface
 			} else {
 				executionStatus = "ready_for_execution"
 			}
-		case "analyze", "fetch", "navigate", "open", "daily_briefing":
+		case "analyze", "fetch", "navigate", "open", "daily_briefing", "clarify":
 			if strings.TrimSpace(target) == "" {
 				executionStatus = "needs_input"
 				missingFields = append(missingFields, "target")
@@ -1280,6 +1412,10 @@ func (a *App) GetConversationMessages(conversationID string) ([]ChatMessage, err
 		return nil, fmt.Errorf("failed to get messages: %w", err)
 	}
 
+	for i := range messages {
+		messages[i].Content = replaySafeChatMessageContent(messages[i])
+	}
+
 	log.Printf("📨 Retrieved %d messages for conversation %s", len(messages), conversationID)
 	return messages, nil
 }
@@ -1455,7 +1591,7 @@ func (a *App) ChatWithButlerPersistent(conversationID, message string) (ChatResp
 	if requiresFinancePrivilege(intent, message) {
 		if !hasFinanceAccess {
 			log.Printf("🔒 Butler financial query blocked (persistent): user role=%s license role=%s lacks finance:view", currentUserRole, licenseRole)
-			errMsg := "Financial data access requires manager or admin privileges.\n\nYou can still ask me about:\n• Customer information\n• Supplier details\n• Order status\n• Operations and pipeline\n\nFor financial reports and metrics, please contact your manager."
+			errMsg := "Financial data access requires manager or admin privileges.\n\nYou can still ask me about:\n• RFQ, offer, and order status by number\n• Item, model, serial, and product lookups\n• Customer emails and follow-ups\n• Sales pipeline status without revenue, profit, margin, cash, AR/AP, or payment figures\n\nFor financial reports and metrics, please contact your manager."
 			blockedMetadata := buildButlerMetadata(intent, map[string]interface{}{
 				"blocked_domain": intent.Domain,
 				"user_role":      currentUserRole,
@@ -1481,6 +1617,62 @@ func (a *App) ChatWithButlerPersistent(conversationID, message string) (ChatResp
 	if offerSeed != "" {
 		offerInput = strings.TrimSpace(offerSeed + " " + offerInput)
 	}
+	if routeReply, routeActions, handled := a.tryButlerIntentClarificationFastPath(intent, message, hasFinanceAccess); handled {
+		metadata := buildButlerMetadata(intent, map[string]interface{}{
+			"fast_path": "butler_intent_clarification",
+		}, hasFinanceAccess, "grounded_sql", "", "", "", nil)
+		a.persistButlerAssistantMessage(conversationID, routeReply, 0, routeActions, &metadata)
+		return ChatResponse{
+			Response:       routeReply,
+			ConversationID: conversationID,
+			Actions:        routeActions,
+			Confidence:     0.99,
+			TokensUsed:     0,
+			Metadata:       metadata,
+		}, nil
+	}
+	if groundedReply, groundedActions, handled := a.tryGroundedARProjectionFastPath(intent, message, hasFinanceAccess); handled {
+		metadata := buildButlerMetadata(intent, map[string]interface{}{
+			"fast_path": "grounded_ar_projection",
+		}, hasFinanceAccess, "grounded_sql", "", "", "", nil)
+		a.persistButlerAssistantMessage(conversationID, groundedReply, 0, groundedActions, &metadata)
+		return ChatResponse{
+			Response:       groundedReply,
+			ConversationID: conversationID,
+			Actions:        groundedActions,
+			Confidence:     0.99,
+			TokensUsed:     0,
+			Metadata:       metadata,
+		}, nil
+	}
+	if groundedReply, handled := a.tryGroundedCapabilitiesFastPath(intent, message, hasFinanceAccess); handled {
+		metadata := buildButlerMetadata(intent, map[string]interface{}{
+			"fast_path": "grounded_capabilities",
+		}, hasFinanceAccess, "grounded_sql", "", "", "", nil)
+		a.persistButlerAssistantMessage(conversationID, groundedReply, 0, []ButlerAction{}, &metadata)
+		return ChatResponse{
+			Response:       groundedReply,
+			ConversationID: conversationID,
+			Actions:        []ButlerAction{},
+			Confidence:     0.99,
+			TokensUsed:     0,
+			Metadata:       metadata,
+		}, nil
+	}
+	if groundedReply, groundedActions, handled := a.tryGroundedManagerFinancialBriefFastPath(intent, message, hasFinanceAccess); handled {
+		metadata := buildButlerMetadata(intent, map[string]interface{}{
+			"fast_path": "grounded_manager_financial_brief",
+		}, hasFinanceAccess, "grounded_sql", "", "", "", nil)
+		a.persistButlerAssistantMessage(conversationID, groundedReply, 0, groundedActions, &metadata)
+		return ChatResponse{
+			Response:       groundedReply,
+			ConversationID: conversationID,
+			Actions:        groundedActions,
+			Confidence:     0.99,
+			TokensUsed:     0,
+			Metadata:       metadata,
+		}, nil
+	}
 	if offerMsg, offerActions, offerHandled := a.tryGroundedOfferDraftFastPath(offerInput, customerHint, productHint); offerHandled {
 		metadata := buildButlerMetadata(intent, map[string]interface{}{
 			"fast_path":     "grounded_offer_draft",
@@ -1493,6 +1685,48 @@ func (a *App) ChatWithButlerPersistent(conversationID, message string) (ChatResp
 			ConversationID: conversationID,
 			Actions:        offerActions,
 			Confidence:     0.99,
+			TokensUsed:     0,
+			Metadata:       metadata,
+		}, nil
+	}
+	if groundedReply, handled := a.tryGroundedTaskCreationFastPath(intent, message); handled {
+		metadata := buildButlerMetadata(intent, map[string]interface{}{
+			"fast_path": "grounded_task_create",
+		}, hasFinanceAccess, "grounded_sql", "", "", "", nil)
+		a.persistButlerAssistantMessage(conversationID, groundedReply, 0, []ButlerAction{}, &metadata)
+		return ChatResponse{
+			Response:       groundedReply,
+			ConversationID: conversationID,
+			Actions:        []ButlerAction{},
+			Confidence:     0.99,
+			TokensUsed:     0,
+			Metadata:       metadata,
+		}, nil
+	}
+	if groundedReply, handled := a.tryGroundedWorkFastPath(intent, message); handled {
+		metadata := buildButlerMetadata(intent, map[string]interface{}{
+			"fast_path": "grounded_work",
+		}, hasFinanceAccess, "grounded_sql", "", "", "", nil)
+		a.persistButlerAssistantMessage(conversationID, groundedReply, 0, []ButlerAction{}, &metadata)
+		return ChatResponse{
+			Response:       groundedReply,
+			ConversationID: conversationID,
+			Actions:        []ButlerAction{},
+			Confidence:     0.98,
+			TokensUsed:     0,
+			Metadata:       metadata,
+		}, nil
+	}
+	if groundedReply, handled := a.tryGroundedSupplierFastPath(intent, message); handled {
+		metadata := buildButlerMetadata(intent, map[string]interface{}{
+			"fast_path": "grounded_supplier",
+		}, hasFinanceAccess, "grounded_sql", "", "", "", nil)
+		a.persistButlerAssistantMessage(conversationID, groundedReply, 0, []ButlerAction{}, &metadata)
+		return ChatResponse{
+			Response:       groundedReply,
+			ConversationID: conversationID,
+			Actions:        []ButlerAction{},
+			Confidence:     0.98,
 			TokensUsed:     0,
 			Metadata:       metadata,
 		}, nil
@@ -1564,16 +1798,21 @@ func (a *App) ChatWithButlerPersistent(conversationID, message string) (ChatResp
 	if len(recentMessages) > historyLimit {
 		startIdx = len(recentMessages) - historyLimit
 	}
+	currentUserMessageInHistory := false
 	for _, msg := range recentMessages[startIdx:] {
-		mistralMessages = append(mistralMessages, map[string]interface{}{
-			"role":    msg.Role,
-			"content": msg.Content,
-		})
+		replayMsg, ok := buildReplayMessage(msg)
+		if !ok {
+			continue
+		}
+		mistralMessages = append(mistralMessages, replayMsg)
+		if msg.Role == "user" && strings.TrimSpace(msg.Content) == strings.TrimSpace(message) {
+			currentUserMessageInHistory = true
+		}
 	}
 
 	// Current user message is already at the end from recent history
 	// If not in history yet (edge case), add it
-	if len(recentMessages) == 0 || recentMessages[len(recentMessages)-1].Content != message {
+	if !currentUserMessageInHistory {
 		mistralMessages = append(mistralMessages, map[string]interface{}{
 			"role":    "user",
 			"content": message,
@@ -1604,18 +1843,20 @@ func (a *App) ChatWithButlerPersistent(conversationID, message string) (ChatResp
 	if modelErr != nil {
 		log.Printf("❌ Mistral API error: %v", modelErr)
 
-		// Save error response as assistant message
-		errorMsg := fmt.Sprintf("Intelligence pipeline error: %v. Please try again.", modelErr)
-		metadata := buildButlerMetadata(intent, context, hasFinanceAccess, usedBackend, requestedModel, usedModel, fallbackReason, modelErr)
-		a.persistButlerAssistantMessage(conversationID, errorMsg, 0, []ButlerAction{}, &metadata)
+		fallbackResponse := a.buildGroundedModelFallbackResponse(intent, message, context, hasFinanceAccess, modelErr)
+		fallbackResponse.Metadata.UsedBackend = firstNonEmpty(fallbackResponse.Metadata.UsedBackend, "grounded_sql_fallback")
+		fallbackResponse.Metadata.RequestedModel = requestedModel
+		fallbackResponse.Metadata.UsedModel = usedModel
+		fallbackResponse.Metadata.FallbackReason = firstNonEmpty(fallbackResponse.Metadata.FallbackReason, fallbackReason, modelErr.Error())
+		a.persistButlerAssistantMessage(conversationID, fallbackResponse.Message, 0, fallbackResponse.Actions, &fallbackResponse.Metadata)
 
 		return ChatResponse{
-			Response:       errorMsg,
+			Response:       fallbackResponse.Message,
 			ConversationID: conversationID,
-			Actions:        []ButlerAction{},
-			Confidence:     0.0,
+			Actions:        fallbackResponse.Actions,
+			Confidence:     fallbackResponse.Confidence,
 			TokensUsed:     0,
-			Metadata:       metadata,
+			Metadata:       fallbackResponse.Metadata,
 		}, nil // Return nil error so frontend shows the message
 	}
 
@@ -1795,9 +2036,6 @@ func callMistralWithMessages(model string, messages []map[string]interface{}) (s
 
 // buildMistralSystemPromptWithHistory creates PRD-style prompt with conversation awareness
 func buildMistralSystemPromptWithHistory(context map[string]interface{}, regime map[string]interface{}, history []ChatMessage) string {
-	// Serialize context to JSON for injection
-	contextJSON, _ := json.MarshalIndent(context, "", "  ")
-
 	// Build regime guidance
 	regimeGuidance := buildRegimeGuidance(regime)
 
@@ -1820,8 +2058,11 @@ func buildMistralSystemPromptWithHistory(context map[string]interface{}, regime 
 				role = "Assistant"
 			}
 			// Sanitize history content before injecting into system prompt (P1: prompt injection prevention)
-			preview := sanitizeForPrompt(msg.Content)
+			preview := sanitizeForPrompt(replaySafeChatMessageContent(msg))
 			preview = contextCleanupPatterns.ReplaceAllString(preview, "")
+			if strings.TrimSpace(preview) == "" {
+				continue
+			}
 			if len(preview) > 100 {
 				preview = preview[:100] + "..."
 			}
@@ -1831,13 +2072,7 @@ func buildMistralSystemPromptWithHistory(context map[string]interface{}, regime 
 		conversationContext += "\nMaintain continuity with this conversation history. Reference previous topics when relevant."
 	}
 
-	// Sanitize context data to prevent prompt injection from database-sourced values
-	contextStr := sanitizeForPrompt(string(contextJSON))
-	contextStr = contextCleanupPatterns.ReplaceAllString(contextStr, "")
-	const maxContextChars = 200000
-	if len(contextStr) > maxContextChars {
-		contextStr = contextStr[:maxContextChars] + "\n... [context truncated at 200K chars]"
-	}
+	contextStr := marshalContextForPrompt(context, butlerMaxContextChars)
 
 	prompt := fmt.Sprintf(`You are Butler, the business intelligence AI for PH Trading WLL — a Bahrain-based process instrumentation company.
 You have access to connected business data in this system and should answer only from that evidence.
@@ -1855,13 +2090,19 @@ DATA-GROUNDING RULES:
 - For company-wide quarter/month/year questions, use 'business_period_summary' when provided and treat it as authoritative.
 - If period summary is empty, do not infer from lifetime data and present period-specific result only.
 
+RBAC AND SALES-SAFE RULES:
+- Treat context as role-scoped. If financial_data, ar_summary, banking_data, cashflow_projection, dso_analysis, customer_profitability, and forecast_intelligence are absent, the current user is not cleared for finance.
+- For finance-restricted users, do not answer revenue, profit, margin, cash, AR/AP, bank, payment, outstanding, salary, total sales, or pipeline-value questions, even if the wording references sales pipeline or offers.
+- Sales-safe help is allowed for RFQ/offer/order status by number, item/model/serial lookup, customer emails, follow-ups, delivery status, and next actions without money, margin, cash, or payment figures.
+- If a restricted user asks for financial details, briefly say manager/admin permission is required and offer the closest sales-safe route.
+
 COMPANY PROFILE:
 - Industry: Process Instrumentation & Control Systems (Bahrain)
 - Currency: BHD (Bahraini Dinar, 3 decimal places = fils)
 - Divisions: PH Trading (primary) + AHS Trading (secondary)
 - VAT Rate: 10%%
 
-FULL DATA ACCESS — you have live data on:
+ROLE-SCOPED DATA ACCESS — you may have live data on:
 • CUSTOMERS: live customer accounts — profiles, grades (A/B/C/D), payment behavior, credit limits, outstanding AR, invoices, orders, contacts, CRM notes, follow-up tasks, active offers, AR risk tiers
 • CUSTOMER ACTIVITY: Dormant customers (no orders 6+ months), new customers this year, lapsed customers, retention signals
 • CUSTOMER PROFITABILITY: Revenue and gross margin by customer — top earners, lowest margin accounts
@@ -1871,18 +2112,19 @@ FULL DATA ACCESS — you have live data on:
 • OFFER EXPIRY: Active quotes approaching ValidityDate — this week / this month / next 60 days
 • COMPETITION: Win/loss trend, top lost-deal reasons, and supplier/product competitiveness signals
 • ORDERS & INVOICES: live orders and customer invoices, including status, line items, and margins
-• PROCUREMENT: 45 POs (multi-currency EUR/USD/BHD), 3-way matching (PO/GRN/Invoice), GRN quality
-• DELIVERY: 155 delivery notes — Prepared/Dispatched/Delivered, serial traceability
+• PROCUREMENT: live purchase orders (multi-currency EUR/USD/BHD), 3-way matching (PO/GRN/Invoice), GRN quality
+• DELIVERY: live delivery notes — Prepared/Dispatched/Delivered, serial traceability
 • SERVICE DUE: Serial-tracked installations nearing calibration, warranty, or annual-service milestones
 • FINANCE: AR/AP, bank balances, FX rates, monthly revenue trends, payment predictions
 • DSO ANALYSIS: Days Sales Outstanding per customer — who pays fast vs slow
 • BANKING: Bank statements, reconciliation status, outstanding/stale/bounced cheques
-• CREDIT NOTES: Draft/Issued/Applied pipeline, outstanding credits
-• PRODUCTS: 19 active products — catalog, pricing, margins, order frequency, serial tracking
+• PRODUCTS: live product catalog, pricing, margins, order frequency, serial tracking
 • FORECASTING: Weighted pipeline by stage, opportunities closing in 60 days, payment predictions, win rates
 • RISK: Overdue AR/AP, credit-blocked customers, expiring offers, system alerts
 • ACTION ITEMS: Prioritized list — overdue invoices, expiring offers, stuck deliveries, pending approvals
 • STRUCTURED MEMORY: Recent entity notes, pending follow-ups, and tactical quick captures
+• WORK MANAGEMENT: Employees, collaborative tasks, task comments, and task notifications
+• DATABASE ACCESS: Cross-module record retrieval covering notes, offers and line items, orders and line items, invoices, supplier invoices, payments, bank statements, expenses, and related operational records
 
 COMPLETE BUSINESS DATA:
 %s
@@ -1890,16 +2132,16 @@ COMPLETE BUSINESS DATA:
 %s%s
 
 YOUR CAPABILITIES:
-1. Answer ANY question about the business — customers, suppliers, finance, operations, pipeline, risk
+1. Answer role-authorized questions about the business — customers, suppliers, finance, operations, pipeline, risk
 2. FUTURE PROSPECTS — use pipeline data, payment predictions, and win probability from context
 3. STRATEGIC ANALYSIS — recommend actions, identify patterns, surface insights from data trends
-4. FORECASTING — estimate revenue using pipeline × close probability, analyze payment timing risk
+4. FORECASTING — for finance-cleared users estimate revenue using pipeline × close probability and payment timing risk; for sales users limit pipeline answers to status/count/next action
 5. RELATIONSHIP ANALYSIS — cross-reference customers, orders, offers, and payments
 6. DAILY PRIORITIZATION — tell the team what to focus on today
 7. CUSTOMER HEALTH — identify dormant accounts, churn risk, new customer opportunities
 8. COMPETITIVE INTELLIGENCE — analyze win/loss patterns and pricing vs margin trade-offs
 9. SUPPLIER BENCHMARKING — compare lead times and QC reliability
-10. PAYMENT BEHAVIOR — DSO by customer, predict who will pay late, recommend collection priority
+10. PAYMENT BEHAVIOR — finance-cleared only: DSO by customer, predict who will pay late, recommend collection priority
 11. SERVICE FOLLOW-UPS — identify equipment due for calibration, warranty, or service
 12. DOCUMENT READINESS — verify customer/contact context and missing fields before quotation drafting
 13. PROACTIVE BRIEFING — summarize what needs attention across collections, operations, service, approvals
@@ -1911,11 +2153,13 @@ RESPONSE GUIDELINES:
 - Always cite specific numbers from context data when available
 - For forward-looking questions, clearly distinguish between actual data and projections
 - Be as detailed or as brief as the question requires — match depth to complexity
+- Write in polished executive prose. Do not use emojis, markdown heading markers like ###, or asterisks for emphasis.
+- Use short section titles and simple dash bullets only when they improve readability.
 - If data is not in context, say so and offer what you do know
 - Suggest next actions only when supported by context
 - For strategic recommendations, ground them in actual data provided
 - Never invent contact people, invoice numbers, project names, or payment events absent from context
-- Treat entity_resolution, quotation_precheck, butler_memory, and proactive_briefing as higher-trust sources
+- Treat entity_resolution, customer_data, supplier_data, employee_context, quotation_precheck, butler_memory, proactive_briefing, work_data, and database_access as higher-trust sources
 - If entity_resolution indicates ambiguous=true, ask a short clarification question
 - Reference previous conversation topics when relevant to maintain continuity
 - Do not claim a PDF or document was generated unless context includes a real file path

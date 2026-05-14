@@ -40,8 +40,18 @@
     { key: 'InProgress', label: 'In Progress', color: 'indigo' },
     { key: 'PartiallyDelivered', label: 'Partially Delivered', color: 'amber' },
     { key: 'FullyDelivered', label: 'Fully Delivered', color: 'green' },
+    { key: 'Invoiced', label: 'Invoiced', color: 'emerald' },
     { key: 'Cancelled', label: 'Cancelled', color: 'red' }
   ];
+
+  function errorMessage(err: unknown) {
+    if (err instanceof Error && err.message) return err.message;
+    if (typeof err === 'string') return err;
+    if (err && typeof err === 'object' && 'message' in err) {
+      return String((err as { message?: unknown }).message || err);
+    }
+    return String(err || 'Unknown error');
+  }
 
   // State
   let orders: main.Order[] = [];
@@ -120,9 +130,16 @@
   let showDetailModal = false;
   let selectedOrder: main.Order | null = null;
   let showTaskModal = false;
-  let orderItems: main.OrderItem[] = [];
+  let orderItems: EditableOrderItem[] = [];
   let deliveryProgress = { delivered: 0, total: 0, percentage: 0 };
   let fulfillmentStatus: any = null;
+  type ConfirmVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'success' | 'warning';
+  let confirmDialogOpen = false;
+  let confirmDialogTitle = '';
+  let confirmDialogMessage = '';
+  let confirmDialogConfirmLabel = 'Confirm';
+  let confirmDialogVariant: ConfirmVariant = 'primary';
+  let confirmDialogResolve: ((confirmed: boolean) => void) | null = null;
 
   function getOrderDateValue(value: any): Date | null {
     if (!value) return null;
@@ -260,6 +277,34 @@
         ((item.unit_price_bhd || 0) <= 0 || (item.total_price || 0) <= 0)
       ).length
     };
+  }
+
+  function askActionConfirmation(options: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    variant?: ConfirmVariant;
+  }): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (confirmDialogResolve) {
+        confirmDialogResolve(false);
+      }
+      confirmDialogTitle = options.title;
+      confirmDialogMessage = options.message;
+      confirmDialogConfirmLabel = options.confirmLabel || 'Confirm';
+      confirmDialogVariant = options.variant || 'primary';
+      confirmDialogResolve = resolve;
+      confirmDialogOpen = true;
+    });
+  }
+
+  function resolveActionConfirmation(confirmed: boolean) {
+    const resolver = confirmDialogResolve;
+    confirmDialogOpen = false;
+    confirmDialogResolve = null;
+    if (resolver) {
+      resolver(confirmed);
+    }
   }
 
   // DataTable columns
@@ -487,7 +532,7 @@
       safeTrim(item.description) || safeTrim(item.product_code) || item.quantity > 0 || item.unit_price_bhd > 0
     );
 
-    if (modalMode === 'edit' && normalizedItems.length === 0 && formData.totalValue <= 0) {
+    if (normalizedItems.length === 0) {
       toast.warning('Add at least one line item with quantity and price before saving this order');
       return;
     }
@@ -532,14 +577,35 @@
       formData.totalValue = computedTotalValue;
 
       if (modalMode === 'create') {
-        // Create new order
-        await CreateOrder(
+        const createdOrder = await CreateOrder(
           formData.orderNumber,
           formData.customerName,
           formData.totalValue,
           formData.orderDate,
           formData.status
         );
+
+        const createdOrderWithItems = {
+          ...createdOrder,
+          order_number: formData.orderNumber,
+          customer_po_number: formData.customerPONumber,
+          customer_id: resolvedCustomerId,
+          customer_name: formData.customerName,
+          order_date: formData.orderDate,
+          required_date: formData.requiredDate,
+          total_value_bhd: computedTotalValue,
+          grand_total_bhd: computedTotalValue,
+          status: formData.status,
+          payment_terms: formData.paymentTerms,
+          delivery_terms: formData.deliveryTerms,
+          items: normalizedItems.map((item, index) => ({
+            ...item,
+            line_number: index + 1,
+            total_price: roundMoney(item.quantity * item.unit_price_bhd)
+          }))
+        };
+
+        await UpdateOrder(createdOrder.id, createdOrderWithItems as any);
         toast.success('Order created successfully');
       } else if (modalMode === 'edit' && editingOrder) {
         // Send full order update, not just status
@@ -617,6 +683,13 @@
 
   // Quick actions
   async function handleCreateDeliveryNote(order: main.Order) {
+    if (isProcessingAction) return;
+
+    if (!orderItems || orderItems.length === 0) {
+      toast.warning('This order has no saved line items. Delivery notes need the actual items to ship; edit or re-import the order before creating a DN.');
+      return;
+    }
+
     // Set pending DN creation in store (DeliveryNotesScreen will consume on mount)
     pendingDNCreate.request(order.id, order.order_number || '', order.customer_name || '');
     showDetailModal = false;
@@ -629,7 +702,13 @@
   async function handleCreateInvoice(order: main.Order) {
     if (isProcessingAction) return;
 
-    if (!confirm(`Create invoice for order ${order.order_number}?\nThis will generate a billing record for ${order.customer_name}.`)) {
+    const confirmed = await askActionConfirmation({
+      title: 'Create Invoice',
+      message: `Create invoice for order ${order.order_number}? This will generate a billing record for ${order.customer_name}.`,
+      confirmLabel: 'Create Invoice',
+      variant: 'primary'
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -639,14 +718,14 @@
       toast.success(`Invoice ${invoice.invoice_number} created`);
       showDetailModal = false;
       window.dispatchEvent(new CustomEvent('navigateToScreen', {
-        detail: { screen: 'finance' }
+        detail: { screen: 'finance', tab: 'invoices', company: order.division || 'PH Trading' }
       }));
       window.dispatchEvent(new CustomEvent('finance:navigate', {
-        detail: { tab: 'invoices' }
+        detail: { tab: 'invoices', company: order.division || 'PH Trading' }
       }));
       await loadOrders();
     } catch (err) {
-      toast.danger('Failed to create invoice: ' + (err as Error).message);
+      toast.danger('Failed to create invoice: ' + errorMessage(err));
     } finally {
       isProcessingAction = false;
     }
@@ -655,7 +734,13 @@
   async function handleCreateProforma(order: main.Order) {
     if (isProcessingAction) return;
 
-    if (!confirm(`Create proforma invoice for order ${order.order_number}?\nThis is a reference document, not a tax invoice.`)) {
+    const confirmed = await askActionConfirmation({
+      title: 'Create Proforma',
+      message: `Create proforma invoice for order ${order.order_number}? This is a reference document, not a tax invoice.`,
+      confirmLabel: 'Create Proforma',
+      variant: 'secondary'
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -665,14 +750,14 @@
       toast.success(`Proforma Invoice ${invoice.invoice_number} created`);
       showDetailModal = false;
       window.dispatchEvent(new CustomEvent('navigateToScreen', {
-        detail: { screen: 'finance' }
+        detail: { screen: 'finance', tab: 'invoices', company: order.division || 'PH Trading' }
       }));
       window.dispatchEvent(new CustomEvent('finance:navigate', {
-        detail: { tab: 'invoices' }
+        detail: { tab: 'invoices', company: order.division || 'PH Trading' }
       }));
       await loadOrders();
     } catch (err) {
-      toast.danger('Failed to create proforma: ' + (err as Error).message);
+      toast.danger('Failed to create proforma: ' + errorMessage(err));
     } finally {
       isProcessingAction = false;
     }
@@ -682,21 +767,30 @@
     if (isProcessingAction) return;
 
     if (!orderItems || orderItems.length === 0) {
-      toast.warning('No order items loaded. Please close and reopen the order details.');
+      toast.warning('This order has no saved line items. Supplier orders need item detail; edit or re-import the order before creating a PO.');
+      return;
+    }
+
+    const confirmed = await askActionConfirmation({
+      title: 'Create Supplier Order',
+      message: `Create a draft supplier order from ${order.order_number}? If the order contains items from multiple suppliers, create supplier orders separately.`,
+      confirmLabel: 'Create Supplier Order',
+      variant: 'secondary'
+    });
+    if (!confirmed) {
       return;
     }
 
     isProcessingAction = true;
     try {
-      const itemIDs = orderItems.map(item => item.id);
-      const po = await CreatePOFromOrder(order.id, '', itemIDs);
-      toast.success(`PO ${po.po_number} created`);
+      const po = await CreatePOFromOrder(order.id, '', []);
+      toast.success(`Supplier order ${po.po_number} created`);
       showDetailModal = false;
       window.dispatchEvent(new CustomEvent('navigateToScreen', {
         detail: { screen: 'operations', tab: 'pos' }
       }));
     } catch (err) {
-      toast.danger('Failed to create PO: ' + (err as Error).message);
+      toast.danger('Failed to create supplier order: ' + errorMessage(err));
     } finally {
       isProcessingAction = false;
     }
@@ -706,7 +800,13 @@
     if (isProcessingAction) return;
     if (!selectedOrder) return;
 
-    if (!confirm(`Mark order ${selectedOrder.order_number} as fully delivered?\n\nThis will update the order status without creating a GRN record.`)) {
+    const confirmed = await askActionConfirmation({
+      title: 'Mark Delivered',
+      message: `Mark order ${selectedOrder.order_number} as fully delivered? This updates the order status without creating a GRN record.`,
+      confirmLabel: 'Mark Delivered',
+      variant: 'primary'
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -717,7 +817,7 @@
       showDetailModal = false;
       await loadOrders();
     } catch (err) {
-      toast.danger('Failed to mark as delivered: ' + (err as Error).message);
+      toast.danger('Failed to mark as delivered: ' + errorMessage(err));
     } finally {
       isProcessingAction = false;
     }
@@ -726,7 +826,13 @@
   async function handleDeleteOrder(order: main.Order) {
     if (isDeleting) return;
 
-    if (!confirm(`Are you sure you want to delete order ${order.order_number}? This cannot be undone.`)) {
+    const confirmed = await askActionConfirmation({
+      title: 'Delete Order',
+      message: `Delete order ${order.order_number}? This cannot be undone.`,
+      confirmLabel: 'Delete Order',
+      variant: 'danger'
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -738,7 +844,7 @@
       selectedOrder = null;
       await loadOrders();
     } catch (err) {
-      toast.danger('Delete failed: ' + (err as Error).message);
+      toast.danger('Delete failed: ' + errorMessage(err));
     } finally {
       isDeleting = false;
     }
@@ -1094,7 +1200,7 @@
             min="0"
             bind:value={formData.totalValue}
             placeholder="0.000"
-            readonly={modalMode === 'edit'}
+            readonly
           />
         </FormGroup>
 
@@ -1130,12 +1236,11 @@
         </FormGroup>
       </div>
 
-      {#if modalMode === 'edit'}
-        <div class="line-items-panel">
+      <div class="line-items-panel">
           <div class="line-items-panel-header">
             <div>
               <h4>Order Line Items</h4>
-              <p>Update each line separately so order totals, delivery notes, and invoices stay accurate.</p>
+              <p>{modalMode === 'edit' ? 'Update each line separately so order totals, delivery notes, and invoices stay accurate.' : 'Capture each line separately so delivery notes, invoices, and purchase orders stay accurate.'}</p>
             </div>
             <Button variant="ghost" type="button" on:click={addFormItem}>
               + Add Line
@@ -1205,7 +1310,6 @@
             {/each}
           </div>
         </div>
-      {/if}
 
       <div class="modal-actions">
         <Button variant="ghost" on:click={() => showModal = false} disabled={saving}>
@@ -1368,6 +1472,27 @@
         </Button>
         <Button variant="ghost" on:click={() => handleDeleteOrder(selectedOrder)} disabled={isDeleting || isProcessingAction} style="color: #EF4444;">
           Delete Order
+        </Button>
+      </div>
+    </div>
+  </Modal>
+{/if}
+
+{#if confirmDialogOpen}
+  <Modal
+    title={confirmDialogTitle}
+    open={confirmDialogOpen}
+    on:close={() => resolveActionConfirmation(false)}
+    size="sm"
+  >
+    <div class="confirm-dialog">
+      <p>{confirmDialogMessage}</p>
+      <div class="confirm-actions">
+        <Button variant="secondary" on:click={() => resolveActionConfirmation(false)}>
+          Cancel
+        </Button>
+        <Button variant={confirmDialogVariant} on:click={() => resolveActionConfirmation(true)}>
+          {confirmDialogConfirmLabel}
         </Button>
       </div>
     </div>
@@ -2013,6 +2138,26 @@
     gap: 8px;
     padding-top: 16px;
     border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+
+  .confirm-dialog {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .confirm-dialog p {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
   }
 
   /* Warning banner for orders with no line items */

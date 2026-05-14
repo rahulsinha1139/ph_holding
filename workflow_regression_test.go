@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,20 +16,37 @@ func migrateWorkflowRegressionTables(t *testing.T, app *App) {
 		&Role{},
 		&User{},
 		&LicenseKey{},
+		&CustomerMaster{},
 		&RFQData{},
 		&CostingSheetData{},
 		&Opportunity{},
 		&Offer{},
 		&OfferItem{},
+		&OfferNote{},
+		&OfferFollowUp{},
+		&DeleteApprovalRequest{},
 		&Order{},
 		&OrderItem{},
 		&Invoice{},
+		&DBInvoiceItem{},
+		&Payment{},
 		&SupplierMaster{},
+		&SupplierContact{},
+		&EntityNote{},
 		&SupplierInvoice{},
+		&SupplierInvoiceItem{},
 		&SupplierPayment{},
 		&BankStatement{},
 		&BankStatementLine{},
 		&BankReconciliationAuditLog{},
+		&Employee{},
+		&EmployeeAccessLink{},
+		&TaskItem{},
+		&TaskComment{},
+		&TaskActivity{},
+		&Notification{},
+		&NotificationReceipt{},
+		&CollaborativePendingOperation{},
 	))
 }
 
@@ -110,6 +128,107 @@ func TestGetOpportunityLineItems_FallsBackWhenLinkedOfferHasNoItems(t *testing.T
 	require.Equal(t, 321.123, items[0].UnitPrice)
 }
 
+func TestDeleteOffer_AdminSoftDeletesUnconvertedOfferAndClearsOpportunity(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	offerID := uuid.New().String()
+	offer := Offer{
+		Base:          Base{ID: offerID, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferNumber:   "DEL-41-26",
+		CustomerName:  "Sedres/Orbitus",
+		QuotationDate: time.Now(),
+		ValidityDate:  time.Now().AddDate(0, 0, 30),
+		Stage:         "Quoted",
+		TotalValueBHD: 2783,
+	}
+	require.NoError(t, app.db.Create(&offer).Error)
+	require.NoError(t, app.db.Create(&OfferItem{
+		Base:        Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferID:     offerID,
+		LineNumber:  1,
+		Description: "Flow meter",
+		Quantity:    1,
+		UnitPrice:   2530,
+		TotalPrice:  2530,
+	}).Error)
+	require.NoError(t, app.db.Create(&OfferNote{
+		Base:     Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferID:  offerID,
+		NoteDate: time.Now(),
+		Content:  "Internal note",
+	}).Error)
+	require.NoError(t, app.db.Create(&OfferFollowUp{
+		Base:         Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferID:      offerID,
+		FollowUpDate: time.Now().AddDate(0, 0, 7),
+		Status:       "pending",
+	}).Error)
+	opportunity := Opportunity{
+		Base:         Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		FolderNumber: "41-26",
+		CustomerName: "Sedres/Orbitus",
+		Title:        "Test Project",
+		Stage:        "Quoted",
+		OfferID:      offerID,
+	}
+	require.NoError(t, app.db.Create(&opportunity).Error)
+
+	require.NoError(t, app.DeleteOffer(offerID))
+
+	var deleted Offer
+	require.NoError(t, app.db.Unscoped().First(&deleted, "id = ?", offerID).Error)
+	require.True(t, deleted.DeletedAt.Valid)
+
+	var liveItems int64
+	require.NoError(t, app.db.Model(&OfferItem{}).Where("offer_id = ?", offerID).Count(&liveItems).Error)
+	require.Zero(t, liveItems)
+	var liveNotes int64
+	require.NoError(t, app.db.Model(&OfferNote{}).Where("offer_id = ?", offerID).Count(&liveNotes).Error)
+	require.Zero(t, liveNotes)
+	var liveFollowUps int64
+	require.NoError(t, app.db.Model(&OfferFollowUp{}).Where("offer_id = ?", offerID).Count(&liveFollowUps).Error)
+	require.Zero(t, liveFollowUps)
+
+	var relinked Opportunity
+	require.NoError(t, app.db.First(&relinked, "id = ?", opportunity.ID).Error)
+	require.Empty(t, relinked.OfferID)
+	require.Equal(t, "Proposal", relinked.Stage)
+}
+
+func TestDeleteOffer_BlocksConvertedOfferWithOrder(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	offerID := uuid.New().String()
+	require.NoError(t, app.db.Create(&Offer{
+		Base:          Base{ID: offerID, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OfferNumber:   "LOCK-42-26",
+		CustomerName:  "BAPCO",
+		QuotationDate: time.Now(),
+		ValidityDate:  time.Now().AddDate(0, 0, 30),
+		Stage:         "Quoted",
+	}).Error)
+	require.NoError(t, app.db.Create(&Order{
+		Base:          Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OrderNumber:   "ORD-LOCK-42",
+		CustomerName:  "BAPCO",
+		OrderDate:     time.Now(),
+		Status:        "Confirmed",
+		OfferID:       offerID,
+		OfferNumber:   "LOCK-42-26",
+		TotalValueBHD: 100,
+		GrandTotalBHD: 100,
+	}).Error)
+
+	err := app.DeleteOffer(offerID)
+	require.ErrorContains(t, err, "linked order")
+
+	var live Offer
+	require.NoError(t, app.db.First(&live, "id = ?", offerID).Error)
+	require.Equal(t, "LOCK-42-26", live.OfferNumber)
+}
+
 func TestUpdateOpportunityDetails_PreservesOwnerNotesForNonManagement(t *testing.T) {
 	app := setupTestApp(t)
 	migrateWorkflowRegressionTables(t, app)
@@ -182,6 +301,85 @@ func TestSeedDefaultRoles_SalesCanCreatePurchaseOrders(t *testing.T) {
 	require.True(t, app.CheckPermissionByRole("sales", "orders:update"))
 }
 
+func TestFixDatabaseDatesDoesNotShiftCurrentYearOrders(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	currentYear := time.Now().Year()
+	currentDate := time.Date(currentYear, time.March, 31, 0, 0, 0, 0, time.UTC)
+	futureDate := currentDate.AddDate(1, 0, 0)
+
+	currentOrder := Order{
+		Base:          Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OrderNumber:   "ORD-CURRENT-YEAR",
+		CustomerName:  "Current Year Customer",
+		OrderDate:     currentDate,
+		RequiredDate:  currentDate,
+		TotalValueBHD: 100,
+		GrandTotalBHD: 100,
+		Status:        "Confirmed",
+	}
+	futureOrder := Order{
+		Base:          Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		OrderNumber:   "ORD-FUTURE-YEAR",
+		CustomerName:  "Future Year Customer",
+		OrderDate:     futureDate,
+		RequiredDate:  futureDate,
+		TotalValueBHD: 200,
+		GrandTotalBHD: 200,
+		Status:        "Confirmed",
+	}
+	require.NoError(t, app.db.Create(&currentOrder).Error)
+	require.NoError(t, app.db.Create(&futureOrder).Error)
+
+	results, err := app.FixDatabaseDates()
+	require.NoError(t, err)
+	require.Equal(t, 1, results["orders"])
+
+	var storedCurrent Order
+	require.NoError(t, app.db.First(&storedCurrent, "id = ?", currentOrder.ID).Error)
+	require.Equal(t, currentDate.Format("2006-01-02"), storedCurrent.OrderDate.Format("2006-01-02"))
+	require.Equal(t, currentDate.Format("2006-01-02"), storedCurrent.RequiredDate.Format("2006-01-02"))
+
+	var storedFuture Order
+	require.NoError(t, app.db.First(&storedFuture, "id = ?", futureOrder.ID).Error)
+	require.Equal(t, currentDate.Format("2006-01-02"), storedFuture.OrderDate.Format("2006-01-02"))
+	require.Equal(t, currentDate.Format("2006-01-02"), storedFuture.RequiredDate.Format("2006-01-02"))
+}
+
+func TestAnalyzeDocumentWithButlerFallsBackWithoutExternalAI(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	oldMistralProvider := settingsBasedMistralKey
+	oldAIMLProvider := settingsBasedAIMLKey
+	defer func() {
+		settingsBasedMistralKey = oldMistralProvider
+		settingsBasedAIMLKey = oldAIMLProvider
+	}()
+
+	SetMistralKeyProvider(func() string { return "" })
+	SetAIMLKeyProvider(func() string { return "" })
+	t.Setenv("MISTRAL_API_KEY", "")
+	t.Setenv("AIML_API_KEY", "")
+	t.Setenv("ASYMM_AIML_API_KEY", "")
+
+	text := `From: Ministry of Works
+Subject: MOW 2026 143 Supply of sensor hydrostatic level measurement
+Delivery Date: 04/05/2026
+RFQ: MOW-2026-143
+Quantity: 2 pcs`
+
+	insight, err := app.AnalyzeDocumentWithButler(text, "rfq", map[string]interface{}{
+		"subject": "MOW 2026 143 Supply of sensor hydrostatic level measurement",
+	})
+	require.NoError(t, err)
+	require.Greater(t, insight.Confidence, 0.0)
+	require.NotEmpty(t, insight.Summary)
+	require.Equal(t, "rfq", insight.DocumentType)
+	require.Contains(t, insight.ExtractedMetadata, "fallback_reason")
+}
+
 func TestUpdateSupplierInvoiceWithPayment_CreatesSingleLedgerEntry(t *testing.T) {
 	app := setupTestApp(t)
 	migrateWorkflowRegressionTables(t, app)
@@ -230,6 +428,148 @@ func TestUpdateSupplierInvoiceWithPayment_CreatesSingleLedgerEntry(t *testing.T)
 	require.NoError(t, err)
 	require.NoError(t, app.db.Where("supplier_invoice_id = ?", invoice.ID).Find(&payments).Error)
 	require.Len(t, payments, 1)
+}
+
+func TestCreateSupplierInvoice_NormalizesCurrencyDivisionAndCreatorFromPO(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+	require.NoError(t, app.db.AutoMigrate(&PurchaseOrder{}, &PurchaseOrderItem{}))
+
+	supplierID := seedTestSupplier(t, app.db, "Endress+Hauser")
+	po := PurchaseOrder{
+		Base:         Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		PONumber:     "PO-EUR-RESTORE",
+		SupplierID:   supplierID,
+		SupplierName: "Endress+Hauser",
+		PODate:       time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+		Currency:     "EUR",
+		ExchangeRate: defaultEURToBHDRate,
+		Division:     "AHS Trading",
+		Status:       "Draft",
+	}
+	require.NoError(t, app.db.Create(&po).Error)
+
+	created, err := app.CreateSupplierInvoice(SupplierInvoice{
+		SupplierID:      supplierID,
+		PurchaseOrderID: po.ID,
+		InvoiceNumber:   "SUPP-EUR-RESTORE",
+		InvoiceDate:     po.PODate,
+		DueDate:         po.PODate.AddDate(0, 0, 30),
+		Currency:        "eur",
+		ExchangeRate:    1,
+		SubtotalForeign: 100,
+		VATForeign:      10,
+		TotalForeign:    110,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "EUR", created.Currency)
+	require.Equal(t, defaultEURToBHDRate, created.ExchangeRate)
+	require.InDelta(t, 49.5, created.TotalBHD, 0.001)
+	require.Equal(t, "AHS Trading", created.Division)
+	require.Equal(t, "test-user", created.CreatedBy)
+	require.Equal(t, po.PONumber, created.PONumber)
+}
+
+func TestCreateSupplierInvoiceFromOCR_LooksUpPONormalizesCurrencyAndCreator(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+	require.NoError(t, app.db.AutoMigrate(&PurchaseOrder{}, &PurchaseOrderItem{}, &OCRDocument{}))
+
+	supplierID := seedTestSupplier(t, app.db, "OCR Supplier")
+	po := PurchaseOrder{
+		Base:         Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		PONumber:     "PO-OCR-RESTORE",
+		SupplierID:   supplierID,
+		SupplierName: "OCR Supplier",
+		PODate:       time.Date(2026, 4, 2, 0, 0, 0, 0, time.UTC),
+		Currency:     "USD",
+		ExchangeRate: defaultExchangeRateToBHD("USD"),
+		Division:     "AHS Trading",
+		Status:       "Draft",
+	}
+	require.NoError(t, app.db.Create(&po).Error)
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"invoice_number": "OCR-SUPP-RESTORE",
+		"invoice_date":   "2026-04-02",
+		"due_date":       "2026-05-02",
+		"subtotal":       200.0,
+		"vat":            20.0,
+		"total":          220.0,
+		"currency":       "usd",
+		"po_number":      po.PONumber,
+	})
+	require.NoError(t, err)
+	ocrDoc := OCRDocument{
+		FileName:          "supplier-invoice.pdf",
+		FilePath:          "/tmp/supplier-invoice.pdf",
+		DocumentType:      "supplier_invoice",
+		ExtractedDataJSON: string(payload),
+		Confidence:        0.88,
+		CreatedAt:         time.Now(),
+	}
+	require.NoError(t, app.db.Create(&ocrDoc).Error)
+
+	created, err := app.CreateSupplierInvoiceFromOCR("1", "", "")
+	require.NoError(t, err)
+	require.Equal(t, supplierID, created.SupplierID)
+	require.Equal(t, po.ID, created.PurchaseOrderID)
+	require.Equal(t, po.PONumber, created.PONumber)
+	require.Equal(t, "USD", created.Currency)
+	require.Equal(t, defaultExchangeRateToBHD("USD"), created.ExchangeRate)
+	require.InDelta(t, 82.72, created.TotalBHD, 0.001)
+	require.Equal(t, "AHS Trading", created.Division)
+	require.Equal(t, "test-user", created.CreatedBy)
+}
+
+func TestCustomerAndSupplierPaymentsCarryResolvedDivision(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	customerID := seedTestCustomer(t, app.db, "BAPCO")
+	invoiceDate := time.Now().AddDate(0, 0, -10)
+	customerInvoice := Invoice{
+		Base:           Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		InvoiceNumber:  "INV-DIV-RESTORE",
+		CustomerID:     customerID,
+		CustomerName:   "BAPCO",
+		InvoiceDate:    invoiceDate,
+		DueDate:        invoiceDate.AddDate(0, 0, 30),
+		Status:         "Sent",
+		GrandTotalBHD:  100,
+		OutstandingBHD: 100,
+		Division:       "AHS Trading",
+	}
+	require.NoError(t, app.db.Create(&customerInvoice).Error)
+
+	customerPayment, err := app.RecordPayment(customerInvoice.ID, 25, "Cash", invoiceDate.AddDate(0, 0, 1).Format("2006-01-02"), "CASH-DIV-1")
+	require.NoError(t, err)
+	require.Equal(t, "AHS Trading", customerPayment.Division)
+
+	supplierID := seedTestSupplier(t, app.db, "Supplier Division")
+	supplierInvoice := SupplierInvoice{
+		Base:            Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now(), CreatedBy: "creator-user"},
+		SupplierID:      supplierID,
+		SupplierName:    "Supplier Division",
+		InvoiceNumber:   "SI-DIV-RESTORE",
+		InvoiceDate:     invoiceDate,
+		DueDate:         invoiceDate.AddDate(0, 0, 30),
+		Currency:        "BHD",
+		ExchangeRate:    1,
+		SubtotalForeign: 100,
+		SubtotalBHD:     100,
+		TotalForeign:    100,
+		TotalBHD:        100,
+		Status:          "Approved",
+		PaymentStatus:   "Unpaid",
+		MatchStatus:     "Matched",
+		Division:        "AHS Trading",
+	}
+	require.NoError(t, app.db.Create(&supplierInvoice).Error)
+
+	supplierPayment, err := app.RecordSupplierPayment(supplierInvoice.ID, 40, "BHD", "Bank Transfer", invoiceDate.AddDate(0, 0, 2).Format("2006-01-02"), "SUP-DIV-1")
+	require.NoError(t, err)
+	require.Equal(t, "AHS Trading", supplierPayment.Division)
 }
 
 func TestGetBusinessYearSummary_CapturesCommercialCoverage(t *testing.T) {
@@ -546,6 +886,7 @@ func TestUpdateOfferFull_PersistsMetadataAndClearsHeaderFields(t *testing.T) {
 	require.NoError(t, app.db.Create(&opportunity).Error)
 
 	updated, err := app.UpdateOfferFull(offer.ID, OfferUpdateData{
+		OfferNumber:       "64-26",
 		CustomerName:      offer.CustomerName,
 		ProjectName:       "Supply of E+H TEMP. TRANSMITTER",
 		FolderNumber:      "64-26",
@@ -587,6 +928,7 @@ func TestUpdateOfferFull_PersistsMetadataAndClearsHeaderFields(t *testing.T) {
 
 	var stored Offer
 	require.NoError(t, app.db.Preload("Items").First(&stored, "id = ?", offer.ID).Error)
+	require.Equal(t, "64-26", stored.OfferNumber)
 	require.Equal(t, "", stored.PaymentTerms)
 	require.Equal(t, "", stored.DeliveryTerms)
 	require.Equal(t, "", stored.DeliveryWeeks)
@@ -823,4 +1165,260 @@ func TestCreateCostingSheet_PersistsCommercialPayloadFields(t *testing.T) {
 	require.InDelta(t, 7.5, decoded.LineItems[0].FreightPercent, 0.0001)
 	require.InDelta(t, 0.377, decoded.LineItems[0].ExchangeRate, 0.0001)
 	require.InDelta(t, 18, decoded.LineItems[0].MarkupPercent, 0.0001)
+}
+
+func TestSaveCostingAsOffer_UsesCostingOfferNumberAndPreparedBy(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	seedTestCustomer(t, app.db, "Awal Dairy Company W.L.L.")
+
+	offer, err := app.SaveCostingAsOffer(CostingExportData{
+		Date:          time.Now().Format("2006-01-02"),
+		PreparedBy:    "Periyasamy N",
+		CustomerName:  "Awal Dairy Company W.L.L.",
+		RfqReference:  "EH-64-26-R0",
+		OfferNumber:   "64-26",
+		FolderNumber:  "64-26",
+		QuoteType:     "Quotation",
+		VatRate:       10,
+		PaymentTerms:  "Net 30",
+		DeliveryTerms: "DAP Bahrain",
+		EstDelivery:   "5-7 weeks",
+		GrandTotal:    768,
+		Subtotal:      768,
+		NetAmount:     768,
+		Profit:        160,
+		LineItems: []CostingExportLineItem{
+			{
+				SlNo:           1,
+				Equipment:      "Temperature transmitter",
+				Model:          "TM411-4EVR5/101",
+				Quantity:       2,
+				SuggestedPrice: 384,
+				TotalPrice:     768,
+				TotalCost:      608,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "64-26", offer.OfferNumber)
+	require.Equal(t, "Periyasamy N", offer.IssuedBy)
+
+	var stored Offer
+	require.NoError(t, app.db.Preload("Items").First(&stored, "id = ?", offer.ID).Error)
+	require.Equal(t, "64-26", stored.OfferNumber)
+	require.Equal(t, "Periyasamy N", stored.IssuedBy)
+	require.Len(t, stored.Items, 1)
+}
+
+func TestOfferNumberPrefersReferenceWhenCurrentValueIsGeneratedSequence(t *testing.T) {
+	costingNumber := desiredOfferNumberFromCosting(CostingExportData{
+		OfferNumber:  "48-26",
+		RfqReference: "2508000",
+	}, "48-26")
+	require.Equal(t, "2508000", costingNumber)
+
+	updateNumber := desiredOfferNumberFromOfferUpdate(OfferUpdateData{
+		OfferNumber:       "48-26",
+		CustomerReference: "2508000",
+	}, "48-26")
+	require.Equal(t, "2508000", updateNumber)
+}
+
+func TestRepairGeneratedOfferNumbersFromReferencesUsesOnlyUniqueReference(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	require.NoError(t, app.db.Create(&Offer{
+		Base:              Base{ID: "offer-bapco-unique"},
+		OfferNumber:       "48-26",
+		CustomerReference: "2508000",
+		CustomerName:      "BAPCO UPSTREAM W.L.L",
+		Stage:             "Quoted",
+	}).Error)
+	require.NoError(t, app.db.Create(&Offer{
+		Base:              Base{ID: "offer-shared-a"},
+		OfferNumber:       "47-26",
+		CustomerReference: "1-26",
+		CustomerName:      "P H Trading W.L.L",
+		Stage:             "Quoted",
+	}).Error)
+	require.NoError(t, app.db.Create(&Offer{
+		Base:              Base{ID: "offer-shared-b"},
+		OfferNumber:       "46-26",
+		CustomerReference: "1-26",
+		CustomerName:      "P H Trading W.L.L",
+		Stage:             "Quoted",
+	}).Error)
+
+	require.Equal(t, 1, app.repairGeneratedOfferNumbersFromReferences())
+
+	var unique Offer
+	require.NoError(t, app.db.First(&unique, "id = ?", "offer-bapco-unique").Error)
+	require.Equal(t, "2508000", unique.OfferNumber)
+
+	var shared Offer
+	require.NoError(t, app.db.First(&shared, "id = ?", "offer-shared-a").Error)
+	require.Equal(t, "47-26", shared.OfferNumber)
+}
+
+func TestSaveCostingAsOffer_UpdatesSourceOfferFromCosting(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	customerID := seedTestCustomer(t, app.db, "Awal Dairy Company W.L.L.")
+	customerName := "Awal Dairy Company W.L.L."
+
+	created, err := app.SaveCostingAsOffer(CostingExportData{
+		Date:          time.Now().Format("2006-01-02"),
+		PreparedBy:    "Periyasamy N",
+		CustomerID:    customerID,
+		CustomerName:  customerName,
+		RfqReference:  "EH-64-26-R0",
+		FolderNumber:  "64-26",
+		QuoteType:     "Quotation",
+		VatRate:       10,
+		PaymentTerms:  "Net 30",
+		DeliveryTerms: "DAP Bahrain",
+		EstDelivery:   "5-7 weeks",
+		GrandTotal:    768,
+		Subtotal:      768,
+		NetAmount:     768,
+		Profit:        160,
+		LineItems: []CostingExportLineItem{
+			{SlNo: 1, Equipment: "Temperature transmitter", Model: "TM411", Quantity: 2, SuggestedPrice: 384, TotalPrice: 768, TotalCost: 304},
+		},
+	})
+	require.NoError(t, err)
+
+	updated, err := app.SaveCostingAsOffer(CostingExportData{
+		Source:             "offer",
+		OfferID:            created.ID,
+		OfferNumber:        created.OfferNumber,
+		Date:               time.Now().Format("2006-01-02"),
+		PreparedBy:         "Stanley Vaz",
+		CustomerID:         customerID,
+		CustomerName:       customerName,
+		RfqReference:       "EH-64-26-R1",
+		FolderNumber:       "64-26",
+		Subject:            "Sub: Updated flow meter",
+		Body:               "Updated commercial body",
+		QuoteType:          "Budgetary Quote",
+		VatRate:            0,
+		PaymentTerms:       "100% Advance Payment with PO",
+		DeliveryTerms:      "DAP Bahrain",
+		EstDelivery:        "7-9 weeks",
+		GrandTotal:         900,
+		Subtotal:           900,
+		NetAmount:          900,
+		Profit:             250,
+		TotalCost:          650,
+		HiddenCharges:      25,
+		TermsAndConditions: "Updated terms",
+		LineItems: []CostingExportLineItem{
+			{SlNo: 1, Equipment: "Flow meter", Model: "FM-900", Quantity: 1, SuggestedPrice: 900, TotalPrice: 900, TotalCost: 650, UserPrice: 900, UserPriceSet: true},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, created.ID, updated.ID)
+	require.Equal(t, "Stanley Vaz", updated.IssuedBy)
+	require.Equal(t, "Budgetary Quote", updated.QuoteType)
+	require.Equal(t, 0.0, updated.VatRate)
+	require.Equal(t, "Updated terms", updated.TermsAndConditions)
+	require.Equal(t, "Sub: Updated flow meter", updated.Subject)
+	require.Len(t, updated.Items, 1)
+	require.Equal(t, "Flow meter", updated.Items[0].Equipment)
+
+	var offerCount int64
+	require.NoError(t, app.db.Model(&Offer{}).Count(&offerCount).Error)
+	require.Equal(t, int64(1), offerCount)
+}
+
+func TestPHOfferSignatureBlockResolvesPreparedByAliases(t *testing.T) {
+	expectedBlocks := []struct {
+		name   string
+		title  string
+		mobile string
+		office string
+		fax    string
+		email  string
+	}{
+		{"EBIN CHACKO", "Technical Sales Engineer", "+973 36418072", "+973 17587654", "+973 17564456", "ebin.chacko@platinumholdings.com.bh"},
+		{"Periyasamy Neelakandan", "Assistant Sales Manager", "+973 34128132", "+973 17587654", "+973 17564456", "periyasamy.n@platinumholdings.com.bh"},
+		{"V.M.Sundar", "Business Development Manager", "+973 38260157", "+973 17587654", "+973 17564456", "vm.sundar@platinumholdings.com.bh"},
+		{"RAMYA BASKARAN", "", "+973 38890513", "+973 17587654", "+973 17564456", "support@platinumholdings.com.bh"},
+		{"STANLEY VAZ", "Chief Operating Officer", "+973 36623662", "+973 17587654", "+973 17564456", ""},
+		{"Abhie Kore", "General Manager", "+973 36771513", "+973 17587654", "+973 17564456", ""},
+	}
+	for _, expected := range expectedBlocks {
+		block := resolvePHOfferSignatureBlock(expected.name)
+		require.NotNil(t, block, expected.name)
+		require.Equal(t, expected.name, block.DisplayName)
+		require.Equal(t, expected.title, block.Title)
+		require.Equal(t, []string{"P.O. BOX 815, MANAMA,", "KINGDOM OF BAHRAIN"}, block.Address)
+		require.Equal(t, expected.mobile, block.Mobile)
+		require.Equal(t, expected.office, block.Office)
+		require.Equal(t, expected.fax, block.Fax)
+		require.Equal(t, expected.email, block.Email)
+		lines := phOfferSignaturePDFLines(*block, false)
+		lineText := make([]string, 0, len(lines))
+		for _, line := range lines {
+			if strings.TrimSpace(line.Text) != "" {
+				lineText = append(lineText, line.Text)
+			}
+		}
+		require.Contains(t, lineText, expected.name)
+		require.Contains(t, lineText, "P.O. BOX 815, MANAMA,")
+		require.Contains(t, lineText, "KINGDOM OF BAHRAIN")
+		require.Contains(t, lineText, "Mob: "+expected.mobile)
+		require.Contains(t, lineText, "Office: "+expected.office)
+		require.Contains(t, lineText, "Fax: "+expected.fax)
+		if expected.title != "" {
+			require.Contains(t, lineText, expected.title)
+		}
+		if expected.email != "" {
+			require.Contains(t, lineText, expected.email)
+		}
+	}
+
+	peri := resolvePHOfferSignatureBlock("Periyasamy N")
+	require.NotNil(t, peri)
+	require.Equal(t, "Periyasamy Neelakandan", peri.DisplayName)
+	require.Equal(t, "Assistant Sales Manager", peri.Title)
+	require.Equal(t, "periyasamy.n@platinumholdings.com.bh", peri.Email)
+	require.Equal(t, "Periyasamy Neelakandan", offerIssuerDisplayName("Periyasamy N"))
+
+	sundar := resolvePHOfferSignatureBlock("V.M. Sundar")
+	require.NotNil(t, sundar)
+	require.Equal(t, "V.M.Sundar", sundar.DisplayName)
+	require.Equal(t, "Business Development Manager", sundar.Title)
+	require.Equal(t, "vm.sundar@platinumholdings.com.bh", sundar.Email)
+}
+
+func TestGetPreparedByOptions_IncludesEmployeesAndLicenseNames(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	require.NoError(t, app.db.Create(&Employee{
+		Base:          Base{ID: uuid.New().String()},
+		EmployeeCode:  "PH-NEW",
+		FullName:      "New PH Engineer",
+		PreferredName: "New PH",
+		IsActive:      true,
+	}).Error)
+	require.NoError(t, app.db.Create(&LicenseKey{
+		Key:         "PH-SLS-NEWHR1",
+		Role:        "sales",
+		DisplayName: "Commission Owner",
+		CreatedBy:   "test",
+	}).Error)
+
+	options, err := app.GetPreparedByOptions()
+	require.NoError(t, err)
+	require.Contains(t, options, "Periyasamy N")
+	require.Contains(t, options, "Periyasamy Neelakandan")
+	require.Contains(t, options, "V.M.Sundar")
+	require.Contains(t, options, "New PH Engineer")
+	require.Contains(t, options, "Commission Owner")
 }

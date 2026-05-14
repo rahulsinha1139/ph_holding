@@ -11,7 +11,7 @@
    * - Link to parent RFQs
    */
 
-  import { onMount } from 'svelte';
+  import { createEventDispatcher, onMount } from 'svelte';
   import { fade } from 'svelte/transition';
   import { main } from '../../../wailsjs/go/models';
   import {
@@ -29,6 +29,7 @@
     AddOfferNote,
     GetOfferNotes,
     DeleteOfferNote,
+    DeleteOffer,
     GetOffersWithNoItems
   } from '../../../wailsjs/go/main/App';
   import PageLayout from '$lib/components/layout/PageLayout.svelte';
@@ -40,22 +41,27 @@
   import Input from '$lib/components/ui/Input.svelte';
   import FormGroup from '$lib/components/ui/FormGroup.svelte';
   import { toast } from '$lib/stores/toasts';
+  import { permissions } from '$lib/stores/authContext';
   import { escapeHtml } from '$lib/utils/escapeHtml';
+  import { formatBHD, formatBHDValue } from '$lib/utils/formatters';
 
   // Props
   export let embedded = false;
+  const dispatch = createEventDispatcher();
 
   type OfferStage = 'all' | 'RFQ' | 'Quoted' | 'Won' | 'Lost';
 
   interface OfferDisplay {
     id: string;
     costing_id?: string;
+    customer_id?: string;
     customer_name: string;
     project_name?: string;
     amount: number;
     status: string;
     stage?: string;
     offer_number?: string;
+    revision_number?: number;
     quotation_date?: string;
     validity_date?: string;
     total_value_bhd?: number;
@@ -63,6 +69,7 @@
     sent_at?: any;
     created_at?: any;
     updated_at?: any;
+    division?: string;
     estimated_margin?: number;
     items?: any[];
     days_until_expiry?: number;
@@ -82,6 +89,12 @@
     attention_phone?: string;
     attention_address?: string;
     discount_percent?: number;
+    quote_type?: string;
+    vat_rate?: number;
+    subject?: string;
+    body?: string;
+    terms_and_conditions?: string;
+    attachment_scope_id?: string;
     coc_coo?: string;
     test_certificate?: string;
     installation?: string;
@@ -95,9 +108,12 @@
   let offers: OfferDisplay[] = [];
   let filteredOffers: OfferDisplay[] = [];
   let loading = true;
+  let selectedCompany: 'PH Trading' | 'AHS Trading' = 'PH Trading';
   let selectedStage: OfferStage = 'all';
   let offersWithNoItems: any[] = [];
   let legacyOfferShells: any[] = [];
+  $: permissionList = Array.isArray($permissions) ? $permissions : [];
+  $: canDeleteOffers = permissionList.includes('*') || permissionList.includes('offers:delete') || permissionList.includes('offers:*');
 
   // Modal state
   let showCreateModal = false;
@@ -214,9 +230,11 @@
   }
 
   let formData = {
+    offer_number: '',
     customer_id: '',
     customer_name: '',
     project_name: '',
+    division: selectedCompany as 'PH Trading' | 'AHS Trading',
     folder_number: '',
     quotation_date: new Date().toISOString().split('T')[0],
     validity_date: '',
@@ -234,6 +252,28 @@
     items: [] as EditableItem[]
   };
   let formLoading = false;
+
+  function todayDateInput(): string {
+    return dateInputFromDate(new Date());
+  }
+
+  function dateInputFromDate(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function normalizeDateInput(value: any, fallback: string): string {
+    if (!value) return fallback;
+    if (typeof value === 'string') {
+      const match = value.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (match) return match[1];
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return fallback;
+    return dateInputFromDate(parsed);
+  }
 
   // DataTable columns configuration
   const columns = [
@@ -296,10 +336,11 @@
       key: 'actions',
       label: 'Actions',
       type: 'actions' as const,
-      width: '220px',
+      width: '280px',
       render: (row: OfferDisplay) => {
         const isQuoted = row.stage === 'Quoted';
         const isLost = row.stage === 'Lost';
+        const isWon = row.stage === 'Won';
         const hasItems = (row.items?.length || 0) > 0;
         return `
           <div style="display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap;">
@@ -368,6 +409,16 @@
                 Follow-Up
               </button>
             ` : ''}
+            ${canDeleteOffers && !isWon ? `
+              <button
+                class="action-btn action-btn-delete"
+                data-action="delete"
+                data-id="${row.id}"
+                aria-label="Delete offer"
+              >
+                Delete
+              </button>
+            ` : ''}
           </div>
         `;
       }
@@ -384,12 +435,14 @@
   ];
 
   // Computed: Update tab counts
+  $: companyScopedOffers = offers.filter((offer) => (offer.division || 'PH Trading') === selectedCompany);
+
   $: {
-    stageTabs[0].count = offers.length;
-    stageTabs[1].count = offers.filter(o => o.stage === 'RFQ').length;
-    stageTabs[2].count = offers.filter(o => o.stage === 'Quoted').length;
-    stageTabs[3].count = offers.filter(o => o.stage === 'Won').length;
-    stageTabs[4].count = offers.filter(o => o.stage === 'Lost').length;
+    stageTabs[0].count = companyScopedOffers.length;
+    stageTabs[1].count = companyScopedOffers.filter(o => o.stage === 'RFQ').length;
+    stageTabs[2].count = companyScopedOffers.filter(o => o.stage === 'Quoted').length;
+    stageTabs[3].count = companyScopedOffers.filter(o => o.stage === 'Won').length;
+    stageTabs[4].count = companyScopedOffers.filter(o => o.stage === 'Lost').length;
   }
 
   $: legacyOfferShells = offersWithNoItems.filter((item) => item?.is_legacy_shell);
@@ -398,10 +451,15 @@
   // Computed: Filter offers by selected stage
   $: {
     if (selectedStage === 'all') {
-      filteredOffers = offers;
+      filteredOffers = companyScopedOffers;
     } else {
-      filteredOffers = offers.filter(o => o.stage === selectedStage);
+      filteredOffers = companyScopedOffers.filter(o => o.stage === selectedStage);
     }
+  }
+
+  function handleCompanySelect(company: string) {
+    selectedCompany = company === 'AHS Trading' ? 'AHS Trading' : 'PH Trading';
+    formData.division = selectedCompany;
   }
 
   async function loadOffers() {
@@ -431,12 +489,14 @@
     return {
       id: offer.id,
       costing_id: offer.costing_id,
+      customer_id: offer.customer_id || '',
       customer_name: offer.customer_name || '',
       project_name: offer.project_name || '',
       amount: offer.total_value_bhd || 0,
       status: offer.stage || 'Quoted',
       stage: offer.stage || 'Quoted',
       offer_number: offer.offer_number || `OFR-${(offer.id || '').toString().slice(0, 8)}`,
+      revision_number: Number(offer.revision_number ?? 0),
       quotation_date: offer.quotation_date || offer.created_at,
       validity_date: offer.validity_date,
       total_value_bhd: offer.total_value_bhd || 0,
@@ -445,6 +505,7 @@
       sent_at: offer.sent_at,
       created_at: offer.created_at,
       updated_at: offer.updated_at,
+      division: offer.division || 'PH Trading',
       items: offer.items || [],
       days_until_expiry: daysUntilExpiry,
       is_expired: daysUntilExpiry < 0,
@@ -463,6 +524,11 @@
       attention_phone: offer.attention_phone || '',
       attention_address: offer.attention_address || '',
       discount_percent: offer.discount_percent,
+      quote_type: offer.quote_type || 'Quotation',
+      vat_rate: Number(offer.vat_rate ?? 10),
+      subject: offer.subject || '',
+      body: offer.body || '',
+      terms_and_conditions: offer.terms_and_conditions || '',
       coc_coo: offer.coc_coo || '',
       test_certificate: offer.test_certificate || '',
       installation: offer.installation || '',
@@ -508,56 +574,131 @@
     // This ensures all offers have proper line items from costing calculations
     toast.info('Opening Costing Sheet to create a new offer with line items');
 
-    // Dispatch custom event for navigation (App.svelte handles routing)
-    const event = new CustomEvent('navigate', {
-      bubbles: true,
-      detail: { screen: 'costing', message: 'Create offer from costing sheet' }
+    dispatch('navigate', { screen: 'opportunities', tab: 'costing', message: 'Create offer from costing sheet' });
+    window.dispatchEvent(new CustomEvent('navigateToScreen', {
+      detail: { screen: 'opportunities', tab: 'costing', message: 'Create offer from costing sheet' }
+    }));
+  }
+
+  function defaultExchangeRateForCurrency(currency: string): number {
+    switch ((currency || '').trim().toUpperCase()) {
+      case '':
+      case 'BHD':
+        return 1;
+      case 'EUR':
+        return 0.45;
+      case 'USD':
+        return 0.376;
+      case 'GBP':
+        return 0.52;
+      case 'CHF':
+        return 0.425;
+      case 'SAR':
+        return 0.100;
+      case 'AED':
+        return 0.102;
+      default:
+        return 1;
+    }
+  }
+
+  function offerItemExchangeRate(item: any): number {
+    const rate = Number(item.exchange_rate ?? item.exchangeRate ?? 0);
+    if (rate > 0 && rate <= 2) return rate;
+    return defaultExchangeRateForCurrency(item.currency || 'BHD');
+  }
+
+  function buildCostingPayloadFromOffer(offer: OfferDisplay) {
+    const quotationDate = normalizeDateInput(offer.quotation_date, todayDateInput());
+    const resolvedCustomer = resolveCustomerFromOffer(offer.customer_id || '', offer.customer_name || '');
+    const itemPayload = (offer.items || []).map((item: any, index: number) => {
+      const quantity = Number(item.quantity || 1) || 1;
+      const unitPrice = Number(item.unit_price_bhd ?? item.unit_price ?? item.unitPrice ?? 0) || 0;
+      const totalPrice = Number(item.total_price ?? item.totalPrice ?? (unitPrice * quantity)) || 0;
+
+      return {
+        slNo: index + 1,
+        equipment: item.equipment || item.description || '',
+        model: item.model || item.product_code || item.product_id || '',
+        serialNumber: item.serial_number || item.serialNumber || '',
+        longCode: item.long_code || item.longCode || '',
+        specification: item.specification || '',
+        detailedDescription: item.detailed_description || item.detailedDescription || '',
+        currency: item.currency || 'BHD',
+        quantity,
+        fob: Number(item.fob ?? item.unit_cost ?? 0) || 0,
+        freight: Number(item.freight ?? 0) || 0,
+        freightPercent: Number(item.freight_percent ?? item.freightPercent ?? 0) || 0,
+        totalCost: Number(item.total_cost ?? item.totalCost ?? 0) || 0,
+        marginPercent: Number(item.margin_percent ?? item.marginPercent ?? 0) || 0,
+        suggestedPrice: unitPrice,
+        totalPrice,
+        exchangeRate: offerItemExchangeRate(item),
+        fobBHD: Number(item.fob_bhd ?? item.fobBHD ?? 0) || 0,
+        freightBHD: Number(item.freight_bhd ?? item.freightBHD ?? 0) || 0,
+        insurance: Number(item.insurance ?? 0) || 0,
+        customsPercent: Number(item.customs_percent ?? item.customsPercent ?? 5) || 0,
+        customsBHD: Number(item.customs_bhd ?? item.customsBHD ?? 0) || 0,
+        handlingPercent: Number(item.handling_percent ?? item.handlingPercent ?? 4) || 0,
+        handlingBHD: Number(item.handling_bhd ?? item.handlingBHD ?? 0) || 0,
+        financePercent: Number(item.finance_percent ?? item.financePercent ?? 1) || 0,
+        financeBHD: Number(item.finance_bhd ?? item.financeBHD ?? 0) || 0,
+        otherCosts: Number(item.other_costs ?? item.otherCosts ?? 0) || 0,
+        userPrice: unitPrice,
+        userPriceSet: unitPrice > 0,
+      };
     });
-    document.dispatchEvent(event);
+    const subtotal = itemPayload.reduce((sum, item) => sum + Number(item.totalPrice || 0), 0);
+    const discount = subtotal * ((Number(offer.discount_percent || 0) || 0) / 100);
+    const vatRate = Number(offer.vat_rate ?? 10);
+
+    return {
+      source: 'offer',
+      offerId: offer.id,
+      offerNumber: offer.offer_number || '',
+      division: offer.division || 'PH Trading',
+      date: quotationDate,
+      preparedBy: offer.issued_by || '',
+      customerId: resolvedCustomer.customer_id || '',
+      customerName: resolvedCustomer.customer_name || offer.customer_name || '',
+      contactPerson: offer.attention_person || '',
+      rfqReference: offer.customer_reference || offer.offer_number || '',
+      folderNumber: offer.folder_number || '',
+      costingId: offer.costing_id || offer.offer_number || '',
+      subject: offer.subject || (offer.project_name ? `Sub: ${offer.project_name}` : `Sub: ${offer.customer_name || ''}`),
+      estDelivery: offer.delivery_weeks || '5-7 weeks',
+      deliveryTerms: offer.delivery_terms || '',
+      paymentTerms: offer.payment_terms || '',
+      orderType: 'General',
+      countryOfOrigin: offer.country_of_origin || 'DE',
+      cocCoo: offer.coc_coo || 'No',
+      testCertificate: offer.test_certificate || 'Additional charges applicable as per OEM terms',
+      installation: offer.installation || 'No',
+      commissioning: offer.commissioning || 'No',
+      testing: offer.testing || 'No',
+      lineItems: itemPayload,
+      subtotal,
+      discount,
+      netAmount: Math.max(subtotal - discount, 0),
+      vatRate,
+      vat: Math.max(subtotal - discount, 0) * (vatRate / 100),
+      grandTotal: Math.max(subtotal - discount, 0) * (1 + vatRate / 100),
+      body: offer.body || '',
+      termsAndConditions: offer.terms_and_conditions || '',
+      attachmentScopeId: offer.attachment_scope_id || '',
+      attachment_scope_id: offer.attachment_scope_id || '',
+      quoteType: offer.quote_type || 'Quotation',
+    };
   }
 
   function openEditModal(offer: OfferDisplay) {
-    editingOffer = offer;
-    const defaultDate = new Date().toISOString().split('T')[0];
-    const defaultValidity = new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0];
-    const resolvedCustomer = resolveCustomerFromOffer((offer as any).customer_id || '', offer.customer_name || '');
-
-    formData = {
-      customer_id: resolvedCustomer.customer_id,
-      customer_name: resolvedCustomer.customer_name,
-      project_name: offer.project_name || '',
-      folder_number: offer.folder_number || '',
-      quotation_date: offer.quotation_date ? new Date(offer.quotation_date).toISOString().split('T')[0] : defaultDate,
-      validity_date: offer.validity_date ? new Date(offer.validity_date).toISOString().split('T')[0] : defaultValidity,
-      payment_terms: offer.payment_terms || '',
-      delivery_terms: offer.delivery_terms || '',
-      delivery_weeks: offer.delivery_weeks || '',
-      country_of_origin: offer.country_of_origin || '',
-      contact_phone: offer.contact_phone || '',
-      customer_reference: offer.customer_reference || '',
-      attention_person: offer.attention_person || '',
-      attention_company: offer.attention_company || '',
-      attention_phone: offer.attention_phone || '',
-      attention_address: offer.attention_address || '',
-      issued_by: offer.issued_by || '',
-      items: (offer.items || []).map((item: any) => ({
-        product_id: item.product_code || '',
-        description: item.description || '',
-        equipment: item.equipment || item.description || '',
-        model: item.model || item.product_code || '',
-        specification: item.specification || '',
-        detailed_description: item.detailed_description || '',
-        currency: item.currency || 'BHD',
-        quantity: item.quantity || 0,
-        fob: item.fob || 0,
-        freight: item.freight || 0,
-        total_cost: item.total_cost || 0,
-        margin_percent: item.margin_percent || 0,
-        unit_price: item.unit_price_bhd || item.unit_price || 0,
-        total_price: item.total_price || 0
-      }))
-    };
-    showEditModal = true;
+    const payload = buildCostingPayloadFromOffer(offer);
+    sessionStorage.setItem('asymmflow.pendingCostingOffer', JSON.stringify(payload));
+    toast.info(`Opening ${offer.offer_number || 'offer'} in Costing Sheet`);
+    dispatch('navigate', { screen: 'opportunities', tab: 'costing', offerId: offer.id });
+    window.dispatchEvent(new CustomEvent('navigateToScreen', {
+      detail: { screen: 'opportunities', tab: 'costing', offerId: offer.id }
+    }));
   }
 
   // Handle create offer (direct from screen)
@@ -617,7 +758,7 @@
     try {
       const customer = customers.find(c => c.id === formData.customer_id);
       const costingData = {
-        division: 'PH Trading',
+        division: formData.division || selectedCompany,
         date: formData.quotation_date,
         preparedBy: '',
         customerName: customer?.business_name || formData.customer_name,
@@ -716,6 +857,7 @@
     formLoading = true;
     try {
       await UpdateOfferFull(editingOffer.id, {
+        offer_number: formData.offer_number,
         customer_id: formData.customer_id,
         customer_name: formData.customer_name,
         project_name: formData.project_name,
@@ -769,13 +911,15 @@
     if (actionLoading) return;
     if (!actionOffer) return;
 
-    if (!confirm(`Confirm marking offer ${actionOffer.offer_number} as WON?\n\nThis will create an order and cannot be undone.`)) {
+    const trimmedPO = customerPONumber.trim();
+    if (!trimmedPO) {
+      toast.warning('Please enter the customer PO number before confirming.');
       return;
     }
 
     actionLoading = true;
     try {
-      await MarkOfferWon(actionOffer.id, customerPONumber);
+      await MarkOfferWon(actionOffer.id, trimmedPO);
       toast.success(`Offer ${actionOffer.offer_number} WON! Order created in pipeline.`);
       showWonModal = false;
       actionOffer = null;
@@ -822,11 +966,25 @@
       // Open edit modal pre-filled with the lost offer's data for a new quote
       const resolvedCustomer = resolveCustomerFromOffer((offer as any).customer_id || '', offer.customer_name || '');
       formData = {
+        ...formData,
+        offer_number: '',
         customer_id: resolvedCustomer.customer_id,
         customer_name: resolvedCustomer.customer_name,
         project_name: offer.project_name || '',
+        folder_number: offer.folder_number || '',
         quotation_date: new Date().toISOString().split('T')[0],
         validity_date: new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0],
+        payment_terms: offer.payment_terms || '',
+        delivery_terms: offer.delivery_terms || '',
+        delivery_weeks: offer.delivery_weeks || '',
+        country_of_origin: offer.country_of_origin || '',
+        contact_phone: offer.contact_phone || '',
+        customer_reference: offer.customer_reference || '',
+        attention_person: offer.attention_person || '',
+        attention_company: offer.attention_company || '',
+        attention_phone: offer.attention_phone || '',
+        attention_address: offer.attention_address || '',
+        issued_by: offer.issued_by || '',
         items: (offer.items || []).map((item: any) => ({
           product_id: item.product_code || '',
           description: item.description || '',
@@ -893,6 +1051,33 @@
       case 'followup':
         openFollowUpModal(offer);
         break;
+      case 'delete':
+        handleDeleteOffer(offer);
+        break;
+    }
+  }
+
+  async function handleDeleteOffer(offer: OfferDisplay) {
+    if (!canDeleteOffers || actionLoading) return;
+    const label = offer.offer_number || offer.id;
+    const confirmed = window.confirm(`Delete offer ${label}? This removes the live quote and keeps converted orders protected.`);
+    if (!confirmed) return;
+
+    actionLoading = true;
+    try {
+      await DeleteOffer(offer.id);
+      toast.success(`Offer ${label} deleted`);
+      if (viewOffer?.id === offer.id) {
+        showViewModal = false;
+        viewOffer = null;
+      }
+      await loadOffers();
+      await loadOffersWithNoItems();
+    } catch (err) {
+      const errorMsg = (err instanceof Error ? err.message : String(err));
+      toast.danger(`Failed to delete offer: ${errorMsg}`);
+    } finally {
+      actionLoading = false;
     }
   }
 
@@ -903,6 +1088,9 @@
       toast.info(`Generating PDF for ${offer.offer_number}...`);
       const filePath = await GenerateOfferPDF(offer.id);
       toast.success(`PDF generated: ${filePath}`);
+      if (filePath) {
+        await OpenExportedFile(filePath);
+      }
     } catch (err) {
       const errorMsg = err?.message || String(err);
       toast.danger(`Failed to generate PDF: ${errorMsg}`);
@@ -917,6 +1105,7 @@
     viewSaving = true;
     try {
       await UpdateOfferFull(viewOffer.id, {
+        offer_number: viewOffer.offer_number || '',
         customer_id: '',
         customer_name: viewOffer.customer_name || '',
         project_name: viewOffer.project_name || '',
@@ -1089,6 +1278,19 @@
 
     <!-- Stage Filter Tabs -->
     <Card padding="sm">
+      <div class="company-toggle" role="tablist" aria-label="Filter offers by company">
+        {#each ['PH Trading', 'AHS Trading'] as company}
+          <button
+            class="company-toggle-btn"
+            class:active={selectedCompany === company}
+            role="tab"
+            aria-selected={selectedCompany === company}
+            on:click={() => handleCompanySelect(company)}
+          >
+            {company}
+          </button>
+        {/each}
+      </div>
       <div class="stage-tabs" role="tablist" aria-label="Filter offers by stage">
         {#each stageTabs as tab}
           <button
@@ -1125,7 +1327,7 @@
       <Card padding="md">
         <div class="stat">
           <div class="stat-label">Total Offers</div>
-          <div class="stat-value">{offers.length}</div>
+          <div class="stat-value">{companyScopedOffers.length}</div>
         </div>
       </Card>
 
@@ -1133,7 +1335,7 @@
         <div class="stat">
           <div class="stat-label">Total Value</div>
           <div class="stat-value">
-            {offers.reduce((sum, o) => sum + o.total_value_bhd, 0).toFixed(3)} BHD
+            {formatBHD(companyScopedOffers.reduce((sum, o) => sum + (o.total_value_bhd || 0), 0))}
           </div>
         </div>
       </Card>
@@ -1142,7 +1344,7 @@
         <div class="stat">
           <div class="stat-label">Expiring Soon</div>
           <div class="stat-value stat-warning">
-            {offers.filter(o => o.is_expiring_soon).length}
+            {companyScopedOffers.filter(o => o.is_expiring_soon).length}
           </div>
         </div>
       </Card>
@@ -1152,8 +1354,8 @@
           <div class="stat-label">Win Rate</div>
           <div class="stat-value stat-success">
             {(() => {
-              const won = offers.filter(o => o.stage === 'Won').length;
-              const lost = offers.filter(o => o.stage === 'Lost').length;
+              const won = companyScopedOffers.filter(o => o.stage === 'Won').length;
+              const lost = companyScopedOffers.filter(o => o.stage === 'Lost').length;
               const closed = won + lost;
               return closed > 0 ? ((won / closed) * 100).toFixed(1) : '0.0';
             })()}%
@@ -1243,7 +1445,7 @@
               />
               <div class="item-total">
                 <div class="label">Total</div>
-                <div class="value">{(item.quantity * item.unit_price).toFixed(3)}</div>
+                <div class="value">{formatBHDValue(item.quantity * item.unit_price)}</div>
               </div>
               <button
                 type="button"
@@ -1259,7 +1461,7 @@
 
         <div class="total-section">
           <div class="total-label">Total Value:</div>
-          <div class="total-value">{totalValue.toFixed(3)} BHD</div>
+          <div class="total-value">{formatBHD(totalValue)}</div>
         </div>
       {/if}
     </div>
@@ -1414,7 +1616,7 @@
                 </div>
                 <div class="form-field">
                   <div class="label">Line Total</div>
-                  <div class="calculated-value">{(item.quantity * item.unit_price).toFixed(3)} BHD</div>
+                  <div class="calculated-value">{formatBHD(item.quantity * item.unit_price)}</div>
                 </div>
                 <div></div>
               </div>
@@ -1424,7 +1626,7 @@
 
         <div class="total-section">
           <div class="total-label">Total Value:</div>
-          <div class="total-value">{totalValue.toFixed(3)} BHD</div>
+          <div class="total-value">{formatBHD(totalValue)}</div>
         </div>
       {/if}
     </div>
@@ -1453,7 +1655,7 @@
     </FormGroup>
     <div class="modal-value">
       <span class="label">Order Value:</span>
-      <span class="value">{(actionOffer?.total_value_bhd || 0).toFixed(3)} BHD</span>
+      <span class="value">{formatBHD(actionOffer?.total_value_bhd || 0)}</span>
     </div>
   </div>
 
@@ -1464,6 +1666,7 @@
     <Button
       variant="primary"
       loading={actionLoading}
+      disabled={!customerPONumber.trim()}
       on:click={handleMarkWon}
     >
       Confirm Won
@@ -1507,7 +1710,7 @@
     </FormGroup>
     <div class="modal-value lost">
       <span class="label">Lost Value:</span>
-      <span class="value">{(actionOffer?.total_value_bhd || 0).toFixed(3)} BHD</span>
+      <span class="value">{formatBHD(actionOffer?.total_value_bhd || 0)}</span>
     </div>
   </div>
 
@@ -1602,7 +1805,7 @@
           </div>
           <div class="meta-item">
             <span class="meta-label">Total Value</span>
-            <span class="meta-value meta-value-highlight">{(viewOffer.total_value_bhd || 0).toFixed(3)} BHD</span>
+            <span class="meta-value meta-value-highlight">{formatBHD(viewOffer.total_value_bhd || 0)}</span>
           </div>
           <!-- Row 2: Editable Reference & Terms -->
           <div class="meta-item">
@@ -1684,22 +1887,22 @@
                     </td>
                     <td class="col-qty">{item.quantity || 0}</td>
                     <td class="col-currency">{item.currency || 'BHD'}</td>
-                    <td class="col-cost">{(item.fob || 0).toFixed(3)}</td>
-                    <td class="col-cost">{(item.freight || 0).toFixed(3)}</td>
-                    <td class="col-cost">{(item.total_cost || 0).toFixed(3)}</td>
+                    <td class="col-cost">{formatBHDValue(item.fob || 0)}</td>
+                    <td class="col-cost">{formatBHDValue(item.freight || 0)}</td>
+                    <td class="col-cost">{formatBHDValue(item.total_cost || 0)}</td>
                     <td class="col-margin">{(item.margin_percent || 0).toFixed(1)}%</td>
-                    <td class="col-price">{(item.unit_price_bhd || item.unit_price || 0).toFixed(3)}</td>
-                    <td class="col-price total-col">{(item.total_price || ((item.quantity || 0) * (item.unit_price_bhd || item.unit_price || 0))).toFixed(3)}</td>
+                    <td class="col-price">{formatBHDValue(item.unit_price_bhd || item.unit_price || 0)}</td>
+                    <td class="col-price total-col">{formatBHDValue(item.total_price || ((item.quantity || 0) * (item.unit_price_bhd || item.unit_price || 0)))}</td>
                   </tr>
                 {/each}
               </tbody>
               <tfoot>
                 <tr class="totals-row">
                   <td colspan="7"></td>
-                  <td class="col-cost subtotal">{viewOffer.items.reduce((s, i) => s + (i.total_cost || 0), 0).toFixed(3)}</td>
+                  <td class="col-cost subtotal">{formatBHDValue(viewOffer.items.reduce((s, i) => s + (i.total_cost || 0), 0))}</td>
                   <td></td>
                   <td></td>
-                  <td class="col-price total-col grand-total">{(viewOffer.total_value_bhd || 0).toFixed(3)} BHD</td>
+                  <td class="col-price total-col grand-total">{formatBHD(viewOffer.total_value_bhd || 0)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -1744,6 +1947,11 @@
   {/if}
 
   <svelte:fragment slot="footer">
+    {#if canDeleteOffers && viewOffer && viewOffer.stage !== 'Won'}
+      <Button variant="danger" loading={actionLoading} on:click={() => viewOffer && handleDeleteOffer(viewOffer)}>
+        Delete Offer
+      </Button>
+    {/if}
     <Button variant="ghost" on:click={() => { showViewModal = false; viewOffer = null; }}>
       Close
     </Button>
@@ -1764,6 +1972,40 @@
   }
 
   /* Stage Tabs */
+  .company-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    margin-bottom: 12px;
+    background: var(--surface-muted, #f3f4f6);
+    border-radius: 12px;
+    width: fit-content;
+  }
+
+  .company-toggle-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .company-toggle-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.5);
+  }
+
+  .company-toggle-btn.active {
+    background: var(--carbon, #1f2937);
+    color: white;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+  }
+
   .stage-tabs {
     display: flex;
     gap: 8px;
@@ -1914,6 +2156,16 @@
 
   :global(.action-btn-followup:hover) {
     background: var(--onyx, #1D1D1F);
+    color: white;
+  }
+
+  :global(.action-btn-delete) {
+    background: rgba(220, 38, 38, 0.08);
+    color: #B91C1C;
+  }
+
+  :global(.action-btn-delete:hover) {
+    background: #B91C1C;
     color: white;
   }
 

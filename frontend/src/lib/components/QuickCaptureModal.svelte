@@ -2,7 +2,7 @@
     import { createEventDispatcher, onMount } from "svelte";
     import { fade, scale } from "svelte/transition";
     import { toast } from "$lib/stores/toasts";
-    import { AnalyzeDocumentWithButler, CheckDuplicateOpportunity, CheckDuplicateRFQ, ListCustomers, ListSuppliers } from "../../../wailsjs/go/main/App";
+    import { AnalyzeDocumentWithButler, CheckDuplicateOpportunity, CheckDuplicateRFQ, GetActiveBankAccounts, ListCustomers, ListSuppliers } from "../../../wailsjs/go/main/App";
 
     export let show = false;
     export let processing = false;
@@ -17,6 +17,7 @@
 
     // Data initialization guard - prevents field reset on paste/edit
     let isDataInitialized = false;
+    let detectedTypeSourceKey = "";
 
     // Dirty state tracking - prevents accidental data loss on outside click
     let isDirty = false;
@@ -25,6 +26,7 @@
     // Customer/Supplier dropdown state - uses Wails-generated types (id is string from GORM)
     let customers: Array<{ id: string; customer_id: string; business_name: string; customer_type: string }> = [];
     let suppliers: Array<{ id: string; supplier_code: string; supplier_name: string }> = [];
+    let bankAccounts: Array<{ id: string; division?: string; bank_name: string; account_name?: string; account_number: string; iban?: string; currency: string; is_active?: boolean }> = [];
     let loadingEntities = false;
     let customerSearchTerm = "";
     let supplierSearchTerm = "";
@@ -32,6 +34,8 @@
     let showSupplierDropdown = false;
     let selectedCustomerId: string | null = null;
     let selectedSupplierId: string | null = null;
+    let selectedBankAccountId = "";
+    let loadingBankAccounts = false;
 
     // Filtered lists for search
     $: filteredCustomers = customerSearchTerm.length > 0
@@ -40,9 +44,11 @@
     $: filteredSuppliers = supplierSearchTerm.length > 0
         ? suppliers.filter(s => s.supplier_name?.toLowerCase().includes(supplierSearchTerm.toLowerCase()))
         : suppliers.slice(0, 50);
+    $: filteredBankAccounts = bankAccounts.filter((account) => (account.division || "PH Trading") === editableData.division);
 
     // Editable document data (populated from OCR + Butler)
     let editableData = {
+        division: "PH Trading",
         customer_name: "",
         supplier_name: "",
         project: "",
@@ -82,6 +88,25 @@
             console.error('Failed to load entities:', err);
         } finally {
             loadingEntities = false;
+        }
+    }
+
+    async function loadBankAccounts() {
+        if (bankAccounts.length > 0 || loadingBankAccounts) return;
+        loadingBankAccounts = true;
+        try {
+            const bankResult = await GetActiveBankAccounts();
+            bankAccounts = (bankResult || []).sort((a, b) => {
+                const left = `${a.bank_name || ""}${a.account_number || ""}`;
+                const right = `${b.bank_name || ""}${b.account_number || ""}`;
+                return left.localeCompare(right);
+            });
+            syncDetectedBankAccountSelection();
+        } catch (err) {
+            bankAccounts = [];
+            console.warn("Bank accounts unavailable for this user or device:", err);
+        } finally {
+            loadingBankAccounts = false;
         }
     }
 
@@ -156,6 +181,64 @@
     // Bank: {date, description, reference, debit, credit, balance}
     let lineItems: Array<any> = [];
 
+    function parseNum(v: any): number {
+        if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+        if (typeof v === "string") {
+            const match = v
+                .replace(/\b(BHD|USD|EUR|GBP|SAR|AED|CHF|KWD|OMR|QAR)\b/gi, "")
+                .replace(/,/g, "")
+                .match(/[-+]?\d*\.?\d+/);
+            return match ? parseFloat(match[0]) || 0 : 0;
+        }
+        return 0;
+    }
+
+    function isCurrencyCode(value: any): boolean {
+        return /^(BHD|USD|EUR|GBP|SAR|AED|CHF|KWD|OMR|QAR)$/i.test(String(value || "").trim());
+    }
+
+    function normalizeLineUnit(value: any): string {
+        const unit = String(value || "").trim();
+        if (!unit || isCurrencyCode(unit)) return "pcs";
+        return unit;
+    }
+
+    function normalizeCommercialLineItem(item: any) {
+        const rawUnit = item.unit || item.uom || item.unit_of_measure;
+        const rawCurrency = item.currency || (isCurrencyCode(rawUnit) ? rawUnit : "");
+        const description =
+            item.description ||
+            item.item_description ||
+            item.item ||
+            item.name ||
+            item.equipment ||
+            item.product ||
+            item.product_name ||
+            item.model ||
+            item.part_number ||
+            "";
+        const partNumber =
+            item.part_number ||
+            item.part_no ||
+            item.item_code ||
+            item.product_code ||
+            item.model ||
+            item.long_code ||
+            "";
+        const unitPrice = parseNum(item.unit_price ?? item.unit_price_bhd ?? item.price ?? item.rate);
+        const totalPrice = parseNum(item.total_price ?? item.total ?? item.line_total);
+        const quantity = parseNum(item.quantity ?? item.qty) || (totalPrice > 0 && unitPrice > 0 ? totalPrice / unitPrice : 1);
+
+        return {
+            description: String(description || "").trim(),
+            quantity,
+            unit: normalizeLineUnit(rawUnit),
+            part_number: String(partNumber || "").trim(),
+            unit_price: unitPrice || (quantity > 0 && totalPrice > 0 ? totalPrice / quantity : 0),
+            currency: isCurrencyCode(rawCurrency) ? String(rawCurrency).trim().toUpperCase() : undefined,
+        };
+    }
+
     // Duplicate RFQ detection state
     let duplicateRFQ: any = null;
     let showDuplicateWarning = false;
@@ -193,13 +276,21 @@
 
     // Auto-analyze with Butler when modal opens (debounced)
     let butlerAutoTriggered = false;
-    $: if (show && ocrResult?.text && !butlerInsights && !butlerAnalyzing && !butlerAutoTriggered) {
+    let hasStructuredBankTransactions = false;
+    $: hasStructuredBankTransactions = selectedType === 'bank_statement' && Array.isArray(ocrResult?.extracted_data?.line_items) && ocrResult.extracted_data.line_items.length > 0;
+    $: if (show && selectedType === 'bank_statement' && bankAccounts.length > 0 && !selectedBankAccountId) {
+        syncDetectedBankAccountSelection();
+    }
+    $: if (show && selectedType === 'bank_statement' && bankAccounts.length === 0 && !loadingBankAccounts) {
+        loadBankAccounts();
+    }
+    $: if (show && ocrResult?.text && !butlerInsights && !butlerAnalyzing && !butlerAutoTriggered && !hasStructuredBankTransactions) {
         butlerAutoTriggered = true;
         console.log('[Butler Auto] Trigger fired, selectedType:', selectedType, 'docType:', ocrResult?.document_type);
         // Debounce: wait 300ms for modal to settle and selectedType to be set
         setTimeout(() => {
             console.log('[Butler Auto] setTimeout executing, selectedType now:', selectedType);
-            if (ocrResult?.text && !butlerInsights && !butlerAnalyzing) {
+            if (ocrResult?.text && !butlerInsights && !butlerAnalyzing && !hasStructuredBankTransactions) {
                 analyzeWithButler();
             }
         }, 300);
@@ -222,11 +313,17 @@
         return typeMap[backendType] || backendType.toLowerCase();
     }
 
-    // Auto-detect document type
-    $: if (ocrResult?.document_type && ocrResult.document_type !== "auto") {
-        selectedType = mapDocType(ocrResult.document_type);
-    } else if (ocrResult?.text) {
-        selectedType = detectDocumentType(ocrResult.text);
+    // Auto-detect document type once per OCR payload; manual operator changes must stick.
+    $: if (ocrResult) {
+        const sourceKey = `${fileName}:${ocrResult.document_type || ""}:${(ocrResult.text || "").slice(0, 80)}`;
+        if (sourceKey !== detectedTypeSourceKey) {
+            if (ocrResult.document_type && ocrResult.document_type !== "auto") {
+                selectedType = mapDocType(ocrResult.document_type);
+            } else if (ocrResult.text) {
+                selectedType = detectDocumentType(ocrResult.text);
+            }
+            detectedTypeSourceKey = sourceKey;
+        }
     }
 
     function initializeEditableData() {
@@ -234,6 +331,7 @@
 
         // Populate editable fields from OCR
         editableData = {
+            division: (typeof data.division === 'string' && data.division.trim() !== '') ? data.division : "PH Trading",
             customer_name: data.customer_name || data.company_name || "",
             supplier_name: data.supplier_name || "",
             project: data.project || data.subject || extractProjectFromFileName(fileName),
@@ -247,7 +345,7 @@
             total: data.total || "",
             vat: data.vat || "",
             currency: data.currency || "BHD",
-            notes: "",
+            notes: data.notes || data.butler_summary || data.summary || "",
             // Bank statement fields
             bank_name: data.bank_name || "",
             account_number: data.account_number || data.iban || "",
@@ -342,16 +440,22 @@
         // Reset selection IDs
         if (!editableData.customer_name) selectedCustomerId = null;
         if (!editableData.supplier_name) selectedSupplierId = null;
+        selectedBankAccountId = typeof data.bank_account_id === 'string' ? data.bank_account_id : "";
 
         // Initialize line items from OCR if available
         if (data.line_items && Array.isArray(data.line_items)) {
-            lineItems = data.line_items.map((item: any) => ({
-                description: item.description || "",
-                quantity: parseFloat(item.quantity) || 1,
-                unit: item.unit || "pcs",
-                part_number: item.part_number || "",
-                unit_price: parseFloat(item.unit_price) || 0
-            }));
+            if (isBankStatement) {
+                lineItems = repairBankTransactionPolarity(data.line_items.map((item: any) => ({
+                    date: item.date || item.value_date || "",
+                    description: item.description || "",
+                    reference: item.reference || item.ref || "",
+                    debit: parseNum(item.debit),
+                    credit: parseNum(item.credit),
+                    balance: parseNum(item.balance),
+                })));
+            } else {
+                lineItems = data.line_items.map(normalizeCommercialLineItem);
+            }
         } else {
             lineItems = [];
         }
@@ -364,12 +468,219 @@
                 console.log(`[OCR] Parsed ${parsedTransactions.length} bank transactions from raw text`);
             }
         }
+
+        syncDetectedBankAccountSelection();
+    }
+
+    function normalizeIdentifier(value: string): string {
+        return (value || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    }
+
+    function normalizeBankName(value: string): string {
+        return (value || '')
+            .toLowerCase()
+            .replace(/\b(bank|bsc|b\.s\.c|wll|w\.l\.l|account|current|checking|call)\b/g, ' ')
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim();
+    }
+
+    function formatBankAccountOption(account: { bank_name?: string; account_name?: string; account_number?: string; currency?: string }): string {
+        const bank = account?.bank_name || 'Bank Account';
+        const accountName = account?.account_name ? ` ${account.account_name}` : '';
+        const accountNumber = account?.account_number ? ` - ${account.account_number}` : '';
+        const currency = account?.currency ? ` (${account.currency})` : '';
+        return `${bank}${accountName}${accountNumber}${currency}`;
+    }
+
+    function findMatchingBankAccountId(): string {
+        const accountNeedle = normalizeIdentifier(editableData.account_number);
+        const bankNeedle = normalizeBankName(editableData.bank_name);
+        let bestId = "";
+        let bestScore = 0;
+        let tied = false;
+
+        for (const account of filteredBankAccounts) {
+            const normalizedAccount = normalizeIdentifier(account.account_number);
+            const normalizedIBAN = normalizeIdentifier(account.iban || '');
+            const normalizedBank = normalizeBankName(account.bank_name);
+            let score = 0;
+
+            if (accountNeedle) {
+                if (accountNeedle === normalizedAccount) {
+                    score += 300;
+                } else if (normalizedIBAN && accountNeedle === normalizedIBAN) {
+                    score += 300;
+                } else if (accountNeedle.length >= 6 && normalizedAccount.endsWith(accountNeedle)) {
+                    score += 260;
+                } else if (normalizedIBAN && accountNeedle.length >= 6 && normalizedIBAN.endsWith(accountNeedle)) {
+                    score += 220;
+                }
+            }
+
+            if (bankNeedle) {
+                if (bankNeedle === normalizedBank) {
+                    score += 90;
+                } else if ((normalizedBank && normalizedBank.includes(bankNeedle)) || (bankNeedle && bankNeedle.includes(normalizedBank))) {
+                    score += 45;
+                }
+            }
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestId = account.id;
+                tied = false;
+            } else if (score > 0 && score === bestScore) {
+                tied = true;
+            }
+        }
+
+        if (tied) return "";
+        return bestScore > 0 ? bestId : "";
+    }
+
+    function syncDetectedBankAccountSelection() {
+        if (selectedType !== 'bank_statement' || selectedBankAccountId || filteredBankAccounts.length === 0) {
+            return;
+        }
+
+        const matchedAccountId = findMatchingBankAccountId();
+        if (matchedAccountId) {
+            selectedBankAccountId = matchedAccountId;
+        }
+    }
+
+    function syncEditableBankFieldsFromSelection() {
+        if (selectedType !== 'bank_statement' || !selectedBankAccountId || filteredBankAccounts.length === 0) {
+            return;
+        }
+
+        const selectedAccount = filteredBankAccounts.find((account) => account.id === selectedBankAccountId);
+        if (!selectedAccount) {
+            return;
+        }
+
+        editableData.bank_name = selectedAccount.bank_name || editableData.bank_name;
+        editableData.account_number = selectedAccount.account_number || editableData.account_number;
+        if (selectedAccount.currency) {
+            editableData.currency = selectedAccount.currency;
+        }
+    }
+
+    $: if (show && selectedType === 'bank_statement' && selectedBankAccountId) {
+        syncEditableBankFieldsFromSelection();
+    }
+
+    $: if (show && selectedType === 'bank_statement' && selectedBankAccountId && !filteredBankAccounts.some((account) => account.id === selectedBankAccountId)) {
+        selectedBankAccountId = "";
+        syncDetectedBankAccountSelection();
+    }
+
+    function inferBankDirectionFromText(description: string, amount: number, balance: number, previousBalance: number, previousBalanceKnown: boolean) {
+        if (!amount) {
+            return { debit: 0, credit: 0 };
+        }
+
+        if (previousBalanceKnown && balance) {
+            const delta = balance - previousBalance;
+            if (Math.abs(Math.abs(delta) - amount) <= 0.051) {
+                return delta >= 0
+                    ? { debit: 0, credit: amount }
+                    : { debit: amount, credit: 0 };
+            }
+        }
+
+        const lower = (description || '').toLowerCase();
+        const creditHints = [
+            'credit',
+            'transfer in',
+            'deposit',
+            'payment | from',
+            'payment from',
+            'fawri ordinary transfer',
+            'sundry credit',
+            'received from',
+            'inward',
+            'receipt',
+        ];
+        for (const hint of creditHints) {
+            if (lower.includes(hint)) {
+                return { debit: 0, credit: amount };
+            }
+        }
+
+        const debitHints = [
+            'debit(tf)',
+            'debit',
+            'payment to',
+            'transfer to',
+            'charges',
+            'charge',
+            'fee',
+            'withdrawal',
+            'fawri to',
+        ];
+        for (const hint of debitHints) {
+            if (lower.includes(hint)) {
+                return { debit: amount, credit: 0 };
+            }
+        }
+
+        return { debit: amount, credit: 0 };
+    }
+
+    function scoreBankTransactionPolarity(transactions: any[]) {
+        let mismatches = 0;
+        let ambiguous = 0;
+        let previousBalance = 0;
+        let previousBalanceKnown = false;
+
+        for (const transaction of transactions) {
+            const debit = Number(transaction?.debit) || 0;
+            const credit = Number(transaction?.credit) || 0;
+            const balance = Number(transaction?.balance) || 0;
+
+            if ((debit > 0 && credit > 0) || (debit === 0 && credit === 0 && balance !== 0)) {
+                ambiguous += 1;
+            }
+
+            if (previousBalanceKnown && balance) {
+                const expectedBalance = previousBalance + credit - debit;
+                if (Math.abs(expectedBalance - balance) > 0.051) {
+                    mismatches += 1;
+                }
+            }
+
+            if (balance) {
+                previousBalance = balance;
+                previousBalanceKnown = true;
+            }
+        }
+
+        return (mismatches * 100) + (ambiguous * 25);
+    }
+
+    function repairBankTransactionPolarity(transactions: any[]) {
+        if (transactions.length < 2) {
+            return transactions;
+        }
+
+        const swapped = transactions.map((transaction) => ({
+            ...transaction,
+            debit: Number(transaction?.credit) || 0,
+            credit: Number(transaction?.debit) || 0,
+        }));
+
+        return scoreBankTransactionPolarity(swapped) + 1 < scoreBankTransactionPolarity(transactions)
+            ? swapped
+            : transactions;
     }
 
     // Parse bank transactions from raw OCR text
     function parseBankTransactionsFromText(text: string): any[] {
         const transactions: any[] = [];
         const lines = text.split('\n');
+        let previousBalance = 0;
+        let previousBalanceKnown = false;
 
         // Look for transaction lines: date pattern followed by description and amounts
         // Common formats:
@@ -412,13 +723,9 @@
                 balance = parsedAmounts[parsedAmounts.length - 1];
             } else if (parsedAmounts.length === 2) {
                 // Format: amount, balance
+                const amount = parsedAmounts[0];
                 balance = parsedAmounts[1];
-                // Determine debit vs credit from context
-                if (rest.toLowerCase().includes('credit') || rest.toLowerCase().includes('transfer in') || rest.toLowerCase().includes('deposit')) {
-                    credit = parsedAmounts[0];
-                } else {
-                    debit = parsedAmounts[0];
-                }
+                ({ debit, credit } = inferBankDirectionFromText(rest, amount, balance, previousBalance, previousBalanceKnown));
             } else if (parsedAmounts.length === 1) {
                 balance = parsedAmounts[0];
             }
@@ -431,9 +738,14 @@
                 credit: credit,
                 balance: balance,
             });
+
+            if (balance) {
+                previousBalance = balance;
+                previousBalanceKnown = true;
+            }
         }
 
-        return transactions;
+        return repairBankTransactionPolarity(transactions);
     }
 
     function extractProjectFromFileName(name: string): string {
@@ -477,23 +789,24 @@
     // Get fields relevant to current document type
     function getRelevantFields(): string[] {
         const fieldsByType: Record<string, string[]> = {
-            rfq: ['customer_name', 'project', 'rfq_number', 'delivery_date', 'notes'],
-            quotation: ['customer_name', 'project', 'rfq_number', 'delivery_date', 'total', 'notes'],
-            costing: ['customer_name', 'project', 'notes'],
-            invoice: ['customer_name', 'invoice_number', 'invoice_date', 'po_number', 'total', 'vat', 'due_date'],
-            supplier_invoice: ['supplier_name', 'invoice_number', 'invoice_date', 'po_number', 'total', 'vat', 'due_date', 'currency'],
-            purchase_order: ['supplier_name', 'po_number', 'invoice_date', 'delivery_date', 'total', 'currency'],
+            rfq: ['division', 'customer_name', 'project', 'rfq_number', 'delivery_date', 'notes'],
+            quotation: ['division', 'customer_name', 'project', 'rfq_number', 'delivery_date', 'total', 'notes'],
+            costing: ['division', 'customer_name', 'project', 'notes'],
+            invoice: ['division', 'customer_name', 'invoice_number', 'invoice_date', 'po_number', 'total', 'vat', 'due_date'],
+            supplier_invoice: ['division', 'supplier_name', 'invoice_number', 'invoice_date', 'po_number', 'total', 'vat', 'due_date', 'currency'],
+            purchase_order: ['division', 'supplier_name', 'po_number', 'invoice_date', 'delivery_date', 'total', 'currency'],
             delivery_note: ['customer_name', 'dn_number', 'delivery_date', 'po_number'],
-            bank_statement: ['bank_name', 'account_number', 'period_start', 'period_end', 'opening_balance', 'closing_balance', 'currency', 'notes'],
+            bank_statement: ['division', 'bank_name', 'account_number', 'period_start', 'period_end', 'opening_balance', 'closing_balance', 'currency', 'notes'],
             contract: ['customer_name', 'supplier_name', 'project', 'notes'],
             report: ['project', 'notes'],
-            excel_data: ['customer_name', 'project', 'notes'],
+            excel_data: ['division', 'customer_name', 'project', 'notes'],
         };
         return fieldsByType[selectedType] || fieldsByType.rfq;
     }
 
     function formatFieldLabel(key: string): string {
         const labels: Record<string, string> = {
+            division: "Company",
             customer_name: "Customer",
             supplier_name: "Supplier",
             project: "Project Name",
@@ -570,14 +883,17 @@
         selectedSupplierId = null;
         showCustomerDropdown = false;
         showSupplierDropdown = false;
+        selectedBankAccountId = "";
         // Reset initialization flag so next modal open re-initializes
         isDataInitialized = false;
+        detectedTypeSourceKey = "";
         // Reset close confirmation state
         showCloseConfirmation = false;
         // Reset Butler auto-trigger flag
         butlerAutoTriggered = false;
         // Reset editable data to clean state (includes bank-specific fields)
         editableData = {
+            division: "PH Trading",
             customer_name: "",
             supplier_name: "",
             project: "",
@@ -660,6 +976,9 @@
         assignIfBlank('customer_name', butlerInsights.detected_customer);
         assignIfBlank('project', butlerInsights.detected_project || butlerInsights.project);
         assignIfBlank('delivery_date', butlerInsights.required_deadline);
+        if (selectedType === 'bank_statement' && butlerInsights.summary) {
+            assignIfBlank('notes', butlerInsights.summary);
+        }
 
         // Merge bank statement specific fields from Butler
         if (butlerInsights.metadata) {
@@ -684,13 +1003,6 @@
 
         // Merge line items from Butler
         if (butlerInsights.extracted_items && Array.isArray(butlerInsights.extracted_items)) {
-            // Helper: parse number that may be formatted with commas (e.g. "1,234.567")
-            const parseNum = (v: any): number => {
-                if (typeof v === 'number') return v;
-                if (typeof v === 'string') return parseFloat(v.replace(/,/g, '')) || 0;
-                return 0;
-            };
-
             // Helper: convert DD/MM/YYYY or DD-MM-YYYY to YYYY-MM-DD for HTML date input
             const toISODate = (d: string): string => {
                 if (!d) return "";
@@ -706,21 +1018,15 @@
             };
 
             const butlerItems = selectedType === 'bank_statement'
-                ? butlerInsights.extracted_items.map((item: any) => ({
+                ? repairBankTransactionPolarity(butlerInsights.extracted_items.map((item: any) => ({
                     date: toISODate(item.date || ""),
                     description: item.description || "",
                     reference: item.reference || item.ref || "",
                     debit: parseNum(item.debit),
                     credit: parseNum(item.credit),
                     balance: parseNum(item.balance),
-                }))
-                : butlerInsights.extracted_items.map((item: any) => ({
-                    description: item.description || "",
-                    quantity: parseNum(item.quantity) || 1,
-                    unit: item.unit || "pcs",
-                    part_number: item.part_number || "",
-                    unit_price: parseNum(item.unit_price)
-                }));
+                })))
+                : butlerInsights.extracted_items.map(normalizeCommercialLineItem);
 
             console.log('[Butler Merge] Mapped', butlerItems.length, 'butler items, existing lineItems:', lineItems.length);
             if (butlerItems.length > 0) {
@@ -728,7 +1034,9 @@
             }
 
             // If we have no items, use Butler's; otherwise ask user
-            if (lineItems.length === 0) {
+            if (selectedType === 'bank_statement' && lineItems.length > 0) {
+                console.log('[Butler Merge] Preserving existing structured bank transactions; Butler items ignored for safety');
+            } else if (lineItems.length === 0) {
                 lineItems = butlerItems;
             } else if (butlerItems.length > lineItems.length) {
                 // Butler found more items - offer to replace
@@ -850,6 +1158,11 @@
                 activeTab = 'details';
                 return;
             }
+            if (!selectedBankAccountId) {
+                toast.danger("Please choose the bank account this statement belongs to");
+                activeTab = 'details';
+                return;
+            }
         }
 
         // Check for duplicates
@@ -884,8 +1197,10 @@
             // Pass structured data for backend
             documentData: {
                 ...editableData,
+                division: editableData.division || 'PH Trading',
                 total: finalTotal,
                 line_items: lineItems,
+                bank_account_id: selectedBankAccountId,
                 // Include IDs in document data for backend routing
                 customer_id: selectedCustomerId,
                 supplier_id: selectedSupplierId
@@ -928,6 +1243,7 @@
     >
         <div
             class="modal"
+            class:bank-statement-modal={selectedType === 'bank_statement'}
             transition:scale={{ duration: 200, start: 0.95 }}
             role="dialog"
             aria-modal="true"
@@ -1005,10 +1321,27 @@
                     {#if activeTab === 'details'}
                         <div class="form-panel" transition:fade={{ duration: 150 }}>
                             <div class="form-grid">
+                                {#if selectedType === 'bank_statement'}
+                                    <div class="form-group full-width">
+                                        <label for="bank_account_id">Bank Account</label>
+                                        <select id="bank_account_id" bind:value={selectedBankAccountId}>
+                                            <option value="">Select the account to save into...</option>
+                                            {#each filteredBankAccounts as account}
+                                                <option value={account.id}>{formatBankAccountOption(account)}</option>
+                                            {/each}
+                                        </select>
+                                        <p class="field-hint">Required so the statement is stored under the correct bank account.</p>
+                                    </div>
+                                {/if}
                                 {#each getRelevantFields() as fieldKey}
                                     <div class="form-group" class:full-width={fieldKey === 'notes'}>
                                         <label for={fieldKey}>{formatFieldLabel(fieldKey)}</label>
-                                        {#if fieldKey === 'notes'}
+                                        {#if fieldKey === 'division'}
+                                            <select id={fieldKey} bind:value={editableData[fieldKey]}>
+                                                <option value="PH Trading">PH Trading</option>
+                                                <option value="AHS Trading">AHS Trading</option>
+                                            </select>
+                                        {:else if fieldKey === 'notes'}
                                             <textarea
                                                 id={fieldKey}
                                                 bind:value={editableData[fieldKey]}
@@ -1155,13 +1488,13 @@
                                                         <input type="text" bind:value={item.reference} placeholder="Ref" />
                                                     </td>
                                                     <td>
-                                                        <input type="number" bind:value={item.debit} min="0" step="0.001" placeholder="0.000" />
+                                                        <input class="number-input" type="number" bind:value={item.debit} min="0" step="0.001" placeholder="0.000" />
                                                     </td>
                                                     <td>
-                                                        <input type="number" bind:value={item.credit} min="0" step="0.001" placeholder="0.000" />
+                                                        <input class="number-input" type="number" bind:value={item.credit} min="0" step="0.001" placeholder="0.000" />
                                                     </td>
                                                     <td>
-                                                        <input type="number" bind:value={item.balance} min="0" step="0.001" placeholder="0.000" />
+                                                        <input class="number-input" type="number" bind:value={item.balance} min="0" step="0.001" placeholder="0.000" />
                                                     </td>
                                                     <td class="actions-cell">
                                                         <button class="btn-icon danger" on:click={() => removeLineItem(i)} title="Remove" aria-label="Remove transaction {i + 1}">&times;</button>
@@ -1417,6 +1750,11 @@
         display: flex;
         flex-direction: column;
         box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    }
+
+    .modal.bank-statement-modal {
+        width: min(96vw, 1580px);
+        max-width: min(96vw, 1580px);
     }
 
     .modal-header {
@@ -1695,6 +2033,12 @@
         min-height: 60px;
     }
 
+    .field-hint {
+        margin: 2px 0 0;
+        font-size: 11px;
+        color: var(--ink-light, #666);
+    }
+
     /* Autocomplete Dropdown */
     .autocomplete-wrapper {
         position: relative;
@@ -1852,6 +2196,10 @@
     .items-table select:focus {
         border-color: #15803d;
         outline: none;
+    }
+
+    .items-table .number-input {
+        min-width: 90px;
     }
 
     .col-desc { width: 35%; }

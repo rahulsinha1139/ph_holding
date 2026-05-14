@@ -14,13 +14,14 @@ test.describe('Pipeline and commercial smoke', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Opportunities' }).click();
-    await expect(page.getByRole('button', { name: /\+ New Opportunity/ })).toBeVisible();
+    await expect(page.getByText('Loading Opportunities...')).toHaveCount(0, { timeout: 15000 });
+    await expect(page.getByRole('button', { name: /\+ New Opportunity/ })).toBeVisible({ timeout: 15000 });
 
     await page.getByRole('button', { name: /\+ New Opportunity/ }).click();
     await page.locator('input[list="cust-list"]').fill('BAPCO');
     await page.getByPlaceholder('Project name').fill('Launch readiness smoke');
     await page.getByPlaceholder('0.00').fill('12500');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await page.getByRole('button', { name: 'Create', exact: true }).click();
 
     await expect(page.getByRole('heading', { name: opportunityTitle })).toBeVisible();
 

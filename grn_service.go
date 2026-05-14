@@ -289,6 +289,9 @@ func (a *App) UpdateGRN(grn GoodsReceivedNote) (GoodsReceivedNote, error) {
 
 // DeleteGRN deletes a GRN by ID
 func (a *App) DeleteGRN(id string) error {
+	if ok, err := a.guardDeleteOrRequest("grn:delete", "grn", id, "GRN"); !ok {
+		return err
+	}
 	if err := a.requirePermission("grn:delete"); err != nil {
 		return err
 	}
@@ -335,6 +338,9 @@ func (a *App) DeleteGRN(id string) error {
 
 // GenerateGRNNumber generates a unique GRN number in format GRN-2026-0001
 func (a *App) GenerateGRNNumber() (string, error) {
+	if err := a.requirePermission("grn:create"); err != nil {
+		return "", err
+	}
 	if a.db == nil {
 		return "", newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}

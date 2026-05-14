@@ -2,31 +2,143 @@
   import { onMount, onDestroy } from "svelte";
   import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
   import { toast } from "../stores/toasts";
-  import { listNotifications, markNotificationAsRead, refreshCollaborativeWorkspace, type NotificationItem } from "$lib/api/collaboration";
+  import {
+    getCurrentEmployeeContext,
+    listNotifications,
+    markNotificationAsRead,
+    refreshCollaborativeWorkspace,
+    type NotificationItem
+  } from "$lib/api/collaboration";
+  import { ReviewDeleteApprovalRequest, ReviewEmployeeArchiveRequest } from "../../../wailsjs/go/main/App";
+
+  const pendingTaskStorageKey = "asymmflow.pendingCollaborativeTaskId";
+  const pendingTaskPayloadStorageKey = "asymmflow.pendingCollaborativeTaskPayload";
+  const NOTIFICATIONS_CACHE_TTL_MS = 20_000;
+
+  type NotificationSnapshot = {
+    notifications: NotificationItem[];
+    savedAt: number;
+  };
+
+  const notificationSnapshots: Record<string, NotificationSnapshot | undefined> = {};
 
   let loading = true;
+  let remoteRefreshing = false;
+  let loadRequestSeq = 0;
   let unreadOnly = false;
   let notifications: NotificationItem[] = [];
+  let currentRole = "";
+  let reviewingDeleteRequestID = "";
+  let reviewingArchiveRequestID = "";
 
-  async function load() {
-    loading = true;
+  function snapshotKey() {
+    return unreadOnly ? "unread" : "all";
+  }
+
+  function hasNotificationData() {
+    return notifications.length > 0;
+  }
+
+  function restoreSnapshot() {
+    const snapshot = notificationSnapshots[snapshotKey()];
+    if (!snapshot) return false;
+    notifications = snapshot.notifications;
+    loading = false;
+    return true;
+  }
+
+  function saveSnapshot() {
+    notificationSnapshots[snapshotKey()] = {
+      notifications: [...notifications],
+      savedAt: Date.now(),
+    };
+  }
+
+  function isSnapshotStale() {
+    const snapshot = notificationSnapshots[snapshotKey()];
+    return !snapshot || Date.now() - snapshot.savedAt > NOTIFICATIONS_CACHE_TTL_MS;
+  }
+
+  function applyLocalReadState(notificationID: string) {
+    const readAt = new Date().toISOString();
+    notifications = notifications.map((notification) =>
+      notification.id === notificationID
+        ? { ...notification, status: "read", read_at: readAt }
+        : notification
+    );
+  }
+
+  async function load(options: { refreshRemote?: boolean; silent?: boolean } = {}) {
+    const { refreshRemote = false, silent = false } = options;
+    const requestSeq = ++loadRequestSeq;
+    const shouldShowLoading = !silent || !hasNotificationData();
+    if (shouldShowLoading) {
+      loading = true;
+    }
     try {
-      await refreshCollaborativeWorkspace().catch(() => undefined);
-      notifications = await listNotifications(100, unreadOnly);
+      if (refreshRemote) {
+        remoteRefreshing = true;
+        await refreshCollaborativeWorkspace().catch(() => undefined);
+      }
+      const rows = await listNotifications(100, unreadOnly);
+      if (requestSeq !== loadRequestSeq) {
+        return;
+      }
+      notifications = rows;
+      saveSnapshot();
     } catch (err) {
-      toast.danger(`Failed to load notifications: ${String(err)}`);
+      if (requestSeq !== loadRequestSeq) {
+        return;
+      }
+      if (!silent || !hasNotificationData()) {
+        toast.danger(`Failed to load notifications: ${String(err)}`);
+      }
     } finally {
-      loading = false;
+      if (requestSeq === loadRequestSeq && shouldShowLoading) {
+        loading = false;
+      }
+      if (requestSeq === loadRequestSeq && refreshRemote) {
+        remoteRefreshing = false;
+      }
     }
   }
 
-  async function markRead(notificationID: string) {
+  async function hydrateNotifications() {
+    const restored = restoreSnapshot();
+    if (!restored) {
+      await load();
+      await load({ refreshRemote: true, silent: true });
+      return;
+    }
+    if (hasNotificationData()) {
+      await load({ refreshRemote: isSnapshotStale(), silent: true });
+      return;
+    }
+    await load({ refreshRemote: true, silent: true });
+  }
+
+  async function markRead(notificationID: string, options: { reload?: boolean } = {}) {
+    const { reload = false } = options;
+    applyLocalReadState(notificationID);
+    saveSnapshot();
     try {
       await markNotificationAsRead(notificationID);
-      await load();
+      if (reload) {
+        await load({ silent: true });
+      }
     } catch (err) {
+      await load({ silent: true }).catch(() => undefined);
       toast.danger(`Failed to update notification: ${String(err)}`);
     }
+  }
+
+  function handleUnreadToggle() {
+    const restored = restoreSnapshot();
+    if (!restored) {
+      void load();
+      return;
+    }
+    void load({ refreshRemote: isSnapshotStale(), silent: true });
   }
 
   function parsePayload(notification: NotificationItem): Record<string, any> {
@@ -64,8 +176,34 @@
     return notification.source_type === "task" || notification.notification_type === "task";
   }
 
+  function isDeleteApprovalNotification(notification: NotificationItem): boolean {
+    return notification.source_type === "delete_approval" || notification.notification_type === "delete_approval";
+  }
+
+  function isEmployeeArchiveNotification(notification: NotificationItem): boolean {
+    return notification.source_type === "employee_archive_approval" || notification.notification_type === "employee_archive_approval";
+  }
+
+  function isPendingDeleteApproval(notification: NotificationItem): boolean {
+    const payload = parsePayload(notification);
+    return isDeleteApprovalNotification(notification)
+      && payload.action === "delete_requested"
+      && notification.status !== "read";
+  }
+
+  function isPendingEmployeeArchiveApproval(notification: NotificationItem): boolean {
+    const payload = parsePayload(notification);
+    return isEmployeeArchiveNotification(notification)
+      && payload.action === "employee_archive_requested"
+      && notification.status !== "read";
+  }
+
+  $: isAdmin = ["admin", "administrator", "developer"].includes(currentRole.toLowerCase());
+
   function notificationTone(notification: NotificationItem): string {
     if (notification.status === "read") return "read";
+    if (isEmployeeArchiveNotification(notification)) return "employee-archive";
+    if (isDeleteApprovalNotification(notification)) return "delete-approval";
     if (isTaskNotification(notification)) return "task";
     return "system";
   }
@@ -75,18 +213,71 @@
     const taskID = String(payload.task_id || notification.source_id || "").trim();
 
     if (notification.status !== "read") {
-      await markRead(notification.id);
+      void markRead(notification.id, { reload: false });
     }
 
     if (taskID) {
+      const taskPayload = {
+        id: taskID,
+        title: String(payload.task_title || notification.title || "Task").trim(),
+        description: String(notification.message || ""),
+        task_type: "internal",
+        status: "open",
+        priority: String(payload.priority || "medium"),
+        project_id: String(payload.project_id || ""),
+        creator_name: String(payload.actor_name || "System"),
+        assignee_name: String(payload.assignee_name || ""),
+      };
+      sessionStorage.setItem(pendingTaskStorageKey, taskID);
+      sessionStorage.setItem(pendingTaskPayloadStorageKey, JSON.stringify(taskPayload));
       window.dispatchEvent(new CustomEvent("navigateToScreen", {
         detail: { screen: "work" },
       }));
       window.setTimeout(() => {
         window.dispatchEvent(new CustomEvent("openCollaborativeTask", {
-          detail: { taskID },
+          detail: { taskID, task: taskPayload },
         }));
       }, 80);
+    }
+  }
+
+  async function reviewDelete(notification: NotificationItem, decision: "approve" | "reject") {
+    const payload = parsePayload(notification);
+    const requestID = String(payload.request_id || notification.source_id || "").trim();
+    if (!requestID) {
+      toast.danger("Delete request is missing its approval id");
+      return;
+    }
+    const notes = decision === "reject" ? (prompt("Reason for rejection") || "") : "";
+    reviewingDeleteRequestID = requestID;
+    try {
+      await ReviewDeleteApprovalRequest(requestID, decision, notes);
+      toast.success(decision === "approve" ? "Delete approved and completed" : "Delete request rejected");
+      await load({ refreshRemote: true, silent: true });
+    } catch (err) {
+      toast.danger(`Delete review failed: ${String(err)}`);
+    } finally {
+      reviewingDeleteRequestID = "";
+    }
+  }
+
+  async function reviewEmployeeArchive(notification: NotificationItem, decision: "approve" | "reject") {
+    const payload = parsePayload(notification);
+    const requestID = String(payload.request_id || notification.source_id || "").trim();
+    if (!requestID) {
+      toast.danger("Employee archive request is missing its approval id");
+      return;
+    }
+    const notes = decision === "reject" ? (prompt("Reason for rejection") || "") : "";
+    reviewingArchiveRequestID = requestID;
+    try {
+      await ReviewEmployeeArchiveRequest(requestID, decision, notes);
+      toast.success(decision === "approve" ? "Employee archived after second admin approval" : "Employee archive request rejected");
+      await load({ refreshRemote: true, silent: true });
+    } catch (err) {
+      toast.danger(`Employee archive review failed: ${String(err)}`);
+    } finally {
+      reviewingArchiveRequestID = "";
     }
   }
 
@@ -102,9 +293,12 @@
   }, []);
 
   onMount(() => {
-    load();
-    EventsOn("notifications:new", load);
-    EventsOn("notifications:updated", load);
+    getCurrentEmployeeContext().then((ctx) => {
+      currentRole = ctx?.license_role || "";
+    }).catch(() => undefined);
+    void hydrateNotifications();
+    EventsOn("notifications:new", () => void load({ silent: true }));
+    EventsOn("notifications:updated", () => void load({ silent: true }));
   });
 
   onDestroy(() => {
@@ -118,9 +312,12 @@
     <div>
       <h1>Notifications.</h1>
       <p class="subtitle">Persistent cross-device collaboration events and task updates.</p>
+      {#if remoteRefreshing}
+        <p class="subtitle">Syncing latest changes</p>
+      {/if}
     </div>
     <label class="toggle">
-      <input type="checkbox" bind:checked={unreadOnly} on:change={load} />
+      <input type="checkbox" bind:checked={unreadOnly} on:change={handleUnreadToggle} />
       <span>Unread only</span>
     </label>
   </header>
@@ -160,6 +357,23 @@
                     </div>
                   {/if}
 
+                  {#if isDeleteApprovalNotification(notification)}
+                    <div class="delete-preview">
+                      <strong>{parsePayload(notification).entity_label || "Delete request"}</strong>
+                      <span>{parsePayload(notification).entity_type || "record"} · requested by {senderLabel(notification)}</span>
+                    </div>
+                  {/if}
+
+                  {#if isEmployeeArchiveNotification(notification)}
+                    <div class="archive-preview">
+                      <strong>{parsePayload(notification).employee_name || "Employee archive request"}</strong>
+                      <span>
+                        {parsePayload(notification).reason || "Second admin approval required"}
+                        {parsePayload(notification).first_approved_by_name ? ` · first approval by ${parsePayload(notification).first_approved_by_name}` : ""}
+                      </span>
+                    </div>
+                  {/if}
+
                   <div class="card-meta">
                     <span>{notification.created_at ? new Date(notification.created_at).toLocaleString() : "Just now"}</span>
                     {#if notification.read_at}
@@ -171,8 +385,38 @@
                     {#if isTaskNotification(notification)}
                       <button class="primary-action" on:click={() => openNotification(notification)}>Open task</button>
                     {/if}
+                    {#if isAdmin && isPendingDeleteApproval(notification)}
+                      <button
+                        class="primary-action danger"
+                        on:click={() => reviewDelete(notification, "approve")}
+                        disabled={reviewingDeleteRequestID === (parsePayload(notification).request_id || notification.source_id)}
+                      >
+                        Approve Delete
+                      </button>
+                      <button
+                        on:click={() => reviewDelete(notification, "reject")}
+                        disabled={reviewingDeleteRequestID === (parsePayload(notification).request_id || notification.source_id)}
+                      >
+                        Reject
+                      </button>
+                    {/if}
+                    {#if isAdmin && isPendingEmployeeArchiveApproval(notification)}
+                      <button
+                        class="primary-action danger"
+                        on:click={() => reviewEmployeeArchive(notification, "approve")}
+                        disabled={reviewingArchiveRequestID === (parsePayload(notification).request_id || notification.source_id)}
+                      >
+                        Approve Archive
+                      </button>
+                      <button
+                        on:click={() => reviewEmployeeArchive(notification, "reject")}
+                        disabled={reviewingArchiveRequestID === (parsePayload(notification).request_id || notification.source_id)}
+                      >
+                        Reject
+                      </button>
+                    {/if}
                     {#if notification.status !== "read"}
-                      <button on:click={() => markRead(notification.id)}>Mark read</button>
+                      <button on:click={() => markRead(notification.id, { reload: true })}>Mark read</button>
                     {/if}
                   </div>
                 </article>
@@ -256,6 +500,16 @@
     box-shadow: 0 14px 32px rgba(15, 23, 42, 0.04);
   }
 
+  .notification-card.delete-approval {
+    border-color: rgba(185, 28, 28, 0.28);
+    box-shadow: 0 14px 32px rgba(127, 29, 29, 0.06);
+  }
+
+  .notification-card.employee-archive {
+    border-color: rgba(180, 83, 9, 0.32);
+    box-shadow: 0 14px 32px rgba(120, 53, 15, 0.06);
+  }
+
   .notification-card.system {
     border-color: rgba(148, 163, 184, 0.3);
   }
@@ -296,7 +550,9 @@
     color: var(--text-primary);
   }
 
-  .task-preview {
+  .task-preview,
+  .delete-preview,
+  .archive-preview {
     display: grid;
     gap: 4px;
     padding: 12px 14px;
@@ -304,7 +560,17 @@
     background: rgba(14, 116, 144, 0.06);
   }
 
-  .task-preview span {
+  .delete-preview {
+    background: rgba(254, 226, 226, 0.7);
+  }
+
+  .archive-preview {
+    background: rgba(254, 243, 199, 0.74);
+  }
+
+  .task-preview span,
+  .delete-preview span,
+  .archive-preview span {
     color: var(--text-secondary);
     font-size: 13px;
   }
@@ -338,6 +604,16 @@
     background: #111827;
     color: white;
     border-color: #111827;
+  }
+
+  .primary-action.danger {
+    background: #b91c1c;
+    border-color: #b91c1c;
+  }
+
+  button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
   }
 
   .toggle {

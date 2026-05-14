@@ -8,13 +8,6 @@ import (
 	"sync"
 )
 
-func uint32AverageToByte(v uint32) byte {
-	if v > 0xFF {
-		return 0xFF
-	}
-	return byte(v)
-}
-
 // PDFElement represents a recurring document element
 type PDFElement struct {
 	Hash        string  // SHA256 of visual/text content
@@ -89,7 +82,7 @@ func HashRegionFuzzy(pixels []byte, width, height int) string {
 				}
 			}
 			if count > 0 {
-				averages[gy*gridSize+gx] = uint32AverageToByte(sum / uint32(count))
+				averages[gy*gridSize+gx] = byte(sum / uint32(count))
 			}
 		}
 	}

@@ -155,6 +155,13 @@ func defaultInvoiceFieldVisibilityJSON() string {
 }
 
 func (a *App) BackfillInvoiceItemsFromOrders() (map[string]interface{}, error) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return nil, err
+	}
+	return a.backfillInvoiceItemsFromOrdersInternal()
+}
+
+func (a *App) backfillInvoiceItemsFromOrdersInternal() (map[string]interface{}, error) {
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
@@ -405,16 +412,33 @@ func (a *App) CreateProformaInvoice(orderID string) (Invoice, error) {
 		GrandTotalBHD:  order.TotalValueBHD * 1.10,
 		OutstandingBHD: 0.0, // Proforma has no outstanding balance
 		PaymentTerms:   order.PaymentTerms,
-		Division:       order.Division,
+		Division:       normalizeDivisionName(order.Division),
 	}
 
-	// Copy line items from order
-	for _, orderItem := range order.Items {
+	// Copy line items from order, including the same costing/specification fields used by tax invoices.
+	for index, orderItem := range order.Items {
+		lineNumber := orderItem.LineNumber
+		if lineNumber == 0 {
+			lineNumber = index + 1
+		}
 		invoice.Items = append(invoice.Items, DBInvoiceItem{
-			Description: orderItem.Description,
-			Quantity:    orderItem.Quantity,
-			Rate:        orderItem.UnitPrice,
-			TotalBHD:    orderItem.TotalPrice,
+			LineNumber:          lineNumber,
+			Description:         orderItem.Description,
+			Quantity:            orderItem.Quantity,
+			Rate:                orderItem.UnitPrice,
+			TotalBHD:            orderItem.TotalPrice,
+			ProductID:           orderItem.ProductID,
+			ProductCode:         orderItem.ProductCode,
+			Equipment:           orderItem.Equipment,
+			Model:               orderItem.Model,
+			Specification:       orderItem.Specification,
+			DetailedDescription: orderItem.DetailedDescription,
+			Currency:            orderItem.Currency,
+			FOB:                 orderItem.FOB,
+			Freight:             orderItem.Freight,
+			TotalCost:           orderItem.TotalCost,
+			MarginPercent:       orderItem.MarginPercent,
+			TotalPrice:          orderItem.TotalPrice,
 		})
 	}
 
@@ -554,15 +578,31 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 	var deliveryNote DeliveryNote
 	var dnItems []DeliveryNoteItem
 	var dnNumber string
+	var deliveryNoteDate *time.Time
 	if deliveryNoteID != "" {
 		if err := a.db.Preload("Items").Where("id = ?", deliveryNoteID).First(&deliveryNote).Error; err != nil {
-			log.Printf("⚠️ Delivery note %s not found, proceeding without DN link: %v", deliveryNoteID, err)
-			deliveryNoteID = ""
-		} else {
-			dnNumber = deliveryNote.DNNumber
-			dnItems = deliveryNote.Items
-			log.Printf("📦 Linking invoice to DN: %s (%d items)", dnNumber, len(dnItems))
+			log.Printf("❌ Delivery note %s not found for invoice creation: %v", deliveryNoteID, err)
+			return Invoice{}, fmt.Errorf("delivery note not found: %w", err)
 		}
+		if deliveryNote.OrderID != orderID {
+			return Invoice{}, fmt.Errorf("delivery note %s does not belong to the selected order", deliveryNote.DNNumber)
+		}
+		var linkedInvoiceCount int64
+		if err := a.db.Model(&Invoice{}).
+			Where("delivery_note_id = ? AND status NOT IN ?", deliveryNoteID, []string{"Cancelled", "Void"}).
+			Count(&linkedInvoiceCount).Error; err != nil {
+			return Invoice{}, fmt.Errorf("failed to check delivery note invoice linkage: %w", err)
+		}
+		if linkedInvoiceCount > 0 {
+			return Invoice{}, fmt.Errorf("delivery note %s has already been linked to an invoice", deliveryNote.DNNumber)
+		}
+		dnNumber = deliveryNote.DNNumber
+		dnItems = deliveryNote.Items
+		if !deliveryNote.DeliveryDate.IsZero() {
+			dt := deliveryNote.DeliveryDate
+			deliveryNoteDate = &dt
+		}
+		log.Printf("📦 Linking invoice to DN: %s (%d items)", dnNumber, len(dnItems))
 	}
 
 	// Generate invoice number
@@ -598,6 +638,12 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		DueDate:            dueDate,
 		DeliveryNoteID:     deliveryNoteID,
 		DeliveryNoteNumber: dnNumber,
+		DeliveryNoteRef:    dnNumber,
+		DespatchDocumentNo: dnNumber,
+		DeliveryNoteDate:   deliveryNoteDate,
+		ModeOfPayment:      firstNonEmptyString(order.PaymentTerms, "Direct Bank Transfer"),
+		BuyersOrderNumber:  order.CustomerPONumber,
+		TermsOfDelivery:    firstNonEmptyString(order.DeliveryTerms, "Direct Bank Transfer"),
 		// Traceability links
 		RfqID:       order.RFQID,
 		OfferID:     order.OfferID,
@@ -615,6 +661,7 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		DiscountPercent:   order.DiscountPercent,
 		PaymentTerms:      order.PaymentTerms,
 		DeliveryTerms:     order.DeliveryTerms,
+		Division:          normalizeDivisionName(order.Division),
 		// Margin fields - will be calculated from items
 		TotalSupplierCostBHD: 0.0,
 		GrossMarginBHD:       0.0,
@@ -689,9 +736,21 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		totalSupplierCost += supplierCost
 
 		unitPrice := roundInvoiceMoney(orderItem.UnitPrice)
-		lineTotal := roundInvoiceMoney(orderItem.TotalPrice)
-		if lineTotal <= 0 && invoiceQty > 0 && unitPrice > 0 {
+		fullLineTotal := roundInvoiceMoney(orderItem.TotalPrice)
+		if unitPrice <= 0 && orderItem.Quantity > 0 && fullLineTotal > 0 {
+			unitPrice = roundInvoiceMoney(fullLineTotal / orderItem.Quantity)
+		}
+
+		lineTotal := 0.0
+		if invoiceQty > 0 && unitPrice > 0 {
 			lineTotal = roundInvoiceMoney(invoiceQty * unitPrice)
+		} else if invoiceQty > 0 && orderItem.Quantity > 0 && fullLineTotal > 0 {
+			lineTotal = roundInvoiceMoney(fullLineTotal * (invoiceQty / orderItem.Quantity))
+		} else {
+			lineTotal = fullLineTotal
+		}
+		if !hasDNs && fullLineTotal > 0 && math.Abs(invoiceQty-orderItem.Quantity) <= 0.001 {
+			lineTotal = fullLineTotal
 		}
 		if unitPrice <= 0 && invoiceQty > 0 && lineTotal > 0 {
 			unitPrice = roundInvoiceMoney(lineTotal / invoiceQty)
@@ -726,6 +785,13 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 			TotalPrice:          lineTotal,
 		}
 		invoice.Items = append(invoice.Items, invoiceItem)
+	}
+
+	if len(invoice.Items) == 0 {
+		if deliveryNoteID != "" {
+			return Invoice{}, fmt.Errorf("delivery note %s has no remaining invoiceable items for this order", dnNumber)
+		}
+		return Invoice{}, fmt.Errorf("order %s has no invoiceable items", order.OrderNumber)
 	}
 
 	// For partial invoices (DN-based), recalculate totals from actual invoice items
@@ -1077,6 +1143,9 @@ func (a *App) UpdateCustomerInvoice(inv Invoice) (Invoice, error) {
 // Reverses QuantityInvoiced updates on order items
 // SECURITY: Blocks deletion if any payment history exists (audit requirement)
 func (a *App) DeleteCustomerInvoice(id string) error {
+	if ok, err := a.guardDeleteOrRequest("invoices:delete", "customer_invoice", id, "Customer invoice"); !ok {
+		return err
+	}
 	if err := a.requirePermission("invoices:delete"); err != nil {
 		return err
 	}
@@ -1206,6 +1275,9 @@ func (a *App) GetInvoicesByCustomer(customerID string) ([]Invoice, error) {
 // P0 FIX: Uses InvoiceSequence table with row-level locking to prevent race conditions
 // The SELECT FOR UPDATE ensures atomic read-modify-write even under concurrent calls
 func (a *App) GenerateInvoiceNumber() (string, error) {
+	if err := a.requirePermission("invoices:create"); err != nil {
+		return "", err
+	}
 	if a.db == nil {
 		return "", fmt.Errorf("database not initialized")
 	}

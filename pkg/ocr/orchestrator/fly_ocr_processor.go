@@ -1,29 +1,16 @@
-// Asymmetrica Runtime OCR Processor (VPS asymm-engine, formerly Fly.io)
+// Fly.io OCR Processor - Asymmetrica Runtime on Fly.io
 //
-// Connects to the Asymmetrica Runtime now hosted on the Asymmetrica VPS at
-// https://api.asymmetrica.ai/engine (reverse-proxied by Caddy to the
-// asymm-engine container on port 8090). Replaces the retired Fly.io
-// deployment at https://asymmetrica-runtime.fly.dev.
+// This processor connects to the Asymmetrica Runtime deployed on Fly.io
+// which provides GPU-accelerated OCR endpoints for the PH Holdings app.
 //
-// Endpoint:
-// - POST /api/ocr/cloud — single-shot OCR that accepts a base64 image and
-//   returns { success, rawText, enhancedText, confidence, structuredData, error }.
-//   The consciousness-enhanced pipeline (previously split across
-//   batch-preprocess + quality-gate + table_extraction) is now handled
-//   server-side inside /api/ocr/cloud and its downstream kernels.
+// Endpoints:
+// - POST /api/ocr/batch-preprocess  - GPU-accelerated image preprocessing
+// - POST /api/ocr/quality-gate      - Quality validation with resonance check
+// - POST /api/kernel/table_extraction - Table and entity extraction
 //
-// Auth:
-// - All requests MUST send X-Asymm-Service-Token. The token is read from the
-//   ASYMM_SERVICE_TOKEN environment variable (or the legacy FlyAPIKey field
-//   in FlyOCRConfig, which is now repurposed for this). Without a valid token
-//   the runtime returns 401 regardless of path.
+// Deployed at: https://asymmetrica-runtime.fly.dev
 //
-// Type names retained as `Fly*` (FlyOCRProcessor, FlyOCRConfig, FlyOCRResult)
-// purely to minimize blast radius on callers. Rename to `AsymmEngine*` in a
-// follow-up refactor when there's slack in the schedule.
-//
-// Original build: January 20, 2026 — Wave 1 Backend OCR Integration.
-// Migrated: April 11, 2026 — off Fly.io, onto Asymmetrica VPS.
+// Built: January 20, 2026 - Wave 1 Backend OCR Integration
 package orchestrator
 
 import (
@@ -36,30 +23,23 @@ import (
 	"image/jpeg"
 	"io"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 )
 
-// FlyOCRProcessor handles OCR via Asymmetrica Runtime.
-// Despite the name, the runtime now lives on the Asymmetrica VPS
-// (https://api.asymmetrica.ai/engine), not Fly.io. Name retained for
-// caller compatibility — rename planned for a follow-up refactor.
+// FlyOCRProcessor handles OCR via Asymmetrica Runtime on Fly.io
 type FlyOCRProcessor struct {
-	apiURL       string
-	serviceToken string // sent as X-Asymm-Service-Token on every request
-	httpClient   *http.Client
-	stats        *FlyOCRStats
-	mu           sync.RWMutex
+	apiURL     string
+	apiKey     string
+	httpClient *http.Client
+	stats      *FlyOCRStats
+	mu         sync.RWMutex
 }
 
-// FlyOCRConfig configures the OCR processor.
-// APIKey is retained for back-compat but is now the X-Asymm-Service-Token
-// value (not a bearer token). Prefer setting it via the ASYMM_SERVICE_TOKEN
-// environment variable.
+// FlyOCRConfig configures the Fly.io OCR processor
 type FlyOCRConfig struct {
 	APIURL  string
-	APIKey  string // service token (X-Asymm-Service-Token value)
+	APIKey  string
 	Timeout time.Duration
 }
 
@@ -90,69 +70,41 @@ type FlyOCRResult struct {
 	Error         string        `json:"error,omitempty"`
 }
 
-// AsymmEngineCloudResponse matches the /api/ocr/cloud response shape.
-// The runtime returns a richer payload than the old batch-preprocess
-// endpoint; we only parse the fields we actually use.
-type AsymmEngineCloudResponse struct {
-	Success          bool                   `json:"success"`
-	RawText          string                 `json:"rawText"`
-	EnhancedText     string                 `json:"enhancedText"`
-	Confidence       float64                `json:"confidence"`
-	ProcessingTimeMs int                    `json:"processingTimeMs"`
-	StructuredData   map[string]interface{} `json:"structuredData"`
-	GraphOperations  int                    `json:"graphOperations"`
-	DocumentType     string                 `json:"documentType"`
-	Error            string                 `json:"error,omitempty"`
+// FlyBatchPreprocessResponse matches Fly.io API response
+type FlyBatchPreprocessResponse struct {
+	Text string `json:"text"`
 }
 
-// FlyTableExtractionResponse is retained for back-compat with ExtractTables().
-// The underlying endpoint /api/kernel/table_extraction is GONE on the new
-// runtime; ExtractTables() is now a stub that returns an empty result with
-// a clear error. Callers that need table extraction should migrate to
-// /api/ocr/document (full document pipeline) or use a dedicated kernel
-// like FormExtractor via /api/kernels/FormExtractor/run.
+// FlyQualityGateResponse matches Fly.io API response
+type FlyQualityGateResponse struct {
+	Quality    string  `json:"quality"`
+	Confidence float64 `json:"confidence"`
+}
+
+// FlyTableExtractionResponse matches Fly.io API response
 type FlyTableExtractionResponse struct {
 	Tables   []map[string]interface{} `json:"tables"`
 	Entities []map[string]interface{} `json:"entities"`
 }
 
-// DefaultFlyOCRConfig returns production defaults.
-// URL can be overridden via ASYMM_ENGINE_URL env var (falls back to the
-// legacy FLY_OCR_URL for back-compat during the transition).
-// The service token is read from ASYMM_SERVICE_TOKEN.
+// DefaultFlyOCRConfig returns production defaults
 func DefaultFlyOCRConfig() *FlyOCRConfig {
-	url := os.Getenv("ASYMM_ENGINE_URL")
-	if url == "" {
-		url = os.Getenv("FLY_OCR_URL") // legacy fallback
-	}
-	if url == "" {
-		url = "https://api.asymmetrica.ai/engine"
-	}
 	return &FlyOCRConfig{
-		APIURL:  url,
-		APIKey:  os.Getenv("ASYMM_SERVICE_TOKEN"),
+		APIURL:  "https://asymmetrica-runtime.fly.dev",
+		APIKey:  "", // Optional - set via env var if auth required
 		Timeout: 60 * time.Second,
 	}
 }
 
-// NewFlyOCRProcessor creates a new OCR processor pointed at the
-// Asymmetrica Runtime (VPS asymm-engine).
+// NewFlyOCRProcessor creates a new Fly.io OCR processor
 func NewFlyOCRProcessor(config *FlyOCRConfig) (*FlyOCRProcessor, error) {
 	if config == nil {
 		config = DefaultFlyOCRConfig()
 	}
 
-	// If the caller passed a config with no APIKey but the env has one,
-	// pick it up automatically. Keeps the call sites that build their own
-	// config working without changes.
-	token := config.APIKey
-	if token == "" {
-		token = os.Getenv("ASYMM_SERVICE_TOKEN")
-	}
-
 	return &FlyOCRProcessor{
-		apiURL:       config.APIURL,
-		serviceToken: token,
+		apiURL: config.APIURL,
+		apiKey: config.APIKey,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
@@ -160,9 +112,7 @@ func NewFlyOCRProcessor(config *FlyOCRConfig) (*FlyOCRProcessor, error) {
 	}, nil
 }
 
-// OCRImage performs OCR on an image via the Asymmetrica Runtime.
-// Calls /api/ocr/cloud as a single-shot request (preprocessing, OCR,
-// consciousness enhancement, and quality assessment all happen server-side).
+// OCRImage performs full OCR pipeline on an image using Fly.io endpoints
 func (p *FlyOCRProcessor) OCRImage(ctx context.Context, img image.Image) (*FlyOCRResult, error) {
 	start := time.Now()
 
@@ -173,40 +123,23 @@ func (p *FlyOCRProcessor) OCRImage(ctx context.Context, img image.Image) (*FlyOC
 	}
 	imageBase64 := base64.StdEncoding.EncodeToString(buf.Bytes())
 
-	cloudReq := map[string]interface{}{
-		"ImageBase64":  imageBase64,
-		"DocumentType": "Generic",
+	// STEP 1: Batch Preprocess (GPU-accelerated preprocessing + OCR)
+	preprocessReq := map[string]interface{}{
+		"image": imageBase64,
 	}
-	respBody, err := p.post(ctx, "/api/ocr/cloud", cloudReq)
+	preprocessResp, err := p.post(ctx, "/api/ocr/batch-preprocess", preprocessReq)
 	if err != nil {
 		p.recordError()
-		return nil, fmt.Errorf("asymm-engine /api/ocr/cloud failed: %w", err)
+		return nil, fmt.Errorf("batch preprocess failed: %w", err)
 	}
 
-	var cloudResp AsymmEngineCloudResponse
-	if err := json.Unmarshal(respBody, &cloudResp); err != nil {
+	var preprocessResult FlyBatchPreprocessResponse
+	if err := json.Unmarshal(preprocessResp, &preprocessResult); err != nil {
 		p.recordError()
-		return nil, fmt.Errorf("failed to parse /api/ocr/cloud response: %w", err)
+		return nil, fmt.Errorf("failed to parse preprocess response: %w", err)
 	}
 
-	// The runtime returns 200 even on backend failures, signaling via the
-	// Success bool and Error field instead of HTTP status. Honor that.
-	if !cloudResp.Success {
-		p.recordError()
-		errMsg := cloudResp.Error
-		if errMsg == "" {
-			errMsg = "asymm-engine OCR returned success=false with no error message"
-		}
-		return &FlyOCRResult{
-			Success: false,
-			Error:   errMsg,
-		}, fmt.Errorf("asymm-engine OCR failed: %s", errMsg)
-	}
-
-	text := cloudResp.RawText
-	if text == "" {
-		text = cloudResp.EnhancedText
-	}
+	text := preprocessResult.Text
 	if text == "" {
 		p.recordError()
 		return &FlyOCRResult{
@@ -215,21 +148,42 @@ func (p *FlyOCRProcessor) OCRImage(ctx context.Context, img image.Image) (*FlyOC
 		}, fmt.Errorf("no text extracted from image")
 	}
 
-	// Synthesize a legacy quality label for back-compat with callers that
-	// expect the old batch-preprocess + quality-gate pipeline shape.
-	confidence := cloudResp.Confidence
-	quality := "PASS"
-	if confidence < 0.6 {
-		quality = "FAIL"
-		p.recordQualityFail()
-	} else {
-		p.recordQualityPass()
+	// STEP 2: Quality Gate (validate text quality with resonance check)
+	qualityReq := map[string]interface{}{
+		"data":      text,
+		"resonance": true,
+	}
+	qualityResp, err := p.post(ctx, "/api/ocr/quality-gate", qualityReq)
+	if err != nil {
+		// Quality gate failure is not fatal - proceed with text
+		p.recordWarning()
 	}
 
+	var qualityResult FlyQualityGateResponse
+	quality := "UNKNOWN"
+	confidence := 0.8 // Default confidence if quality gate fails
+
+	if err == nil {
+		if err := json.Unmarshal(qualityResp, &qualityResult); err == nil {
+			quality = qualityResult.Quality
+			confidence = qualityResult.Confidence
+
+			if quality == "PASS" {
+				p.recordQualityPass()
+			} else {
+				p.recordQualityFail()
+			}
+		}
+	}
+
+	// STEP 3: Table Extraction (optional - only if tables detected)
+	// For now, we'll skip this to keep latency low
+	// Future enhancement: detect tables via k-sum first, then extract
+
 	duration := time.Since(start)
-	// Cost is now effectively zero — we own the compute. Keep the field for
-	// back-compat with stats/summary code but report $0.00.
-	cost := 0.0
+	// Cost estimate: Fly.io Machines ~$0.0002/sec (shared-cpu-1x)
+	// Average OCR: ~2 seconds = $0.0004 per page
+	cost := duration.Seconds() * 0.0002
 
 	result := &FlyOCRResult{
 		Success:       true,
@@ -248,46 +202,29 @@ func (p *FlyOCRProcessor) OCRImage(ctx context.Context, img image.Image) (*FlyOC
 	return result, nil
 }
 
-// OCRImageBytes performs OCR on raw image bytes via /api/ocr/cloud.
-// This is the byte-slice entry point; OCRImage uses the image.Image
-// entry point. Both converge on the same runtime endpoint.
+// OCRImageBytes performs OCR on raw image bytes
 func (p *FlyOCRProcessor) OCRImageBytes(ctx context.Context, imageData []byte) (*FlyOCRResult, error) {
 	start := time.Now()
 
 	imageBase64 := base64.StdEncoding.EncodeToString(imageData)
 
-	cloudReq := map[string]interface{}{
-		"ImageBase64":  imageBase64,
-		"DocumentType": "Generic",
+	// STEP 1: Batch Preprocess
+	preprocessReq := map[string]interface{}{
+		"image": imageBase64,
 	}
-	respBody, err := p.post(ctx, "/api/ocr/cloud", cloudReq)
+	preprocessResp, err := p.post(ctx, "/api/ocr/batch-preprocess", preprocessReq)
 	if err != nil {
 		p.recordError()
-		return nil, fmt.Errorf("asymm-engine /api/ocr/cloud failed: %w", err)
+		return nil, fmt.Errorf("batch preprocess failed: %w", err)
 	}
 
-	var cloudResp AsymmEngineCloudResponse
-	if err := json.Unmarshal(respBody, &cloudResp); err != nil {
+	var preprocessResult FlyBatchPreprocessResponse
+	if err := json.Unmarshal(preprocessResp, &preprocessResult); err != nil {
 		p.recordError()
-		return nil, fmt.Errorf("failed to parse /api/ocr/cloud response: %w", err)
+		return nil, fmt.Errorf("failed to parse preprocess response: %w", err)
 	}
 
-	if !cloudResp.Success {
-		p.recordError()
-		errMsg := cloudResp.Error
-		if errMsg == "" {
-			errMsg = "asymm-engine OCR returned success=false with no error message"
-		}
-		return &FlyOCRResult{
-			Success: false,
-			Error:   errMsg,
-		}, fmt.Errorf("asymm-engine OCR failed: %s", errMsg)
-	}
-
-	text := cloudResp.RawText
-	if text == "" {
-		text = cloudResp.EnhancedText
-	}
+	text := preprocessResult.Text
 	if text == "" {
 		p.recordError()
 		return &FlyOCRResult{
@@ -296,17 +233,35 @@ func (p *FlyOCRProcessor) OCRImageBytes(ctx context.Context, imageData []byte) (
 		}, fmt.Errorf("no text extracted from image")
 	}
 
-	confidence := cloudResp.Confidence
-	quality := "PASS"
-	if confidence < 0.6 {
-		quality = "FAIL"
-		p.recordQualityFail()
-	} else {
-		p.recordQualityPass()
+	// STEP 2: Quality Gate
+	qualityReq := map[string]interface{}{
+		"data":      text,
+		"resonance": true,
+	}
+	qualityResp, err := p.post(ctx, "/api/ocr/quality-gate", qualityReq)
+	if err != nil {
+		p.recordWarning()
+	}
+
+	var qualityResult FlyQualityGateResponse
+	quality := "UNKNOWN"
+	confidence := 0.8
+
+	if err == nil {
+		if err := json.Unmarshal(qualityResp, &qualityResult); err == nil {
+			quality = qualityResult.Quality
+			confidence = qualityResult.Confidence
+
+			if quality == "PASS" {
+				p.recordQualityPass()
+			} else {
+				p.recordQualityFail()
+			}
+		}
 	}
 
 	duration := time.Since(start)
-	cost := 0.0 // self-hosted compute
+	cost := duration.Seconds() * 0.0002
 
 	result := &FlyOCRResult{
 		Success:       true,
@@ -325,42 +280,37 @@ func (p *FlyOCRProcessor) OCRImageBytes(ctx context.Context, imageData []byte) (
 	return result, nil
 }
 
-// ExtractTables is retained as a stub for back-compat.
-// The old /api/kernel/table_extraction endpoint has been REMOVED from the
-// Asymmetrica Runtime — tables and entities are now produced inline by
-// /api/ocr/document (full pipeline) or via dedicated kernel dispatch at
-// /api/kernels/FormExtractor/run (which expects docs already loaded into
-// the runtime workspace).
-//
-// This stub returns an empty result with a descriptive error rather than
-// panicking. Callers who actually need tables should migrate to use
-// /api/ocr/document through a new helper and parse StructuredData from
-// the richer cloud/document response shape.
-//
-// ExtractTables has ZERO callers in ph_holdings as of 2026-04-11 (verified
-// by grep), so the stub path is never actually exercised in production.
+// ExtractTables performs table extraction on text
 func (p *FlyOCRProcessor) ExtractTables(ctx context.Context, text string) (*FlyTableExtractionResponse, error) {
-	_ = ctx
-	_ = text
-	return &FlyTableExtractionResponse{
-			Tables:   []map[string]interface{}{},
-			Entities: []map[string]interface{}{},
-		}, fmt.Errorf("ExtractTables is deprecated: /api/kernel/table_extraction no longer exists on the Asymmetrica Runtime. Use /api/ocr/document for full document analysis including tables")
+	tableReq := map[string]interface{}{
+		"prompt": fmt.Sprintf("Extract tables and entities from: %s", text),
+		"model":  "table_extraction",
+	}
+
+	tableResp, err := p.post(ctx, "/api/kernel/table_extraction", tableReq)
+	if err != nil {
+		return nil, fmt.Errorf("table extraction failed: %w", err)
+	}
+
+	var tableResult FlyTableExtractionResponse
+	if err := json.Unmarshal(tableResp, &tableResult); err != nil {
+		return nil, fmt.Errorf("failed to parse table extraction response: %w", err)
+	}
+
+	p.mu.Lock()
+	p.stats.TablesExtracted += len(tableResult.Tables)
+	p.mu.Unlock()
+
+	return &tableResult, nil
 }
 
-// HealthCheck verifies the Asymmetrica Runtime is reachable and our
-// service token is accepted. Uses /api/catalog as the health probe —
-// it's a lightweight auth-gated GET that returns the kernel list.
-// The old /health endpoint was unreliable (returned 500 in testing).
+// HealthCheck verifies the Fly.io service is running
 func (p *FlyOCRProcessor) HealthCheck(ctx context.Context) error {
-	url := p.apiURL + "/api/catalog"
+	url := p.apiURL + "/health"
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
-	}
-	if p.serviceToken != "" {
-		req.Header.Set("X-Asymm-Service-Token", p.serviceToken)
 	}
 
 	resp, err := p.httpClient.Do(req)
@@ -377,8 +327,7 @@ func (p *FlyOCRProcessor) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-// post sends an authenticated POST to the Asymmetrica Runtime.
-// Sends X-Asymm-Service-Token on every request (required by the backend).
+// post sends a POST request to Fly.io endpoint
 func (p *FlyOCRProcessor) post(ctx context.Context, endpoint string, reqData interface{}) ([]byte, error) {
 	jsonBody, err := json.Marshal(reqData)
 	if err != nil {
@@ -393,8 +342,8 @@ func (p *FlyOCRProcessor) post(ctx context.Context, endpoint string, reqData int
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if p.serviceToken != "" {
-		req.Header.Set("X-Asymm-Service-Token", p.serviceToken)
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}
 
 	resp, err := p.httpClient.Do(req)
@@ -491,21 +440,21 @@ func (p *FlyOCRProcessor) Summary() string {
 	}
 
 	return fmt.Sprintf(`
-🚀 ASYMMETRICA RUNTIME OCR SUMMARY
+🚀 FLY.IO OCR SUMMARY (Asymmetrica Runtime)
 ═══════════════════════════════════════════════════
 Requests:      %d total, %d success, %d errors
 Characters:    %d extracted
 Duration:      %v total, %v avg/request
 Throughput:    %.2f pages/sec
-Cost:          $%.4f (self-hosted — no per-request pricing)
+Cost:          $%.4f estimated
 Quality:       %.1f%% pass rate (%d passed, %d failed)
 Tables:        %d extracted
-Deployment:    %s (asymm-engine on VPS)
+Deployment:    https://asymmetrica-runtime.fly.dev
 
 Performance:
-  Latency: ~2s per page when backend OCR provider is healthy
-  Cost:    $0.00 per page (self-hosted compute, no per-call pricing)
-  Engine:  Consciousness-enhanced pipeline via /api/ocr/cloud
+  Latency: ~2s per page (preprocessing + OCR + quality gate)
+  Cost:    ~$0.0004 per page (Fly.io shared-cpu-1x)
+  GPU:     Accelerated preprocessing via Fly.io GPUs
 `,
 		stats.TotalRequests, stats.SuccessCount, stats.ErrorCount,
 		stats.TotalCharacters,
@@ -514,7 +463,6 @@ Performance:
 		stats.TotalCost,
 		qualityRate, stats.QualityPasses, stats.QualityFails,
 		stats.TablesExtracted,
-		p.apiURL,
 	)
 }
 

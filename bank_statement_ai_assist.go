@@ -147,13 +147,26 @@ func parseBankStatementLocally(text string) (*parsedStatement, string, error) {
 		return parsed, "PDF_OCR_NBB", nil
 	}
 
+	parsed, kfhErr := parseKFHFormat(text)
+	if kfhErr == nil && parsed != nil {
+		return parsed, "PDF_OCR_KFH", nil
+	}
+
+	parsed, alSalamErr := parseAlSalamOCRFormat(text)
+	if alSalamErr == nil && parsed != nil {
+		return parsed, "PDF_OCR_AL_SALAM", nil
+	}
+
 	parsed, genericErr := parseGenericBankFormat(text)
 	if genericErr == nil && parsed != nil {
 		return parsed, "PDF_OCR_GENERIC", nil
 	}
 
 	if err != nil {
-		return nil, "", fmt.Errorf("%w; generic parser: %v", err, genericErr)
+		return nil, "", fmt.Errorf("%w; kfh parser: %v; al salam parser: %v; generic parser: %v", err, kfhErr, alSalamErr, genericErr)
+	}
+	if kfhErr != nil || alSalamErr != nil {
+		return nil, "", fmt.Errorf("kfh parser: %v; al salam parser: %v; generic parser: %v", kfhErr, alSalamErr, genericErr)
 	}
 	return nil, "", genericErr
 }
@@ -173,6 +186,12 @@ func validateParsedStatement(parsed *parsedStatement) bankStatementValidation {
 
 	var computedDebits float64
 	var computedCredits float64
+	computedDebitCount := 0
+	computedCreditCount := 0
+	headerDebitCount := parsed.DebitCount
+	headerCreditCount := parsed.CreditCount
+	headerDebitTotal := parsed.TotalDebits
+	headerCreditTotal := parsed.TotalCredits
 
 	previousBalance := parsed.OpeningBalance
 	previousBalanceKnown := previousBalance != 0
@@ -196,6 +215,12 @@ func validateParsedStatement(parsed *parsedStatement) bankStatementValidation {
 		}
 		computedDebits += line.Debit
 		computedCredits += line.Credit
+		if line.Debit > 0 {
+			computedDebitCount++
+		}
+		if line.Credit > 0 {
+			computedCreditCount++
+		}
 
 		if previousBalanceKnown && line.Balance != 0 {
 			expectedBalance := previousBalance + line.Credit - line.Debit
@@ -228,6 +253,22 @@ func validateParsedStatement(parsed *parsedStatement) bankStatementValidation {
 			validation.Blocking = true
 			validation.BlockingIssues = append(validation.BlockingIssues, "opening balance, totals, and closing balance do not reconcile")
 		}
+	}
+	if headerDebitTotal > 0 && absFloat(headerDebitTotal-computedDebits) > bankStatementValidationTolerance {
+		validation.Blocking = true
+		validation.BlockingIssues = append(validation.BlockingIssues, "parsed debits do not match the statement debit summary")
+	}
+	if headerCreditTotal > 0 && absFloat(headerCreditTotal-computedCredits) > bankStatementValidationTolerance {
+		validation.Blocking = true
+		validation.BlockingIssues = append(validation.BlockingIssues, "parsed credits do not match the statement credit summary")
+	}
+	if headerDebitCount > 0 && headerDebitCount != computedDebitCount {
+		validation.Blocking = true
+		validation.BlockingIssues = append(validation.BlockingIssues, "parsed debit count does not match the statement debit summary")
+	}
+	if headerCreditCount > 0 && headerCreditCount != computedCreditCount {
+		validation.Blocking = true
+		validation.BlockingIssues = append(validation.BlockingIssues, "parsed credit count does not match the statement credit summary")
 	}
 
 	if parsed.TotalDebits == 0 && computedDebits > 0 {

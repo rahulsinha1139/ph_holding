@@ -3,8 +3,11 @@ package main
 import (
 	"fmt"
 	"log"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/jung-kurt/gofpdf"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -159,6 +162,281 @@ func (a *App) GetDeliveryNoteByID(id string) (DeliveryNote, error) {
 	return dn, nil
 }
 
+// GenerateDeliveryNotePDF creates a customer-facing delivery note that follows
+// the PH Trading delivery note structure shared by the client.
+func (a *App) GenerateDeliveryNotePDF(id string) (string, error) {
+	if err := a.requirePermission("delivery_notes:view"); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(id) == "" {
+		return "", fmt.Errorf("delivery note ID is required")
+	}
+	if a.db == nil {
+		return "", newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	var dn DeliveryNote
+	if err := a.db.Preload("Items").First(&dn, "id = ?", id).Error; err != nil {
+		return "", newError("DN_NOT_FOUND", "Delivery note not found", err.Error())
+	}
+	if dn.DeliveryDate.IsZero() {
+		dn.DeliveryDate = time.Now()
+	}
+
+	var order Order
+	if strings.TrimSpace(dn.OrderID) != "" {
+		_ = a.db.First(&order, "id = ?", dn.OrderID).Error
+	}
+
+	var customer CustomerMaster
+	if strings.TrimSpace(dn.CustomerID) != "" {
+		_ = a.db.First(&customer, "id = ?", dn.CustomerID).Error
+	}
+
+	division := normalizeDivisionName(order.Division)
+	profile := companyDocumentProfile(division)
+	customerName := firstNonEmptyString(customer.BusinessName, order.CustomerName, dn.CustomerID)
+	deliveryAddress := firstNonEmptyString(dn.DeliveryAddress, order.AttentionAddress, customer.AddressLine1, customer.City, customer.Country)
+	billToLines := compactStrings([]string{
+		customerName,
+		customer.AddressLine1,
+		customer.City,
+		customer.Country,
+		customerTRNLine(customer.TRN),
+	})
+	if len(billToLines) == 1 && strings.TrimSpace(order.AttentionAddress) != "" {
+		billToLines = append(billToLines, splitNonEmptyLines(order.AttentionAddress)...)
+	}
+	deliveryLines := compactStrings(append([]string{customerName}, splitNonEmptyLines(deliveryAddress)...))
+	if len(deliveryLines) == 1 {
+		deliveryLines = append(deliveryLines, compactStrings([]string{customer.AddressLine1, customer.City, customer.Country})...)
+	}
+
+	pdf := gofpdf.New("P", "mm", "A4", "")
+	pdf.SetAutoPageBreak(false, 0)
+	pdf.AddPage()
+	a.applyLetterheadForDivision(pdf, profile.Division)
+
+	pdf.SetTextColor(20, 20, 20)
+	pdf.SetFont("Times", "B", 17)
+	pdf.SetXY(0, 38)
+	pdf.CellFormat(210, 8, "Delivery Note", "", 0, "C", false, 0, "")
+	pdf.Line(89, 47, 121, 47)
+
+	pdf.SetFont("Times", "B", 12)
+	pdf.SetXY(35, 66)
+	pdf.Cell(20, 6, "Ref:")
+	pdf.SetFont("Times", "", 12)
+	pdf.Cell(58, 6, sanitizeForPDF(firstNonEmptyString(dn.DNNumber, "-")))
+
+	pdf.SetFont("Times", "B", 12)
+	pdf.SetXY(126, 66)
+	pdf.Cell(18, 6, "Dated:")
+	pdf.SetFont("Times", "B", 12)
+	pdf.Cell(40, 6, dn.DeliveryDate.Format("02-01-2006"))
+
+	y := 82.0
+	pdf.SetFont("Times", "B", 11)
+	pdf.SetXY(35, y)
+	pdf.Cell(0, 5, "Bill to,")
+	y += 6
+	pdf.SetFont("Times", "", 11)
+	for _, line := range billToLines {
+		pdf.SetXY(35, y)
+		pdf.MultiCell(95, 5, sanitizeForPDF(line), "", "L", false)
+		y = pdf.GetY()
+	}
+
+	y += 5
+	pdf.SetFont("Times", "B", 11)
+	pdf.SetXY(35, y)
+	pdf.Cell(0, 5, "Delivery Location:")
+	y += 6
+	pdf.SetFont("Times", "", 11)
+	for _, line := range deliveryLines {
+		pdf.SetXY(35, y)
+		pdf.MultiCell(110, 5, sanitizeForPDF(line), "", "L", false)
+		y = pdf.GetY()
+	}
+
+	y += 8
+	pdf.SetFont("Times", "", 11)
+	pdf.SetXY(35, y)
+	pdf.Cell(42, 6, "PURCHASE ORDER NO.:")
+	pdf.SetFont("Times", "B", 11)
+	pdf.Cell(80, 6, sanitizeForPDF(firstNonEmptyString(order.CustomerPONumber, order.OrderNumber, "-")))
+	y += 7
+	pdf.SetFont("Times", "", 11)
+	pdf.SetXY(35, y)
+	pdf.Cell(18, 6, "DATE :")
+	orderDate := order.OrderDate
+	if orderDate.IsZero() {
+		orderDate = dn.CreatedAt
+	}
+	pdf.Cell(60, 6, orderDate.Format("02 Jan, 2006"))
+
+	tableY := y + 16
+	tableEndY := a.drawDeliveryNoteTable(pdf, tableY, dn.Items, profile.Division)
+
+	const signatureBlockHeight = 34.0
+	const signatureDefaultY = 222.0
+	const deliveryNoteFooterSafeY = 286.0
+	signatureY := mathMax(tableEndY+10, signatureDefaultY)
+	if signatureY+signatureBlockHeight > deliveryNoteFooterSafeY {
+		pdf.AddPage()
+		a.applyLetterheadForDivision(pdf, profile.Division)
+		signatureY = signatureDefaultY
+	}
+	pdf.SetFont("Times", "B", 10)
+	pdf.SetXY(35, signatureY)
+	pdf.Cell(70, 5, "Supplied in Good Order and condition.")
+	pdf.SetXY(112, signatureY)
+	pdf.Cell(78, 5, "Received in Good order and condition")
+
+	signerName := a.resolveDocumentSignerName(firstNonEmptyString(dn.UpdatedBy, dn.CreatedBy, a.getCurrentUserDisplayName()))
+	signatureBlock := a.resolvePreparedBySignatureBlock(signerName)
+	drawPHSignaturePDFLines(pdf, 35, signatureY+10, 70, 2.45, 5.1, signatureBlock, false)
+
+	pdf.SetFont("Times", "", 10)
+	pdf.SetXY(112, signatureY+12)
+	pdf.Cell(78, 5, "For "+sanitizeForPDF(customerName))
+
+	docYear := dn.DeliveryDate.Year()
+	if docYear <= 0 {
+		docYear = time.Now().Year()
+	}
+	outputDir := a.getExportDir("customer", customerName, "Delivery Notes", docYear)
+	fileName := fmt.Sprintf("Delivery_Note_%s.pdf", sanitizeFilename(firstNonEmptyString(dn.DNNumber, id)))
+	outputPath := filepath.Join(outputDir, fileName)
+	if err := pdf.OutputFileAndClose(outputPath); err != nil {
+		return "", fmt.Errorf("failed to save delivery note PDF: %w", err)
+	}
+
+	log.Printf("✅ Delivery note PDF generated: %s", outputPath)
+	return outputPath, nil
+}
+
+func (a *App) drawDeliveryNoteTable(pdf *gofpdf.Fpdf, y float64, items []DeliveryNoteItem, division string) float64 {
+	x := 35.0
+	widths := []float64{13, 89, 25, 25}
+	headers := []string{"Item\nNo", "Order Code Description", "Qty ordered", "Qty Delivered"}
+	rowHeight := 10.0
+	pageBottomY := 252.0
+
+	drawHeader := func(headerY float64) {
+		pdf.SetLineWidth(0.2)
+		pdf.SetFont("Times", "B", 10)
+		pdf.SetXY(x, headerY)
+		for i, header := range headers {
+			cellX := pdf.GetX()
+			cellY := pdf.GetY()
+			pdf.Rect(cellX, cellY, widths[i], rowHeight, "D")
+			pdf.MultiCell(widths[i], 5, sanitizeForPDF(header), "", "C", false)
+			pdf.SetXY(cellX+widths[i], cellY)
+		}
+		pdf.SetXY(x, headerY+rowHeight)
+		pdf.SetFont("Times", "", 10)
+	}
+
+	drawHeader(y)
+	for i, item := range items {
+		description := strings.TrimSpace(item.Description)
+		if strings.TrimSpace(item.ProductCode) != "" {
+			description = strings.TrimSpace(description + "\n" + item.ProductCode)
+		}
+		if description == "" {
+			description = "-"
+		}
+		lines := pdf.SplitText(sanitizeForPDF(description), widths[1]-4)
+		height := mathMax(10, float64(len(lines))*5+2)
+		if pdf.GetY()+height > pageBottomY && pdf.GetY() > y+rowHeight {
+			pdf.AddPage()
+			if a != nil {
+				a.applyLetterheadForDivision(pdf, division)
+			}
+			drawHeader(45)
+		}
+
+		startX := x
+		startY := pdf.GetY()
+		pdf.Rect(startX, startY, widths[0], height, "D")
+		pdf.SetXY(startX+2, startY+2)
+		pdf.CellFormat(widths[0]-4, 5, fmt.Sprintf("%d", i+1), "", 0, "L", false, 0, "")
+
+		descX := startX + widths[0]
+		pdf.Rect(descX, startY, widths[1], height, "D")
+		pdf.SetXY(descX+2, startY+2)
+		pdf.MultiCell(widths[1]-4, 5, sanitizeForPDF(description), "", "L", false)
+
+		qtyOrderedX := descX + widths[1]
+		pdf.Rect(qtyOrderedX, startY, widths[2], height, "D")
+		pdf.SetXY(qtyOrderedX, startY+2)
+		pdf.CellFormat(widths[2], 5, formatQty(item.QuantityOrdered), "", 0, "C", false, 0, "")
+
+		qtyDeliveredX := qtyOrderedX + widths[2]
+		pdf.Rect(qtyDeliveredX, startY, widths[3], height, "D")
+		pdf.SetXY(qtyDeliveredX, startY+2)
+		pdf.CellFormat(widths[3], 5, formatQty(item.QuantityDelivered), "", 0, "C", false, 0, "")
+
+		pdf.SetXY(x, startY+height)
+	}
+
+	return pdf.GetY()
+}
+
+func customerTRNLine(trn string) string {
+	if strings.TrimSpace(trn) == "" {
+		return ""
+	}
+	return "VAT Reg. No. " + strings.TrimSpace(trn)
+}
+
+func splitNonEmptyLines(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+	return compactStrings(parts)
+}
+
+func compactStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func formatQty(value float64) string {
+	if mathAbs(value-mathRound(value)) < 0.001 {
+		return fmt.Sprintf("%.0f", value)
+	}
+	return fmt.Sprintf("%.2f", value)
+}
+
+func mathMax(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func mathRound(value float64) float64 {
+	if value >= 0 {
+		return float64(int(value + 0.5))
+	}
+	return float64(int(value - 0.5))
+}
+
+func mathAbs(value float64) float64 {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
 // GetDeliveryNotesByOrder retrieves all delivery notes for an order
 func (a *App) GetDeliveryNotesByOrder(orderID string) ([]DeliveryNote, error) {
 	if err := a.requirePermission("delivery_notes:view"); err != nil {
@@ -278,6 +556,9 @@ func (a *App) UpdateDeliveryNote(dn DeliveryNote) (DeliveryNote, error) {
 
 // DeleteDeliveryNote deletes a delivery note (soft delete)
 func (a *App) DeleteDeliveryNote(id string) error {
+	if ok, err := a.guardDeleteOrRequest("delivery_notes:delete", "delivery_note", id, "Delivery note"); !ok {
+		return err
+	}
 	if err := a.requirePermission("delivery_notes:delete"); err != nil {
 		return err
 	}
@@ -894,14 +1175,16 @@ func (a *App) GetDeliveryAreaSummary() (map[string]int, error) {
 
 // OrderFulfillmentItem represents per-item delivery breakdown for an order
 type OrderFulfillmentItem struct {
-	OrderItemID  string  `json:"order_item_id"`
-	ProductCode  string  `json:"product_code"`
-	Description  string  `json:"description"`
-	OrderedQty   float64 `json:"ordered_qty"`
-	ShippedQty   float64 `json:"shipped_qty"`
-	DeliveredQty float64 `json:"delivered_qty"`
-	InvoicedQty  float64 `json:"invoiced_qty"`
-	RemainingQty float64 `json:"remaining_qty"`
+	OrderItemID            string  `json:"order_item_id"`
+	ProductID              string  `json:"product_id"`
+	ProductCode            string  `json:"product_code"`
+	Description            string  `json:"description"`
+	OrderedQty             float64 `json:"ordered_qty"`
+	ShippedQty             float64 `json:"shipped_qty"`
+	DeliveredQty           float64 `json:"delivered_qty"`
+	InvoicedQty            float64 `json:"invoiced_qty"`
+	RemainingQty           float64 `json:"remaining_qty"`
+	RequiresSerialTracking bool    `json:"requires_serial_tracking"`
 }
 
 // OrderFulfillment represents the full delivery fulfillment status for an order
@@ -939,8 +1222,27 @@ func (a *App) GetOrderFulfillmentDetail(orderID string) (OrderFulfillment, error
 	// Calculate delivered quantities per order item from all DNs
 	deliveredQtyMap := make(map[string]float64)
 	for _, dn := range deliveryNotes {
+		if strings.EqualFold(strings.TrimSpace(dn.Status), "Cancelled") {
+			continue
+		}
 		for _, item := range dn.Items {
 			deliveredQtyMap[item.OrderItemID] += item.QuantityDelivered
+		}
+	}
+
+	productIDs := make([]string, 0, len(order.Items))
+	for _, item := range order.Items {
+		if strings.TrimSpace(item.ProductID) != "" {
+			productIDs = append(productIDs, item.ProductID)
+		}
+	}
+	serialTrackingByProduct := make(map[string]bool)
+	if len(productIDs) > 0 {
+		var products []ProductMaster
+		if err := a.db.Where("id IN ?", productIDs).Find(&products).Error; err == nil {
+			for _, product := range products {
+				serialTrackingByProduct[product.ID] = product.RequiresSerialTracking
+			}
 		}
 	}
 
@@ -963,14 +1265,16 @@ func (a *App) GetOrderFulfillmentDetail(orderID string) (OrderFulfillment, error
 		}
 
 		fi := OrderFulfillmentItem{
-			OrderItemID:  item.ID,
-			ProductCode:  item.ProductCode,
-			Description:  item.Description,
-			OrderedQty:   item.Quantity,
-			ShippedQty:   item.QuantityShipped,
-			DeliveredQty: deliveredQty,
-			InvoicedQty:  item.QuantityInvoiced,
-			RemainingQty: remainingQty,
+			OrderItemID:            item.ID,
+			ProductID:              item.ProductID,
+			ProductCode:            item.ProductCode,
+			Description:            item.Description,
+			OrderedQty:             item.Quantity,
+			ShippedQty:             item.QuantityShipped,
+			DeliveredQty:           deliveredQty,
+			InvoicedQty:            item.QuantityInvoiced,
+			RemainingQty:           remainingQty,
+			RequiresSerialTracking: serialTrackingByProduct[item.ProductID],
 		}
 		fulfillment.Items = append(fulfillment.Items, fi)
 
@@ -1199,25 +1503,15 @@ func (a *App) CreateDNWithSerials(orderID string, items []DNItemInputWithSerials
 		return DeliveryNote{}, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
-	var order Order
-	if err := a.db.Preload("Items").First(&order, "id = ?", orderID).Error; err != nil {
-		return DeliveryNote{}, newError("ORDER_NOT_FOUND", "Order not found for serial allocation", err.Error())
-	}
-	orderItemMap := make(map[string]OrderItem, len(order.Items))
-	for _, orderItem := range order.Items {
-		orderItemMap[orderItem.ID] = orderItem
-	}
-
 	// Pre-validate serial count matches ship qty (availability is checked atomically in allocateSerialsToDN)
 	// S6 FIX: Removed TOCTOU-prone availability pre-check — allocateSerialsToDN uses atomic UPDATE WHERE
 	for _, item := range items {
-		orderItem, ok := orderItemMap[item.OrderItemID]
-		if !ok {
-			return DeliveryNote{}, newError("INVALID_ITEM",
-				fmt.Sprintf("Order item %s not found in order", item.OrderItemID), "")
-		}
-		if err := a.validateProductSerialHandling(orderItem.ProductID, item.ShipQty, item.SerialNos, "delivery"); err != nil {
-			return DeliveryNote{}, err
+		if len(item.SerialNos) > 0 {
+			if float64(len(item.SerialNos)) != item.ShipQty {
+				return DeliveryNote{}, newError("SERIAL_COUNT_MISMATCH",
+					fmt.Sprintf("Serial count (%d) must match ship qty (%.0f) for order item %s",
+						len(item.SerialNos), item.ShipQty, item.OrderItemID), "")
+			}
 		}
 	}
 
@@ -1255,6 +1549,11 @@ func (a *App) CreateDNWithSerials(orderID string, items []DNItemInputWithSerials
 	}
 
 	// Load customer for serial allocation
+	var order Order
+	if err := a.db.Where("id = ?", orderID).First(&order).Error; err != nil {
+		cleanupDN("order lookup failed")
+		return DeliveryNote{}, newError("ORDER_NOT_FOUND", "Order not found for serial allocation", err.Error())
+	}
 	var customer CustomerMaster
 	if err := a.db.Where("id = ?", order.CustomerID).First(&customer).Error; err != nil {
 		cleanupDN("customer lookup failed")

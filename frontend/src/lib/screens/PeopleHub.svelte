@@ -1,17 +1,20 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { EventsOff, EventsOn } from "../../../wailsjs/runtime/runtime";
   import { toast } from "../stores/toasts";
   import {
-    createEmployeeAccessLink,
     createEmployeeProfile,
+    getCurrentEmployeeContext,
     listEmployeeAccessLinks,
     listEmployeeContributionSummaries,
     listEmployeeProfiles,
     listEmployeeProjectAssignments,
+    listEmployeeTasks,
     listLicenseKeys,
+    reassignEmployeeLicenseAccess,
     reassignEmployeeManager,
     refreshCollaborativeWorkspace,
+    requestEmployeeArchive,
     setEmployeeEmploymentState,
     updateEmployeeProfile,
     type EmployeeAccessLink,
@@ -19,22 +22,26 @@
     type EmployeeProfile,
     type LicenseKeySummary,
     type ProjectMember,
+    type CollaborativeTask,
   } from "$lib/api/collaboration";
-
-  type PeopleTab = "directory" | "org" | "contributions";
 
   let loading = true;
   let saving = false;
-  let activeTab: PeopleTab = "directory";
+  let remoteRefreshing = false;
+  let archiveSubmitting = false;
+  let currentRole = "";
 
   let employees: EmployeeProfile[] = [];
   let accessLinks: EmployeeAccessLink[] = [];
   let licenseKeys: LicenseKeySummary[] = [];
   let contributions: EmployeeContributionSummary[] = [];
   let projectAssignments: ProjectMember[] = [];
+  let selectedEmployeeTasks: CollaborativeTask[] = [];
 
   let selectedEmployeeID = "";
   let directorySearch = "";
+  let directoryStatusFilter: "active" | "archive" | "all" = "active";
+  let contributionSection: HTMLElement | null = null;
 
   let createFullName = "";
   let createDepartment = "";
@@ -52,8 +59,11 @@
   let startDate = "";
   let emergencyContact = "";
   let notes = "";
+  let archiveReason = "";
 
   let assignmentLoadToken = 0;
+  let loadRequestSeq = 0;
+  let selectedEmployeeLoading = false;
 
   function toDateInput(value?: string) {
     if (!value) return "";
@@ -77,21 +87,24 @@
     startDate = toDateInput(employee?.start_date);
     emergencyContact = employee?.emergency_contact || "";
     notes = employee?.notes || "";
+    archiveReason = employee?.archive_reason || "";
   }
 
   async function load(options: { refreshRemote?: boolean } = {}) {
     const { refreshRemote = false } = options;
-    loading = true;
+    const requestSeq = ++loadRequestSeq;
+    loading = employees.length === 0;
     try {
-      if (refreshRemote) {
-        await refreshCollaborativeWorkspace().catch(() => undefined);
-      }
       const [employeeRows, linkRows, licenseRows, contributionRows] = await Promise.all([
         listEmployeeProfiles(false),
         listEmployeeAccessLinks(),
         listLicenseKeys(),
         listEmployeeContributionSummaries(),
       ]);
+
+      if (requestSeq !== loadRequestSeq) {
+        return;
+      }
 
       employees = employeeRows;
       accessLinks = linkRows;
@@ -108,11 +121,32 @@
         selectedLicenseKey = availableLicenseKeys[0].key;
       }
 
-      await loadSelectedEmployeeData(selectedEmployeeID);
+      void loadSelectedEmployeeData(selectedEmployeeID);
     } catch (err) {
+      if (requestSeq !== loadRequestSeq) {
+        return;
+      }
       toast.danger(`Failed to load people hub: ${String(err)}`);
     } finally {
-      loading = false;
+      if (requestSeq === loadRequestSeq) {
+        loading = false;
+      }
+      if (requestSeq === loadRequestSeq && refreshRemote) {
+        void refreshPeopleFromRemote();
+      }
+    }
+  }
+
+  async function refreshPeopleFromRemote() {
+    if (remoteRefreshing) return;
+    remoteRefreshing = true;
+    try {
+      await refreshCollaborativeWorkspace();
+      await load();
+    } catch {
+      // Local SQLite is the working view; sync failures surface through the sidebar status.
+    } finally {
+      remoteRefreshing = false;
     }
   }
 
@@ -122,24 +156,40 @@
 
     if (!selected?.id) {
       projectAssignments = [];
+      selectedEmployeeTasks = [];
+      selectedEmployeeLoading = false;
       return;
     }
 
     const token = ++assignmentLoadToken;
+    selectedEmployeeLoading = true;
     try {
-      const assignments = await listEmployeeProjectAssignments(selected.id);
+      const [assignments, tasks] = await Promise.all([
+        listEmployeeProjectAssignments(selected.id),
+        listEmployeeTasks(selected.id, true),
+      ]);
       if (token === assignmentLoadToken) {
         projectAssignments = assignments;
+        selectedEmployeeTasks = tasks;
       }
     } catch (err) {
       if (token === assignmentLoadToken) {
         projectAssignments = [];
+        selectedEmployeeTasks = [];
       }
-      toast.warning(`Could not load project assignments: ${String(err)}`);
+      toast.warning(`Could not load selected employee work: ${String(err)}`);
+    } finally {
+      if (token === assignmentLoadToken) {
+        selectedEmployeeLoading = false;
+      }
     }
   }
 
   async function handleCreate() {
+    if (!isAdmin) {
+      toast.warning("Only admin can add employee profiles");
+      return;
+    }
     if (!createFullName.trim()) {
       toast.warning("Employee name is required");
       return;
@@ -208,17 +258,53 @@
       toast.warning("Choose an employee first");
       return;
     }
-
-    const nextIsActive = !(selectedEmployee.is_active !== false);
-    const nextStatus = nextIsActive ? "active" : "inactive";
+    if (!isAdmin) {
+      toast.warning("Only admin can reactivate employee profiles");
+      return;
+    }
+    if (selectedEmployee.is_active !== false) {
+      toast.warning("Use employee archive for removals");
+      return;
+    }
 
     try {
-      await setEmployeeEmploymentState(selectedEmployee.id, nextIsActive, nextStatus);
-      employmentStatus = nextStatus;
+      await setEmployeeEmploymentState(selectedEmployee.id, true, "active");
+      employmentStatus = "active";
       await load();
-      toast.success(nextIsActive ? "Employee reactivated" : "Employee deactivated");
+      toast.success("Employee reactivated");
     } catch (err) {
       toast.danger(`Failed to update employee status: ${String(err)}`);
+    }
+  }
+
+  async function handleArchiveRequest() {
+    if (!selectedEmployee?.id) {
+      toast.warning("Choose an employee first");
+      return;
+    }
+    if (!isAdmin) {
+      toast.warning("Only admin can archive employees");
+      return;
+    }
+    if (selectedEmployee.is_active === false) {
+      toast.warning("This employee is already archived or inactive");
+      return;
+    }
+    if (!archiveReason.trim()) {
+      toast.warning("Archive reason is required");
+      return;
+    }
+
+    archiveSubmitting = true;
+    try {
+      await requestEmployeeArchive(selectedEmployee.id, archiveReason.trim());
+      toast.success("Employee archived");
+      archiveReason = "";
+      await load({ refreshRemote: true });
+    } catch (err) {
+      toast.danger(`Failed to archive employee: ${String(err)}`);
+    } finally {
+      archiveSubmitting = false;
     }
   }
 
@@ -233,28 +319,85 @@
     }
 
     try {
-      await createEmployeeAccessLink({
-        employee_id: selectedEmployeeID,
-        license_key: selectedLicenseKey,
-        access_status: "active",
-      });
+      await reassignEmployeeLicenseAccess(selectedEmployeeID, selectedLicenseKey, true);
       await load();
       selectedLicenseKey = availableLicenseKeys[0]?.key || "";
-      toast.success("Employee linked to license");
+      toast.success("Employee license assignment updated");
     } catch (err) {
-      toast.danger(`Failed to link employee access: ${String(err)}`);
+      toast.danger(`Failed to assign employee license: ${String(err)}`);
     }
   }
 
-  function selectEmployee(employeeID: string) {
+  function selectEmployee(employeeID: string, focusContribution = true) {
     selectedEmployeeID = employeeID;
-    loadSelectedEmployeeData(employeeID);
+    void loadSelectedEmployeeData(employeeID);
+    if (focusContribution) {
+      void tick().then(() => {
+        contributionSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
   }
 
-  $: linkedLicenseKeys = new Set(accessLinks.map((link) => link.license_key));
-  $: availableLicenseKeys = licenseKeys.filter((license) => !linkedLicenseKeys.has(license.key));
+  function normalizeTaskStatus(status?: string) {
+    return (status || "open").toLowerCase();
+  }
+
+  function formatTaskStatus(status?: string) {
+    return normalizeTaskStatus(status).replaceAll("_", " ");
+  }
+
+  function isCompletedTask(task: CollaborativeTask) {
+    const status = normalizeTaskStatus(task.status);
+    return status === "completed" || status === "done" || status === "archived";
+  }
+
+  function isBlockedTask(task: CollaborativeTask) {
+    return normalizeTaskStatus(task.status) === "blocked" || Boolean(task.blocked_reason);
+  }
+
+  function isOverdueTask(task: CollaborativeTask) {
+    if (!task.due_date || isCompletedTask(task)) return false;
+    const due = new Date(task.due_date);
+    if (Number.isNaN(due.getTime())) return false;
+    return due.getTime() < Date.now();
+  }
+
+  function formatShortDate(value?: string) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  function isArchivedEmployee(employee: EmployeeProfile) {
+    return employee.is_active === false || (employee.employment_status || "").toLowerCase() === "archived";
+  }
+
+  function employeeStatusLabel(employee: EmployeeProfile) {
+    if ((employee.employment_status || "").toLowerCase() === "archived") return "Archived";
+    if (employee.is_active === false) return "Inactive";
+    return employee.employment_status || "Active";
+  }
+
+  function taskSortTime(task: CollaborativeTask) {
+    const value = task.due_date || task.completed_at || task.last_comment_at || task.started_at || "";
+    const parsed = value ? new Date(value).getTime() : 0;
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+
+  $: activeLinkedLicenseKeys = new Set(
+    accessLinks
+      .filter((link) => (link.access_status || "active").toLowerCase() !== "inactive")
+      .map((link) => link.license_key)
+  );
+  $: availableLicenseKeys = licenseKeys.filter((license) => !activeLinkedLicenseKeys.has(license.key));
   $: selectedEmployee = employees.find((employee) => employee.id === selectedEmployeeID) || null;
+  $: isAdmin = ["admin", "administrator", "developer"].includes(currentRole.toLowerCase());
+  $: activeEmployeeCount = employees.filter((employee) => !isArchivedEmployee(employee)).length;
+  $: archivedEmployeeCount = employees.filter(isArchivedEmployee).length;
   $: filteredEmployees = employees.filter((employee) => {
+    if (directoryStatusFilter === "active" && isArchivedEmployee(employee)) return false;
+    if (directoryStatusFilter === "archive" && !isArchivedEmployee(employee)) return false;
     const search = directorySearch.trim().toLowerCase();
     if (!search) return true;
     const haystack = [
@@ -270,6 +413,21 @@
     return haystack.includes(search);
   });
   $: selectedAccessLinks = accessLinks.filter((link) => link.employee_id === selectedEmployeeID);
+  $: contributionByEmployee = new Map(contributions.map((summary) => [summary.employee_id, summary]));
+  $: selectedContribution = contributionByEmployee.get(selectedEmployeeID) || null;
+  $: selectedOpenTasks = selectedEmployeeTasks.filter((task) => !isCompletedTask(task));
+  $: selectedCompletedTasks = selectedEmployeeTasks.filter(isCompletedTask);
+  $: selectedBlockedTasks = selectedEmployeeTasks.filter(isBlockedTask);
+  $: selectedOverdueTasks = selectedEmployeeTasks.filter(isOverdueTask);
+  $: computedCompletionRate = selectedEmployeeTasks.length
+    ? (selectedCompletedTasks.length / selectedEmployeeTasks.length) * 100
+    : 0;
+  $: selectedTaskTimeline = [...selectedEmployeeTasks].sort((left, right) => taskSortTime(right) - taskSortTime(left));
+  $: selectedActiveTaskCount = selectedContribution?.active_task_count ?? selectedOpenTasks.length;
+  $: selectedCompletedTaskCount = selectedContribution?.completed_task_count ?? selectedCompletedTasks.length;
+  $: selectedBlockedTaskCount = selectedContribution?.blocked_task_count ?? selectedBlockedTasks.length;
+  $: selectedOverdueTaskCount = selectedContribution?.overdue_task_count ?? selectedOverdueTasks.length;
+  $: selectedCompletionRate = selectedContribution?.completion_rate ?? computedCompletionRate;
   $: sortedContributions = [...contributions].sort((left, right) => {
     if ((right.completed_task_count || 0) !== (left.completed_task_count || 0)) {
       return (right.completed_task_count || 0) - (left.completed_task_count || 0);
@@ -287,10 +445,13 @@
   $: orgGroupEntries = Object.entries(orgGroups).sort((left, right) => left[0].localeCompare(right[0]));
 
   onMount(() => {
-    load({ refreshRemote: true });
-    EventsOn("employees:updated", load);
-    EventsOn("tasks:updated", load);
-    EventsOn("projects:updated", load);
+    getCurrentEmployeeContext().then((ctx) => {
+      currentRole = ctx?.license_role || "";
+    }).catch(() => undefined);
+    void load({ refreshRemote: true });
+    EventsOn("employees:updated", () => void load());
+    EventsOn("tasks:updated", () => void load());
+    EventsOn("projects:updated", () => void load());
   });
 
   onDestroy(() => {
@@ -306,108 +467,188 @@
       <h1>People.</h1>
       <p class="subtitle">Employee directory, reporting structure, access mapping, and contribution insight.</p>
     </div>
-    <div class="tabs">
-      <button class:active={activeTab === "directory"} on:click={() => (activeTab = "directory")}>Directory</button>
-      <button class:active={activeTab === "org"} on:click={() => (activeTab = "org")}>Org</button>
-      <button class:active={activeTab === "contributions"} on:click={() => (activeTab = "contributions")}>Contributions</button>
-    </div>
+    {#if remoteRefreshing}
+      <span class="status-chip">Syncing latest changes</span>
+    {/if}
   </header>
 
-  <section class="composer">
-    <div class="panel-head">
-      <h2>Add Employee</h2>
-      <span>{employees.length} total</span>
-    </div>
-    <div class="grid three">
-      <input bind:value={createFullName} placeholder="Full name" />
-      <input bind:value={createDepartment} placeholder="Department" />
-      <input bind:value={createJobTitle} placeholder="Job title" />
-    </div>
-    <div class="actions">
-      <button on:click={handleCreate}>Create Employee</button>
-    </div>
-  </section>
+  {#if isAdmin}
+    <section class="composer">
+      <div class="panel-head">
+        <h2>Add Employee</h2>
+        <span>{employees.length} total</span>
+      </div>
+      <div class="grid three">
+        <input bind:value={createFullName} placeholder="Full name" />
+        <input bind:value={createDepartment} placeholder="Department" />
+        <input bind:value={createJobTitle} placeholder="Job title" />
+      </div>
+      <div class="actions">
+        <button on:click={handleCreate}>Create Employee</button>
+      </div>
+    </section>
 
-  <section class="composer">
-    <div class="panel-head">
-      <h2>Link Employee Access</h2>
-      <span>{accessLinks.length} access links</span>
-    </div>
-    <div class="grid three">
-      <select bind:value={selectedEmployeeID} on:change={() => loadSelectedEmployeeData(selectedEmployeeID)}>
-        <option value="">Select employee</option>
-        {#each employees as employee}
-          <option value={employee.id}>{employee.full_name} {employee.department ? `• ${employee.department}` : ""}</option>
-        {/each}
-      </select>
+    <section class="composer">
+      <div class="panel-head">
+        <h2>Assign Employee Access</h2>
+        <span>{accessLinks.length} access links</span>
+      </div>
+      <div class="grid three">
+        <select bind:value={selectedEmployeeID} on:change={() => selectEmployee(selectedEmployeeID, false)}>
+          <option value="">Select employee</option>
+          {#each employees as employee}
+            <option value={employee.id}>{employee.full_name} {employee.department ? `• ${employee.department}` : ""}</option>
+          {/each}
+        </select>
 
-      <select bind:value={selectedLicenseKey}>
-        <option value="">Select license key</option>
-        {#each availableLicenseKeys as license}
-          <option value={license.key}>
-            {license.key} • {license.display_name || license.assigned_to || license.role}
-          </option>
-        {/each}
-      </select>
+        <select bind:value={selectedLicenseKey}>
+          <option value="">Select license key</option>
+          {#each availableLicenseKeys as license}
+            <option value={license.key}>
+              {license.key} • {license.display_name || license.assigned_to || license.role}
+            </option>
+          {/each}
+        </select>
 
-      <div class="hint-card">
-        {#if availableLicenseKeys.length === 0}
-          All visible license keys are already linked.
-        {:else}
-          {availableLicenseKeys.length} unlinked license keys available.
+        <div class="hint-card">
+          {#if availableLicenseKeys.length === 0}
+            All visible license keys are already linked.
+          {:else}
+            {availableLicenseKeys.length} available license keys.
+          {/if}
+        </div>
+      </div>
+      <div class="actions">
+        <button on:click={handleLinkAccess}>Assign Access</button>
+      </div>
+    </section>
+  {/if}
+
+  <section class="content-grid directory-layout">
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Employee Directory</h2>
+        <span>{activeEmployeeCount} active · {archivedEmployeeCount} archived</span>
+      </div>
+      <div class="filter-pills">
+        <button class:active={directoryStatusFilter === "active"} on:click={() => directoryStatusFilter = "active"}>Active</button>
+        <button class:active={directoryStatusFilter === "archive"} on:click={() => directoryStatusFilter = "archive"}>Archive</button>
+        <button class:active={directoryStatusFilter === "all"} on:click={() => directoryStatusFilter = "all"}>All</button>
+      </div>
+      <input bind:value={directorySearch} placeholder="Search by name, code, department, or title" />
+      {#if loading}
+        <div class="empty">Loading employees...</div>
+      {:else if filteredEmployees.length === 0}
+        <div class="empty">No employee profiles match this search.</div>
+      {:else}
+        <div class="list">
+          {#each filteredEmployees as employee}
+            <button
+              class:selected={employee.id === selectedEmployeeID}
+              class:archived={isArchivedEmployee(employee)}
+              class="list-row selectable"
+              on:click={() => selectEmployee(employee.id)}
+            >
+              <div>
+                <strong>{employee.full_name}</strong>
+                <div class="meta">{employee.employee_code} • {employee.department || "No department"}</div>
+              </div>
+              <div class="meta right">
+                <div>{employee.job_title || "No title"}</div>
+                <div>{employee.manager_name || employeeStatusLabel(employee)}</div>
+              </div>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </article>
+
+    <article class="panel detail-panel" bind:this={contributionSection}>
+      <div class="panel-head">
+        <h2>Employee Detail</h2>
+        {#if selectedEmployee}
+          <span>{selectedEmployee.is_active === false ? "Inactive" : "Active"}</span>
         {/if}
       </div>
-    </div>
-    <div class="actions">
-      <button on:click={handleLinkAccess}>Link Access</button>
-    </div>
-  </section>
 
-  {#if activeTab === "directory"}
-    <section class="content-grid directory-layout">
-      <article class="panel">
-        <div class="panel-head">
-          <h2>Employee Directory</h2>
-          <span>{filteredEmployees.length} visible</span>
-        </div>
-        <input bind:value={directorySearch} placeholder="Search by name, code, department, or title" />
-        {#if loading}
-          <div class="empty">Loading employees...</div>
-        {:else if filteredEmployees.length === 0}
-          <div class="empty">No employee profiles match this search.</div>
-        {:else}
-          <div class="list">
-            {#each filteredEmployees as employee}
-              <button
-                class:selected={employee.id === selectedEmployeeID}
-                class="list-row selectable"
-                on:click={() => selectEmployee(employee.id)}
-              >
-                <div>
-                  <strong>{employee.full_name}</strong>
-                  <div class="meta">{employee.employee_code} • {employee.department || "No department"}</div>
-                </div>
-                <div class="meta right">
-                  <div>{employee.job_title || "No title"}</div>
-                  <div>{employee.manager_name || employee.employment_status || "Active"}</div>
-                </div>
-              </button>
-            {/each}
+      {#if !selectedEmployee}
+        <div class="empty">Select an employee to manage their profile and contribution history.</div>
+      {:else}
+        <div class="employee-summary">
+          <div>
+            <h3>Contribution & Tasks</h3>
+            <p class="meta">
+              {selectedEmployee.full_name} • {selectedEmployee.department || "No department"} • {selectedEmployee.job_title || "No title"}
+            </p>
           </div>
-        {/if}
-      </article>
+          <span class="status-chip" class:inactive={isArchivedEmployee(selectedEmployee)}>
+            {employeeStatusLabel(selectedEmployee)}
+          </span>
+        </div>
 
-      <article class="panel detail-panel">
-        <div class="panel-head">
-          <h2>Employee Detail</h2>
-          {#if selectedEmployee}
-            <span>{selectedEmployee.is_active === false ? "Inactive" : "Active"}</span>
+        <div class="metric-row">
+          <div>
+            <span>Active Tasks</span>
+            <strong>{selectedActiveTaskCount}</strong>
+          </div>
+          <div>
+            <span>Completed</span>
+            <strong>{selectedCompletedTaskCount}</strong>
+          </div>
+          <div>
+            <span>Projects</span>
+            <strong>{selectedContribution?.active_project_count ?? projectAssignments.filter((assignment) => assignment.is_active !== false).length}</strong>
+          </div>
+        </div>
+
+        <div class="metric-row secondary-row">
+          <div>
+            <span>Blocked</span>
+            <strong>{selectedBlockedTaskCount}</strong>
+          </div>
+          <div>
+            <span>Overdue</span>
+            <strong>{selectedOverdueTaskCount}</strong>
+          </div>
+          <div>
+            <span>Completion</span>
+            <strong>{selectedCompletionRate.toFixed(0)}%</strong>
+          </div>
+        </div>
+
+        <div class="subsection">
+          <div class="panel-head compact">
+            <h3>Task History</h3>
+            <span>{selectedEmployeeTasks.length} records</span>
+          </div>
+          {#if selectedEmployeeLoading}
+            <div class="empty small">Loading selected employee work...</div>
+          {:else if selectedTaskTimeline.length === 0}
+            <div class="empty small">No assigned task history yet.</div>
+          {:else}
+            <div class="task-list">
+              {#each selectedTaskTimeline as task}
+                <div class="task-row" class:completed={isCompletedTask(task)} class:blocked={isBlockedTask(task)}>
+                  <div>
+                    <strong>{task.title}</strong>
+                    <div class="meta">
+                      {task.task_type || "Task"}
+                      {task.due_date ? ` • Due ${formatShortDate(task.due_date)}` : ""}
+                      {task.completed_at ? ` • Completed ${formatShortDate(task.completed_at)}` : ""}
+                    </div>
+                  </div>
+                  <span class="task-status">{formatTaskStatus(task.status)}</span>
+                </div>
+              {/each}
+            </div>
           {/if}
         </div>
 
-        {#if !selectedEmployee}
-          <div class="empty">Select an employee to manage their profile.</div>
-        {:else}
+        <div class="subsection">
+          <div class="panel-head compact">
+            <h3>Profile</h3>
+            <span>{selectedEmployee.employee_code}</span>
+          </div>
           <div class="grid two">
             <label>
               <span>Full Name</span>
@@ -484,11 +725,38 @@
 
           <div class="actions">
             <button disabled={saving} on:click={handleSaveProfile}>Save Profile</button>
-            <button class="secondary" on:click={handleEmploymentToggle}>
-              {selectedEmployee.is_active === false ? "Reactivate" : "Deactivate"}
-            </button>
+            {#if isAdmin && selectedEmployee.is_active === false}
+              <button class="secondary" on:click={handleEmploymentToggle}>Reactivate</button>
+            {/if}
           </div>
 
+          {#if isAdmin && selectedEmployee.is_active !== false}
+            <div class="archive-panel">
+              <div>
+                <strong>Employee Archive</strong>
+                <p>Any admin can archive this employee. Linked tasks, offers, orders, invoices, and audit history stay attached to the archived profile.</p>
+              </div>
+              <textarea bind:value={archiveReason} placeholder="Reason for archive"></textarea>
+              <div class="actions">
+                <button class="danger" disabled={archiveSubmitting} on:click={handleArchiveRequest}>
+                  {archiveSubmitting ? "Archiving..." : "Archive Employee"}
+                </button>
+              </div>
+            </div>
+          {:else if isArchivedEmployee(selectedEmployee)}
+            <div class="archive-panel archived-panel">
+              <div>
+                <strong>Archived Employee</strong>
+                <p>
+                  {selectedEmployee.archive_reason || "Employee is inactive. Historical work remains linked to this profile."}
+                  {selectedEmployee.archived_at ? ` Archived ${formatShortDate(selectedEmployee.archived_at)}.` : ""}
+                </p>
+              </div>
+            </div>
+          {/if}
+        </div>
+
+        <div class="detail-split">
           <div class="subsection">
             <div class="panel-head compact">
               <h3>Project Assignments</h3>
@@ -538,13 +806,13 @@
               </div>
             {/if}
           </div>
-        {/if}
-      </article>
-    </section>
-  {/if}
+        </div>
+      {/if}
+    </article>
+  </section>
 
-  {#if activeTab === "org"}
-    <section class="panel">
+  <section class="content-grid lower-layout">
+    <article class="panel">
       <div class="panel-head">
         <h2>Org / Reporting</h2>
         <span>{orgGroupEntries.length} reporting groups</span>
@@ -563,7 +831,7 @@
               </div>
               <div class="list compact-list">
                 {#each reports as employee}
-                  <button class="list-row selectable" on:click={() => { activeTab = "directory"; selectEmployee(employee.id); }}>
+                  <button class="list-row selectable" on:click={() => selectEmployee(employee.id)}>
                     <div>
                       <strong>{employee.full_name}</strong>
                       <div class="meta">{employee.department || "No department"}</div>
@@ -579,13 +847,11 @@
           {/each}
         </div>
       {/if}
-    </section>
-  {/if}
+    </article>
 
-  {#if activeTab === "contributions"}
-    <section class="panel">
+    <article class="panel">
       <div class="panel-head">
-        <h2>Assignments & Contribution</h2>
+        <h2>Team Contribution Overview</h2>
         <span>{sortedContributions.length} employees tracked</span>
       </div>
       {#if loading}
@@ -595,7 +861,7 @@
       {:else}
         <div class="contribution-grid">
           {#each sortedContributions as summary}
-            <button class="contribution-card" on:click={() => { activeTab = "directory"; selectEmployee(summary.employee_id); }}>
+            <button class="contribution-card" on:click={() => selectEmployee(summary.employee_id)}>
               <div class="card-head">
                 <div>
                   <strong>{summary.employee_name}</strong>
@@ -645,8 +911,8 @@
           {/each}
         </div>
       {/if}
-    </section>
-  {/if}
+    </article>
+  </section>
 </div>
 
 <style>
@@ -681,7 +947,6 @@
     color: var(--text-secondary);
   }
 
-  .tabs,
   .actions {
     display: flex;
     gap: 10px;
@@ -729,6 +994,16 @@
     grid-template-columns: minmax(320px, 0.9fr) minmax(420px, 1.1fr);
   }
 
+  .lower-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(360px, 0.85fr);
+  }
+
+  .detail-split {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .list {
     display: grid;
     gap: 10px;
@@ -754,8 +1029,7 @@
 
   .selectable.selected,
   .selectable:hover,
-  .contribution-card:hover,
-  .tabs button.active {
+  .contribution-card:hover {
     border-color: color-mix(in srgb, var(--accent-primary) 62%, var(--border) 38%);
     background: color-mix(in srgb, var(--surface) 76%, var(--accent-primary) 24%);
   }
@@ -813,6 +1087,60 @@
     background: color-mix(in srgb, var(--surface) 88%, #d97706 12%);
   }
 
+  button.danger {
+    background: color-mix(in srgb, var(--surface) 82%, #dc2626 18%);
+    border-color: color-mix(in srgb, #dc2626 46%, var(--border) 54%);
+    color: #7f1d1d;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.64;
+  }
+
+  .filter-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 12px 0;
+  }
+
+  .filter-pills button {
+    border-radius: 999px;
+    padding: 8px 12px;
+    background: color-mix(in srgb, var(--surface) 92%, var(--accent-primary) 8%);
+  }
+
+  .filter-pills button.active {
+    background: color-mix(in srgb, var(--accent-primary) 24%, var(--surface) 76%);
+    border-color: color-mix(in srgb, var(--accent-primary) 62%, var(--border) 38%);
+  }
+
+  .list-row.archived {
+    background: color-mix(in srgb, var(--surface) 86%, #92400e 14%);
+  }
+
+  .archive-panel {
+    border: 1px solid color-mix(in srgb, #dc2626 24%, var(--border) 76%);
+    border-radius: 14px;
+    padding: 14px;
+    display: grid;
+    gap: 12px;
+    background: color-mix(in srgb, var(--surface) 90%, #fee2e2 10%);
+    margin-top: 12px;
+  }
+
+  .archive-panel p {
+    margin-top: 6px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  .archived-panel {
+    border-color: color-mix(in srgb, #92400e 30%, var(--border) 70%);
+    background: color-mix(in srgb, var(--surface) 88%, #fef3c7 12%);
+  }
+
   .hint-card,
   .stat-card {
     padding: 14px;
@@ -834,6 +1162,55 @@
     display: block;
     margin-top: 6px;
     font-size: 1.1rem;
+  }
+
+  .employee-summary {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px;
+    background: color-mix(in srgb, var(--surface) 88%, var(--accent-primary) 12%);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .status-chip,
+  .task-status {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 6px 10px;
+    background: color-mix(in srgb, var(--surface) 84%, var(--accent-primary) 16%);
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    white-space: nowrap;
+  }
+
+  .task-list {
+    display: grid;
+    gap: 8px;
+    max-height: 360px;
+    overflow: auto;
+    padding-right: 2px;
+  }
+
+  .task-row {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: color-mix(in srgb, var(--surface) 94%, var(--accent-primary) 6%);
+  }
+
+  .task-row.completed {
+    opacity: 0.74;
+  }
+
+  .task-row.blocked {
+    border-color: color-mix(in srgb, #dc2626 42%, var(--border) 58%);
   }
 
   .subsection {
@@ -900,6 +1277,8 @@
 
   @media (max-width: 1100px) {
     .directory-layout,
+    .lower-layout,
+    .detail-split,
     .grid.two,
     .grid.three,
     .stat-grid {
@@ -915,6 +1294,7 @@
     .header,
     .panel-head,
     .card-head,
+    .employee-summary,
     .org-head,
     .actions {
       align-items: stretch;

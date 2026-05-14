@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"html"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -69,12 +68,12 @@ func (a *App) CreateCreditNote(invoiceID, reason string, items []CreditNoteItemI
 		lineTotal := input.Quantity * input.Rate
 		subtotal += lineTotal
 		cnItems = append(cnItems, CreditNoteItem{
-			Base:         Base{ID: uuid.New().String(), CreatedAt: now, UpdatedAt: now},
-			LineNumber:   i + 1,
-			Description:  input.Description,
-			Quantity:     input.Quantity,
-			Rate:         input.Rate,
-			TotalBHD:     lineTotal,
+			Base:        Base{ID: uuid.New().String(), CreatedAt: now, UpdatedAt: now},
+			LineNumber:  i + 1,
+			Description: input.Description,
+			Quantity:    input.Quantity,
+			Rate:        input.Rate,
+			TotalBHD:    lineTotal,
 		})
 	}
 
@@ -129,6 +128,7 @@ func (a *App) CreateCreditNote(invoiceID, reason string, items []CreditNoteItemI
 			VATPercent:       vatPercent,
 			GrandTotalBHD:    grandTotal,
 			Status:           "Draft",
+			Division:         normalizeDivisionName(invoice.Division),
 			Items:            cnItems,
 		}
 
@@ -372,6 +372,9 @@ func (a *App) GenerateCreditNotePDF(id string) (string, error) {
 		log.Printf("⚠️ Could not fetch customer details: %v", err)
 	}
 
+	division := a.resolveCreditNoteDivision(cn)
+	profile := companyDocumentProfile(division)
+
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.SetAutoPageBreak(true, 30)
 	pdf.SetTopMargin(50)
@@ -379,15 +382,8 @@ func (a *App) GenerateCreditNotePDF(id string) (string, error) {
 	pdf.SetRightMargin(10)
 
 	// Set header with letterhead
-	imgPath := a.letterheadImagePath()
 	pdf.SetHeaderFuncMode(func() {
-		fileInfo, err := os.Stat(imgPath)
-		if err == nil && fileInfo.Size() <= 10*1024*1024 {
-			opt := gofpdf.ImageOptions{ImageType: "PNG", ReadDpi: true}
-			pdf.ImageOptions(imgPath, 0, 0, 210, 297, false, opt, 0, "")
-		} else {
-			addLetterheadFallback(pdf)
-		}
+		a.applyLetterheadForDivision(pdf, profile.Division)
 	}, true)
 
 	pdf.AddPage()
@@ -404,22 +400,18 @@ func (a *App) GenerateCreditNotePDF(id string) (string, error) {
 	pdf.SetXY(10, headerY)
 	pdf.SetFont("Helvetica", "B", 9)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(90, 4, "P H TRADING W.L.L")
+	pdf.Cell(90, 4, sanitizeForPDF(profile.LegalName))
 	pdf.Ln(4)
-	pdf.SetX(10)
 	pdf.SetFont("Helvetica", "", 8)
 	pdf.SetTextColor(60, 60, 60)
-	pdf.Cell(90, 4, "Flat/Shop No.91, Building 198")
-	pdf.Ln(4)
-	pdf.SetX(10)
-	pdf.Cell(90, 4, "Road/Street 2803, AL SEEF, Block 428")
-	pdf.Ln(4)
-	pdf.SetX(10)
-	pdf.Cell(90, 4, "Kingdom of Bahrain")
-	pdf.Ln(4)
+	for _, line := range profile.AddressLines {
+		pdf.SetX(10)
+		pdf.Cell(90, 4, sanitizeForPDF(line))
+		pdf.Ln(4)
+	}
 	pdf.SetX(10)
 	pdf.SetFont("Helvetica", "B", 8)
-	pdf.Cell(90, 4, "TRN: 200010357800002")
+	pdf.Cell(90, 4, "TRN: "+sanitizeForPDF(profile.VATNumber))
 
 	// CN metadata (right)
 	rightX := 120.0
@@ -548,18 +540,12 @@ func (a *App) GenerateCreditNotePDF(id string) (string, error) {
 	pdf.SetTextColor(60, 60, 60)
 	pdf.MultiCell(90, 4, "We declare that this credit note shows the actual adjustment against the referenced invoice and that all particulars are true and correct.", "", "", false)
 
-	// Signature
+	// Prepared-by signature block from PH's canonical signature list.
 	pdf.SetXY(130, pdf.GetY()-15)
-	pdf.SetFont("Helvetica", "B", 8)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(60, 5, "For P H TRADING W.L.L")
-	pdf.Ln(20)
-	pdf.SetX(130)
-	pdf.Cell(60, 5, "________________________")
-	pdf.Ln(4)
-	pdf.SetX(130)
-	pdf.SetFont("Helvetica", "", 7)
-	pdf.Cell(60, 5, "Authorized Signatory")
+	signerName := a.resolveDocumentSignerName(firstNonEmptyString(cn.CreatedBy, a.getCurrentUserDisplayName()))
+	signatureBlock := a.resolvePreparedBySignatureBlock(signerName)
+	drawPHSignaturePDFLines(pdf, 130, pdf.GetY(), 60, 3.5, 6.6, signatureBlock, false)
 
 	// Save
 	paths := a.getAppPaths()

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount, tick } from "svelte";
+    import { createEventDispatcher, onMount, tick } from "svelte";
     import OpportunityDetail from "../components/OpportunityDetail.svelte";
     import ContextTaskModal from "../components/ContextTaskModal.svelte";
     import WabiSpinner from "../components/ui/WabiSpinner.svelte";
@@ -8,7 +8,7 @@
     import {
         GetRFQs,
         GetPipelineOpportunities,
-        CreateRFQ,
+        CreateRFQWithReference,
         DeleteRFQ,
         DeleteRFQWithCascade,
         ListCustomers,
@@ -16,6 +16,8 @@
     import { toast } from "../stores/toasts";
     import { devLog } from "$lib/utils/devLog";
     import { debounce } from "$lib/utils/debounce";
+
+    const dispatch = createEventDispatcher();
 
     let opportunities: any[] = [];
     let filteredOpportunities: any[] = [];
@@ -374,6 +376,26 @@
         }
     }
 
+    function handleOpenCostingFromDetail(event: CustomEvent) {
+        const opportunity = event.detail?.opportunity || selected;
+        const pendingPayload = event.detail?.pendingPayload || {
+            id: String(opportunity?.id || ""),
+            customer_name: opportunity?.client || opportunity?.customer || "",
+            folder_number: opportunity?.folder_number || opportunity?.rfq_number || "",
+            rfq_ref: opportunity?.rfq_ref || opportunity?.eh_ref || "",
+            title: opportunity?.project || opportunity?.project_name || opportunity?.title || "",
+        };
+        if (pendingPayload?.id) {
+            sessionStorage.setItem("asymmflow.pendingCostingOpportunity", JSON.stringify(pendingPayload));
+        }
+        showTaskModal = false;
+        showOpportunityModal = false;
+        dispatch("navigate", { screen: "opportunities", tab: "costing" });
+        window.dispatchEvent(new CustomEvent("navigateToScreen", {
+            detail: { screen: "opportunities", tab: "costing" }
+        }));
+    }
+
     async function handleCreate() {
         if (!createForm.customer || !createForm.project) {
             toast.warning("Customer and Prospect/Project fields are required");
@@ -382,9 +404,10 @@
 
         creating = true;
         try {
-            await CreateRFQ(
+            await CreateRFQWithReference(
                 createForm.customer,
                 createForm.project,
+                createForm.rfq_ref,
                 parseFloat(createForm.value) || 0,
                 createForm.notes,
             );
@@ -619,7 +642,11 @@
                 </div>
             </div>
 
-            <OpportunityDetail opportunity={selected} on:updated={loadOpportunities} />
+            <OpportunityDetail
+                opportunity={selected}
+                on:updated={loadOpportunities}
+                on:createCosting={handleOpenCostingFromDetail}
+            />
         </div>
     </div>
 {/if}
@@ -661,6 +688,11 @@
                 <div class="form-group">
                     <label class="label" for="create-project">Project</label>
                     <input id="create-project" type="text" bind:value={createForm.project} class="input" placeholder="Project name" required />
+                </div>
+
+                <div class="form-group">
+                    <label class="label" for="create-opportunity-reference">Reference ID</label>
+                    <input id="create-opportunity-reference" type="text" bind:value={createForm.rfq_ref} class="input" placeholder="Customer RFQ / enquiry ref" />
                 </div>
 
                 <div class="form-grid">

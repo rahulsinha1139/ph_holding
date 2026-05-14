@@ -27,7 +27,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -37,18 +36,6 @@ import (
 // ContractService handles contract generation and management
 type ContractService struct {
 	db *gorm.DB
-}
-
-func parseContractSequence(contractNo string) (int, error) {
-	parts := strings.Split(contractNo, "/")
-	if len(parts) != 2 {
-		return 0, fmt.Errorf("invalid contract number format: %s", contractNo)
-	}
-	num, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return 0, fmt.Errorf("invalid contract sequence in %s: %w", contractNo, err)
-	}
-	return num, nil
 }
 
 // NewContractService creates a new contract service
@@ -75,13 +62,13 @@ func (ContractTemplate) TableName() string {
 // ContractClause defines individual clauses that can be included in contracts
 type ContractClause struct {
 	ID                  string    `gorm:"primaryKey;size:36" json:"id"`
-	Category            string    `gorm:"index;size:100" json:"category"`       // "Payment", "Delivery", "Warranty", "Liability", "Termination"
-	Title               string    `gorm:"size:255" json:"title"`                // "Payment Terms", "Force Majeure", etc.
-	Text                string    `gorm:"type:text" json:"text"`                // Actual clause text
-	IsOptional          bool      `json:"is_optional"`                          // Can be excluded?
+	Category            string    `gorm:"index;size:100" json:"category"` // "Payment", "Delivery", "Warranty", "Liability", "Termination"
+	Title               string    `gorm:"size:255" json:"title"`          // "Payment Terms", "Force Majeure", etc.
+	Text                string    `gorm:"type:text" json:"text"`          // Actual clause text
+	IsOptional          bool      `json:"is_optional"`                    // Can be excluded?
 	PaymentGradeMinimum string    `gorm:"size:10" json:"payment_grade_minimum"` // "A", "B", "C", "D" - minimum grade required
-	IsProtective        bool      `json:"is_protective"`                        // Is this a protective clause for PH Holdings?
-	DisplayOrder        int       `json:"display_order"`                        // Order in contract
+	IsProtective        bool      `json:"is_protective"`                  // Is this a protective clause for PH Holdings?
+	DisplayOrder        int       `json:"display_order"`                  // Order in contract
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
@@ -92,10 +79,10 @@ func (ContractClause) TableName() string {
 
 // Contract represents a generated contract document
 type Contract struct {
-	ID           string `gorm:"primaryKey;size:36" json:"id"`
-	ContractNo   string `gorm:"uniqueIndex;size:50" json:"contract_no"` // "CON25/001"
-	CustomerID   string `gorm:"index;size:36" json:"customer_id"`
-	CustomerName string `gorm:"index;size:255" json:"customer_name"`
+	ID           string    `gorm:"primaryKey;size:36" json:"id"`
+	ContractNo   string    `gorm:"uniqueIndex;size:50" json:"contract_no"` // "CON25/001"
+	CustomerID   string    `gorm:"index;size:36" json:"customer_id"`
+	CustomerName string    `gorm:"index;size:255" json:"customer_name"`
 
 	// Template and Type
 	TemplateID   string `gorm:"index;size:36" json:"template_id,omitempty"`
@@ -113,8 +100,8 @@ type Contract struct {
 	ExpiryDate    *time.Time `json:"expiry_date,omitempty"`
 
 	// Status
-	Status  string `gorm:"index;size:50" json:"status"` // "Draft", "Active", "Expired", "Terminated"
-	PDFPath string `gorm:"size:1000" json:"pdf_path"`
+	Status    string `gorm:"index;size:50" json:"status"` // "Draft", "Active", "Expired", "Terminated"
+	PDFPath   string `gorm:"size:1000" json:"pdf_path"`
 
 	// Clauses (JSON array of clause IDs)
 	SelectedClauses string `gorm:"type:text" json:"selected_clauses"` // JSON array
@@ -305,11 +292,13 @@ func (s *ContractService) GenerateContractNumber() (string, error) {
 
 		nextNum = 1
 		if maxContract.ContractNo != "" {
-			num, err := parseContractSequence(maxContract.ContractNo)
-			if err != nil {
-				return err
+			// Extract number from "CON25/001"
+			parts := strings.Split(maxContract.ContractNo, "/")
+			if len(parts) == 2 {
+				var num int
+				fmt.Sscanf(parts[1], "%d", &num)
+				nextNum = num + 1
 			}
-			nextNum = num + 1
 		}
 
 		// Transaction will commit automatically if no error is returned
@@ -330,11 +319,12 @@ func (s *ContractService) GenerateContractNumber() (string, error) {
 
 		nextNum = 1
 		if maxContract.ContractNo != "" {
-			num, err := parseContractSequence(maxContract.ContractNo)
-			if err != nil {
-				return "", err
+			parts := strings.Split(maxContract.ContractNo, "/")
+			if len(parts) == 2 {
+				var num int
+				fmt.Sscanf(parts[1], "%d", &num)
+				nextNum = num + 1
 			}
-			nextNum = num + 1
 		}
 	}
 
@@ -376,9 +366,6 @@ func (s *ContractService) GenerateContractPDF(contract *Contract, customer *Cust
 	}
 
 	// Save PDF
-	if gen.renderErr != nil {
-		return "", fmt.Errorf("failed to render contract PDF: %w", gen.renderErr)
-	}
 	if err := gen.pdf.WritePdf(pdfPath); err != nil {
 		return "", fmt.Errorf("failed to save PDF: %v", err)
 	}
@@ -452,82 +439,82 @@ func (s *ContractService) RenderContractPDF(gen *PDFGenerator, contract *Contrac
 		log.Printf("Warning: no TTF fonts available for contract PDF, using built-in font")
 	}
 
-	gen.mustSetFont(fontName, "", 14)
+	gen.pdf.SetFont(fontName, "", 14)
 
 	// Header
 	gen.pdf.SetXY(50, 50)
-	gen.mustCell("SERVICE CONTRACT")
+	gen.pdf.Cell(nil, "SERVICE CONTRACT")
 
-	gen.mustSetFont(fontName, "", 10)
+	gen.pdf.SetFont("dejavu", "", 10)
 	gen.pdf.SetXY(50, 70)
-	gen.mustCell(fmt.Sprintf("Contract No: %s", contract.ContractNo))
+	gen.pdf.Cell(nil, fmt.Sprintf("Contract No: %s", contract.ContractNo))
 
 	gen.pdf.SetXY(50, 85)
-	gen.mustCell(fmt.Sprintf("Date: %s", contract.EffectiveDate.Format("02 Jan 2006")))
+	gen.pdf.Cell(nil, fmt.Sprintf("Date: %s", contract.EffectiveDate.Format("02 Jan 2006")))
 
 	// Parties
 	y := 110.0
-	gen.mustSetFont(fontName, "", 11)
+	gen.pdf.SetFont("dejavu", "", 11)
 	gen.pdf.SetXY(50, y)
-	gen.mustCell("PARTIES TO THIS AGREEMENT:")
+	gen.pdf.Cell(nil, "PARTIES TO THIS AGREEMENT:")
 
 	y += 20
-	gen.mustSetFont(fontName, "", 10)
+	gen.pdf.SetFont("dejavu", "", 10)
 	gen.pdf.SetXY(50, y)
-	gen.mustCell("SERVICE PROVIDER:")
+	gen.pdf.Cell(nil, "SERVICE PROVIDER:")
 	y += 15
 	gen.pdf.SetXY(70, y)
-	gen.mustCell("PH Holdings WLL")
+	gen.pdf.Cell(nil, "PH Holdings WLL")
 	y += 12
 	gen.pdf.SetXY(70, y)
-	gen.mustCell("Building 1194, Road 4129, Block 341, Manama, Kingdom of Bahrain")
+	gen.pdf.Cell(nil, "Building 1194, Road 4129, Block 341, Manama, Kingdom of Bahrain")
 	y += 12
 	gen.pdf.SetXY(70, y)
-	gen.mustCell("TRN: 200010357800002")
+	gen.pdf.Cell(nil, "TRN: 200010357800002")
 
 	y += 25
 	gen.pdf.SetXY(50, y)
-	gen.mustCell("CUSTOMER:")
+	gen.pdf.Cell(nil, "CUSTOMER:")
 	y += 15
 	gen.pdf.SetXY(70, y)
-	gen.mustCell(customer.BusinessName)
+	gen.pdf.Cell(nil, customer.BusinessName)
 	y += 12
 	gen.pdf.SetXY(70, y)
 	address := fmt.Sprintf("%s, %s, %s", customer.AddressLine1, customer.City, customer.Country)
-	gen.mustCell(address)
+	gen.pdf.Cell(nil, address)
 	if customer.TRN != "" {
 		y += 12
 		gen.pdf.SetXY(70, y)
-		gen.mustCell(fmt.Sprintf("TRN: %s", customer.TRN))
+		gen.pdf.Cell(nil, fmt.Sprintf("TRN: %s", customer.TRN))
 	}
 
 	// Contract Value and Terms
 	y += 30
-	gen.mustSetFont(fontName, "", 11)
+	gen.pdf.SetFont("dejavu", "", 11)
 	gen.pdf.SetXY(50, y)
-	gen.mustCell("CONTRACT TERMS:")
+	gen.pdf.Cell(nil, "CONTRACT TERMS:")
 
 	y += 20
-	gen.mustSetFont(fontName, "", 10)
+	gen.pdf.SetFont("dejavu", "", 10)
 	gen.pdf.SetXY(50, y)
-	gen.mustCell(fmt.Sprintf("Contract Value: BHD %.2f", contract.ContractValueBHD))
+	gen.pdf.Cell(nil, fmt.Sprintf("Contract Value: BHD %.2f", contract.ContractValueBHD))
 
 	y += 15
 	gen.pdf.SetXY(50, y)
-	gen.mustCell(fmt.Sprintf("Payment Terms: %s", contract.PaymentTerms))
+	gen.pdf.Cell(nil, fmt.Sprintf("Payment Terms: %s", contract.PaymentTerms))
 
 	y += 15
 	gen.pdf.SetXY(50, y)
-	gen.mustCell(fmt.Sprintf("Effective Date: %s", contract.EffectiveDate.Format("02 Jan 2006")))
+	gen.pdf.Cell(nil, fmt.Sprintf("Effective Date: %s", contract.EffectiveDate.Format("02 Jan 2006")))
 
 	// Clauses
 	y += 30
-	gen.mustSetFont(fontName, "", 11)
+	gen.pdf.SetFont("dejavu", "", 11)
 	gen.pdf.SetXY(50, y)
-	gen.mustCell("TERMS AND CONDITIONS:")
+	gen.pdf.Cell(nil, "TERMS AND CONDITIONS:")
 
 	y += 20
-	gen.mustSetFont(fontName, "", 9)
+	gen.pdf.SetFont("dejavu", "", 9)
 
 	for i, clause := range clauses {
 		// Check if new page needed
@@ -537,13 +524,13 @@ func (s *ContractService) RenderContractPDF(gen *PDFGenerator, contract *Contrac
 		}
 
 		// Clause title
-		gen.mustSetFont(fontName, "", 10)
+		gen.pdf.SetFont("dejavu", "", 10)
 		gen.pdf.SetXY(50, y)
-		gen.mustCell(fmt.Sprintf("%d. %s", i+1, clause.Title))
+		gen.pdf.Cell(nil, fmt.Sprintf("%d. %s", i+1, clause.Title))
 		y += 15
 
 		// Clause text (word wrap for long text)
-		gen.mustSetFont(fontName, "", 9)
+		gen.pdf.SetFont("dejavu", "", 9)
 		lines := wrapText(clause.Text, 90) // ~90 chars per line
 		for _, line := range lines {
 			if y > 780 {
@@ -551,7 +538,7 @@ func (s *ContractService) RenderContractPDF(gen *PDFGenerator, contract *Contrac
 				y = 50
 			}
 			gen.pdf.SetXY(70, y)
-			gen.mustCell(line)
+			gen.pdf.Cell(nil, line)
 			y += 12
 		}
 		y += 8 // Space between clauses
@@ -564,31 +551,28 @@ func (s *ContractService) RenderContractPDF(gen *PDFGenerator, contract *Contrac
 		y = 50
 	}
 
-	gen.mustSetFont(fontName, "", 10)
+	gen.pdf.SetFont("dejavu", "", 10)
 	gen.pdf.SetXY(50, y)
-	gen.mustCell("SIGNATURES:")
+	gen.pdf.Cell(nil, "SIGNATURES:")
 
 	y += 30
 	gen.pdf.SetXY(50, y)
-	gen.mustCell("_________________________")
+	gen.pdf.Cell(nil, "_________________________")
 	gen.pdf.SetXY(320, y)
-	gen.mustCell("_________________________")
+	gen.pdf.Cell(nil, "_________________________")
 
 	y += 15
 	gen.pdf.SetXY(50, y)
-	gen.mustCell("PH Holdings WLL")
+	gen.pdf.Cell(nil, "PH Holdings WLL")
 	gen.pdf.SetXY(320, y)
-	gen.mustCell(customer.BusinessName)
+	gen.pdf.Cell(nil, customer.BusinessName)
 
 	y += 12
 	gen.pdf.SetXY(50, y)
-	gen.mustCell("Authorized Signatory")
+	gen.pdf.Cell(nil, "Authorized Signatory")
 	gen.pdf.SetXY(320, y)
-	gen.mustCell("Authorized Signatory")
+	gen.pdf.Cell(nil, "Authorized Signatory")
 
-	if gen.renderErr != nil {
-		return fmt.Errorf("contract PDF render failed: %w", gen.renderErr)
-	}
 	return nil
 }
 

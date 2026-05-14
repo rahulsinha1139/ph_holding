@@ -90,7 +90,7 @@
     // Computed fields
     days_until_due?: number;
     is_overdue?: boolean;
-    outstanding_bhd?: number;
+    outstanding_bhd: number;
     // Note: supplier_name already exists in main.SupplierInvoice
   }
 
