@@ -35,6 +35,8 @@
     SetExchangeRate,
     GetSupportedCurrencies,
     GetSyncHealth,
+    GetSyncCoverageReport,
+    MigrateRemoteSchema,
     GetBackupInfo,
     GetBackupPolicy,
     SaveBackupPolicy,
@@ -112,6 +114,8 @@
   let bsReport: any = null;
   let availableYears: number[] = [];
   let syncHealth: any = null;
+  let syncCoverage: any = null;
+  let migratingRemoteSchema = false;
   let backupInfo: any = null;
   let backupPolicy: any = null;
   let backupRunning = false;
@@ -354,9 +358,31 @@
 
   async function refreshRolloutData() {
     try { syncHealth = await GetSyncHealth(); } catch { syncHealth = null; }
+    await loadSyncCoverage();
     await loadBackupState();
     try { rolloutStatus = await GetPhase7RolloutStatus(); } catch { rolloutStatus = null; }
     await Promise.all([loadRolloutOps(), loadPilotReadiness()]);
+  }
+
+  async function loadSyncCoverage() {
+    try {
+      syncCoverage = await GetSyncCoverageReport();
+    } catch {
+      syncCoverage = null;
+    }
+  }
+
+  async function repairRemoteSchema() {
+    migratingRemoteSchema = true;
+    try {
+      await MigrateRemoteSchema();
+      toast.success("Remote sync schema repaired");
+      await refreshRolloutData();
+    } catch (e: any) {
+      toast.danger("Remote schema repair failed: " + (e?.message || e));
+    } finally {
+      migratingRemoteSchema = false;
+    }
   }
 
   async function loadBackupState() {
@@ -1351,6 +1377,32 @@
             <span>Last Sync: {syncHealth?.last_sync_at ? new Date(syncHealth.last_sync_at).toLocaleString() : 'Never'}</span>
             <span>Backups: {syncHealth?.backup_count ?? 0}</span>
           </div>
+          <div class="sync-coverage-panel">
+            <div class="sync-coverage-head">
+              <div>
+                <strong>Schema Coverage</strong>
+                <p class="hint compact-hint">Checks whether every canonical sync table exists locally and on the remote database.</p>
+              </div>
+              <div class="action-row compact-actions">
+                <button class="btn-secondary" on:click={loadSyncCoverage}>Refresh Coverage</button>
+                <button class="btn-primary" on:click={repairRemoteSchema} disabled={migratingRemoteSchema}>
+                  {migratingRemoteSchema ? 'Repairing...' : 'Repair Remote Schema'}
+                </button>
+              </div>
+            </div>
+            <div class="result-stats">
+              <span>Canonical Tables: {syncCoverage?.sync_tables_total ?? 'n/a'}</span>
+              <span>Remote Missing: {syncCoverage?.missing_remote_tables?.length ?? 0}</span>
+              <span>Local Missing: {syncCoverage?.missing_local_tables?.length ?? 0}</span>
+              <span>Untracked Local: {syncCoverage?.untracked_local_tables?.length ?? 0}</span>
+            </div>
+            {#if syncCoverage?.missing_remote_tables?.length}
+              <div class="schema-warning">Remote needs: {syncCoverage.missing_remote_tables.slice(0, 12).join(', ')}{syncCoverage.missing_remote_tables.length > 12 ? '...' : ''}</div>
+            {/if}
+            {#if syncCoverage?.untracked_local_tables?.length}
+              <div class="schema-note">Local-only tables: {syncCoverage.untracked_local_tables.slice(0, 12).join(', ')}{syncCoverage.untracked_local_tables.length > 12 ? '...' : ''}</div>
+            {/if}
+          </div>
 
           <h3>Database Backups</h3>
           <div class="backup-panel">
@@ -2002,6 +2054,46 @@
     gap: 16px;
     font-size: 13px;
     color: var(--steel, #86868B);
+  }
+  .sync-coverage-panel {
+    margin-top: 16px;
+    padding: 14px;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 8px;
+    background: var(--surface-elevated, #FAFAFA);
+  }
+  .sync-coverage-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-start;
+    margin-bottom: 10px;
+  }
+  .compact-hint {
+    margin: 4px 0 0;
+  }
+  .compact-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 0;
+  }
+  .schema-warning,
+  .schema-note {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+  .schema-warning {
+    border: 1px solid #F2B8B5;
+    background: #FFF4F4;
+    color: #B42318;
+  }
+  .schema-note {
+    border: 1px solid var(--border, #E5E5E5);
+    background: #FFFFFF;
+    color: var(--steel, #686C6A);
   }
   .rollout-actions {
     display: flex;

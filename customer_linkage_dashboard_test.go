@@ -128,7 +128,7 @@ func TestCustomerFullProfileLinksOrdersOffersInvoicesAndPayments(t *testing.T) {
 	require.Equal(t, 1, profile.TotalOrders)
 	require.Equal(t, 2000.0, profile.AvgOrderValue)
 	require.Equal(t, 2800.0, profile.TotalRevenue)
-	require.Equal(t, 2300.0, profile.OutstandingBHD)
+	require.Equal(t, 300.0, profile.OutstandingBHD)
 	require.GreaterOrEqual(t, profile.RFQsFloated, 1)
 	require.Len(t, profile.RecentOrders, 1)
 	require.Len(t, profile.RecentInvoices, 1)

@@ -2,6 +2,9 @@
     import { currentUser } from "$lib/stores/authContext";
     import { setTextScalePreset, textScalePreset, type TextScalePreset } from "$lib/stores/textScale";
 
+    export let title = "";
+    export let subtitle = "";
+
     // Reactive user data
     $: userName = $currentUser?.full_name || "User";
     $: userInitial = userName.charAt(0).toUpperCase();
@@ -14,8 +17,15 @@
 </script>
 
 <header class="header">
-    <!-- Left: spacer -->
-    <div class="header-left"></div>
+    <!-- Left: current workspace title -->
+    <div class="header-left" aria-live="polite">
+        {#if title}
+            <strong>{title}</strong>
+            {#if subtitle}
+                <span>{subtitle}</span>
+            {/if}
+        {/if}
+    </div>
 
     <!-- Right: Actions -->
     <div class="header-right">
@@ -57,6 +67,30 @@
         display: flex;
         align-items: center;
         gap: 12px;
+    }
+
+    .header-left {
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+    }
+
+    .header-left strong {
+        color: var(--text-primary);
+        font-family: var(--font-display);
+        font-size: var(--section-title-size-scaled, 18px);
+        font-weight: 700;
+        letter-spacing: 0;
+        white-space: nowrap;
+    }
+
+    .header-left span {
+        color: var(--text-muted);
+        font-size: var(--meta-text-size-scaled, 12px);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .text-size-control {

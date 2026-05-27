@@ -272,7 +272,7 @@
     reviewingArchiveRequestID = requestID;
     try {
       await ReviewEmployeeArchiveRequest(requestID, decision, notes);
-      toast.success(decision === "approve" ? "Employee archived after second admin approval" : "Employee archive request rejected");
+      toast.success(decision === "approve" ? "Employee archived" : "Employee archive request rejected");
       await load({ refreshRemote: true, silent: true });
     } catch (err) {
       toast.danger(`Employee archive review failed: ${String(err)}`);

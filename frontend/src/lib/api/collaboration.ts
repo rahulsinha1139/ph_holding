@@ -1,8 +1,10 @@
 import {
   AddCollaborativeProjectMember,
   AddCollaborativeTaskComment,
+  ArchiveCollaborativeProject,
   CreateCollaborativeProject,
   CreateCollaborativeTask,
+  DeleteCollaborativeProject,
   DeleteCollaborativeTask,
   CreateEmployeeAccessLink,
   CreateEmployeeProfile,
@@ -33,6 +35,8 @@ import {
   RequestEmployeeArchive,
   ReviewEmployeeArchiveRequest,
   SetEmployeeEmploymentState,
+  ShelveCollaborativeProject,
+  UpdateCollaborativeProject,
   UpdateCollaborativeTaskDueDate,
   UpdateCollaborativeTask,
   UpdateCollaborativeTaskStatus,
@@ -115,6 +119,12 @@ export interface CollaborativeProject {
   description?: string;
   status?: string;
   customer_id?: string;
+  customer_name?: string;
+  end_user_name?: string;
+  opportunity_key?: string;
+  customer_poc_name?: string;
+  customer_poc_email?: string;
+  customer_poc_phone?: string;
   opportunity_id?: string;
   order_id?: string;
   starts_on?: string;
@@ -216,6 +226,10 @@ export interface EmployeeContributionSummary {
   blocked_task_count: number;
   overdue_task_count: number;
   completion_rate: number;
+  opportunity_ytd: number;
+  opportunity_won_ytd: number;
+  opportunity_lost_ytd: number;
+  revenue_ytd: number;
   primary_license_key?: string;
   primary_device_name?: string;
 }
@@ -300,6 +314,7 @@ function toEmployeeAccessLink(link: main.EmployeeAccessLink): EmployeeAccessLink
 }
 
 function toProject(project: main.Project): CollaborativeProject {
+  const raw = project as any;
   return {
     id: project.id,
     name: project.name,
@@ -307,6 +322,12 @@ function toProject(project: main.Project): CollaborativeProject {
     description: project.description,
     status: project.status,
     customer_id: project.customer_id,
+    customer_name: raw.customer_name,
+    end_user_name: raw.end_user_name,
+    opportunity_key: raw.opportunity_key,
+    customer_poc_name: raw.customer_poc_name,
+    customer_poc_email: raw.customer_poc_email,
+    customer_poc_phone: raw.customer_poc_phone,
     opportunity_id: project.opportunity_id,
     order_id: project.order_id,
     starts_on: normalizeWailsDateTime(project.starts_on),
@@ -486,6 +507,22 @@ export async function listProjects(activeOnly = true): Promise<CollaborativeProj
 
 export async function createProject(project: Partial<CollaborativeProject>): Promise<CollaborativeProject> {
   return toProject(await CreateCollaborativeProject(buildWailsInput(main.Project, project as Record<string, any>)));
+}
+
+export async function updateProject(projectID: string, updates: Partial<CollaborativeProject>): Promise<CollaborativeProject> {
+  return toProject(await UpdateCollaborativeProject(projectID, updates as Record<string, any>));
+}
+
+export async function archiveProject(projectID: string, reason: string): Promise<CollaborativeProject> {
+  return toProject(await ArchiveCollaborativeProject(projectID, reason));
+}
+
+export async function shelveProject(projectID: string, reason: string): Promise<CollaborativeProject> {
+  return toProject(await ShelveCollaborativeProject(projectID, reason));
+}
+
+export async function deleteProject(projectID: string, reason: string): Promise<void> {
+  await DeleteCollaborativeProject(projectID, reason);
 }
 
 export async function addProjectMember(projectID: string, employeeID: string, role: string): Promise<ProjectMember> {

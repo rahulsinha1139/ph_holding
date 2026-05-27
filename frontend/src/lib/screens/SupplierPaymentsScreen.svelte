@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher, onMount } from 'svelte';
+  import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
   import {
     GetAllSupplierPayments,
@@ -18,8 +18,6 @@
   import { toast } from '$lib/stores/toasts';
   import { permissions } from '$lib/stores/authContext';
   import { buildWailsInput } from '$lib/utils/wailsInterop';
-  const dispatch = createEventDispatcher();
-
   export let embedded = false;
   export let company: 'PH Trading' | 'AHS Trading' = 'PH Trading';
 
@@ -97,10 +95,6 @@
     const date = new Date(dateVal);
     if (isNaN(date.getTime())) return false;
     return date.getFullYear() === new Date().getFullYear();
-  }
-
-  function openBankReconciliation() {
-    dispatch('navigate', { tab: 'bank_recon', source: 'supplier_payments' });
   }
 
   function matchesCompany(division?: string) {
@@ -408,13 +402,11 @@
   {#if !embedded}
     <PageLayout title="Supplier Settlements" subtitle="Track outgoing cash events alongside open supplier payables">
       <svelte:fragment slot="actions">
-        <Button variant="secondary" on:click={openBankReconciliation}>Open Bank Recon</Button>
         <Button variant="primary" on:click={openPaymentModal} disabled={!canCreate}>Record Payment</Button>
       </svelte:fragment>
     </PageLayout>
   {:else}
     <div class="embedded-header">
-      <Button variant="secondary" size="sm" on:click={openBankReconciliation}>Open Bank Recon</Button>
       <Button variant="primary" size="sm" on:click={openPaymentModal} disabled={!canCreate}>Record Payment</Button>
     </div>
   {/if}

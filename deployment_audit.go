@@ -49,6 +49,8 @@ type DeploymentDataAudit struct {
 }
 
 var criticalDeploymentTableNames = []string{
+	"account_mappings",
+	"fiscal_periods",
 	"employees",
 	"employee_access_links",
 	"projects",
@@ -76,6 +78,19 @@ var criticalDeploymentTableNames = []string{
 	"user_activity_events",
 	"user_activity_weekly_summaries",
 	"opportunity_edit_conflicts",
+	"rfq_comments",
+	"opportunity_comments",
+	"costing_line_items",
+	"post_sale_notes",
+	"data_update_manifests",
+	"data_update_operations",
+	"data_update_receipts",
+	"inventory_items",
+	"stock_movements",
+	"stock_adjustments",
+	"intelligence_opportunity_enrichment",
+	"intelligence_line_item_enrichment",
+	"intelligence_order_enrichment",
 }
 
 func criticalDeploymentModels() []interface{} {
@@ -83,6 +98,8 @@ func criticalDeploymentModels() []interface{} {
 		&LicenseKey{},
 		&CompanyBankAccount{},
 		&Setting{},
+		&AccountMapping{},
+		&FiscalPeriod{},
 		&Employee{},
 		&EmployeeAccessLink{},
 		&Project{},
@@ -112,6 +129,19 @@ func criticalDeploymentModels() []interface{} {
 		&UserActivityEvent{},
 		&UserActivityWeeklySummary{},
 		&OpportunityEditConflict{},
+		&RFQComment{},
+		&OpportunityComment{},
+		&CostingLineItemData{},
+		&PostSaleNote{},
+		&DataUpdateManifest{},
+		&DataUpdateOperation{},
+		&DataUpdateReceipt{},
+		&InventoryItem{},
+		&StockMovement{},
+		&StockAdjustment{},
+		&IntelligenceOpportunityEnrichment{},
+		&IntelligenceLineItemEnrichment{},
+		&IntelligenceOrderEnrichment{},
 	}
 }
 
@@ -143,6 +173,12 @@ func (a *App) ensureCriticalDeploymentFoundations() error {
 	}
 	if err := a.EnsureOpportunityConflictFoundation(); err != nil {
 		failures = append(failures, fmt.Sprintf("opportunity conflict foundation: %v", err))
+	}
+	if err := a.ensureDataQualityReviewFoundation(); err != nil {
+		failures = append(failures, fmt.Sprintf("data quality foundation: %v", err))
+	}
+	if err := a.EnsureAdminDataUpdateFoundation(); err != nil {
+		failures = append(failures, fmt.Sprintf("admin data update foundation: %v", err))
 	}
 	a.ensureCrossModuleSchemaExtensions()
 	a.migrateInvoiceCheckConstraint()

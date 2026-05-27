@@ -6,12 +6,21 @@
     import Button from "../components/ui/Button.svelte";
 
     import {
+        BrowseFolder,
         GetRFQs,
         GetPipelineOpportunities,
         CreateRFQWithReference,
+        DeleteOpportunity,
         DeleteRFQ,
         DeleteRFQWithCascade,
+        ImportTenderFolders,
         ListCustomers,
+        PreviewTenderFolders,
+        UpdateOpportunityCommercialFields,
+        UpdateRFQ,
+        GetOpportunityComments,
+        ExportReport,
+        OpenExportedFile,
     } from "../../../wailsjs/go/main/App";
     import { toast } from "../stores/toasts";
     import { devLog } from "$lib/utils/devLog";
@@ -39,6 +48,13 @@
     let showDeleteConfirm = false;
     let deleteTarget: any = null;
     let deleting = false;
+    let importingTenders = false;
+    let editingOpportunity = false;
+    let savingOpportunityEdit = false;
+    let opportunityEdit: Record<string, any> = {};
+    let opportunityChangeLog: any[] = [];
+    let loadingOpportunityChangeLog = false;
+    let extractingOpportunities = false;
     let showTaskModal = false;
     let opportunityModalEl: HTMLDivElement | null = null;
 
@@ -62,7 +78,16 @@
     };
 
     const priorityOptions = ["Normal", "Urgent", "Critical"];
-    const STATUS_OPTIONS = ["All", "New", "Qualified", "Proposal", "Quoted", "Won", "Lost", "On Hold"];
+    const STATUS_OPTIONS = ["All", "RFQ Received", "New", "Qualified", "Proposal", "Quoted", "Won", "Lost", "On Hold"];
+    const SORT_OPTIONS = [
+        { id: "date", label: "Recent" },
+        { id: "key", label: "Key" },
+        { id: "customer", label: "Customer" },
+        { id: "value", label: "Value" },
+        { id: "status", label: "Status" },
+        { id: "source", label: "Source" },
+    ];
+    const STAGE_ORDER = ["RFQ Received", "New", "Qualified", "Proposal", "Quoted", "Won", "Lost", "On Hold"];
 
     const updateDebouncedSearch = debounce((value: string) => {
         debouncedSearchQuery = value;
@@ -137,6 +162,37 @@
         }
 
         return String(b?.id || "").localeCompare(String(a?.id || ""), undefined, { numeric: true, sensitivity: "base" });
+    }
+
+    function naturalCompare(a: any, b: any): number {
+        return String(a || "").localeCompare(String(b || ""), undefined, { numeric: true, sensitivity: "base" });
+    }
+
+    function getOpportunityKey(opp: any): string {
+        return String(opp?.folder_number || opp?.rfq_number || opp?.rfq_ref || opp?.eh_ref || opp?.id || "").trim();
+    }
+
+    function getOpportunityCustomer(opp: any): string {
+        return String(opp?.client || opp?.customer || opp?.customer_name || "").trim();
+    }
+
+    function getOpportunityTitle(opp: any): string {
+        return String(opp?.title || opp?.project || opp?.project_name || opp?.folder_name || "").trim();
+    }
+
+    function getStageRank(value: any): number {
+        const stage = normalizeStage(value);
+        const index = STAGE_ORDER.indexOf(stage);
+        return index >= 0 ? index : STAGE_ORDER.length;
+    }
+
+    function chooseSort(nextSortBy: string) {
+        if (sortBy === nextSortBy) {
+            sortDirection = sortDirection === "asc" ? "desc" : "asc";
+            return;
+        }
+        sortBy = nextSortBy;
+        sortDirection = nextSortBy === "date" || nextSortBy === "value" ? "desc" : "asc";
     }
 
     function normalizePipelineOpportunity(opp: any) {
@@ -289,28 +345,30 @@
         }
 
         result.sort((a, b) => {
-            let aValue: any = 0;
-            let bValue: any = 0;
+            let comparison = 0;
 
             if (sortBy === "date") {
-                aValue = getOpportunityTimestamp(a);
-                bValue = getOpportunityTimestamp(b);
+                comparison = getOpportunityTimestamp(a) - getOpportunityTimestamp(b);
             } else if (sortBy === "value") {
-                aValue = Number(a.value) || 0;
-                bValue = Number(b.value) || 0;
+                comparison = getOpportunityValue(a) - getOpportunityValue(b);
             } else if (sortBy === "customer") {
-                aValue = (a.client || a.customer || "").toLowerCase();
-                bValue = (b.client || b.customer || "").toLowerCase();
+                comparison = naturalCompare(getOpportunityCustomer(a), getOpportunityCustomer(b));
+            } else if (sortBy === "key") {
+                comparison = naturalCompare(getOpportunityKey(a), getOpportunityKey(b));
+            } else if (sortBy === "status") {
+                comparison = getStageRank(a.stage || a.status) - getStageRank(b.stage || b.status);
+                if (comparison === 0) comparison = naturalCompare(a.stage || a.status, b.stage || b.status);
+            } else if (sortBy === "source") {
+                comparison = naturalCompare(a._source, b._source);
+            } else {
+                comparison = naturalCompare(getOpportunityTitle(a), getOpportunityTitle(b));
             }
 
-            if (aValue === bValue) {
+            if (comparison === 0) {
                 return compareOpportunityRecency(a, b);
             }
 
-            if (sortDirection === "asc") {
-                return aValue > bValue ? 1 : -1;
-            }
-            return aValue < bValue ? 1 : -1;
+            return sortDirection === "asc" ? comparison : -comparison;
         });
 
         filteredOpportunities = result;
@@ -351,14 +409,182 @@
 
     async function selectOpportunity(opp: any) {
         selected = opp;
+        editingOpportunity = false;
+        opportunityEdit = {};
         showOpportunityModal = true;
+        loadOpportunityChangeLog(opp);
         await tick();
         opportunityModalEl?.focus();
+    }
+
+    async function loadOpportunityChangeLog(opp: any) {
+        opportunityChangeLog = [];
+        if (!opp || opp._source !== "pipeline" || !opp.id) return;
+        loadingOpportunityChangeLog = true;
+        try {
+            opportunityChangeLog = await GetOpportunityComments(String(opp.id)) || [];
+        } catch (err) {
+            opportunityChangeLog = [{
+                id: "unavailable",
+                comment: "Change log is available to management/admin roles.",
+                created_by: "System",
+                created_at: new Date().toISOString(),
+            }];
+        } finally {
+            loadingOpportunityChangeLog = false;
+        }
     }
 
     function closeOpportunityModal() {
         showTaskModal = false;
         showOpportunityModal = false;
+        editingOpportunity = false;
+        opportunityEdit = {};
+        opportunityChangeLog = [];
+    }
+
+    function toDateInputValue(value: any): string {
+        if (!value) return "";
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return "";
+        return parsed.toISOString().split("T")[0];
+    }
+
+    function startOpportunityEdit() {
+        if (!selected) return;
+        opportunityEdit = {
+            folder_number: selected.folder_number || selected.rfq_number || "",
+            title: selected.title || selected.project || selected.project_name || "",
+            customer_name: selected.customer_name || selected.client || selected.customer || "",
+            eh_ref: selected.eh_ref || selected.rfq_ref || "",
+            stage: selected.stage || selected.status || "New",
+            year: getOpportunityYear(selected),
+            expected_date: toDateInputValue(selected.expected_date),
+            salesperson: selected.salesperson || selected.owner || selected.owner_name || "",
+            division: selected.division || "",
+            source: selected.source || selected._source || "",
+            product_type: selected.product_type || "",
+            customer_grade: selected.customer_grade || "",
+            payment_terms: selected.payment_terms || "",
+            delivery_terms: selected.delivery_terms || "",
+            revenue_bhd: Number(selected.value || selected.revenue_bhd || 0) || 0,
+            cost_bhd: Number(selected.cost_bhd || 0) || 0,
+            profit_bhd: Number(selected.profit_bhd || 0) || 0,
+            comment: selected.comment || selected.notes || "",
+            owner_notes: selected.owner_notes || "",
+            product_details: selected.product_details || "",
+            won_reason: selected.won_reason || "",
+            lost_reason: selected.lost_reason || "",
+        };
+        editingOpportunity = true;
+    }
+
+    function cancelOpportunityEdit() {
+        editingOpportunity = false;
+        opportunityEdit = {};
+    }
+
+    async function saveOpportunityEdit() {
+        if (!selected) return;
+        savingOpportunityEdit = true;
+        try {
+            let normalized: any;
+            if (selected._source === "rfq") {
+                const updated = await UpdateRFQ(Number(selected.id), {
+                    client: String(opportunityEdit.customer_name || "").trim(),
+                    project: String(opportunityEdit.title || "").trim(),
+                    rfq_ref: String(opportunityEdit.folder_number || "").trim(),
+                    value: Number(opportunityEdit.revenue_bhd || 0) || 0,
+                    notes: String(opportunityEdit.comment || "").trim(),
+                    status: String(opportunityEdit.stage || "New").trim(),
+                    visit_locations: "",
+                    product_details: String(opportunityEdit.product_details || "").trim(),
+                    document_hash: "",
+                    source_doc_path: "",
+                });
+                normalized = normalizeRFQ(updated);
+            } else {
+                const updated = await UpdateOpportunityCommercialFields(String(selected.id), {
+                    folder_number: String(opportunityEdit.folder_number || "").trim(),
+                    title: String(opportunityEdit.title || "").trim(),
+                    customer_name: String(opportunityEdit.customer_name || "").trim(),
+                    eh_ref: String(opportunityEdit.eh_ref || "").trim(),
+                    stage: String(opportunityEdit.stage || "New").trim(),
+                    year: Number(opportunityEdit.year || 0) || undefined,
+                    expected_date: String(opportunityEdit.expected_date || "").trim(),
+                    salesperson: String(opportunityEdit.salesperson || "").trim(),
+                    division: String(opportunityEdit.division || "").trim(),
+                    source: String(opportunityEdit.source || "").trim(),
+                    product_type: String(opportunityEdit.product_type || "").trim(),
+                    customer_grade: String(opportunityEdit.customer_grade || "").trim(),
+                    payment_terms: String(opportunityEdit.payment_terms || "").trim(),
+                    delivery_terms: String(opportunityEdit.delivery_terms || "").trim(),
+                    revenue_bhd: Number(opportunityEdit.revenue_bhd || 0) || 0,
+                    cost_bhd: Number(opportunityEdit.cost_bhd || 0) || 0,
+                    profit_bhd: Number(opportunityEdit.profit_bhd || 0) || 0,
+                    comment: String(opportunityEdit.comment || "").trim(),
+                    owner_notes: String(opportunityEdit.owner_notes || "").trim(),
+                    product_details: String(opportunityEdit.product_details || "").trim(),
+                    won_reason: String(opportunityEdit.won_reason || "").trim(),
+                    lost_reason: String(opportunityEdit.lost_reason || "").trim(),
+                });
+                normalized = normalizePipelineOpportunity(updated);
+            }
+            selected = { ...selected, ...normalized };
+            opportunities = opportunities.map((opp) => String(opp.id) === String(selected.id) ? { ...opp, ...normalized } : opp);
+            editingOpportunity = false;
+            opportunityEdit = {};
+            applyFilters();
+            await loadOpportunityChangeLog(selected);
+            toast.success("Opportunity updated");
+        } catch (err) {
+            toast.danger(`Failed to update opportunity: ${String(err)}`);
+        } finally {
+            savingOpportunityEdit = false;
+        }
+    }
+
+    async function handleTenderImport() {
+        importingTenders = true;
+        try {
+            const rootPath = await BrowseFolder();
+            if (!rootPath) return;
+            const preview = await PreviewTenderFolders(rootPath);
+            if (!Array.isArray(preview) || preview.length === 0) {
+                toast.info("No tender folders found in that location");
+                return;
+            }
+            const confirmed = window.confirm(`Import ${preview.length} tender folder${preview.length === 1 ? "" : "s"} as RFQ Received / Tender records?`);
+            if (!confirmed) return;
+            const imported = await ImportTenderFolders(rootPath);
+            toast.success(`Imported ${(imported || []).length} tender folder${(imported || []).length === 1 ? "" : "s"}`);
+            await loadOpportunities();
+            activeFilter = "RFQ Received";
+        } catch (err) {
+            toast.danger(`Tender import failed: ${String(err)}`);
+        } finally {
+            importingTenders = false;
+        }
+    }
+
+    async function exportOpportunityExtract() {
+        extractingOpportunities = true;
+        try {
+            const path = await ExportReport("opportunity_extract", "excel", JSON.stringify(filteredOpportunities));
+            await OpenExportedFile(path).catch(() => {});
+            toast.success(`Opportunity extract exported: ${path}`);
+        } catch (err) {
+            toast.danger(`Failed to export opportunities: ${String(err)}`);
+        } finally {
+            extractingOpportunities = false;
+        }
+    }
+
+    function handleOpportunityCardKeydown(event: KeyboardEvent, opp: any) {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        if (event.target !== event.currentTarget) return;
+        event.preventDefault();
+        selectOpportunity(opp);
     }
 
     function handleGlobalKeydown(event: KeyboardEvent) {
@@ -442,7 +668,9 @@
 
         deleting = true;
         try {
-            if (cascade) {
+            if (deleteTarget._source === "pipeline") {
+                await DeleteOpportunity(String(deleteTarget.id));
+            } else if (cascade) {
                 await DeleteRFQWithCascade(deleteTarget.id, true);
             } else {
                 await DeleteRFQ(deleteTarget.id);
@@ -457,7 +685,9 @@
             await loadOpportunities();
         } catch (err: any) {
             const errorMsg = err?.message || String(err);
-            if (errorMsg.includes("costing sheet") || errorMsg.includes("offer")) {
+            if (errorMsg.toLowerCase().includes("not authorized") || errorMsg.toLowerCase().includes("only admins")) {
+                toast.warning("You are not authorised to delete this record. Please ask an admin.");
+            } else if (errorMsg.includes("costing sheet") || errorMsg.includes("offer")) {
                 toast.warning("This opportunity has linked documents. Use 'Delete All' to remove everything.");
             } else {
                 toast.danger("Delete failed: " + errorMsg);
@@ -488,7 +718,15 @@
                 <span class="kpi-value">{pipelineStats.newCount + pipelineStats.quotedCount}</span>
             </div>
         </div>
-        <Button variant="primary" on:click={() => (showCreateForm = true)}>+ New Opportunity</Button>
+        <div class="primary-actions">
+            <Button variant="secondary" on:click={handleTenderImport} disabled={importingTenders}>
+                {importingTenders ? "Importing..." : "Import Tenders"}
+            </Button>
+            <Button variant="secondary" on:click={exportOpportunityExtract} disabled={extractingOpportunities || loadingList}>
+                {extractingOpportunities ? "Exporting..." : "Extract"}
+            </Button>
+            <Button variant="primary" on:click={() => (showCreateForm = true)}>+ New Opportunity</Button>
+        </div>
     </div>
 
     <div class="controls-bar">
@@ -512,17 +750,27 @@
             </select>
 
             <div class="sort-controls">
-                <select bind:value={sortBy} class="sort-select">
-                    <option value="date">Latest First</option>
-                    <option value="value">Value</option>
-                    <option value="customer">Customer</option>
-                </select>
+                <div class="sort-chip-group" role="group" aria-label="Sort opportunities">
+                    {#each SORT_OPTIONS as option}
+                        <button
+                            class="sort-chip"
+                            class:active={sortBy === option.id}
+                            on:click={() => chooseSort(option.id)}
+                            type="button"
+                        >
+                            {option.label}
+                            {#if sortBy === option.id}
+                                <span>{sortDirection === "asc" ? "Asc" : "Desc"}</span>
+                            {/if}
+                        </button>
+                    {/each}
+                </div>
                 <button
                     class="sort-direction-btn"
                     on:click={() => (sortDirection = sortDirection === "asc" ? "desc" : "asc")}
                     title={sortDirection === "asc" ? "Ascending" : "Descending"}
                 >
-                    {sortDirection === "asc" ? "(asc)" : "(desc)"}
+                    {sortDirection === "asc" ? "Ascending" : "Descending"}
                 </button>
             </div>
 
@@ -562,7 +810,7 @@
                         role="button"
                         tabindex="0"
                         on:click={() => selectOpportunity(opp)}
-                        on:keydown={(event) => (event.key === "Enter" || event.key === " ") && selectOpportunity(opp)}
+                        on:keydown={(event) => handleOpportunityCardKeydown(event, opp)}
                     >
                         <div class="card-main">
                             <div class="card-identity">
@@ -597,15 +845,13 @@
                             </div>
 
                             <div class="card-actions">
-                                {#if opp._source === "rfq"}
-                                    <button
-                                        class="delete-btn"
-                                        on:click={(event) => confirmDelete(opp, event)}
-                                        aria-label={`Delete ${opp.project || "opportunity"}`}
-                                    >
-                                        Delete
-                                    </button>
-                                {/if}
+                                <button
+                                    class="delete-btn"
+                                    on:click={(event) => confirmDelete(opp, event)}
+                                    aria-label={`Delete ${opp.project || "opportunity"}`}
+                                >
+                                    Delete
+                                </button>
                                 <span class="view-link">View details</span>
                             </div>
                         </div>
@@ -638,15 +884,151 @@
                 </div>
                 <div class="modal-header-actions">
                     <button class="ghost-btn" on:click={() => showTaskModal = true}>Create Task</button>
+                    {#if editingOpportunity}
+                        <button class="ghost-btn" on:click={cancelOpportunityEdit} disabled={savingOpportunityEdit}>Cancel</button>
+                        <button class="ghost-btn primary-ghost" on:click={saveOpportunityEdit} disabled={savingOpportunityEdit}>
+                            {savingOpportunityEdit ? "Saving..." : "Save"}
+                        </button>
+                    {:else}
+                        <button class="ghost-btn" on:click={startOpportunityEdit}>Edit</button>
+                    {/if}
+                    <button class="ghost-btn danger-ghost" on:click={(event) => confirmDelete(selected, event)}>Delete</button>
                     <button class="close-btn" on:click={closeOpportunityModal} aria-label="Close opportunity details">Close</button>
                 </div>
             </div>
 
-            <OpportunityDetail
-                opportunity={selected}
-                on:updated={loadOpportunities}
-                on:createCosting={handleOpenCostingFromDetail}
-            />
+            {#if editingOpportunity}
+                <section class="opportunity-editor">
+                    <div class="editor-grid">
+                        <div class="form-group">
+                            <label class="label" for="edit-folder">RFQ / Folder Key</label>
+                            <input id="edit-folder" class="input" bind:value={opportunityEdit.folder_number} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-title">Opportunity Name</label>
+                            <input id="edit-title" class="input" bind:value={opportunityEdit.title} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-customer">Customer</label>
+                            <input id="edit-customer" class="input" bind:value={opportunityEdit.customer_name} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-ref">Customer / EH Reference</label>
+                            <input id="edit-ref" class="input" bind:value={opportunityEdit.eh_ref} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-stage">Status</label>
+                            <select id="edit-stage" class="input" bind:value={opportunityEdit.stage}>
+                                {#each STATUS_OPTIONS.filter((status) => status !== "All") as status}
+                                    <option value={status}>{status}</option>
+                                {/each}
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-value">Value (BHD)</label>
+                            <input id="edit-value" class="input" type="number" step="0.001" bind:value={opportunityEdit.revenue_bhd} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-year">Year</label>
+                            <input id="edit-year" class="input" type="number" min="2000" max="2100" bind:value={opportunityEdit.year} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-expected-date">Expected Close</label>
+                            <input id="edit-expected-date" class="input" type="date" bind:value={opportunityEdit.expected_date} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-salesperson">Owner / Salesperson</label>
+                            <input id="edit-salesperson" class="input" bind:value={opportunityEdit.salesperson} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-division">Division</label>
+                            <input id="edit-division" class="input" bind:value={opportunityEdit.division} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-source">Source</label>
+                            <input id="edit-source" class="input" bind:value={opportunityEdit.source} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-product-type">Product Type</label>
+                            <input id="edit-product-type" class="input" bind:value={opportunityEdit.product_type} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-cost">Cost (BHD)</label>
+                            <input id="edit-cost" class="input" type="number" step="0.001" bind:value={opportunityEdit.cost_bhd} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-profit">Profit (BHD)</label>
+                            <input id="edit-profit" class="input" type="number" step="0.001" bind:value={opportunityEdit.profit_bhd} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-payment">Payment Terms</label>
+                            <input id="edit-payment" class="input" bind:value={opportunityEdit.payment_terms} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-delivery">Delivery Terms</label>
+                            <input id="edit-delivery" class="input" bind:value={opportunityEdit.delivery_terms} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-grade">Customer Grade</label>
+                            <input id="edit-grade" class="input" bind:value={opportunityEdit.customer_grade} />
+                        </div>
+                        <div class="form-group">
+                            <label class="label" for="edit-won-reason">Won Reason</label>
+                            <input id="edit-won-reason" class="input" bind:value={opportunityEdit.won_reason} />
+                        </div>
+                        <div class="form-group wide">
+                            <label class="label" for="edit-product-details">Line / Product Details</label>
+                            <textarea id="edit-product-details" class="input" rows="3" bind:value={opportunityEdit.product_details}></textarea>
+                        </div>
+                        <div class="form-group wide">
+                            <label class="label" for="edit-comment">Customer / Commercial Notes</label>
+                            <textarea id="edit-comment" class="input" rows="3" bind:value={opportunityEdit.comment}></textarea>
+                        </div>
+                        <div class="form-group wide">
+                            <label class="label" for="edit-owner-notes">Internal Notes</label>
+                            <textarea id="edit-owner-notes" class="input" rows="3" bind:value={opportunityEdit.owner_notes}></textarea>
+                        </div>
+                        <div class="form-group wide">
+                            <label class="label" for="edit-lost-reason">Lost Reason</label>
+                            <textarea id="edit-lost-reason" class="input" rows="2" bind:value={opportunityEdit.lost_reason}></textarea>
+                        </div>
+                    </div>
+                </section>
+            {:else}
+                <OpportunityDetail
+                    opportunity={selected}
+                    on:updated={loadOpportunities}
+                    on:createCosting={handleOpenCostingFromDetail}
+                />
+            {/if}
+
+            <section class="change-log-panel" aria-label="Opportunity change log">
+                <div class="change-log-header">
+                    <h4>Change Log</h4>
+                    {#if loadingOpportunityChangeLog}
+                        <span>Loading...</span>
+                    {:else}
+                        <span>{opportunityChangeLog.length} entr{opportunityChangeLog.length === 1 ? "y" : "ies"}</span>
+                    {/if}
+                </div>
+                {#if loadingOpportunityChangeLog}
+                    <div class="change-log-empty">Loading opportunity history...</div>
+                {:else if opportunityChangeLog.length === 0}
+                    <div class="change-log-empty">No recorded changes yet.</div>
+                {:else}
+                    <div class="change-log-list">
+                        {#each opportunityChangeLog as entry}
+                            <article class="change-log-entry">
+                                <div>
+                                    <strong>{entry.created_by || "System"}</strong>
+                                    <p>{entry.comment}</p>
+                                </div>
+                                <time>{formatDate(entry.created_at)}</time>
+                            </article>
+                        {/each}
+                    </div>
+                {/if}
+            </section>
         </div>
     </div>
 {/if}
@@ -768,9 +1150,11 @@
                 <Button variant="danger" on:click={() => handleDelete(false)} disabled={deleting}>
                     {deleting ? "Deleting..." : "Delete"}
                 </Button>
-                <Button variant="danger" on:click={() => handleDelete(true)} disabled={deleting}>
-                    {deleting ? "..." : "Delete All"}
-                </Button>
+                {#if deleteTarget._source === "rfq"}
+                    <Button variant="danger" on:click={() => handleDelete(true)} disabled={deleting}>
+                        {deleting ? "..." : "Delete All"}
+                    </Button>
+                {/if}
             </div>
         </div>
     </div>
@@ -800,6 +1184,7 @@
     }
 
     .kpi-row,
+    .primary-actions,
     .filter-tabs,
     .right-controls,
     .sort-controls,
@@ -839,7 +1224,6 @@
     }
 
     .filter-tab,
-    .sort-select,
     .year-select,
     .sort-direction-btn,
     .search-input,
@@ -864,7 +1248,6 @@
         border-color: var(--brand-indigo);
     }
 
-    .sort-select,
     .year-select,
     .search-input,
     .input {
@@ -892,6 +1275,51 @@
     .close-btn {
         padding: 0.65rem 0.85rem;
         cursor: pointer;
+    }
+
+    .sort-controls {
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .sort-chip-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+        align-items: center;
+    }
+
+    .sort-chip {
+        border: 1px solid rgba(15, 23, 42, 0.1);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.82);
+        color: var(--text-secondary);
+        min-height: 34px;
+        padding: 0.45rem 0.75rem;
+        font: inherit;
+        font-size: 0.78rem;
+        font-weight: 700;
+        cursor: pointer;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+        transition: background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+    }
+
+    .sort-chip:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 5px 14px rgba(15, 23, 42, 0.09);
+        color: var(--text-primary);
+    }
+
+    .sort-chip.active {
+        background: var(--brand-indigo);
+        color: #ffffff;
+        border-color: var(--brand-indigo);
+    }
+
+    .sort-chip span {
+        margin-left: 0.35rem;
+        font-size: 0.68rem;
+        opacity: 0.82;
     }
 
     .list-shell {
@@ -969,8 +1397,8 @@
     }
 
     .opportunity-number {
-        background: rgba(15, 23, 42, 0.08);
-        color: var(--text-primary);
+        background: rgba(16, 185, 129, 0.14);
+        color: #047857;
         font-weight: 700;
     }
 
@@ -980,8 +1408,8 @@
     }
 
     .source-pill {
-        background: rgba(16, 185, 129, 0.12);
-        color: #047857;
+        background: rgba(15, 23, 42, 0.08);
+        color: var(--text-secondary);
     }
 
     .source-pill.rfq {
@@ -1084,6 +1512,91 @@
         color: var(--text-primary);
     }
 
+    .primary-ghost {
+        background: var(--brand-indigo);
+        color: white;
+        border-color: var(--brand-indigo);
+    }
+
+    .danger-ghost {
+        color: #b42318;
+        border-color: rgba(180, 35, 24, 0.18);
+        background: rgba(254, 242, 242, 0.88);
+    }
+
+    .opportunity-editor {
+        border-top: 1px solid var(--border);
+        padding-top: 1rem;
+    }
+
+    .change-log-panel {
+        margin-top: 1rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border);
+    }
+
+    .change-log-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .change-log-header h4 {
+        margin: 0;
+        font-size: 0.9rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--text-primary);
+    }
+
+    .change-log-header span,
+    .change-log-empty,
+    .change-log-entry time {
+        color: var(--text-muted);
+        font-size: 0.78rem;
+    }
+
+    .change-log-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+    }
+
+    .change-log-entry {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgba(15, 23, 42, 0.03);
+    }
+
+    .change-log-entry strong {
+        display: block;
+        margin-bottom: 0.2rem;
+        font-size: 0.82rem;
+        color: var(--text-primary);
+    }
+
+    .change-log-entry p {
+        margin: 0;
+        color: var(--text-secondary);
+        line-height: 1.4;
+    }
+
+    .editor-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.9rem;
+    }
+
+    .editor-grid .wide {
+        grid-column: 1 / -1;
+    }
+
     .form-group {
         display: flex;
         flex-direction: column;
@@ -1149,9 +1662,14 @@
         .card-foot,
         .action-bar,
         .controls-bar,
-        .modal-header {
+        .modal-header,
+        .primary-actions {
             flex-direction: column;
             align-items: stretch;
+        }
+
+        .editor-grid {
+            grid-template-columns: 1fr;
         }
 
         .card-summary {

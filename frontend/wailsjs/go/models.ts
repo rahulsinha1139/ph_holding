@@ -1,5 +1,5 @@
 export namespace data {
-	
+
 	export class ImportResult {
 	    customers_total: number;
 	    customers_imported: number;
@@ -22,11 +22,11 @@ export namespace data {
 	    duration: number;
 	    start_time: time.Time;
 	    end_time: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ImportResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customers_total = source["customers_total"];
@@ -51,7 +51,7 @@ export namespace data {
 	        this.start_time = this.convertValues(source["start_time"], time.Time);
 	        this.end_time = this.convertValues(source["end_time"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -74,7 +74,7 @@ export namespace data {
 }
 
 export namespace engines {
-	
+
 	export class WilliamsMetrics {
 	    total_items: number;
 	    optimal_batch_size: number;
@@ -84,11 +84,11 @@ export namespace engines {
 	    efficiency: number;
 	    space_complexity: string;
 	    proof_url: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new WilliamsMetrics(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_items = source["total_items"];
@@ -105,21 +105,21 @@ export namespace engines {
 }
 
 export namespace gorm {
-	
+
 	export class DeletedAt {
 	    Time: time.Time;
 	    Valid: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DeletedAt(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.Time = this.convertValues(source["Time"], time.Time);
 	        this.Valid = source["Valid"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -142,7 +142,7 @@ export namespace gorm {
 }
 
 export namespace graph {
-	
+
 	export class BuildStats {
 	    nodes_created: number;
 	    edges_created: number;
@@ -152,11 +152,11 @@ export namespace graph {
 	    edges_by_type: Record<string, number>;
 	    start_time: time.Time;
 	    end_time: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BuildStats(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.nodes_created = source["nodes_created"];
@@ -168,7 +168,7 @@ export namespace graph {
 	        this.start_time = this.convertValues(source["start_time"], time.Time);
 	        this.end_time = this.convertValues(source["end_time"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -193,11 +193,11 @@ export namespace graph {
 	    type: string;
 	    weight: number;
 	    properties: Record<string, any>;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new D3Link(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.source = source["source"];
@@ -213,11 +213,11 @@ export namespace graph {
 	    type: string;
 	    size: number;
 	    properties: Record<string, any>;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new D3Node(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -236,11 +236,11 @@ export namespace graph {
 	    avg_degree: number;
 	    max_degree: number;
 	    max_degree_node: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GraphStats(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_nodes = source["total_nodes"];
@@ -257,18 +257,18 @@ export namespace graph {
 	    nodes: D3Node[];
 	    links: D3Link[];
 	    stats: GraphStats;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GraphData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.nodes = this.convertValues(source["nodes"], D3Node);
 	        this.links = this.convertValues(source["links"], D3Link);
 	        this.stats = this.convertValues(source["stats"], GraphStats);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -296,11 +296,11 @@ export namespace graph {
 	    weight: number;
 	    created_at: time.Time;
 	    updated_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GraphEdge(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -312,7 +312,7 @@ export namespace graph {
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -339,11 +339,11 @@ export namespace graph {
 	    properties: number[];
 	    created_at: time.Time;
 	    updated_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GraphNode(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -354,7 +354,7 @@ export namespace graph {
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -377,7 +377,7 @@ export namespace graph {
 }
 
 export namespace integration {
-	
+
 	export class ToolStatus {
 	    name: string;
 	    available: boolean;
@@ -386,11 +386,11 @@ export namespace integration {
 	    required: boolean;
 	    install_url: string;
 	    error_message?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ToolStatus(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -409,11 +409,11 @@ export namespace integration {
 	    timestamp: time.Time;
 	    summary: string;
 	    ready_to_use: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ToolsReport(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.all_required = source["all_required"];
@@ -423,7 +423,7 @@ export namespace integration {
 	        this.summary = source["summary"];
 	        this.ready_to_use = source["ready_to_use"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -446,7 +446,7 @@ export namespace integration {
 }
 
 export namespace main {
-	
+
 	export class ARAgingBucket {
 	    id: string;
 	    created_at: time.Time;
@@ -466,11 +466,11 @@ export namespace main {
 	    risk_tier: string;
 	    risk_score: number;
 	    overdue_days: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ARAgingBucket(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -492,7 +492,7 @@ export namespace main {
 	        this.risk_score = source["risk_score"];
 	        this.overdue_days = source["overdue_days"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -521,11 +521,11 @@ export namespace main {
 	    amount: number;
 	    days_overdue: number;
 	    aging_bucket: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ARAgingDetail(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
@@ -547,11 +547,11 @@ export namespace main {
 	    days_120_plus: number;
 	    total: number;
 	    details?: ARAgingDetail[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ARAgingReport(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.current = source["current"];
@@ -562,7 +562,7 @@ export namespace main {
 	        this.total = source["total"];
 	        this.details = this.convertValues(source["details"], ARAgingDetail);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -585,11 +585,11 @@ export namespace main {
 	    account_code: string;
 	    account_name: string;
 	    balance: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new AccountBalance(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.account_code = source["account_code"];
@@ -609,11 +609,11 @@ export namespace main {
 	    message: string;
 	    is_active: boolean;
 	    is_acknowledged: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Alert(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -628,7 +628,7 @@ export namespace main {
 	        this.is_active = source["is_active"];
 	        this.is_acknowledged = source["is_acknowledged"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -653,11 +653,11 @@ export namespace main {
 	    active_info: number;
 	    total_active: number;
 	    top_alerts: Alert[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new AlertSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.active_critical = source["active_critical"];
@@ -666,7 +666,7 @@ export namespace main {
 	        this.total_active = source["total_active"];
 	        this.top_alerts = this.convertValues(source["top_alerts"], Alert);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -689,11 +689,11 @@ export namespace main {
 	    allocation_type: string;
 	    entity_id: string;
 	    allocated_amount: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new AllocationInput(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.allocation_type = source["allocation_type"];
@@ -705,11 +705,11 @@ export namespace main {
 	    margin: number;
 	    win_probability: number;
 	    risk: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new AlternativeMargin(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.margin = source["margin"];
@@ -723,11 +723,11 @@ export namespace main {
 	    test_data: string;
 	    report_output: string;
 	    asymm_math_root: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ApplicationPaths(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.project_root = source["project_root"];
@@ -745,11 +745,11 @@ export namespace main {
 	    file_type_breakdown: Record<string, number>;
 	    average_confidence: number;
 	    total_processing_time: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ArchaeologyScanSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_files = source["total_files"];
@@ -768,11 +768,11 @@ export namespace main {
 	    mime_type: string;
 	    size: number;
 	    created_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new AssetInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -782,7 +782,7 @@ export namespace main {
 	        this.size = source["size"];
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -803,11 +803,11 @@ export namespace main {
 	}
 	export class AttachmentInfo {
 	    file_name: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new AttachmentInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.file_name = source["file_name"];
@@ -822,11 +822,11 @@ export namespace main {
 	    user_id: string;
 	    action: string;
 	    resource: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new AuditLog(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -838,7 +838,7 @@ export namespace main {
 	        this.action = source["action"];
 	        this.resource = source["resource"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -863,11 +863,11 @@ export namespace main {
 	    user_name: string;
 	    expires_at: time.Time;
 	    scopes: string[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new AuthState(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.is_authenticated = source["is_authenticated"];
@@ -876,7 +876,7 @@ export namespace main {
 	        this.expires_at = this.convertValues(source["expires_at"], time.Time);
 	        this.scopes = source["scopes"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -902,11 +902,11 @@ export namespace main {
 	    last_backup_path: string;
 	    next_backup_due_at: string;
 	    due_now: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BackupPolicy(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.auto_backup_enabled = source["auto_backup_enabled"];
@@ -925,11 +925,11 @@ export namespace main {
 	    closing_balance: number;
 	    opening_balance: number;
 	    gap_amount: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BalanceGap(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.from_statement_id = source["from_statement_id"];
@@ -940,7 +940,7 @@ export namespace main {
 	        this.opening_balance = source["opening_balance"];
 	        this.gap_amount = source["gap_amount"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -966,11 +966,11 @@ export namespace main {
 	    total_gap_amount: number;
 	    is_continuous: boolean;
 	    statements_covered: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BalanceContinuityReportData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.bank_account_id = source["bank_account_id"];
@@ -980,7 +980,7 @@ export namespace main {
 	        this.is_continuous = source["is_continuous"];
 	        this.statements_covered = source["statements_covered"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -999,7 +999,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class BalanceSheetReport {
 	    as_of_date: string;
 	    assets: AccountBalance[];
@@ -1008,11 +1008,11 @@ export namespace main {
 	    total_liabilities: number;
 	    equity: AccountBalance[];
 	    total_equity: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BalanceSheetReport(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.as_of_date = source["as_of_date"];
@@ -1023,7 +1023,7 @@ export namespace main {
 	        this.equity = this.convertValues(source["equity"], AccountBalance);
 	        this.total_equity = source["total_equity"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1059,11 +1059,11 @@ export namespace main {
 	    gl_account_id?: string;
 	    is_posted: boolean;
 	    journal_entry_id?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BankExpenseEntry(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1083,7 +1083,7 @@ export namespace main {
 	        this.is_posted = source["is_posted"];
 	        this.journal_entry_id = source["journal_entry_id"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1121,11 +1121,11 @@ export namespace main {
 	    reversed_by: string;
 	    reversed_at?: time.Time;
 	    reversal_reason: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BankReconciliationAuditLog(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1147,7 +1147,7 @@ export namespace main {
 	        this.reversed_at = this.convertValues(source["reversed_at"], time.Time);
 	        this.reversal_reason = source["reversal_reason"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1172,11 +1172,11 @@ export namespace main {
 	    total_lines: number;
 	    matched_percent: number;
 	    auto_matched_count: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BankReconciliationMatchResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.matched_count = source["matched_count"];
@@ -1218,11 +1218,11 @@ export namespace main {
 	    verified_by: string;
 	    verified_at?: time.Time;
 	    notes: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BankStatementLine(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1257,7 +1257,7 @@ export namespace main {
 	        this.verified_at = this.convertValues(source["verified_at"], time.Time);
 	        this.notes = source["notes"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1305,11 +1305,11 @@ export namespace main {
 	    balance_verified: boolean;
 	    discrepancy_amount: number;
 	    lines?: BankStatementLine[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BankStatement(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1341,7 +1341,7 @@ export namespace main {
 	        this.discrepancy_amount = source["discrepancy_amount"];
 	        this.lines = this.convertValues(source["lines"], BankStatementLine);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1360,7 +1360,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class BatchOfferResult {
 	    total_offers: number;
 	    total_files: number;
@@ -1372,11 +1372,11 @@ export namespace main {
 	    documents_by_type: Record<string, number>;
 	    total_cost_usd: number;
 	    gpu_usage_percent: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BatchOfferResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_offers = source["total_offers"];
@@ -1417,11 +1417,11 @@ export namespace main {
 	    parsed_at: time.Time;
 	    parse_success: boolean;
 	    parse_error: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ParsedRFQEmail(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.file_path = source["file_path"];
@@ -1450,7 +1450,7 @@ export namespace main {
 	        this.parse_success = source["parse_success"];
 	        this.parse_error = source["parse_error"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1477,11 +1477,11 @@ export namespace main {
 	    emails: ParsedRFQEmail[];
 	    duration: number;
 	    parsed_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BatchParseResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.base_path = source["base_path"];
@@ -1492,7 +1492,7 @@ export namespace main {
 	        this.duration = source["duration"];
 	        this.parsed_at = this.convertValues(source["parsed_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1515,11 +1515,11 @@ export namespace main {
 	    r1: number;
 	    r2: number;
 	    r3: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ThreeRegime(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.r1 = source["r1"];
@@ -1538,11 +1538,11 @@ export namespace main {
 	    risk_factors: string[];
 	    recommended_action: string;
 	    timestamp: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PaymentPrediction(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
@@ -1556,7 +1556,7 @@ export namespace main {
 	        this.recommended_action = source["recommended_action"];
 	        this.timestamp = source["timestamp"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1584,11 +1584,11 @@ export namespace main {
 	    approved_value: number;
 	    rejected_value: number;
 	    approval_rate: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BatchSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_customers = source["total_customers"];
@@ -1604,17 +1604,17 @@ export namespace main {
 	export class BatchResult {
 	    summary: BatchSummary;
 	    predictions: PaymentPrediction[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BatchResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.summary = this.convertValues(source["summary"], BatchSummary);
 	        this.predictions = this.convertValues(source["predictions"], PaymentPrediction);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1633,7 +1633,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class BookBankReconciliation {
 	    id: string;
 	    created_at: time.Time;
@@ -1659,11 +1659,11 @@ export namespace main {
 	    reconciled_by: string;
 	    reconciled_at?: time.Time;
 	    notes: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BookBankReconciliation(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1691,7 +1691,7 @@ export namespace main {
 	        this.reconciled_at = this.convertValues(source["reconciled_at"], time.Time);
 	        this.notes = source["notes"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1724,11 +1724,11 @@ export namespace main {
 	    booking_rate: number;
 	    created_at: time.Time;
 	    updated_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CompanyBankAccount(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1745,7 +1745,7 @@ export namespace main {
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1785,11 +1785,11 @@ export namespace main {
 	    is_stale: boolean;
 	    stale_date?: time.Time;
 	    reissued_as?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OutstandingCheque(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1813,7 +1813,7 @@ export namespace main {
 	        this.stale_date = this.convertValues(source["stale_date"], time.Time);
 	        this.reissued_as = source["reissued_as"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1850,11 +1850,11 @@ export namespace main {
 	    status: string;
 	    cleared_date?: time.Time;
 	    matched_line_id?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DepositInTransit(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1875,7 +1875,7 @@ export namespace main {
 	        this.cleared_date = this.convertValues(source["cleared_date"], time.Time);
 	        this.matched_line_id = source["matched_line_id"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1899,11 +1899,11 @@ export namespace main {
 	    deposits_in_transit: DepositInTransit[];
 	    outstanding_cheques: OutstandingCheque[];
 	    bank_account: CompanyBankAccount;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new BookBankReconciliationReport(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.reconciliation = this.convertValues(source["reconciliation"], BookBankReconciliation);
@@ -1911,7 +1911,7 @@ export namespace main {
 	        this.outstanding_cheques = this.convertValues(source["outstanding_cheques"], OutstandingCheque);
 	        this.bank_account = this.convertValues(source["bank_account"], CompanyBankAccount);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1935,11 +1935,11 @@ export namespace main {
 	    target: string;
 	    label: string;
 	    data: any;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ButlerAction(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
@@ -1961,11 +1961,11 @@ export namespace main {
 	    industry: string;
 	    address_line1: string;
 	    trn: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ButlerCustomerRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.business_name = source["business_name"];
@@ -1992,11 +1992,11 @@ export namespace main {
 	    suggested_actions: ButlerAction[];
 	    document_type: string;
 	    metadata: Record<string, any>;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ButlerOCRInsight(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.summary = source["summary"];
@@ -2009,7 +2009,7 @@ export namespace main {
 	        this.document_type = source["document_type"];
 	        this.metadata = source["metadata"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2036,11 +2036,11 @@ export namespace main {
 	    quantity: number;
 	    unit_price_bhd: number;
 	    optional: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ButlerOfferDraftLineItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.description = source["description"];
@@ -2066,11 +2066,11 @@ export namespace main {
 	    quote_type: string;
 	    vat_rate: number;
 	    line_items: ButlerOfferDraftLineItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ButlerOfferDraftRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.division = source["division"];
@@ -2087,7 +2087,7 @@ export namespace main {
 	        this.vat_rate = source["vat_rate"];
 	        this.line_items = this.convertValues(source["line_items"], ButlerOfferDraftLineItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2117,11 +2117,11 @@ export namespace main {
 	    entity_resolution: Record<string, any>;
 	    generated_at: string;
 	    error: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ButlerResponseMetadata(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.used_backend = source["used_backend"];
@@ -2142,11 +2142,11 @@ export namespace main {
 	    confidence: number;
 	    context: Record<string, any>;
 	    metadata: ButlerResponseMetadata;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ButlerResponse(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.message = source["message"];
@@ -2155,7 +2155,7 @@ export namespace main {
 	        this.context = source["context"];
 	        this.metadata = this.convertValues(source["metadata"], ButlerResponseMetadata);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2174,7 +2174,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class ButlerSupplierRequest {
 	    supplier_name: string;
 	    supplier_type: string;
@@ -2186,11 +2186,11 @@ export namespace main {
 	    tax_id: string;
 	    brands_handled: string;
 	    lead_time_days: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ButlerSupplierRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.supplier_name = source["supplier_name"];
@@ -2216,11 +2216,11 @@ export namespace main {
 	    overdue_bhd: number;
 	    last_order_date?: time.Time;
 	    city: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CustomerMetricCard(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2234,7 +2234,7 @@ export namespace main {
 	        this.last_order_date = this.convertValues(source["last_order_date"], time.Time);
 	        this.city = source["city"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2274,11 +2274,11 @@ export namespace main {
 	    top5_revenue_pct: number;
 	    top10_revenue_pct: number;
 	    customers: CustomerMetricCard[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CRMCustomerDashboard(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_customers = source["total_customers"];
@@ -2302,7 +2302,7 @@ export namespace main {
 	        this.top10_revenue_pct = source["top10_revenue_pct"];
 	        this.customers = this.convertValues(source["customers"], CustomerMetricCard);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2332,11 +2332,11 @@ export namespace main {
 	    overdue_bhd: number;
 	    brands_handled: string;
 	    country: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SupplierMetricCard(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2359,11 +2359,11 @@ export namespace main {
 	    overdue_payables: number;
 	    top_suppliers: SupplierMetricCard[];
 	    suppliers: SupplierMetricCard[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CRMSupplierDashboard(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_suppliers = source["total_suppliers"];
@@ -2374,7 +2374,7 @@ export namespace main {
 	        this.top_suppliers = this.convertValues(source["top_suppliers"], SupplierMetricCard);
 	        this.suppliers = this.convertValues(source["suppliers"], SupplierMetricCard);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2401,11 +2401,11 @@ export namespace main {
 	    cumulative_cash: number;
 	    opening_balance: number;
 	    closing_balance: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CashFlowProjectionDay(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.date = this.convertValues(source["date"], time.Time);
@@ -2416,7 +2416,7 @@ export namespace main {
 	        this.opening_balance = source["opening_balance"];
 	        this.closing_balance = source["closing_balance"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2443,11 +2443,11 @@ export namespace main {
 	    total_outflows: number;
 	    projected_cash: number;
 	    daily_projections: CashFlowProjectionDay[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CashFlowProjection(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.start_date = this.convertValues(source["start_date"], time.Time);
@@ -2458,7 +2458,7 @@ export namespace main {
 	        this.projected_cash = source["projected_cash"];
 	        this.daily_projections = this.convertValues(source["daily_projections"], CashFlowProjectionDay);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2477,7 +2477,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class ChartOfAccount {
 	    id: string;
 	    created_at: time.Time;
@@ -2493,11 +2493,11 @@ export namespace main {
 	    vat_direction: string;
 	    parent_account_id: string;
 	    account_group: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ChartOfAccount(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2515,7 +2515,7 @@ export namespace main {
 	        this.parent_account_id = source["parent_account_id"];
 	        this.account_group = source["account_group"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2551,11 +2551,11 @@ export namespace main {
 	    action_data: string;
 	    action_status: string;
 	    action_metadata: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ChatMessage(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2575,7 +2575,7 @@ export namespace main {
 	        this.action_status = source["action_status"];
 	        this.action_metadata = source["action_metadata"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2601,11 +2601,11 @@ export namespace main {
 	    confidence: number;
 	    tokens_used: number;
 	    metadata: ButlerResponseMetadata;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ChatResponse(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.response = source["response"];
@@ -2615,7 +2615,7 @@ export namespace main {
 	        this.tokens_used = source["tokens_used"];
 	        this.metadata = this.convertValues(source["metadata"], ButlerResponseMetadata);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2648,11 +2648,11 @@ export namespace main {
 	    status: string;
 	    issued_date: time.Time;
 	    exhausted_date?: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ChequeRegister(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2669,7 +2669,7 @@ export namespace main {
 	        this.issued_date = this.convertValues(source["issued_date"], time.Time);
 	        this.exhausted_date = this.convertValues(source["exhausted_date"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2696,11 +2696,11 @@ export namespace main {
 	    suggested_action: string;
 	    keywords_found: string[];
 	    explanation: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ClassificationResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.document_type = source["document_type"];
@@ -2727,11 +2727,11 @@ export namespace main {
 	    last_attempt_at?: time.Time;
 	    next_attempt_at?: time.Time;
 	    error_message: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CollaborativePendingOperation(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2749,7 +2749,7 @@ export namespace main {
 	        this.next_attempt_at = this.convertValues(source["next_attempt_at"], time.Time);
 	        this.error_message = source["error_message"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2768,7 +2768,70 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+	export class CommercialDeploymentCleanupTableResult {
+	    table: string;
+	    local_rows: number;
+	    remote_rows: number;
+	    error?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CommercialDeploymentCleanupTableResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.table = source["table"];
+	        this.local_rows = source["local_rows"];
+	        this.remote_rows = source["remote_rows"];
+	        this.error = source["error"];
+	    }
+	}
+	export class CommercialDeploymentCleanupResult {
+	    dry_run: boolean;
+	    confirmation_required?: string;
+	    remote_required: boolean;
+	    remote_connected: boolean;
+	    local_total: number;
+	    remote_total: number;
+	    tables: CommercialDeploymentCleanupTableResult[];
+	    messages?: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new CommercialDeploymentCleanupResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dry_run = source["dry_run"];
+	        this.confirmation_required = source["confirmation_required"];
+	        this.remote_required = source["remote_required"];
+	        this.remote_connected = source["remote_connected"];
+	        this.local_total = source["local_total"];
+	        this.remote_total = source["remote_total"];
+	        this.tables = this.convertValues(source["tables"], CommercialDeploymentCleanupTableResult);
+	        this.messages = source["messages"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+
 	export class CompleteFlowResult {
 	    tender_id: string;
 	    customer_id: string;
@@ -2782,11 +2845,11 @@ export namespace main {
 	    flow_confidence: number;
 	    final_decision: string;
 	    timestamp: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CompleteFlowResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.tender_id = source["tender_id"];
@@ -2808,11 +2871,11 @@ export namespace main {
 	    data: Record<string, any>;
 	    rule_set: string;
 	    threshold: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ComplianceData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
@@ -2829,11 +2892,11 @@ export namespace main {
 	    iterations: number;
 	    recommendations: string[];
 	    timestamp: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ComplianceResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.compliant = source["compliant"];
@@ -2867,11 +2930,11 @@ export namespace main {
 	    updated_at: time.Time;
 	    created_by: string;
 	    deleted_at?: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Contract(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2896,7 +2959,7 @@ export namespace main {
 	        this.created_by = source["created_by"];
 	        this.deleted_at = this.convertValues(source["deleted_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2924,11 +2987,11 @@ export namespace main {
 	    is_active: boolean;
 	    created_at: time.Time;
 	    updated_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ContractTemplate(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2940,7 +3003,7 @@ export namespace main {
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2969,11 +3032,11 @@ export namespace main {
 	    summary: string;
 	    is_active: boolean;
 	    last_msg_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Conversation(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2986,7 +3049,7 @@ export namespace main {
 	        this.is_active = source["is_active"];
 	        this.last_msg_at = this.convertValues(source["last_msg_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3037,11 +3100,11 @@ export namespace main {
 	    otherCosts: number;
 	    userPrice: number;
 	    userPriceSet: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CostingExportLineItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.slNo = source["slNo"];
@@ -3091,11 +3154,11 @@ export namespace main {
 	    notes: string;
 	    uploaded_by: string;
 	    created_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CostingSheetAttachmentSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -3112,7 +3175,7 @@ export namespace main {
 	        this.uploaded_by = source["uploaded_by"];
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3177,11 +3240,11 @@ export namespace main {
 	    opportunityRecordId: string;
 	    projectName: string;
 	    termsAndConditions: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CostingExportData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.division = source["division"];
@@ -3230,7 +3293,7 @@ export namespace main {
 	        this.projectName = source["projectName"];
 	        this.termsAndConditions = source["termsAndConditions"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3249,7 +3312,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class CostingLineItem {
 	    description: string;
 	    product_code: string;
@@ -3257,11 +3320,11 @@ export namespace main {
 	    quantity: number;
 	    unit_cost_bhd: number;
 	    margin_percent: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CostingLineItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.description = source["description"];
@@ -3285,11 +3348,11 @@ export namespace main {
 	    unit_profit_bhd: number;
 	    total_profit_bhd: number;
 	    actual_margin_pct: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CostingLineResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.description = source["description"];
@@ -3313,11 +3376,11 @@ export namespace main {
 	    apply_discount: boolean;
 	    requested_discount?: number;
 	    notes?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CostingRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
@@ -3327,7 +3390,7 @@ export namespace main {
 	        this.requested_discount = source["requested_discount"];
 	        this.notes = source["notes"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3367,11 +3430,11 @@ export namespace main {
 	    needs_approval: boolean;
 	    valid_until: string;
 	    calculated_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CostingResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
@@ -3395,7 +3458,7 @@ export namespace main {
 	        this.valid_until = source["valid_until"];
 	        this.calculated_at = this.convertValues(source["calculated_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3414,7 +3477,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class CostingSheetData {
 	    id: number;
 	    rfq_id: number;
@@ -3434,11 +3497,11 @@ export namespace main {
 	    risk_warnings: string;
 	    created_at: time.Time;
 	    updated_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CostingSheetData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -3460,7 +3523,7 @@ export namespace main {
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3491,11 +3554,11 @@ export namespace main {
 	    quantity: number;
 	    rate: number;
 	    total_bhd: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CreditNoteItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -3510,7 +3573,7 @@ export namespace main {
 	        this.rate = source["rate"];
 	        this.total_bhd = source["total_bhd"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3551,11 +3614,11 @@ export namespace main {
 	    applied_at?: time.Time;
 	    credit_note_hash: string;
 	    items: CreditNoteItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CreditNote(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -3580,7 +3643,7 @@ export namespace main {
 	        this.credit_note_hash = source["credit_note_hash"];
 	        this.items = this.convertValues(source["items"], CreditNoteItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3599,16 +3662,16 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class CreditNoteItemInput {
 	    description: string;
 	    quantity: number;
 	    rate: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CreditNoteItemInput(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.description = source["description"];
@@ -3627,11 +3690,11 @@ export namespace main {
 	    effective_to?: time.Time;
 	    set_by: string;
 	    notes: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CurrencyExchangeRate(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -3645,7 +3708,7 @@ export namespace main {
 	        this.set_by = source["set_by"];
 	        this.notes = source["notes"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3673,11 +3736,11 @@ export namespace main {
 	    user_id: string;
 	    resolved_by: string;
 	    permissions: string[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CurrentEmployeeContext(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.employee_id = source["employee_id"];
@@ -3702,11 +3765,11 @@ export namespace main {
 	    is_emergency: number;
 	    has_abb: number;
 	    dispute_count: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Customer(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -3734,11 +3797,11 @@ export namespace main {
 	    relation_years: number;
 	    last_contact: time.Time;
 	    timestamp: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Customer360(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
@@ -3753,7 +3816,7 @@ export namespace main {
 	        this.last_contact = this.convertValues(source["last_contact"], time.Time);
 	        this.timestamp = source["timestamp"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3777,11 +3840,11 @@ export namespace main {
 	    order_date: time.Time;
 	    total_value_bhd: number;
 	    status: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OrderSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.order_number = source["order_number"];
@@ -3789,7 +3852,7 @@ export namespace main {
 	        this.total_value_bhd = source["total_value_bhd"];
 	        this.status = source["status"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3814,11 +3877,11 @@ export namespace main {
 	    value: number;
 	    status: string;
 	    created_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OpportunitySummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -3827,7 +3890,7 @@ export namespace main {
 	        this.status = source["status"];
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3852,11 +3915,11 @@ export namespace main {
 	    invoice_number: string;
 	    days_to_payment: number;
 	    payment_method: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PaymentHistoryEntry(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.payment_date = this.convertValues(source["payment_date"], time.Time);
@@ -3865,7 +3928,7 @@ export namespace main {
 	        this.days_to_payment = source["days_to_payment"];
 	        this.payment_method = source["payment_method"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3891,11 +3954,11 @@ export namespace main {
 	    days_90_120: number;
 	    days_120_plus: number;
 	    total_outstanding: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ReceivablesAgingSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.current = source["current"];
@@ -3920,11 +3983,11 @@ export namespace main {
 	    r1: number;
 	    r2: number;
 	    r3: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PredictionRecord(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -3941,7 +4004,7 @@ export namespace main {
 	        this.r2 = source["r2"];
 	        this.r3 = source["r3"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -3989,11 +4052,11 @@ export namespace main {
 	    open_opportunities: OpportunitySummary[];
 	    recent_orders: OrderSummary[];
 	    customer_lifetime_value: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Customer360Data(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
@@ -4025,7 +4088,7 @@ export namespace main {
 	        this.recent_orders = this.convertValues(source["recent_orders"], OrderSummary);
 	        this.customer_lifetime_value = source["customer_lifetime_value"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4049,11 +4112,11 @@ export namespace main {
 	    total_edges: number;
 	    average_connections: number;
 	    graph_density: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GraphMetrics(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_nodes = source["total_nodes"];
@@ -4069,11 +4132,11 @@ export namespace main {
 	    type: string;
 	    label: string;
 	    weight?: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GraphRelation(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4087,11 +4150,11 @@ export namespace main {
 	export class GraphPosition {
 	    x: number;
 	    y: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GraphPosition(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.x = source["x"];
@@ -4104,11 +4167,11 @@ export namespace main {
 	    label: string;
 	    data: Record<string, any>;
 	    position?: GraphPosition;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GraphEntity(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4117,7 +4180,7 @@ export namespace main {
 	        this.data = source["data"];
 	        this.position = this.convertValues(source["position"], GraphPosition);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4141,11 +4204,11 @@ export namespace main {
 	    entities: GraphEntity[];
 	    relations: GraphRelation[];
 	    metrics: GraphMetrics;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Customer360Graph(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
@@ -4153,7 +4216,7 @@ export namespace main {
 	        this.relations = this.convertValues(source["relations"], GraphRelation);
 	        this.metrics = this.convertValues(source["metrics"], GraphMetrics);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4185,11 +4248,15 @@ export namespace main {
 	    phone: string;
 	    address: string;
 	    is_primary_contact: boolean;
-	
+	    is_decision_maker: boolean;
+	    decision_role: string;
+	    reports_to_contact_id: string;
+	    reports_to_name: string;
+
 	    static createFrom(source: any = {}) {
 	        return new CustomerContact(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4204,8 +4271,12 @@ export namespace main {
 	        this.phone = source["phone"];
 	        this.address = source["address"];
 	        this.is_primary_contact = source["is_primary_contact"];
+	        this.is_decision_maker = source["is_decision_maker"];
+	        this.decision_role = source["decision_role"];
+	        this.reports_to_contact_id = source["reports_to_contact_id"];
+	        this.reports_to_name = source["reports_to_name"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4234,11 +4305,11 @@ export namespace main {
 	    entity_id: string;
 	    note_type: string;
 	    content: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new EntityNote(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4251,7 +4322,7 @@ export namespace main {
 	        this.note_type = source["note_type"];
 	        this.content = source["content"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4277,11 +4348,11 @@ export namespace main {
 	    grand_total_bhd: number;
 	    outstanding_bhd: number;
 	    status: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new InvoiceSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4291,7 +4362,7 @@ export namespace main {
 	        this.outstanding_bhd = source["outstanding_bhd"];
 	        this.status = source["status"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4342,11 +4413,11 @@ export namespace main {
 	    recent_invoices: InvoiceSummary[];
 	    payment_history: PaymentHistoryEntry[];
 	    notes: EntityNote[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CustomerFullProfile(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4381,7 +4452,7 @@ export namespace main {
 	        this.payment_history = this.convertValues(source["payment_history"], PaymentHistoryEntry);
 	        this.notes = this.convertValues(source["notes"], EntityNote);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4441,11 +4512,11 @@ export namespace main {
 	    requires_prepayment: boolean;
 	    has_abb_competition: boolean;
 	    is_emergency_only: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CustomerMaster(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4489,7 +4560,7 @@ export namespace main {
 	        this.has_abb_competition = source["has_abb_competition"];
 	        this.is_emergency_only = source["is_emergency_only"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4514,11 +4585,11 @@ export namespace main {
 	    short_code: string;
 	    score: number;
 	    match_reason: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CustomerMatchResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
@@ -4528,7 +4599,7 @@ export namespace main {
 	        this.match_reason = source["match_reason"];
 	    }
 	}
-	
+
 	export class ProductSummary {
 	    product_id: string;
 	    product_code: string;
@@ -4536,11 +4607,11 @@ export namespace main {
 	    order_count: number;
 	    total_quantity: number;
 	    total_value_bhd: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ProductSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.product_id = source["product_id"];
@@ -4556,11 +4627,11 @@ export namespace main {
 	    order_frequency: number;
 	    last_order_date?: time.Time;
 	    preferred_products: ProductSummary[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CustomerOrderHistorySummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.avg_order_value = source["avg_order_value"];
@@ -4568,7 +4639,7 @@ export namespace main {
 	        this.last_order_date = this.convertValues(source["last_order_date"], time.Time);
 	        this.preferred_products = this.convertValues(source["preferred_products"], ProductSummary);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4606,11 +4677,11 @@ export namespace main {
 	    status: string;
 	    notes: string;
 	    updated_by: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CustomerReceipt(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4632,7 +4703,7 @@ export namespace main {
 	        this.notes = source["notes"];
 	        this.updated_by = source["updated_by"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4665,11 +4736,11 @@ export namespace main {
 	    allocation_date: time.Time;
 	    status: string;
 	    updated_by: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CustomerReceiptAllocation(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4686,7 +4757,7 @@ export namespace main {
 	        this.status = source["status"];
 	        this.updated_by = source["updated_by"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4715,11 +4786,11 @@ export namespace main {
 	    reference: string;
 	    division: string;
 	    notes: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CustomerReceiptInput(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
@@ -4739,11 +4810,11 @@ export namespace main {
 	    revenue: number;
 	    invoice_count: number;
 	    year: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CustomerRevenueData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
@@ -4757,11 +4828,11 @@ export namespace main {
 	    type: string;
 	    label: string;
 	    count: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new CustomerTypeItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
@@ -4778,11 +4849,11 @@ export namespace main {
 	    costing_sheet_id: string;
 	    description: string;
 	    amount_bhd: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DBCostingAdditionalCost(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4794,7 +4865,7 @@ export namespace main {
 	        this.description = source["description"];
 	        this.amount_bhd = source["amount_bhd"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4829,11 +4900,11 @@ export namespace main {
 	    margin_percent: number;
 	    unit_price_bhd: number;
 	    line_total_bhd: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DBCostingItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4852,7 +4923,7 @@ export namespace main {
 	        this.unit_price_bhd = source["unit_price_bhd"];
 	        this.line_total_bhd = source["line_total_bhd"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4894,11 +4965,11 @@ export namespace main {
 	    converted_to_offer_id: string;
 	    items?: DBCostingItem[];
 	    additional_costs?: DBCostingAdditionalCost[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DBCostingSheet(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4924,7 +4995,7 @@ export namespace main {
 	        this.items = this.convertValues(source["items"], DBCostingItem);
 	        this.additional_costs = this.convertValues(source["additional_costs"], DBCostingAdditionalCost);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4967,11 +5038,11 @@ export namespace main {
 	    total_cost: number;
 	    margin_percent: number;
 	    total_price: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DBInvoiceItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -4998,7 +5069,7 @@ export namespace main {
 	        this.margin_percent = source["margin_percent"];
 	        this.total_price = source["total_price"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5022,19 +5093,25 @@ export namespace main {
 	    records_pushed: number;
 	    records_pulled: number;
 	    tables_processed: number;
+	    data_updates_checked: number;
+	    data_updates_applied: number;
+	    data_update_failures: number;
 	    duration: string;
 	    error?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DBSyncResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.success = source["success"];
 	        this.records_pushed = source["records_pushed"];
 	        this.records_pulled = source["records_pulled"];
 	        this.tables_processed = source["tables_processed"];
+	        this.data_updates_checked = source["data_updates_checked"];
+	        this.data_updates_applied = source["data_updates_applied"];
+	        this.data_update_failures = source["data_update_failures"];
 	        this.duration = source["duration"];
 	        this.error = source["error"];
 	    }
@@ -5045,11 +5122,11 @@ export namespace main {
 	    last_sync_at?: string;
 	    last_sync_status?: string;
 	    records_synced?: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DBSyncSettings(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.auto_sync_enabled = source["auto_sync_enabled"];
@@ -5063,11 +5140,11 @@ export namespace main {
 	    order_item_id: string;
 	    ship_qty: number;
 	    serial_nos: string[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DNItemInputWithSerials(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.order_item_id = source["order_item_id"];
@@ -5082,11 +5159,11 @@ export namespace main {
 	    time: time.Time;
 	    time_ago: string;
 	    color: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DashboardEvent(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -5096,7 +5173,7 @@ export namespace main {
 	        this.time_ago = source["time_ago"];
 	        this.color = source["color"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5137,11 +5214,11 @@ export namespace main {
 	    cash_balance_bhd: number;
 	    cash_position_note: string;
 	    fresh_start_date: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DashboardStats(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.active_rfqs = source["active_rfqs"];
@@ -5177,11 +5254,11 @@ export namespace main {
 	    severity: string;
 	    confidence: number;
 	    timestamp: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DataDiscrepancy(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
@@ -5194,7 +5271,316 @@ export namespace main {
 	        this.confidence = source["confidence"];
 	        this.timestamp = this.convertValues(source["timestamp"], time.Time);
 	    }
-	
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DataQualityIssue {
+	    id: string;
+	    severity: string;
+	    issue_type: string;
+	    entity_type: string;
+	    entity_id: string;
+	    summary: string;
+	    detail: string;
+	    primary_action: string;
+	    review_status: string;
+	    review_note: string;
+	    reviewed_by: string;
+	    reviewed_at: string;
+
+	    static createFrom(source: any = {}) {
+	        return new DataQualityIssue(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.severity = source["severity"];
+	        this.issue_type = source["issue_type"];
+	        this.entity_type = source["entity_type"];
+	        this.entity_id = source["entity_id"];
+	        this.summary = source["summary"];
+	        this.detail = source["detail"];
+	        this.primary_action = source["primary_action"];
+	        this.review_status = source["review_status"];
+	        this.review_note = source["review_note"];
+	        this.reviewed_by = source["reviewed_by"];
+	        this.reviewed_at = source["reviewed_at"];
+	    }
+	}
+	export class DataQualityReview {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    version: number;
+	    created_by: string;
+	    issue_id: string;
+	    issue_type: string;
+	    severity: string;
+	    entity_type: string;
+	    entity_id: string;
+	    summary: string;
+	    detail: string;
+	    primary_action: string;
+	    status: string;
+	    review_note: string;
+	    reviewed_by_id: string;
+	    reviewed_by: string;
+	    reviewed_at?: time.Time;
+
+	    static createFrom(source: any = {}) {
+	        return new DataQualityReview(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.version = source["version"];
+	        this.created_by = source["created_by"];
+	        this.issue_id = source["issue_id"];
+	        this.issue_type = source["issue_type"];
+	        this.severity = source["severity"];
+	        this.entity_type = source["entity_type"];
+	        this.entity_id = source["entity_id"];
+	        this.summary = source["summary"];
+	        this.detail = source["detail"];
+	        this.primary_action = source["primary_action"];
+	        this.status = source["status"];
+	        this.review_note = source["review_note"];
+	        this.reviewed_by_id = source["reviewed_by_id"];
+	        this.reviewed_by = source["reviewed_by"];
+	        this.reviewed_at = this.convertValues(source["reviewed_at"], time.Time);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DataUpdateTableImpact {
+	    table: string;
+	    operation: string;
+	    count: number;
+
+	    static createFrom(source: any = {}) {
+	        return new DataUpdateTableImpact(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.table = source["table"];
+	        this.operation = source["operation"];
+	        this.count = source["count"];
+	    }
+	}
+	export class DataUpdateApplyResult {
+	    manifest_id: string;
+	    version: string;
+	    dry_run: boolean;
+	    applied: boolean;
+	    already_applied: boolean;
+	    backup_path: string;
+	    operation_count: number;
+	    tables: DataUpdateTableImpact[];
+	    integrity_check: string;
+	    error?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new DataUpdateApplyResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.manifest_id = source["manifest_id"];
+	        this.version = source["version"];
+	        this.dry_run = source["dry_run"];
+	        this.applied = source["applied"];
+	        this.already_applied = source["already_applied"];
+	        this.backup_path = source["backup_path"];
+	        this.operation_count = source["operation_count"];
+	        this.tables = this.convertValues(source["tables"], DataUpdateTableImpact);
+	        this.integrity_check = source["integrity_check"];
+	        this.error = source["error"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DataUpdateAutoApplySummary {
+	    source: string;
+	    dry_run: boolean;
+	    pending_count: number;
+	    applied_count: number;
+	    already_applied_count: number;
+	    failed_count: number;
+	    results: DataUpdateApplyResult[];
+	    error?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new DataUpdateAutoApplySummary(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.source = source["source"];
+	        this.dry_run = source["dry_run"];
+	        this.pending_count = source["pending_count"];
+	        this.applied_count = source["applied_count"];
+	        this.already_applied_count = source["already_applied_count"];
+	        this.failed_count = source["failed_count"];
+	        this.results = this.convertValues(source["results"], DataUpdateApplyResult);
+	        this.error = source["error"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DataUpdateManifest {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    version: number;
+	    created_by: string;
+	    version_label: string;
+	    title: string;
+	    description: string;
+	    status: string;
+	    published_at?: time.Time;
+	    min_app_version: string;
+	    manifest_hash: string;
+	    apply_mode: string;
+	    source: string;
+
+	    static createFrom(source: any = {}) {
+	        return new DataUpdateManifest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.version = source["version"];
+	        this.created_by = source["created_by"];
+	        this.version_label = source["version_label"];
+	        this.title = source["title"];
+	        this.description = source["description"];
+	        this.status = source["status"];
+	        this.published_at = this.convertValues(source["published_at"], time.Time);
+	        this.min_app_version = source["min_app_version"];
+	        this.manifest_hash = source["manifest_hash"];
+	        this.apply_mode = source["apply_mode"];
+	        this.source = source["source"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+	export class DataUpdateValidationResult {
+	    manifest_id: string;
+	    version: string;
+	    title: string;
+	    status: string;
+	    valid: boolean;
+	    operation_count: number;
+	    issues: string[];
+	    tables: DataUpdateTableImpact[];
+	    already_applied: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new DataUpdateValidationResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.manifest_id = source["manifest_id"];
+	        this.version = source["version"];
+	        this.title = source["title"];
+	        this.status = source["status"];
+	        this.valid = source["valid"];
+	        this.operation_count = source["operation_count"];
+	        this.issues = source["issues"];
+	        this.tables = this.convertValues(source["tables"], DataUpdateTableImpact);
+	        this.already_applied = source["already_applied"];
+	    }
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5231,11 +5617,11 @@ export namespace main {
 	    reviewed_by_name: string;
 	    reviewed_at?: time.Time;
 	    review_notes: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DeleteApprovalRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -5256,7 +5642,7 @@ export namespace main {
 	        this.reviewed_at = this.convertValues(source["reviewed_at"], time.Time);
 	        this.review_notes = source["review_notes"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5281,11 +5667,11 @@ export namespace main {
 	    linked_offers: number;
 	    deleted_costing_sheets: number;
 	    deleted_offers: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DeleteCascadeResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.rfq_id = source["rfq_id"];
@@ -5309,11 +5695,11 @@ export namespace main {
 	    quantity_ordered: number;
 	    quantity_delivered: number;
 	    quantity_remaining: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DeliveryNoteItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -5330,7 +5716,7 @@ export namespace main {
 	        this.quantity_delivered = source["quantity_delivered"];
 	        this.quantity_remaining = source["quantity_remaining"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5374,11 +5760,11 @@ export namespace main {
 	    delivery_sequence: number;
 	    total_deliveries: number;
 	    items?: DeliveryNoteItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DeliveryNote(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -5406,7 +5792,7 @@ export namespace main {
 	        this.total_deliveries = source["total_deliveries"];
 	        this.items = this.convertValues(source["items"], DeliveryNoteItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5425,15 +5811,15 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class DeliveryNoteItemInput {
 	    order_item_id: string;
 	    ship_qty: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DeliveryNoteItemInput(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.order_item_id = source["order_item_id"];
@@ -5470,11 +5856,11 @@ export namespace main {
 	    days_until_due: number;
 	    order_value: number;
 	    is_high_priority: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DeliveryPlanningItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -5507,7 +5893,7 @@ export namespace main {
 	        this.order_value = source["order_value"];
 	        this.is_high_priority = source["is_high_priority"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5557,11 +5943,11 @@ export namespace main {
 	    payroll_runs: number;
 	    legacy_followup_tasks: number;
 	    migrated_legacy_tasks: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DeploymentDataAudit(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.generated_at = source["generated_at"];
@@ -5596,7 +5982,7 @@ export namespace main {
 	        this.migrated_legacy_tasks = source["migrated_legacy_tasks"];
 	    }
 	}
-	
+
 	export class Device {
 	    id: string;
 	    created_at: time.Time;
@@ -5614,11 +6000,11 @@ export namespace main {
 	    is_admin_device: boolean;
 	    notes: string;
 	    approver_name?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Device(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -5638,7 +6024,7 @@ export namespace main {
 	        this.notes = source["notes"];
 	        this.approver_name = source["approver_name"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5666,11 +6052,11 @@ export namespace main {
 	    user_name?: string;
 	    role_name?: string;
 	    permissions?: string[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DeviceRegistrationResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.device_id = source["device_id"];
@@ -5695,11 +6081,11 @@ export namespace main {
 	    permissions: string;
 	    is_active: boolean;
 	    is_system: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Role(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -5714,7 +6100,7 @@ export namespace main {
 	        this.is_active = source["is_active"];
 	        this.is_system = source["is_system"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5752,11 +6138,11 @@ export namespace main {
 	    must_change_password: boolean;
 	    role_name?: string;
 	    role: Role;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new User(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -5778,7 +6164,7 @@ export namespace main {
 	        this.role_name = source["role_name"];
 	        this.role = this.convertValues(source["role"], Role);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5808,11 +6194,11 @@ export namespace main {
 	    is_primary: boolean;
 	    user: User;
 	    device: Device;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DeviceUser(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -5826,7 +6212,7 @@ export namespace main {
 	        this.user = this.convertValues(source["user"], User);
 	        this.device = this.convertValues(source["device"], Device);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5852,11 +6238,11 @@ export namespace main {
 	    extension: string;
 	    size_bytes: number;
 	    mod_time: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DiscoveredFile(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.file_name = source["file_name"];
@@ -5866,7 +6252,7 @@ export namespace main {
 	        this.size_bytes = source["size_bytes"];
 	        this.mod_time = this.convertValues(source["mod_time"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5899,11 +6285,11 @@ export namespace main {
 	    error_msg?: string;
 	    confirmed_customer_id?: string;
 	    imported_offer_id?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DiscoveredDeal(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.local_id = source["local_id"];
@@ -5920,7 +6306,7 @@ export namespace main {
 	        this.confirmed_customer_id = source["confirmed_customer_id"];
 	        this.imported_offer_id = source["imported_offer_id"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -5939,7 +6325,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class DivisionFinancialSummary {
 	    division: string;
 	    year: number;
@@ -5964,11 +6350,11 @@ export namespace main {
 	    total_liabilities: number;
 	    total_equity: number;
 	    has_data: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DivisionFinancialSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.division = source["division"];
@@ -6002,11 +6388,11 @@ export namespace main {
 	    source: string;
 	    priority: number;
 	    timestamp: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ERPEvent(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
@@ -6041,11 +6427,11 @@ export namespace main {
 	    archive_reason: string;
 	    archive_request_id: string;
 	    manager_name?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Employee(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -6073,7 +6459,7 @@ export namespace main {
 	        this.archive_request_id = source["archive_request_id"];
 	        this.manager_name = source["manager_name"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -6106,11 +6492,11 @@ export namespace main {
 	    is_primary: boolean;
 	    employee_name?: string;
 	    device_name?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new EmployeeAccessLink(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -6127,7 +6513,7 @@ export namespace main {
 	        this.employee_name = source["employee_name"];
 	        this.device_name = source["device_name"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -6169,11 +6555,11 @@ export namespace main {
 	    rejected_by_name: string;
 	    rejected_at?: time.Time;
 	    review_notes: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new EmployeeArchiveRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -6199,7 +6585,7 @@ export namespace main {
 	        this.rejected_at = this.convertValues(source["rejected_at"], time.Time);
 	        this.review_notes = source["review_notes"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -6241,11 +6627,11 @@ export namespace main {
 	    notes: string;
 	    employee_name?: string;
 	    job_title?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new EmployeeCompensationProfile(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -6271,7 +6657,7 @@ export namespace main {
 	        this.employee_name = source["employee_name"];
 	        this.job_title = source["job_title"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -6306,13 +6692,17 @@ export namespace main {
 	    blocked_task_count: number;
 	    overdue_task_count: number;
 	    completion_rate: number;
+	    opportunity_ytd: number;
+	    opportunity_won_ytd: number;
+	    opportunity_lost_ytd: number;
+	    revenue_ytd: number;
 	    primary_license_key?: string;
 	    primary_device_name?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new EmployeeContributionSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.employee_id = source["employee_id"];
@@ -6330,11 +6720,15 @@ export namespace main {
 	        this.blocked_task_count = source["blocked_task_count"];
 	        this.overdue_task_count = source["overdue_task_count"];
 	        this.completion_rate = source["completion_rate"];
+	        this.opportunity_ytd = source["opportunity_ytd"];
+	        this.opportunity_won_ytd = source["opportunity_won_ytd"];
+	        this.opportunity_lost_ytd = source["opportunity_lost_ytd"];
+	        this.revenue_ytd = source["revenue_ytd"];
 	        this.primary_license_key = source["primary_license_key"];
 	        this.primary_device_name = source["primary_device_name"];
 	    }
 	}
-	
+
 	export class ExcelImportResult {
 	    file_path: string;
 	    file_name: string;
@@ -6344,11 +6738,11 @@ export namespace main {
 	    grand_total: number;
 	    customer: string;
 	    offer_number: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ExcelImportResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.file_path = source["file_path"];
@@ -6368,11 +6762,11 @@ export namespace main {
 	    results: ExcelImportResult[];
 	    total_line_items: number;
 	    total_value: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ExcelBatchImportResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_files = source["total_files"];
@@ -6382,7 +6776,7 @@ export namespace main {
 	        this.total_line_items = source["total_line_items"];
 	        this.total_value = source["total_value"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -6406,11 +6800,11 @@ export namespace main {
 	    vat_percent: number;
 	    vat_amount: number;
 	    grand_total: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ExcelCostingTotals(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.subtotal = source["subtotal"];
@@ -6444,11 +6838,11 @@ export namespace main {
 	    selling_price_bhd: number;
 	    suggested_price_bhd: number;
 	    total_suggested_bhd: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ExcelCostingLineItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.product_number = source["product_number"];
@@ -6490,11 +6884,11 @@ export namespace main {
 	    reference: string;
 	    payment_terms: string;
 	    country_of_origin: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ExcelCostingMetadata(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.date = source["date"];
@@ -6519,11 +6913,11 @@ export namespace main {
 	    totals: ExcelCostingTotals;
 	    parsed_at: time.Time;
 	    warnings: string[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ExcelCostingData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.file_path = source["file_path"];
@@ -6534,7 +6928,7 @@ export namespace main {
 	        this.parsed_at = this.convertValues(source["parsed_at"], time.Time);
 	        this.warnings = source["warnings"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -6553,10 +6947,10 @@ export namespace main {
 		    return a;
 		}
 	}
-	
-	
-	
-	
+
+
+
+
 	export class ExpenseCategory {
 	    id: string;
 	    created_at: time.Time;
@@ -6571,11 +6965,11 @@ export namespace main {
 	    is_active: boolean;
 	    sort_order: number;
 	    gl_account_name?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ExpenseCategory(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -6592,7 +6986,7 @@ export namespace main {
 	        this.sort_order = source["sort_order"];
 	        this.gl_account_name = source["gl_account_name"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -6618,11 +7012,11 @@ export namespace main {
 	    total_recurring: number;
 	    month_to_date_spend: number;
 	    upcoming_commitments: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ExpenseDashboardSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_drafts = source["total_drafts"];
@@ -6653,6 +7047,9 @@ export namespace main {
 	    customer_id?: string;
 	    opportunity_id?: string;
 	    order_id?: string;
+	    inventory_linked: boolean;
+	    inventory_item_id?: string;
+	    inventory_reference: string;
 	    cost_center: string;
 	    currency: string;
 	    amount: number;
@@ -6677,11 +7074,11 @@ export namespace main {
 	    notes: string;
 	    category_name?: string;
 	    vendor_name?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ExpenseEntry(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -6703,6 +7100,9 @@ export namespace main {
 	        this.customer_id = source["customer_id"];
 	        this.opportunity_id = source["opportunity_id"];
 	        this.order_id = source["order_id"];
+	        this.inventory_linked = source["inventory_linked"];
+	        this.inventory_item_id = source["inventory_item_id"];
+	        this.inventory_reference = source["inventory_reference"];
 	        this.cost_center = source["cost_center"];
 	        this.currency = source["currency"];
 	        this.amount = source["amount"];
@@ -6728,7 +7128,7 @@ export namespace main {
 	        this.category_name = source["category_name"];
 	        this.vendor_name = source["vendor_name"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -6761,11 +7161,11 @@ export namespace main {
 	    tax_number: string;
 	    notes: string;
 	    is_active: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ExpenseVendor(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -6782,7 +7182,7 @@ export namespace main {
 	        this.notes = source["notes"];
 	        this.is_active = source["is_active"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -6809,11 +7209,11 @@ export namespace main {
 	    total_bhd: number;
 	    unrealized_gain: number;
 	    percent_exposure: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FXExposureReport(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.currency = source["currency"];
@@ -6836,11 +7236,11 @@ export namespace main {
 	    rate_date: time.Time;
 	    rate: number;
 	    source: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FXRate(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -6854,7 +7254,7 @@ export namespace main {
 	        this.rate = source["rate"];
 	        this.source = source["source"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -6892,11 +7292,11 @@ export namespace main {
 	    journal_entry_id?: string;
 	    posted_by: string;
 	    posted_at?: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FXRevaluation(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -6918,7 +7318,7 @@ export namespace main {
 	        this.posted_by = source["posted_by"];
 	        this.posted_at = this.convertValues(source["posted_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -6948,11 +7348,11 @@ export namespace main {
 	    RetryCount: number;
 	    LastError: string;
 	    Metadata: Record<string, any>;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FileSyncState(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.Path = source["Path"];
@@ -6966,7 +7366,7 @@ export namespace main {
 	        this.LastError = source["LastError"];
 	        this.Metadata = source["Metadata"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -6993,11 +7393,11 @@ export namespace main {
 	    created_by: string;
 	    file_path: string;
 	    event_type: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FileWatchEvent(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -7008,7 +7408,7 @@ export namespace main {
 	        this.file_path = source["file_path"];
 	        this.event_type = source["event_type"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -7039,11 +7439,11 @@ export namespace main {
 	    file_size: number;
 	    mod_time: time.Time;
 	    extension: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FilesystemDocClassification(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.file_path = source["file_path"];
@@ -7058,7 +7458,7 @@ export namespace main {
 	        this.mod_time = this.convertValues(source["mod_time"], time.Time);
 	        this.extension = source["extension"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -7086,11 +7486,11 @@ export namespace main {
 	    by_product_type: Record<string, number>;
 	    documents: FilesystemDocClassification[];
 	    scan_duration: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FilesystemClassificationSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_files = source["total_files"];
@@ -7102,7 +7502,7 @@ export namespace main {
 	        this.documents = this.convertValues(source["documents"], FilesystemDocClassification);
 	        this.scan_duration = source["scan_duration"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -7121,7 +7521,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class FinancialDashboard {
 	    period: string;
 	    prior_year: string;
@@ -7173,11 +7573,11 @@ export namespace main {
 	    py_gross_profit: number;
 	    py_net_profit: number;
 	    py_total_assets: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FinancialDashboard(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.period = source["period"];
@@ -7266,11 +7666,11 @@ export namespace main {
 	    trade_payables: number;
 	    total_liabilities: number;
 	    current_liabilities: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FinancialYearSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.year = source["year"];
@@ -7312,11 +7712,11 @@ export namespace main {
 	    success: boolean;
 	    created: string[];
 	    inbox_path: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FolderStructureResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.success = source["success"];
@@ -7341,11 +7741,11 @@ export namespace main {
 	    contact: string;
 	    notes: string;
 	    completed_at?: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FollowUpTask(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -7365,7 +7765,7 @@ export namespace main {
 	        this.notes = source["notes"];
 	        this.completed_at = this.convertValues(source["completed_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -7394,11 +7794,11 @@ export namespace main {
 	    quantity_invoiced: number;
 	    remaining_to_ship: number;
 	    shipped_pct: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ItemFulfillment(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.item_id = source["item_id"];
@@ -7422,11 +7822,11 @@ export namespace main {
 	    invoicing_pct: number;
 	    status: string;
 	    items: ItemFulfillment[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FulfillmentStatus(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.order_id = source["order_id"];
@@ -7439,7 +7839,7 @@ export namespace main {
 	        this.status = source["status"];
 	        this.items = this.convertValues(source["items"], ItemFulfillment);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -7465,11 +7865,11 @@ export namespace main {
 	    match_score: number;
 	    match_method: string;
 	    needs_review: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FuzzyMatchResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.extracted_name = source["extracted_name"];
@@ -7489,11 +7889,11 @@ export namespace main {
 	    cuda_ok: boolean;
 	    use_gpu: boolean;
 	    kernels_loaded: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GPUInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.detected = source["detected"];
@@ -7520,11 +7920,11 @@ export namespace main {
 	    resolution: string;
 	    resolved_at?: time.Time;
 	    cost_impact_bhd: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GRNDiscrepancy(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -7541,7 +7941,7 @@ export namespace main {
 	        this.resolved_at = this.convertValues(source["resolved_at"], time.Time);
 	        this.cost_impact_bhd = source["cost_impact_bhd"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -7574,11 +7974,11 @@ export namespace main {
 	    quantity_accepted: number;
 	    quantity_rejected: number;
 	    rejection_reason: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GRNItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -7595,7 +7995,7 @@ export namespace main {
 	        this.quantity_rejected = source["quantity_rejected"];
 	        this.rejection_reason = source["rejection_reason"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -7629,11 +8029,11 @@ export namespace main {
 	    quantity_rejected: number;
 	    rejection_reason: string;
 	    serial_numbers: string[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GRNItemWithSerials(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -7651,7 +8051,7 @@ export namespace main {
 	        this.rejection_reason = source["rejection_reason"];
 	        this.serial_numbers = source["serial_numbers"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -7695,11 +8095,11 @@ export namespace main {
 	    total_accepted: number;
 	    total_rejected: number;
 	    acceptance_rate: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GRNResponse(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -7727,7 +8127,7 @@ export namespace main {
 	        this.total_rejected = source["total_rejected"];
 	        this.acceptance_rate = source["acceptance_rate"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -7764,11 +8164,11 @@ export namespace main {
 	    qc_by: string;
 	    updated_by: string;
 	    items?: GRNItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GoodsReceivedNote(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -7789,7 +8189,7 @@ export namespace main {
 	        this.updated_by = source["updated_by"];
 	        this.items = this.convertValues(source["items"], GRNItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -7812,11 +8212,11 @@ export namespace main {
 	    grade: string;
 	    count: number;
 	    percentage: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GradeDistItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.grade = source["grade"];
@@ -7824,10 +8224,10 @@ export namespace main {
 	        this.percentage = source["percentage"];
 	    }
 	}
-	
-	
-	
-	
+
+
+
+
 	export class InboxDocument {
 	    id: number;
 	    document_id: string;
@@ -7840,11 +8240,11 @@ export namespace main {
 	    suggested_actions: string[];
 	    processed_at: time.Time;
 	    created_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new InboxDocument(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -7859,7 +8259,7 @@ export namespace main {
 	        this.processed_at = this.convertValues(source["processed_at"], time.Time);
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -7889,11 +8289,11 @@ export namespace main {
 	    needs_review: boolean;
 	    ocr_confidence: number;
 	    error?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new InboxProcessResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.document_id = source["document_id"];
@@ -7907,7 +8307,7 @@ export namespace main {
 	        this.ocr_confidence = source["ocr_confidence"];
 	        this.error = source["error"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -7932,11 +8332,11 @@ export namespace main {
 	    needs_review: number;
 	    processed: number;
 	    by_type: Record<string, number>;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new InboxStats(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_documents = source["total_documents"];
@@ -7953,11 +8353,11 @@ export namespace main {
 	    warnings: string[];
 	    scan_duration_ms: number;
 	    report_path: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new InitialScanResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_files = source["total_files"];
@@ -7983,11 +8383,11 @@ export namespace main {
 	    supplier_id: string;
 	    supplier_name: string;
 	    lead_time_days: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new InventoryAlert(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.product_id = source["product_id"];
@@ -8005,7 +8405,7 @@ export namespace main {
 	        this.supplier_name = source["supplier_name"];
 	        this.lead_time_days = source["lead_time_days"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -8045,11 +8445,11 @@ export namespace main {
 	    total_value: number;
 	    last_purchase_cost: number;
 	    last_movement_at?: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new InventoryItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -8073,7 +8473,7 @@ export namespace main {
 	        this.last_purchase_cost = source["last_purchase_cost"];
 	        this.last_movement_at = this.convertValues(source["last_movement_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -8091,6 +8491,40 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class InventoryPendingFulfillmentRow {
+	    order_id: string;
+	    order_number: string;
+	    customer_name: string;
+	    product_code: string;
+	    description: string;
+	    ordered_quantity: number;
+	    delivered_quantity: number;
+	    invoiced_quantity: number;
+	    pending_quantity: number;
+	    available_quantity: number;
+	    shortage_quantity: number;
+	    status: string;
+
+	    static createFrom(source: any = {}) {
+	        return new InventoryPendingFulfillmentRow(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.order_id = source["order_id"];
+	        this.order_number = source["order_number"];
+	        this.customer_name = source["customer_name"];
+	        this.product_code = source["product_code"];
+	        this.description = source["description"];
+	        this.ordered_quantity = source["ordered_quantity"];
+	        this.delivered_quantity = source["delivered_quantity"];
+	        this.invoiced_quantity = source["invoiced_quantity"];
+	        this.pending_quantity = source["pending_quantity"];
+	        this.available_quantity = source["available_quantity"];
+	        this.shortage_quantity = source["shortage_quantity"];
+	        this.status = source["status"];
+	    }
 	}
 	export class Invoice {
 	    id: string;
@@ -8150,11 +8584,11 @@ export namespace main {
 	    journal_entry_id: string;
 	    invoice_hash: string;
 	    items: DBInvoiceItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Invoice(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -8215,7 +8649,7 @@ export namespace main {
 	        this.invoice_hash = source["invoice_hash"];
 	        this.items = this.convertValues(source["items"], DBInvoiceItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -8247,11 +8681,11 @@ export namespace main {
 	    unit_price: number;
 	    total_price: number;
 	    currency: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SupplierInvoiceItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -8267,7 +8701,7 @@ export namespace main {
 	        this.total_price = source["total_price"];
 	        this.currency = source["currency"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -8328,11 +8762,11 @@ export namespace main {
 	    dispute_reason: string;
 	    journal_entry_id: string;
 	    items: SupplierInvoiceItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SupplierInvoice(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -8377,7 +8811,7 @@ export namespace main {
 	        this.journal_entry_id = source["journal_entry_id"];
 	        this.items = this.convertValues(source["items"], SupplierInvoiceItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -8414,11 +8848,11 @@ export namespace main {
 	    total_foreign: number;
 	    total_bhd: number;
 	    quantity_received: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PurchaseOrderItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -8439,7 +8873,7 @@ export namespace main {
 	        this.total_bhd = source["total_bhd"];
 	        this.quantity_received = source["quantity_received"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -8486,11 +8920,11 @@ export namespace main {
 	    updated_by: string;
 	    division: string;
 	    items?: PurchaseOrderItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PurchaseOrder(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -8521,7 +8955,7 @@ export namespace main {
 	        this.division = source["division"];
 	        this.items = this.convertValues(source["items"], PurchaseOrderItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -8565,11 +8999,11 @@ export namespace main {
 	    total_cost: number;
 	    margin_percent: number;
 	    total_price: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OrderItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -8597,7 +9031,7 @@ export namespace main {
 	        this.margin_percent = source["margin_percent"];
 	        this.total_price = source["total_price"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -8649,11 +9083,11 @@ export namespace main {
 	    discount_percent: number;
 	    division: string;
 	    items?: OrderItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Order(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -8689,7 +9123,7 @@ export namespace main {
 	        this.division = source["division"];
 	        this.items = this.convertValues(source["items"], OrderItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -8745,11 +9179,11 @@ export namespace main {
 	    other_costs: number;
 	    user_price: number;
 	    user_price_set: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OfferItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -8789,7 +9223,7 @@ export namespace main {
 	        this.user_price = source["user_price"];
 	        this.user_price_set = source["user_price_set"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -8853,11 +9287,11 @@ export namespace main {
 	    folder_number: string;
 	    project_name: string;
 	    items?: OfferItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Offer(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -8905,7 +9339,7 @@ export namespace main {
 	        this.project_name = source["project_name"];
 	        this.items = this.convertValues(source["items"], OfferItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -8932,11 +9366,11 @@ export namespace main {
 	    purchase_orders: PurchaseOrder[];
 	    supplier_invoices: SupplierInvoice[];
 	    delivery_notes: DeliveryNote[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new InvoiceAuditTrail(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.invoice = this.convertValues(source["invoice"], Invoice);
@@ -8947,7 +9381,7 @@ export namespace main {
 	        this.supplier_invoices = this.convertValues(source["supplier_invoices"], SupplierInvoice);
 	        this.delivery_notes = this.convertValues(source["delivery_notes"], DeliveryNote);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -8977,11 +9411,11 @@ export namespace main {
 	    currency: string;
 	    item_count: number;
 	    discount_applied: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new InvoiceGeometry(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -8995,7 +9429,7 @@ export namespace main {
 	        this.item_count = source["item_count"];
 	        this.discount_applied = source["discount_applied"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9022,11 +9456,11 @@ export namespace main {
 	    confidence: number;
 	    recommendations: string[];
 	    timestamp: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new InvoiceResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.invoice_id = source["invoice_id"];
@@ -9038,18 +9472,18 @@ export namespace main {
 	        this.timestamp = source["timestamp"];
 	    }
 	}
-	
-	
+
+
 	export class ReportGenerateOutput {
 	    file_path: string;
 	    file_size: number;
 	    row_count?: number;
 	    generated: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ReportGenerateOutput(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.file_path = source["file_path"];
@@ -9057,7 +9491,7 @@ export namespace main {
 	        this.row_count = source["row_count"];
 	        this.generated = this.convertValues(source["generated"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9085,11 +9519,11 @@ export namespace main {
 	    output?: ReportGenerateOutput;
 	    started_at?: any;
 	    completed_at?: any;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new JobStatusResponse(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9101,7 +9535,7 @@ export namespace main {
 	        this.started_at = source["started_at"];
 	        this.completed_at = source["completed_at"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9127,11 +9561,11 @@ export namespace main {
 	    progress: number;
 	    created_at: any;
 	    completed_at?: any;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new JobSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9155,11 +9589,11 @@ export namespace main {
 	    credit: number;
 	    description: string;
 	    updated_by: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new JournalLine(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9175,7 +9609,7 @@ export namespace main {
 	        this.description = source["description"];
 	        this.updated_by = source["updated_by"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9217,11 +9651,11 @@ export namespace main {
 	    reverses_id: string;
 	    updated_by: string;
 	    lines?: JournalLine[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new JournalEntry(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9247,7 +9681,7 @@ export namespace main {
 	        this.updated_by = source["updated_by"];
 	        this.lines = this.convertValues(source["lines"], JournalLine);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9266,7 +9700,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class LicenseActivationResult {
 	    success: boolean;
 	    message: string;
@@ -9274,11 +9708,11 @@ export namespace main {
 	    display_name: string;
 	    permissions: string[];
 	    device_hash: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new LicenseActivationResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.success = source["success"];
@@ -9298,14 +9732,15 @@ export namespace main {
 	    activated: boolean;
 	    activated_at?: time.Time;
 	    issued_at: time.Time;
+	    updated_at: time.Time;
 	    expires_at?: time.Time;
 	    notes: string;
 	    created_by: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new LicenseKey(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9316,11 +9751,12 @@ export namespace main {
 	        this.activated = source["activated"];
 	        this.activated_at = this.convertValues(source["activated_at"], time.Time);
 	        this.issued_at = this.convertValues(source["issued_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
 	        this.expires_at = this.convertValues(source["expires_at"], time.Time);
 	        this.notes = source["notes"];
 	        this.created_by = source["created_by"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9346,11 +9782,11 @@ export namespace main {
 	    display_name: string;
 	    permissions: string[];
 	    expires_at?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new LicenseValidationResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.valid = source["valid"];
@@ -9367,11 +9803,11 @@ export namespace main {
 	    margin_percent: number;
 	    threshold: number;
 	    recommendation: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new MarginAlert(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.severity = source["severity"];
@@ -9390,11 +9826,11 @@ export namespace main {
 	    margin_percent: number;
 	    order_count: number;
 	    avg_margin_pct: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new MarginAnalysisByCustomer(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
@@ -9414,11 +9850,11 @@ export namespace main {
 	    gross_margin: number;
 	    margin_percent: number;
 	    order_count: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new MarginAnalysisByProduct(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.product_category = source["product_category"];
@@ -9437,11 +9873,11 @@ export namespace main {
 	    confidence: number;
 	    recommended_action: string;
 	    warning?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new MarginSimulation(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer = source["customer"];
@@ -9467,11 +9903,11 @@ export namespace main {
 	    supplier_payment_count: number;
 	    product_count: number;
 	    activity_score: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new MasterDataDuplicateMember(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9488,7 +9924,7 @@ export namespace main {
 	        this.product_count = source["product_count"];
 	        this.activity_score = source["activity_score"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9515,11 +9951,11 @@ export namespace main {
 	    auto_merge_safe: boolean;
 	    auto_merge_reason: string;
 	    members: MasterDataDuplicateMember[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new MasterDataDuplicateCandidate(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.entity_type = source["entity_type"];
@@ -9530,7 +9966,7 @@ export namespace main {
 	        this.auto_merge_reason = source["auto_merge_reason"];
 	        this.members = this.convertValues(source["members"], MasterDataDuplicateMember);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9555,11 +9991,11 @@ export namespace main {
 	    supplier_candidates: MasterDataDuplicateCandidate[];
 	    auto_merge_customer_ids: string[];
 	    auto_merge_supplier_ids: string[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new MasterDataCleanupAudit(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.generated_at = this.convertValues(source["generated_at"], time.Time);
@@ -9568,7 +10004,7 @@ export namespace main {
 	        this.auto_merge_customer_ids = source["auto_merge_customer_ids"];
 	        this.auto_merge_supplier_ids = source["auto_merge_supplier_ids"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9587,8 +10023,8 @@ export namespace main {
 		    return a;
 		}
 	}
-	
-	
+
+
 	export class MonthlyPLBreakdown {
 	    month: number;
 	    month_name: string;
@@ -9596,11 +10032,11 @@ export namespace main {
 	    purchases: number;
 	    gross_profit: number;
 	    net_profit: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new MonthlyPLBreakdown(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.month = source["month"];
@@ -9628,11 +10064,11 @@ export namespace main {
 	    action_payload: string;
 	    read_at?: time.Time;
 	    delivered_at?: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Notification(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9652,7 +10088,7 @@ export namespace main {
 	        this.read_at = this.convertValues(source["read_at"], time.Time);
 	        this.delivered_at = this.convertValues(source["delivered_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9688,11 +10124,11 @@ export namespace main {
 	    gpu_used: boolean;
 	    processed_at: time.Time;
 	    created_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OCRDocument(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9712,7 +10148,7 @@ export namespace main {
 	        this.processed_at = this.convertValues(source["processed_at"], time.Time);
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9747,11 +10183,11 @@ export namespace main {
 	    table_detected: boolean;
 	    gpu_used: boolean;
 	    error?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OCRResultSimple(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.success = source["success"];
@@ -9771,7 +10207,7 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
-	
+
 	export class OfferData {
 	    id: string;
 	    costing_id: string;
@@ -9783,11 +10219,11 @@ export namespace main {
 	    sent_at: time.Time;
 	    created_at: time.Time;
 	    updated_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OfferData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9801,7 +10237,7 @@ export namespace main {
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9832,11 +10268,11 @@ export namespace main {
 	    status: string;
 	    completed_at?: time.Time;
 	    completed_by: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OfferFollowUp(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9851,7 +10287,7 @@ export namespace main {
 	        this.completed_at = this.convertValues(source["completed_at"], time.Time);
 	        this.completed_by = source["completed_by"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9870,7 +10306,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class OfferNote {
 	    id: string;
 	    created_at: time.Time;
@@ -9880,11 +10316,11 @@ export namespace main {
 	    offer_id: string;
 	    note_date: time.Time;
 	    content: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OfferNote(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9896,7 +10332,7 @@ export namespace main {
 	        this.note_date = this.convertValues(source["note_date"], time.Time);
 	        this.content = source["content"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9925,11 +10361,11 @@ export namespace main {
 	    total_value_bhd: number;
 	    stage: string;
 	    items_json: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OfferRevision(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9942,7 +10378,7 @@ export namespace main {
 	        this.stage = source["stage"];
 	        this.items_json = source["items_json"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -9971,11 +10407,11 @@ export namespace main {
 	    stage: string;
 	    revision_number: number;
 	    match_score: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OfferSearchResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -9988,7 +10424,7 @@ export namespace main {
 	        this.revision_number = source["revision_number"];
 	        this.match_score = source["match_score"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10024,11 +10460,11 @@ export namespace main {
 	    margin_percent: number;
 	    total_price: number;
 	    exchange_rate: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OfferUpdateItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.description = source["description"];
@@ -10076,11 +10512,11 @@ export namespace main {
 	    discount: number;
 	    stage: string;
 	    items: OfferUpdateItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OfferUpdateData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.offer_number = source["offer_number"];
@@ -10110,7 +10546,7 @@ export namespace main {
 	        this.stage = source["stage"];
 	        this.items = this.convertValues(source["items"], OfferUpdateItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10129,18 +10565,18 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class OfficeInfo {
 	    outlook_enabled: boolean;
 	    excel_enabled: boolean;
 	    word_enabled: boolean;
 	    powerpoint_enabled: boolean;
 	    version: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OfficeInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.outlook_enabled = source["outlook_enabled"];
@@ -10157,11 +10593,11 @@ export namespace main {
 	    message: string;
 	    costing_sheets_imported: number;
 	    pdfs_queued: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OneDriveImportResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.deal_local_id = source["deal_local_id"];
@@ -10179,11 +10615,11 @@ export namespace main {
 	    scan_paths: string[];
 	    scanned_at: time.Time;
 	    errors: string[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OneDriveScanResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.deals = this.convertValues(source["deals"], DiscoveredDeal);
@@ -10193,7 +10629,7 @@ export namespace main {
 	        this.scanned_at = this.convertValues(source["scanned_at"], time.Time);
 	        this.errors = source["errors"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10221,11 +10657,11 @@ export namespace main {
 	    accounts_payable_bhd: number;
 	    expense_liability_bhd: number;
 	    net_position_bhd: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OperationalBalanceSheetReport(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.as_of_date = source["as_of_date"];
@@ -10253,11 +10689,11 @@ export namespace main {
 	    balance_bhd: number;
 	    status: string;
 	    division: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OperationalLedgerEntry(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -10285,11 +10721,11 @@ export namespace main {
 	    vendor_id: string;
 	    source_type: string;
 	    status: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OperationalLedgerFilter(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.division = source["division"];
@@ -10316,11 +10752,11 @@ export namespace main {
 	    invoice_count: number;
 	    expense_count: number;
 	    expense_breakdown: AccountBalance[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OperationalProfitLossReport(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.start_date = source["start_date"];
@@ -10337,7 +10773,7 @@ export namespace main {
 	        this.expense_count = source["expense_count"];
 	        this.expense_breakdown = this.convertValues(source["expense_breakdown"], AccountBalance);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10399,11 +10835,11 @@ export namespace main {
 	    product_type: string;
 	    won_reason: string;
 	    lost_reason: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Opportunity(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -10449,7 +10885,7 @@ export namespace main {
 	        this.won_reason = source["won_reason"];
 	        this.lost_reason = source["lost_reason"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10474,11 +10910,12 @@ export namespace main {
 	    comment: string;
 	    created_by: string;
 	    created_at: time.Time;
-	
+	    updated_at: time.Time;
+
 	    static createFrom(source: any = {}) {
 	        return new OpportunityComment(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -10486,8 +10923,9 @@ export namespace main {
 	        this.comment = source["comment"];
 	        this.created_by = source["created_by"];
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10527,11 +10965,11 @@ export namespace main {
 	    resolution_note: string;
 	    resolved_by: string;
 	    resolved_at?: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OpportunityEditConflict(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -10555,7 +10993,7 @@ export namespace main {
 	        this.resolved_by = source["resolved_by"];
 	        this.resolved_at = this.convertValues(source["resolved_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10577,17 +11015,17 @@ export namespace main {
 	export class OpportunityConflictResolutionResult {
 	    conflict: OpportunityEditConflict;
 	    opportunity: Opportunity;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OpportunityConflictResolutionResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.conflict = this.convertValues(source["conflict"], OpportunityEditConflict);
 	        this.opportunity = this.convertValues(source["opportunity"], Opportunity);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10618,11 +11056,11 @@ export namespace main {
 	    primary_email: string;
 	    primary_phone: string;
 	    estimated_value: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OpportunityDueData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -10637,7 +11075,7 @@ export namespace main {
 	        this.primary_phone = source["primary_phone"];
 	        this.estimated_value = source["estimated_value"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10656,9 +11094,9 @@ export namespace main {
 		    return a;
 		}
 	}
-	
-	
-	
+
+
+
 	export class OrderFulfillmentItem {
 	    order_item_id: string;
 	    product_id: string;
@@ -10670,11 +11108,11 @@ export namespace main {
 	    invoiced_qty: number;
 	    remaining_qty: number;
 	    requires_serial_tracking: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OrderFulfillmentItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.order_item_id = source["order_item_id"];
@@ -10697,11 +11135,11 @@ export namespace main {
 	    items: OrderFulfillmentItem[];
 	    fully_delivered: boolean;
 	    fully_invoiced: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OrderFulfillment(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.order_id = source["order_id"];
@@ -10712,7 +11150,7 @@ export namespace main {
 	        this.fully_delivered = source["fully_delivered"];
 	        this.fully_invoiced = source["fully_invoiced"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10731,8 +11169,8 @@ export namespace main {
 		    return a;
 		}
 	}
-	
-	
+
+
 	export class OrderSearchResult {
 	    id: string;
 	    order_number: string;
@@ -10743,11 +11181,11 @@ export namespace main {
 	    total_value_bhd: number;
 	    status: string;
 	    match_score: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OrderSearchResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -10760,7 +11198,7 @@ export namespace main {
 	        this.status = source["status"];
 	        this.match_score = source["match_score"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10782,27 +11220,27 @@ export namespace main {
 	export class OrderStage {
 	    stage: string;
 	    count: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OrderStage(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.stage = source["stage"];
 	        this.count = source["count"];
 	    }
 	}
-	
-	
+
+
 	export class OverdueBucket {
 	    days: string;
 	    amount: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OverdueBucket(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.days = source["days"];
@@ -10822,11 +11260,11 @@ export namespace main {
 	    requires_reapproval: boolean;
 	    reapproved_by: string;
 	    reapproved_at?: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new POAmendment(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -10842,7 +11280,7 @@ export namespace main {
 	        this.reapproved_by = source["reapproved_by"];
 	        this.reapproved_at = this.convertValues(source["reapproved_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10867,11 +11305,11 @@ export namespace main {
 	    po_date: time.Time;
 	    total_bhd: number;
 	    status: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new POSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -10880,7 +11318,7 @@ export namespace main {
 	        this.total_bhd = source["total_bhd"];
 	        this.status = source["status"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10907,11 +11345,11 @@ export namespace main {
 	    total_pages: number;
 	    has_next: boolean;
 	    has_prev: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PaginationResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.data = source["data"];
@@ -10923,7 +11361,7 @@ export namespace main {
 	        this.has_prev = source["has_prev"];
 	    }
 	}
-	
+
 	export class Payment {
 	    id: string;
 	    created_at: time.Time;
@@ -10943,11 +11381,11 @@ export namespace main {
 	    reference: string;
 	    division: string;
 	    updated_by: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Payment(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -10969,7 +11407,7 @@ export namespace main {
 	        this.division = source["division"];
 	        this.updated_by = source["updated_by"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -10998,11 +11436,11 @@ export namespace main {
 	    over_90_days: number;
 	    total_outstanding: number;
 	    avg_days_overdue: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PaymentAgingBucket(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer_id = source["customer_id"];
@@ -11026,11 +11464,11 @@ export namespace main {
 	    grand_total: number;
 	    avg_days_overdue: number;
 	    customer_buckets: PaymentAgingBucket[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PaymentAgingReport(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.report_date = this.convertValues(source["report_date"], time.Time);
@@ -11043,7 +11481,7 @@ export namespace main {
 	        this.avg_days_overdue = source["avg_days_overdue"];
 	        this.customer_buckets = this.convertValues(source["customer_buckets"], PaymentAgingBucket);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -11062,8 +11500,8 @@ export namespace main {
 		    return a;
 		}
 	}
-	
-	
+
+
 	export class PayrollComponent {
 	    id: string;
 	    created_at: time.Time;
@@ -11075,11 +11513,11 @@ export namespace main {
 	    code: string;
 	    name: string;
 	    amount: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PayrollComponent(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -11093,7 +11531,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.amount = source["amount"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -11119,11 +11557,11 @@ export namespace main {
 	    approved_unpaid_runs: number;
 	    month_to_date_net_payroll: number;
 	    upcoming_payroll_liability: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PayrollDashboardSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.active_profiles = source["active_profiles"];
@@ -11154,11 +11592,11 @@ export namespace main {
 	    bank_statement_line_id?: string;
 	    employee_name?: string;
 	    run_number?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PayrollPayout(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -11181,7 +11619,7 @@ export namespace main {
 	        this.employee_name = source["employee_name"];
 	        this.run_number = source["run_number"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -11213,11 +11651,11 @@ export namespace main {
 	    payment_date?: time.Time;
 	    status: string;
 	    notes: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PayrollPeriod(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -11233,7 +11671,7 @@ export namespace main {
 	        this.status = source["status"];
 	        this.notes = source["notes"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -11276,11 +11714,11 @@ export namespace main {
 	    payout_status?: string;
 	    payout_paid_at?: time.Time;
 	    components?: PayrollComponent[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PayrollRunItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -11307,7 +11745,7 @@ export namespace main {
 	        this.payout_paid_at = this.convertValues(source["payout_paid_at"], time.Time);
 	        this.components = this.convertValues(source["components"], PayrollComponent);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -11356,11 +11794,11 @@ export namespace main {
 	    period_name?: string;
 	    items?: PayrollRunItem[];
 	    payouts?: PayrollPayout[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PayrollRun(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -11393,7 +11831,7 @@ export namespace main {
 	        this.items = this.convertValues(source["items"], PayrollRunItem);
 	        this.payouts = this.convertValues(source["payouts"], PayrollPayout);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -11412,16 +11850,16 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class Phase7ActionResult {
 	    status: string;
 	    message: string;
 	    processed: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Phase7ActionResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.status = source["status"];
@@ -11438,11 +11876,11 @@ export namespace main {
 	    failed_collaborative_ops: number;
 	    dead_letter_collaborative_ops: number;
 	    payroll_payouts_awaiting_recon: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Phase7RolloutStatus(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.followup_backfill_completed_at = source["followup_backfill_completed_at"];
@@ -11462,11 +11900,11 @@ export namespace main {
 	    completed: boolean;
 	    notes: string;
 	    completed_at: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PilotChecklistItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -11479,11 +11917,11 @@ export namespace main {
 	}
 	export class PilotExportResult {
 	    path: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PilotExportResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.path = source["path"];
@@ -11509,11 +11947,11 @@ export namespace main {
 	    user_name: string;
 	    ready_for_pilot: boolean;
 	    issues: string[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PilotReadinessRow(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.employee_id = source["employee_id"];
@@ -11548,11 +11986,11 @@ export namespace main {
 	    pending_devices: number;
 	    blocked_devices: number;
 	    approved_devices: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PilotReadinessSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.generated_at = source["generated_at"];
@@ -11570,11 +12008,11 @@ export namespace main {
 	export class PilotSupportBundleResult {
 	    path: string;
 	    rows: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PilotSupportBundleResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.path = source["path"];
@@ -11585,11 +12023,11 @@ export namespace main {
 	    stage: string;
 	    count: number;
 	    value: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PipelineStage(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.stage = source["stage"];
@@ -11609,11 +12047,11 @@ export namespace main {
 	    offer_found: boolean;
 	    offer_stage: string;
 	    offer_value: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PipelineTraceability(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.order_id = source["order_id"];
@@ -11643,11 +12081,11 @@ export namespace main {
 	    note_date: time.Time;
 	    resolved_at?: time.Time;
 	    resolution: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PostSaleNote(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -11664,7 +12102,7 @@ export namespace main {
 	        this.resolved_at = this.convertValues(source["resolved_at"], time.Time);
 	        this.resolution = source["resolution"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -11683,7 +12121,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class PricingRecommendation {
 	    customer: string;
 	    recommended_margin: number;
@@ -11693,11 +12131,11 @@ export namespace main {
 	    confidence_score: number;
 	    alternative_margins: AlternativeMargin[];
 	    generated_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PricingRecommendation(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.customer = source["customer"];
@@ -11709,7 +12147,7 @@ export namespace main {
 	        this.alternative_margins = this.convertValues(source["alternative_margins"], AlternativeMargin);
 	        this.generated_at = this.convertValues(source["generated_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -11751,11 +12189,11 @@ export namespace main {
 	    datasheet_url: string;
 	    specifications: string;
 	    requires_serial_tracking: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ProductMaster(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -11781,7 +12219,7 @@ export namespace main {
 	        this.specifications = source["specifications"];
 	        this.requires_serial_tracking = source["requires_serial_tracking"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -11800,7 +12238,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class ProfitLossReport {
 	    period_start: string;
 	    period_end: string;
@@ -11814,11 +12252,11 @@ export namespace main {
 	    total_expenses: number;
 	    net_income: number;
 	    net_margin: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ProfitLossReport(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.period_start = source["period_start"];
@@ -11834,7 +12272,7 @@ export namespace main {
 	        this.net_income = source["net_income"];
 	        this.net_margin = source["net_margin"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -11866,13 +12304,19 @@ export namespace main {
 	    customer_id?: string;
 	    opportunity_id?: string;
 	    order_id?: string;
+	    customer_name: string;
+	    end_user_name: string;
+	    opportunity_key: string;
+	    customer_poc_name: string;
+	    customer_poc_email: string;
+	    customer_poc_phone: string;
 	    starts_on?: time.Time;
 	    ends_on?: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Project(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -11887,10 +12331,16 @@ export namespace main {
 	        this.customer_id = source["customer_id"];
 	        this.opportunity_id = source["opportunity_id"];
 	        this.order_id = source["order_id"];
+	        this.customer_name = source["customer_name"];
+	        this.end_user_name = source["end_user_name"];
+	        this.opportunity_key = source["opportunity_key"];
+	        this.customer_poc_name = source["customer_poc_name"];
+	        this.customer_poc_email = source["customer_poc_email"];
+	        this.customer_poc_phone = source["customer_poc_phone"];
 	        this.starts_on = this.convertValues(source["starts_on"], time.Time);
 	        this.ends_on = this.convertValues(source["ends_on"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -11924,11 +12374,11 @@ export namespace main {
 	    left_at?: time.Time;
 	    employee_name?: string;
 	    project_name?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ProjectMember(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -11946,7 +12396,7 @@ export namespace main {
 	        this.employee_name = source["employee_name"];
 	        this.project_name = source["project_name"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -11965,8 +12415,8 @@ export namespace main {
 		    return a;
 		}
 	}
-	
-	
+
+
 	export class QuickCapture {
 	    id: number;
 	    title: string;
@@ -11976,11 +12426,11 @@ export namespace main {
 	    status: string;
 	    created_at: time.Time;
 	    updated_at: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new QuickCapture(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -11992,7 +12442,7 @@ export namespace main {
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12017,11 +12467,12 @@ export namespace main {
 	    comment: string;
 	    created_by: string;
 	    created_at: time.Time;
-	
+	    updated_at: time.Time;
+
 	    static createFrom(source: any = {}) {
 	        return new RFQComment(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -12029,8 +12480,9 @@ export namespace main {
 	        this.comment = source["comment"];
 	        this.created_by = source["created_by"];
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12061,15 +12513,16 @@ export namespace main {
 	    stage: string;
 	    created_at: time.Time;
 	    updated_at: time.Time;
+	    created_by: string;
 	    document_hash: string;
 	    visit_locations: string;
 	    product_details: string;
 	    source_doc_path: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new RFQData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -12083,12 +12536,13 @@ export namespace main {
 	        this.stage = source["stage"];
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.created_by = source["created_by"];
 	        this.document_hash = source["document_hash"];
 	        this.visit_locations = source["visit_locations"];
 	        this.product_details = source["product_details"];
 	        this.source_doc_path = source["source_doc_path"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12118,11 +12572,11 @@ export namespace main {
 	    product_details: string;
 	    document_hash: string;
 	    source_doc_path: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new RFQUpdateRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.client = source["client"];
@@ -12137,7 +12591,7 @@ export namespace main {
 	        this.source_doc_path = source["source_doc_path"];
 	    }
 	}
-	
+
 	export class ReconciliationResult {
 	    total_offers: number;
 	    matched_offers: number;
@@ -12158,11 +12612,11 @@ export namespace main {
 	    processing_time: number;
 	    confidence_score: number;
 	    ready_to_apply: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ReconciliationResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_offers = source["total_offers"];
@@ -12185,7 +12639,7 @@ export namespace main {
 	        this.confidence_score = source["confidence_score"];
 	        this.ready_to_apply = source["ready_to_apply"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12214,11 +12668,11 @@ export namespace main {
 	    is_reconciled: boolean;
 	    days_since_reconciled: number;
 	    status: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ReconciliationStatusSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.bank_account_id = source["bank_account_id"];
@@ -12231,7 +12685,7 @@ export namespace main {
 	        this.days_since_reconciled = source["days_since_reconciled"];
 	        this.status = source["status"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12274,11 +12728,11 @@ export namespace main {
 	    auto_submit: boolean;
 	    category_name?: string;
 	    vendor_name?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new RecurringExpense(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -12305,7 +12759,7 @@ export namespace main {
 	        this.category_name = source["category_name"];
 	        this.vendor_name = source["vendor_name"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12337,11 +12791,11 @@ export namespace main {
 	    lead_time_days: number;
 	    urgency_level: string;
 	    reason: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ReorderSuggestion(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.product_id = source["product_id"];
@@ -12362,11 +12816,11 @@ export namespace main {
 	    type: string;
 	    count: number;
 	    value: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new StockMovementSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
@@ -12378,11 +12832,11 @@ export namespace main {
 	    name: string;
 	    revenue: number;
 	    count: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TopProduct(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -12416,11 +12870,11 @@ export namespace main {
 	    collection_target?: number;
 	    collected?: number;
 	    overdue?: OverdueBucket[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ReportData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.pipeline = this.convertValues(source["pipeline"], PipelineStage);
@@ -12449,7 +12903,7 @@ export namespace main {
 	        this.collected = source["collected"];
 	        this.overdue = this.convertValues(source["overdue"], OverdueBucket);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12468,18 +12922,18 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class ReportMetadata {
 	    name: string;
 	    path: string;
 	    size: number;
 	    created_at: time.Time;
 	    mime_type: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ReportMetadata(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -12488,7 +12942,7 @@ export namespace main {
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	        this.mime_type = source["mime_type"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12507,7 +12961,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class RoutingResult {
 	    event_id: string;
 	    geometry: string;
@@ -12516,11 +12970,11 @@ export namespace main {
 	    difficulty: number;
 	    route_reason: string;
 	    timestamp: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new RoutingResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.event_id = source["event_id"];
@@ -12530,7 +12984,7 @@ export namespace main {
 	        this.route_reason = source["route_reason"];
 	        this.timestamp = source["timestamp"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12554,11 +13008,11 @@ export namespace main {
 	    count: number;
 	    value: number;
 	    color: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SalesPipelineData(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.stage = source["stage"];
@@ -12575,11 +13029,11 @@ export namespace main {
 	    percentage: number;
 	    messages: string[];
 	    last_update: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ScanProgress(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.phase = source["phase"];
@@ -12590,7 +13044,7 @@ export namespace main {
 	        this.messages = source["messages"];
 	        this.last_update = this.convertValues(source["last_update"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12614,11 +13068,11 @@ export namespace main {
 	    evidence_extracts_path: string;
 	    archaeology_report_path: string;
 	    summary: ArchaeologyScanSummary;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ScanResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.workspace_index_path = source["workspace_index_path"];
@@ -12626,7 +13080,7 @@ export namespace main {
 	        this.archaeology_report_path = source["archaeology_report_path"];
 	        this.summary = this.convertValues(source["summary"], ArchaeologyScanSummary);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12675,11 +13129,11 @@ export namespace main {
 	    calibration_due_date?: time.Time;
 	    calibration_cert_path: string;
 	    notes: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SerialNumber(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -12712,7 +13166,7 @@ export namespace main {
 	        this.calibration_cert_path = source["calibration_cert_path"];
 	        this.notes = source["notes"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12745,11 +13199,11 @@ export namespace main {
 	    closing_balance: number;
 	    imported_at: time.Time;
 	    bank_statement_id: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new StatementHash(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -12766,7 +13220,7 @@ export namespace main {
 	        this.imported_at = this.convertValues(source["imported_at"], time.Time);
 	        this.bank_statement_id = source["bank_statement_id"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12790,11 +13244,11 @@ export namespace main {
 	    grade_distribution: Record<string, number>;
 	    avg_confidence: number;
 	    avg_predicted_days: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Statistics(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_predictions = source["total_predictions"];
@@ -12823,11 +13277,11 @@ export namespace main {
 	    adjustment_number: string;
 	    approved_by: string;
 	    approved_at?: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new StockAdjustment(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -12850,7 +13304,7 @@ export namespace main {
 	        this.approved_by = source["approved_by"];
 	        this.approved_at = this.convertValues(source["approved_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12878,18 +13332,24 @@ export namespace main {
 	    inventory_item_id: string;
 	    movement_type: string;
 	    movement_number: string;
+	    reference_type: string;
+	    reference_id: string;
+	    reference_number: string;
+	    counterparty_id: string;
+	    counterparty_name: string;
 	    quantity: number;
 	    direction: string;
 	    balance_before: number;
 	    balance_after: number;
 	    movement_date: time.Time;
+	    notes: string;
 	    unit_cost: number;
 	    total_value: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new StockMovement(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -12900,15 +13360,21 @@ export namespace main {
 	        this.inventory_item_id = source["inventory_item_id"];
 	        this.movement_type = source["movement_type"];
 	        this.movement_number = source["movement_number"];
+	        this.reference_type = source["reference_type"];
+	        this.reference_id = source["reference_id"];
+	        this.reference_number = source["reference_number"];
+	        this.counterparty_id = source["counterparty_id"];
+	        this.counterparty_name = source["counterparty_name"];
 	        this.quantity = source["quantity"];
 	        this.direction = source["direction"];
 	        this.balance_before = source["balance_before"];
 	        this.balance_after = source["balance_after"];
 	        this.movement_date = this.convertValues(source["movement_date"], time.Time);
+	        this.notes = source["notes"];
 	        this.unit_cost = source["unit_cost"];
 	        this.total_value = source["total_value"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12927,7 +13393,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class SupplierContact {
 	    id: string;
 	    created_at: time.Time;
@@ -12941,11 +13407,15 @@ export namespace main {
 	    phone: string;
 	    address: string;
 	    is_primary_contact: boolean;
-	
+	    is_decision_maker: boolean;
+	    decision_role: string;
+	    reports_to_contact_id: string;
+	    reports_to_name: string;
+
 	    static createFrom(source: any = {}) {
 	        return new SupplierContact(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -12960,8 +13430,12 @@ export namespace main {
 	        this.phone = source["phone"];
 	        this.address = source["address"];
 	        this.is_primary_contact = source["is_primary_contact"];
+	        this.is_decision_maker = source["is_decision_maker"];
+	        this.decision_role = source["decision_role"];
+	        this.reports_to_contact_id = source["reports_to_contact_id"];
+	        this.reports_to_name = source["reports_to_name"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -12993,11 +13467,11 @@ export namespace main {
 	    resolution: string;
 	    cost_bhd: number;
 	    resolved_at?: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SupplierIssue(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -13013,7 +13487,7 @@ export namespace main {
 	        this.cost_bhd = source["cost_bhd"];
 	        this.resolved_at = this.convertValues(source["resolved_at"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13040,11 +13514,11 @@ export namespace main {
 	    outstanding_bhd: number;
 	    payment_status: string;
 	    status: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SupplierInvoiceSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -13055,7 +13529,7 @@ export namespace main {
 	        this.payment_status = source["payment_status"];
 	        this.status = source["status"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13105,11 +13579,11 @@ export namespace main {
 	    open_issues: number;
 	    issue_cost: number;
 	    notes: EntityNote[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SupplierFullProfile(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -13143,7 +13617,7 @@ export namespace main {
 	        this.issue_cost = source["issue_cost"];
 	        this.notes = this.convertValues(source["notes"], EntityNote);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13162,10 +13636,10 @@ export namespace main {
 		    return a;
 		}
 	}
-	
-	
-	
-	
+
+
+
+
 	export class SupplierLeadTimeMetrics {
 	    supplier_id: string;
 	    supplier_name: string;
@@ -13179,11 +13653,11 @@ export namespace main {
 	    on_time_rate: number;
 	    performance_grade: string;
 	    average_lateness_days: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SupplierLeadTimeMetrics(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.supplier_id = source["supplier_id"];
@@ -13225,11 +13699,11 @@ export namespace main {
 	    payment_terms: string;
 	    rating: number;
 	    notes: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SupplierMaster(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -13257,7 +13731,7 @@ export namespace main {
 	        this.rating = source["rating"];
 	        this.notes = source["notes"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13276,7 +13750,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class SupplierPayment {
 	    id: string;
 	    created_at: time.Time;
@@ -13299,11 +13773,11 @@ export namespace main {
 	    division: string;
 	    supplier_name: string;
 	    invoice_number: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SupplierPayment(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -13328,7 +13802,7 @@ export namespace main {
 	        this.supplier_name = source["supplier_name"];
 	        this.invoice_number = source["invoice_number"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13363,11 +13837,11 @@ export namespace main {
 	    week_collections_actual: number;
 	    week_collections_target: number;
 	    overdue_by_grade: Record<string, number>;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SurvivalMetrics(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.cash_runway_days = source["cash_runway_days"];
@@ -13386,7 +13860,79 @@ export namespace main {
 	        this.week_collections_target = source["week_collections_target"];
 	        this.overdue_by_grade = source["overdue_by_grade"];
 	    }
-	
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SyncTableCoverage {
+	    table: string;
+	    local_exists: boolean;
+	    local_has_updated_at: boolean;
+	    local_rows: number;
+	    remote_checked: boolean;
+	    remote_exists: boolean;
+	    remote_has_updated_at: boolean;
+	    status: string;
+	    note: string;
+
+	    static createFrom(source: any = {}) {
+	        return new SyncTableCoverage(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.table = source["table"];
+	        this.local_exists = source["local_exists"];
+	        this.local_has_updated_at = source["local_has_updated_at"];
+	        this.local_rows = source["local_rows"];
+	        this.remote_checked = source["remote_checked"];
+	        this.remote_exists = source["remote_exists"];
+	        this.remote_has_updated_at = source["remote_has_updated_at"];
+	        this.status = source["status"];
+	        this.note = source["note"];
+	    }
+	}
+	export class SyncCoverageReport {
+	    generated_at: string;
+	    sync_tables_total: number;
+	    local_tables_total: number;
+	    remote_online: boolean;
+	    missing_local_tables: string[];
+	    missing_remote_tables: string[];
+	    untracked_local_tables: string[];
+	    tables: SyncTableCoverage[];
+
+	    static createFrom(source: any = {}) {
+	        return new SyncCoverageReport(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.generated_at = source["generated_at"];
+	        this.sync_tables_total = source["sync_tables_total"];
+	        this.local_tables_total = source["local_tables_total"];
+	        this.remote_online = source["remote_online"];
+	        this.missing_local_tables = source["missing_local_tables"];
+	        this.missing_remote_tables = source["missing_remote_tables"];
+	        this.untracked_local_tables = source["untracked_local_tables"];
+	        this.tables = this.convertValues(source["tables"], SyncTableCoverage);
+	    }
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13414,11 +13960,11 @@ export namespace main {
 	    backup_count: number;
 	    last_backup_at: string;
 	    uptime_seconds: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SyncHealth(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.is_online = source["is_online"];
@@ -13431,17 +13977,18 @@ export namespace main {
 	        this.uptime_seconds = source["uptime_seconds"];
 	    }
 	}
+
 	export class SystemInfo {
 	    os: string;
 	    cpu: string;
 	    gpu: string;
 	    ram: string;
 	    has_gpu: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SystemInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.os = source["os"];
@@ -13466,11 +14013,11 @@ export namespace main {
 	    retained_earnings: number;
 	    total_equity: number;
 	    currency: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TallyBalanceSheet(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.as_of_date = this.convertValues(source["as_of_date"], time.Time);
@@ -13488,7 +14035,7 @@ export namespace main {
 	        this.total_equity = source["total_equity"];
 	        this.currency = source["currency"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13514,11 +14061,11 @@ export namespace main {
 	    errors: number;
 	    error_details?: string[];
 	    batch_id: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TallyImportResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_rows = source["total_rows"];
@@ -13546,11 +14093,11 @@ export namespace main {
 	    purchase_count: number;
 	    currency: string;
 	    monthly_breakdown?: MonthlyPLBreakdown[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TallyPLReport(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.year = source["year"];
@@ -13570,7 +14117,7 @@ export namespace main {
 	        this.currency = source["currency"];
 	        this.monthly_breakdown = this.convertValues(source["monthly_breakdown"], MonthlyPLBreakdown);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13601,11 +14148,11 @@ export namespace main {
 	    detail: string;
 	    metadata_json: string;
 	    employee_name?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TaskActivity(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -13620,7 +14167,7 @@ export namespace main {
 	        this.metadata_json = source["metadata_json"];
 	        this.employee_name = source["employee_name"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13649,11 +14196,11 @@ export namespace main {
 	    employee_id: string;
 	    body: string;
 	    employee_name?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TaskComment(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -13666,7 +14213,7 @@ export namespace main {
 	        this.body = source["body"];
 	        this.employee_name = source["employee_name"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13711,11 +14258,11 @@ export namespace main {
 	    last_comment_at?: time.Time;
 	    creator_name?: string;
 	    assignee_name?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TaskItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -13744,7 +14291,7 @@ export namespace main {
 	        this.creator_name = source["creator_name"];
 	        this.assignee_name = source["assignee_name"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13763,17 +14310,39 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class TenderFolderPreview {
+	    folder_path: string;
+	    folder_name: string;
+	    workflow_key: string;
+	    title: string;
+	    existing: boolean;
+	    status: string;
+
+	    static createFrom(source: any = {}) {
+	        return new TenderFolderPreview(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.folder_path = source["folder_path"];
+	        this.folder_name = source["folder_name"];
+	        this.workflow_key = source["workflow_key"];
+	        this.title = source["title"];
+	        this.existing = source["existing"];
+	        this.status = source["status"];
+	    }
+	}
 	export class TenderItem {
 	    product_id: string;
 	    product_name: string;
 	    quantity: number;
 	    unit_price: number;
 	    margin: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TenderItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.product_id = source["product_id"];
@@ -13793,11 +14362,11 @@ export namespace main {
 	    is_abb: boolean;
 	    is_emergency: boolean;
 	    required_date: time.Time;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TenderGeometry(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -13810,7 +14379,7 @@ export namespace main {
 	        this.is_emergency = source["is_emergency"];
 	        this.required_date = this.convertValues(source["required_date"], time.Time);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13829,7 +14398,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class TenderResult {
 	    tender_id: string;
 	    feasible: boolean;
@@ -13841,11 +14410,11 @@ export namespace main {
 	    recommendation: string;
 	    abb_warning: boolean;
 	    timestamp: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TenderResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.tender_id = source["tender_id"];
@@ -13859,7 +14428,7 @@ export namespace main {
 	        this.abb_warning = source["abb_warning"];
 	        this.timestamp = source["timestamp"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -13878,33 +14447,75 @@ export namespace main {
 		    return a;
 		}
 	}
-	
+
 	export class ThreeWayMatchResult {
 	    matched: boolean;
 	    reason: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ThreeWayMatchResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.matched = source["matched"];
 	        this.reason = source["reason"];
 	    }
 	}
-	
-	
+
+	export class UnifiedThreadEntry {
+	    id: string;
+	    source_type: string;
+	    source_id: string;
+	    workflow_key: string;
+	    comment: string;
+	    created_by: string;
+	    created_at: time.Time;
+
+	    static createFrom(source: any = {}) {
+	        return new UnifiedThreadEntry(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.source_type = source["source_type"];
+	        this.source_id = source["source_id"];
+	        this.workflow_key = source["workflow_key"];
+	        this.comment = source["comment"];
+	        this.created_by = source["created_by"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
 	export class UserActivityChartRow {
 	    label: string;
 	    active_hours: number;
 	    meaningful_hours: number;
 	    efficiency_score: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new UserActivityChartRow(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.label = source["label"];
@@ -13929,11 +14540,11 @@ export namespace main {
 	    active_seconds: number;
 	    meaningful_seconds: number;
 	    idle_seconds: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new UserActivityEventInput(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.session_id = source["session_id"];
@@ -13965,11 +14576,11 @@ export namespace main {
 	    update_count: number;
 	    export_count: number;
 	    navigation_count: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new UserActivityHeartbeatInput(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.session_id = source["session_id"];
@@ -13989,11 +14600,11 @@ export namespace main {
 	    key: string;
 	    label: string;
 	    count: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new UserActivityMetric(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.key = source["key"];
@@ -14029,11 +14640,11 @@ export namespace main {
 	    update_count: number;
 	    export_count: number;
 	    navigation_count: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new UserActivitySession(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -14064,7 +14675,7 @@ export namespace main {
 	        this.export_count = source["export_count"];
 	        this.navigation_count = source["navigation_count"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -14103,11 +14714,11 @@ export namespace main {
 	    top_actions: UserActivityMetric[];
 	    top_searches: UserActivityMetric[];
 	    last_activity_at: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new UserActivityUserReport(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.user_key = source["user_key"];
@@ -14130,7 +14741,7 @@ export namespace main {
 	        this.top_searches = this.convertValues(source["top_searches"], UserActivityMetric);
 	        this.last_activity_at = source["last_activity_at"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -14161,11 +14772,11 @@ export namespace main {
 	    chart_rows: UserActivityChartRow[];
 	    monitoring_principals: string[];
 	    confidentiality_notice: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new UserActivityWeeklyReport(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.week_start = source["week_start"];
@@ -14180,7 +14791,7 @@ export namespace main {
 	        this.monitoring_principals = source["monitoring_principals"];
 	        this.confidentiality_notice = source["confidentiality_notice"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -14214,11 +14825,11 @@ export namespace main {
 	    is_active: boolean;
 	    invalidated_at?: time.Time;
 	    invalidated_reason?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new UserSession(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -14236,7 +14847,7 @@ export namespace main {
 	        this.invalidated_at = this.convertValues(source["invalidated_at"], time.Time);
 	        this.invalidated_reason = source["invalidated_reason"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -14263,11 +14874,11 @@ export namespace main {
 	    net_vat: number;
 	    customer_invoices: number;
 	    supplier_invoices: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new VATReconciliation(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.start_date = this.convertValues(source["start_date"], time.Time);
@@ -14278,7 +14889,7 @@ export namespace main {
 	        this.customer_invoices = source["customer_invoices"];
 	        this.supplier_invoices = source["supplier_invoices"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -14310,11 +14921,11 @@ export namespace main {
 	    quarter: number;
 	    net_vat: number;
 	    status: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new VATReturn(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -14330,7 +14941,7 @@ export namespace main {
 	        this.net_vat = source["net_vat"];
 	        this.status = source["status"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -14352,11 +14963,11 @@ export namespace main {
 	export class ValidationResult {
 	    valid: boolean;
 	    errors: string[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ValidationResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.valid = source["valid"];
@@ -14368,11 +14979,11 @@ export namespace main {
 	    description: string;
 	    amount: number;
 	    type: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new VarianceItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.category = source["category"];
@@ -14390,11 +15001,11 @@ export namespace main {
 	    code: string;
 	    name: string;
 	    is_active: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Warehouse(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -14406,7 +15017,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.is_active = source["is_active"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -14429,17 +15040,17 @@ export namespace main {
 }
 
 export namespace time {
-	
+
 	export class Time {
-	
-	
+
+
 	    static createFrom(source: any = {}) {
 	        return new Time(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	
+
 	    }
 	}
 

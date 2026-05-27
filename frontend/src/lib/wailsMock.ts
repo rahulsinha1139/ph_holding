@@ -88,7 +88,7 @@ if (DESIGN_MODE) {
     };
 
     const mockSettings = {
-        CompanyName: 'PH Holdings Trading LLC',
+        CompanyName: 'PH Trading WLL',
         Currency: 'AED',
         Locale: 'en-AE',
         Theme: 'wabi-sabi',

@@ -150,6 +150,10 @@
     }
   }
 
+  function formatBHD(value: number | undefined): string {
+    return `${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} BHD`;
+  }
+
   async function loadSelectedEmployeeData(employeeID = selectedEmployeeID) {
     const selected = employees.find((employee) => employee.id === employeeID) || null;
     applyEmployeeToForm(selected);
@@ -462,15 +466,11 @@
 </script>
 
 <div class="page">
-  <header class="header">
-    <div>
-      <h1>People.</h1>
-      <p class="subtitle">Employee directory, reporting structure, access mapping, and contribution insight.</p>
-    </div>
-    {#if remoteRefreshing}
+  {#if remoteRefreshing}
+    <div class="page-status">
       <span class="status-chip">Syncing latest changes</span>
-    {/if}
-  </header>
+    </div>
+  {/if}
 
   {#if isAdmin}
     <section class="composer">
@@ -613,6 +613,21 @@
           <div>
             <span>Completion</span>
             <strong>{selectedCompletionRate.toFixed(0)}%</strong>
+          </div>
+        </div>
+
+        <div class="metric-row commercial-row">
+          <div>
+            <span>Opportunities YTD</span>
+            <strong>{selectedContribution?.opportunity_ytd ?? 0}</strong>
+          </div>
+          <div>
+            <span>Won / Lost</span>
+            <strong>{selectedContribution?.opportunity_won_ytd ?? 0} / {selectedContribution?.opportunity_lost_ytd ?? 0}</strong>
+          </div>
+          <div>
+            <span>Revenue YTD</span>
+            <strong>{formatBHD(selectedContribution?.revenue_ytd)}</strong>
           </div>
         </div>
 
@@ -812,9 +827,9 @@
   </section>
 
   <section class="content-grid lower-layout">
-    <article class="panel">
+    <article class="panel org-compact-panel">
       <div class="panel-head">
-        <h2>Org / Reporting</h2>
+        <h2>Reporting Groups</h2>
         <span>{orgGroupEntries.length} reporting groups</span>
       </div>
       {#if loading}
@@ -849,7 +864,7 @@
       {/if}
     </article>
 
-    <article class="panel">
+    <article class="panel team-overview-panel">
       <div class="panel-head">
         <h2>Team Contribution Overview</h2>
         <span>{sortedContributions.length} employees tracked</span>
@@ -904,6 +919,21 @@
                 </div>
               </div>
 
+              <div class="metric-row commercial-row">
+                <div>
+                  <span>Opps YTD</span>
+                  <strong>{summary.opportunity_ytd}</strong>
+                </div>
+                <div>
+                  <span>Won / Lost</span>
+                  <strong>{summary.opportunity_won_ytd} / {summary.opportunity_lost_ytd}</strong>
+                </div>
+                <div>
+                  <span>Revenue YTD</span>
+                  <strong>{formatBHD(summary.revenue_ytd)}</strong>
+                </div>
+              </div>
+
               <div class="meta strip">
                 {summary.manager_name || "No manager"} • {summary.primary_device_name || "No device linked"}
               </div>
@@ -922,7 +952,7 @@
     gap: 20px;
   }
 
-  .header,
+  .page-status,
   .panel-head,
   .card-head,
   .org-head,
@@ -933,14 +963,16 @@
     gap: 12px;
   }
 
-  h1,
+  .page-status {
+    justify-content: flex-end;
+  }
+
   h2,
   h3,
   p {
     margin: 0;
   }
 
-  .subtitle,
   .meta,
   label span,
   .metric-row span {
@@ -995,7 +1027,16 @@
   }
 
   .lower-layout {
-    grid-template-columns: minmax(0, 1fr) minmax(360px, 0.85fr);
+    grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.45fr);
+    align-items: start;
+  }
+
+  .team-overview-panel {
+    order: 1;
+  }
+
+  .org-compact-panel {
+    order: 2;
   }
 
   .detail-split {
@@ -1240,15 +1281,31 @@
     padding: 14px;
   }
 
-  .org-grid,
+  .org-grid {
+    margin-top: 16px;
+    grid-template-columns: 1fr;
+    max-height: 560px;
+    overflow: auto;
+    padding-right: 2px;
+  }
+
   .contribution-grid {
     margin-top: 16px;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    grid-template-columns: repeat(2, minmax(320px, 1fr));
   }
 
   .org-card,
   .contribution-card {
     padding: 16px;
+  }
+
+  .org-compact-panel .org-card {
+    padding: 12px;
+  }
+
+  .org-compact-panel .list-row {
+    border-radius: 10px;
+    padding: 8px 10px;
   }
 
   .metric-row {
@@ -1260,6 +1317,16 @@
   .secondary-row {
     padding-top: 4px;
     border-top: 1px solid var(--border);
+  }
+
+  .commercial-row {
+    padding-top: 4px;
+    border-top: 1px solid var(--border);
+  }
+
+  .commercial-row strong {
+    font-size: 0.96rem;
+    word-break: break-word;
   }
 
   .strip {
@@ -1291,7 +1358,6 @@
       padding: 16px;
     }
 
-    .header,
     .panel-head,
     .card-head,
     .employee-summary,

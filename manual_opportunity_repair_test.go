@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -35,6 +36,59 @@ func TestManualRepairImportedOpportunityMetadata(t *testing.T) {
 	}
 
 	t.Logf("repair_summary malformed_remaining=%d", malformedCount)
+}
+
+func TestRepairImportedOpportunityMetadataFixesSeedYearParse(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&Opportunity{}))
+
+	rows := []Opportunity{
+		{
+			Base:         Base{ID: "opp-year-blank"},
+			FolderNumber: "2025-02",
+			CustomerName: "Tabreed",
+			Stage:        "Quoted",
+			Year:         0,
+		},
+		{
+			Base:         Base{ID: "opp-year-2025-excel"},
+			Source:       "2025_excel",
+			FolderNumber: "262 C-25",
+			Stage:        "Won",
+			Year:         0,
+		},
+		{
+			Base:         Base{ID: "opp-year-sa"},
+			Source:       "2026_onedrive",
+			FolderNumber: "SA-05-SULB",
+			FolderName:   "SA-05-SULB AIT",
+			Stage:        "Quoted",
+			Year:         2005,
+		},
+		{
+			Base:         Base{ID: "opp-year-source-only"},
+			Source:       "2026_onedrive",
+			FolderNumber: "NOMAC",
+			FolderName:   "NOMAC",
+			Stage:        "Qualified",
+			Year:         0,
+		},
+	}
+	require.NoError(t, db.Create(&rows).Error)
+	require.NoError(t, repairImportedOpportunityMetadata(db))
+
+	expected := map[string]int{
+		"opp-year-blank":       2025,
+		"opp-year-2025-excel":  2025,
+		"opp-year-sa":          2026,
+		"opp-year-source-only": 2026,
+	}
+	for id, wantYear := range expected {
+		var got Opportunity
+		require.NoError(t, db.First(&got, "id = ?", id).Error)
+		require.Equal(t, wantYear, got.Year, id)
+	}
 }
 
 func TestManualRepairCommercialPlaceholders(t *testing.T) {

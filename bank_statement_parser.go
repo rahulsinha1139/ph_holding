@@ -51,6 +51,60 @@ type parsedLine struct {
 	Balance     float64
 }
 
+func normalizeBankAccountIdentifier(value string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(strings.TrimSpace(value)) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func bankStatementIdentifierMatches(candidate string, account CompanyBankAccount) bool {
+	needle := normalizeBankAccountIdentifier(candidate)
+	if needle == "" {
+		return false
+	}
+	accountNumber := normalizeBankAccountIdentifier(account.AccountNumber)
+	iban := normalizeBankAccountIdentifier(account.IBAN)
+
+	if accountNumber != "" && needle == accountNumber {
+		return true
+	}
+	if iban != "" && needle == iban {
+		return true
+	}
+	if len(needle) >= 8 && accountNumber != "" && (strings.HasSuffix(accountNumber, needle) || strings.HasSuffix(needle, accountNumber)) {
+		return true
+	}
+	if len(needle) >= 8 && iban != "" && strings.HasSuffix(iban, needle) {
+		return true
+	}
+	return false
+}
+
+func validateParsedStatementMatchesSelectedAccount(parsed *parsedStatement, account CompanyBankAccount) error {
+	if parsed == nil {
+		return nil
+	}
+	parsedAccount := strings.TrimSpace(parsed.AccountNumber)
+	parsedIBAN := strings.TrimSpace(parsed.IBAN)
+	if parsedAccount == "" && parsedIBAN == "" {
+		return nil
+	}
+	if bankStatementIdentifierMatches(parsedAccount, account) || bankStatementIdentifierMatches(parsedIBAN, account) {
+		return nil
+	}
+
+	selectedRef := strings.TrimSpace(account.AccountNumber)
+	if account.IBAN != "" {
+		selectedRef = fmt.Sprintf("%s / %s", selectedRef, account.IBAN)
+	}
+	statementRef := strings.TrimSpace(strings.Join([]string{parsedAccount, parsedIBAN}, " / "))
+	return fmt.Errorf("selected bank account %q (%s) does not match the statement account %q. Choose the statement's actual bank account before importing", account.BankName, selectedRef, statementRef)
+}
+
 // =============================================================================
 // PDF IMPORT (via OCR + Butler AI)
 // =============================================================================
@@ -93,6 +147,9 @@ func (a *App) ImportBankStatementPDF(filePath string, bankAccountID string) (*Ba
 		return nil, fmt.Errorf("failed to parse statement: %w", err)
 	}
 	parsed := parseOutcome.Statement
+	if err := validateParsedStatementMatchesSelectedAccount(parsed, bankAccount); err != nil {
+		return nil, err
+	}
 
 	// Step 3: Create the BankStatement
 	statementNumber := buildBankStatementNumber(bankAccount, parsed.PeriodStart, parsed.PeriodEnd)
@@ -202,6 +259,9 @@ func (a *App) ImportBankStatementCSV(filePath string, bankAccountID string) (*Ba
 	parsed, err := parseCSVRecords(records)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse CSV: %w", err)
+	}
+	if err := validateParsedStatementMatchesSelectedAccount(parsed, bankAccount); err != nil {
+		return nil, err
 	}
 
 	// Generate statement number

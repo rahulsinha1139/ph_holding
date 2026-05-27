@@ -150,3 +150,81 @@ func TestReassignCollaborativeTaskCreatesSelfAssignmentNotification(t *testing.T
 	require.True(t, seen["notification_receipt/create"], "notification receipt must be queued for remote devices")
 	require.True(t, seen["task/reassign"], "task reassignment must be queued for remote devices")
 }
+
+func TestListNotificationFeedHidesReadItemsAfterThirtyDays(t *testing.T) {
+	app := setupHybridFeatureTestApp(t)
+	current := seedCurrentAdminContext(t, app, "Rahul")
+	now := time.Now()
+	oldReadAt := now.AddDate(0, 0, -31)
+	recentReadAt := now.AddDate(0, 0, -7)
+
+	require.NoError(t, app.db.Create(&Notification{
+		Base:       Base{ID: "notif-old-read", CreatedAt: oldReadAt, CreatedBy: "test"},
+		EmployeeID: current.EmployeeID,
+		Title:      "Old read",
+		Status:     "read",
+		ReadAt:     &oldReadAt,
+	}).Error)
+	require.NoError(t, app.db.Create(&Notification{
+		Base:       Base{ID: "notif-recent-read", CreatedAt: recentReadAt, CreatedBy: "test"},
+		EmployeeID: current.EmployeeID,
+		Title:      "Recent read",
+		Status:     "read",
+		ReadAt:     &recentReadAt,
+	}).Error)
+	require.NoError(t, app.db.Create(&Notification{
+		Base:       Base{ID: "notif-unread", CreatedAt: now, CreatedBy: "test"},
+		EmployeeID: current.EmployeeID,
+		Title:      "Unread",
+		Status:     "unread",
+	}).Error)
+
+	feed, err := app.ListNotificationFeed(50, false)
+	require.NoError(t, err)
+	ids := make(map[string]bool, len(feed))
+	for _, notification := range feed {
+		ids[notification.ID] = true
+	}
+	require.True(t, ids["notif-unread"])
+	require.True(t, ids["notif-recent-read"])
+	require.False(t, ids["notif-old-read"])
+}
+
+func TestEmployeeContributionSummariesIncludeCommercialYTD(t *testing.T) {
+	app := setupHybridFeatureTestApp(t)
+	seedCurrentAdminContext(t, app, "Rahul")
+	employee := createEmployeeForTest(t, app, "Sundar Manager", "Sundar", "Management", "Business Development Manager")
+
+	thisYear := time.Now().Year()
+	require.NoError(t, app.db.Create(&Opportunity{
+		Base:         Base{ID: "opp-sundar-won", CreatedBy: "test"},
+		FolderNumber: "EMP-YTD-1",
+		Salesperson:  employee.FullName,
+		OfferDate:    time.Date(thisYear, time.March, 1, 0, 0, 0, 0, time.Local),
+		Stage:        "Won",
+		RevenueBHD:   1250.5,
+	}).Error)
+	require.NoError(t, app.db.Create(&Opportunity{
+		Base:         Base{ID: "opp-sundar-lost", CreatedBy: "test"},
+		FolderNumber: "EMP-YTD-2",
+		Salesperson:  employee.PreferredName,
+		OfferDate:    time.Date(thisYear, time.April, 1, 0, 0, 0, 0, time.Local),
+		Stage:        "Lost",
+		RevenueBHD:   500,
+	}).Error)
+
+	summaries, err := app.ListEmployeeContributionSummaries()
+	require.NoError(t, err)
+	var sundar EmployeeContributionSummary
+	for _, summary := range summaries {
+		if summary.EmployeeID == employee.ID {
+			sundar = summary
+			break
+		}
+	}
+	require.Equal(t, employee.ID, sundar.EmployeeID)
+	require.Equal(t, 2, sundar.OpportunityYTD)
+	require.Equal(t, 1, sundar.OpportunityWonYTD)
+	require.Equal(t, 1, sundar.OpportunityLostYTD)
+	require.Equal(t, 1250.5, sundar.RevenueYTD)
+}

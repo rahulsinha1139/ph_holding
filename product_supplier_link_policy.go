@@ -29,6 +29,12 @@ func (a *App) resolveSupplierForProduct(product ProductMaster) (*SupplierMaster,
 		}
 	}
 
+	for _, token := range []string{product.SupplierCode, product.ProductName, product.Description, product.ProductCode} {
+		if supplier, err := a.findSupplierByCommercialToken(token); err == nil {
+			return supplier, nil
+		}
+	}
+
 	return nil, fmt.Errorf("supplier not found for product %s", product.ProductCode)
 }
 

@@ -30,30 +30,9 @@ func filterMalformedDraftPOs(pos []PurchaseOrder) []PurchaseOrder {
 }
 
 func (a *App) inferSupplierForOrderItems(order Order, itemIDs []string) (SupplierMaster, error) {
-	selectedItemIDs := make(map[string]struct{}, len(itemIDs))
-	for _, itemID := range itemIDs {
-		if trimmed := strings.TrimSpace(itemID); trimmed != "" {
-			selectedItemIDs[trimmed] = struct{}{}
-		}
-	}
-
 	supplierIDs := make(map[string]struct{})
-	for _, orderItem := range order.Items {
-		if len(selectedItemIDs) > 0 {
-			if _, ok := selectedItemIDs[orderItem.ID]; !ok {
-				continue
-			}
-		}
-
-		if strings.TrimSpace(orderItem.ProductID) == "" {
-			continue
-		}
-
-		var product ProductMaster
-		if err := a.db.Select("id", "product_code", "supplier_id", "supplier_code").First(&product, "id = ?", orderItem.ProductID).Error; err != nil {
-			continue
-		}
-		if supplier, err := a.resolveSupplierForProduct(product); err == nil {
+	for _, orderItem := range orderItemsForSupplierOrder(order, itemIDs) {
+		if supplier, err := a.inferSupplierForOrderItem(orderItem); err == nil {
 			supplierIDs[supplier.ID] = struct{}{}
 		}
 	}
@@ -76,6 +55,256 @@ func (a *App) inferSupplierForOrderItems(order Order, itemIDs []string) (Supplie
 	}
 
 	return supplier, nil
+}
+
+func (a *App) inferSupplierForOrderItem(orderItem OrderItem) (*SupplierMaster, error) {
+	if a.db == nil {
+		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	if strings.TrimSpace(orderItem.ProductID) != "" {
+		var product ProductMaster
+		if err := a.db.Select("id", "product_code", "supplier_id", "supplier_code").First(&product, "id = ?", orderItem.ProductID).Error; err == nil {
+			if supplier, err := a.resolveSupplierForProduct(product); err == nil {
+				return supplier, nil
+			}
+		}
+	}
+
+	for _, lookup := range orderItemProductLookupValues(orderItem) {
+		var product ProductMaster
+		like := "%" + escapeLikeWildcards(lookup) + "%"
+		if err := a.db.Select("id", "product_code", "supplier_id", "supplier_code").
+			Where("product_code = ? OR sku = ? OR part_number = ? OR product_name LIKE ? ESCAPE '\\\\' OR description LIKE ? ESCAPE '\\\\'", lookup, lookup, lookup, like, like).
+			First(&product).Error; err != nil {
+			continue
+		}
+		if supplier, err := a.resolveSupplierForProduct(product); err == nil {
+			return supplier, nil
+		}
+	}
+
+	for _, token := range supplierLookupTokensFromOrderItem(orderItem) {
+		if supplier, err := a.findSupplierByCommercialToken(token); err == nil {
+			return supplier, nil
+		}
+	}
+
+	return nil, newError("SUPPLIER_NOT_FOUND", "Unable to determine supplier from selected order items", "")
+}
+
+func orderItemProductLookupValues(orderItem OrderItem) []string {
+	values := []string{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		upper := strings.ToUpper(value)
+		for _, existing := range values {
+			if strings.ToUpper(existing) == upper {
+				return
+			}
+		}
+		values = append(values, value)
+	}
+
+	add(orderItem.ProductCode)
+	add(orderItem.Model)
+	add(orderItem.Equipment)
+	add(orderItem.Description)
+	return values
+}
+
+func orderItemsForSupplierOrder(order Order, itemIDs []string) []OrderItem {
+	selectedItemIDs := make(map[string]struct{}, len(itemIDs))
+	for _, itemID := range itemIDs {
+		if trimmed := strings.TrimSpace(itemID); trimmed != "" {
+			selectedItemIDs[trimmed] = struct{}{}
+		}
+	}
+	hasExplicitSelection := len(selectedItemIDs) > 0
+
+	items := make([]OrderItem, 0, len(order.Items))
+	seen := make(map[string]struct{}, len(order.Items))
+	for _, orderItem := range order.Items {
+		if hasExplicitSelection {
+			if _, ok := selectedItemIDs[strings.TrimSpace(orderItem.ID)]; !ok {
+				continue
+			}
+		}
+		if isSupplierOrderSummaryItem(orderItem) {
+			continue
+		}
+		if !hasExplicitSelection {
+			signature := supplierOrderItemSignature(orderItem)
+			if signature != "" {
+				if _, ok := seen[signature]; ok {
+					continue
+				}
+				seen[signature] = struct{}{}
+			}
+		}
+		items = append(items, orderItem)
+	}
+	return items
+}
+
+func isSupplierOrderSummaryItem(orderItem OrderItem) bool {
+	description := strings.ToLower(strings.TrimSpace(orderItem.Description))
+	productCode := strings.ToLower(strings.TrimSpace(orderItem.ProductCode))
+	return strings.HasPrefix(description, "total for order") || productCode == "total for order"
+}
+
+func supplierOrderItemSignature(orderItem OrderItem) string {
+	quantity := roundTo3(orderItem.Quantity)
+	unitPrice := roundTo3(orderItem.UnitPrice)
+	totalPrice := roundTo3(orderItem.TotalPrice)
+	if totalPrice <= 0 && quantity > 0 && unitPrice > 0 {
+		totalPrice = roundTo3(quantity * unitPrice)
+	}
+	return strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(orderItem.ProductCode)),
+		strings.ToLower(strings.TrimSpace(orderItem.Description)),
+		strings.ToLower(strings.TrimSpace(orderItem.Equipment)),
+		strings.ToLower(strings.TrimSpace(orderItem.Model)),
+		fmt.Sprintf("%.3f", quantity),
+		fmt.Sprintf("%.3f", unitPrice),
+		fmt.Sprintf("%.3f", totalPrice),
+	}, "|")
+}
+
+func supplierLookupTokensFromOrderItem(orderItem OrderItem) []string {
+	haystack := strings.ToUpper(strings.Join([]string{
+		orderItem.ProductCode,
+		orderItem.Description,
+		orderItem.Equipment,
+		orderItem.Model,
+		orderItem.Specification,
+		orderItem.DetailedDescription,
+	}, " "))
+
+	tokens := []string{}
+	add := func(value string) {
+		value = strings.Trim(strings.TrimSpace(value), ":-_/.,;()[]{}")
+		if value == "" || len(value) < 2 {
+			return
+		}
+		upper := strings.ToUpper(value)
+		for _, existing := range tokens {
+			if strings.ToUpper(existing) == upper {
+				return
+			}
+		}
+		tokens = append(tokens, value)
+	}
+
+	known := []struct {
+		aliases []string
+		tokens  []string
+	}{
+		{[]string{"SERVOMEX", "SERVOTOUGH", "SVX", "SRVX"}, []string{"SERVOMEX", "SRVX", "SVX"}},
+		{[]string{"ENDRESS", "ENDRESS+HAUSER", "E+H", "E&H"}, []string{"ENDRESS", "ENDRESS+HAUSER", "EH"}},
+		{[]string{"ABB"}, []string{"ABB"}},
+		{[]string{"SIEMENS"}, []string{"SIEMENS", "SIEM"}},
+		{[]string{"EMERSON"}, []string{"EMERSON", "EMER"}},
+		{[]string{"YOKOGAWA"}, []string{"YOKOGAWA", "YOKO"}},
+		{[]string{"HONEYWELL"}, []string{"HONEYWELL", "HON"}},
+		{[]string{"GIC"}, []string{"GIC"}},
+	}
+	for _, rule := range known {
+		for _, alias := range rule.aliases {
+			if strings.Contains(haystack, alias) {
+				for _, token := range rule.tokens {
+					add(token)
+				}
+				break
+			}
+		}
+	}
+
+	for _, raw := range []string{orderItem.Equipment, orderItem.Description} {
+		parts := strings.FieldsFunc(raw, func(r rune) bool {
+			return r == '-' || r == '|' || r == '/' || r == ',' || r == ':'
+		})
+		if len(parts) > 0 {
+			first := strings.TrimSpace(parts[0])
+			if len(first) >= 3 && len(first) <= 40 {
+				add(first)
+			}
+		}
+	}
+
+	return tokens
+}
+
+func (a *App) findSupplierByCommercialToken(token string) (*SupplierMaster, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, newError("SUPPLIER_NOT_FOUND", "Supplier not found", "")
+	}
+
+	terms := supplierCommercialSearchTerms(token)
+
+	var supplier SupplierMaster
+	for _, term := range terms {
+		upperTerm := strings.ToUpper(term)
+		if err := a.db.Where(
+			"UPPER(supplier_code) = ? OR UPPER(supplier_name) = ?",
+			upperTerm,
+			upperTerm,
+		).First(&supplier).Error; err == nil {
+			return &supplier, nil
+		}
+	}
+
+	for _, term := range terms {
+		likeTerm := "%" + escapeLikeWildcards(term) + "%"
+		if err := a.db.Where(
+			"supplier_name LIKE ? ESCAPE '\\\\' OR brands_handled LIKE ? ESCAPE '\\\\' OR product_types LIKE ? ESCAPE '\\\\'",
+			likeTerm,
+			likeTerm,
+			likeTerm,
+		).First(&supplier).Error; err == nil {
+			return &supplier, nil
+		}
+	}
+
+	return nil, newError("SUPPLIER_NOT_FOUND", "Supplier not found", token)
+}
+
+func supplierCommercialSearchTerms(token string) []string {
+	terms := []string{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range terms {
+			if strings.EqualFold(existing, value) {
+				return
+			}
+		}
+		terms = append(terms, value)
+	}
+
+	add(token)
+	add(canonicalSupplierCodeRef(token))
+
+	upper := strings.ToUpper(strings.TrimSpace(token))
+	if strings.Contains(upper, "SERVOMEX") || strings.Contains(upper, "SERVOTOUGH") || upper == "SVX" || upper == "SRVX" || strings.HasPrefix(upper, "SVX-") || strings.HasPrefix(upper, "SRVX-") {
+		add("SERVOMEX")
+		add("Servomex")
+		add("SRVX")
+		add("SVX")
+	}
+	if strings.Contains(upper, "ENDRESS") || strings.Contains(upper, "E+H") || strings.Contains(upper, "E&H") || upper == "EH" {
+		add("Endress+Hauser")
+		add("ENDRESS")
+		add("EH")
+	}
+
+	return terms
 }
 
 func (a *App) normalizePurchaseOrder(po *PurchaseOrder) error {
@@ -760,11 +989,17 @@ func (a *App) CreatePOFromOrder(orderID string, supplierID string, itemIDs []str
 	if err := a.db.Preload("Items").First(&order, "id = ?", orderID).Error; err != nil {
 		return PurchaseOrder{}, newError("ORDER_NOT_FOUND", "Order not found", err.Error())
 	}
+	supplierOrderItems := orderItemsForSupplierOrder(order, itemIDs)
+	if len(supplierOrderItems) == 0 {
+		return PurchaseOrder{}, newError("NO_ITEMS", "No order line items are available for supplier PO creation", "")
+	}
+	orderForSupplier := order
+	orderForSupplier.Items = supplierOrderItems
 
 	// Load supplier to get default currency and payment terms
 	var supplier SupplierMaster
 	if strings.TrimSpace(supplierID) == "" {
-		inferredSupplier, err := a.inferSupplierForOrderItems(order, itemIDs)
+		inferredSupplier, err := a.inferSupplierForOrderItems(orderForSupplier, nil)
 		if err != nil {
 			return PurchaseOrder{}, err
 		}
@@ -789,38 +1024,26 @@ func (a *App) CreatePOFromOrder(orderID string, supplierID string, itemIDs []str
 		Items:            []PurchaseOrderItem{},
 	}
 
-	// If supplier has default currency, use it
-	// Note: SupplierMaster needs DefaultCurrency field added in future
-	// For now, we'll assume BHD
+	if strings.TrimSpace(supplier.PaymentTerms) != "" {
+		po.PaymentTerms = strings.TrimSpace(supplier.PaymentTerms)
+	}
 
 	// Add items
 	var subtotal float64
-	for _, orderItem := range order.Items {
+	for _, orderItem := range supplierOrderItems {
 		// Skip zero or negative quantity items
 		if orderItem.Quantity <= 0 {
 			log.Printf("⚠️ Skipping item %s with invalid quantity %.0f", orderItem.ProductCode, orderItem.Quantity)
 			continue
 		}
 
-		// Check if this item should be included
-		includeItem := len(itemIDs) == 0 // If no specific items, include all
-		if !includeItem {
-			for _, itemID := range itemIDs {
-				if orderItem.ID == itemID {
-					includeItem = true
-					break
-				}
-			}
-		}
-
-		if !includeItem {
-			continue
-		}
-
 		productProfile, err := a.loadProductOperationsProfile(orderItem.ProductID)
 		if err == nil && !productBelongsToSupplier(productProfile, supplierID) {
-			log.Printf("⚠️ Skipping item %s - belongs to different supplier", orderItem.ProductCode)
-			continue
+			inferredForItem, inferErr := a.inferSupplierForOrderItem(orderItem)
+			if inferErr != nil || inferredForItem.ID != supplierID {
+				log.Printf("⚠️ Skipping item %s - belongs to different supplier", orderItem.ProductCode)
+				continue
+			}
 		}
 
 		product := ProductMaster{}

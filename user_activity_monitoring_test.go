@@ -195,7 +195,7 @@ func TestUserActivityMonitoringFullDownloadSkipsRestrictedTables(t *testing.T) {
 	require.EqualValues(t, 1, localCount)
 }
 
-func TestDBSyncSkipsMissingRemoteActivityTables(t *testing.T) {
+func TestDBSyncReportsMissingRemoteActivityTables(t *testing.T) {
 	app := newActivityMonitoringTestApp(t)
 	app.currentUser = &User{DisplayName: "Rahul"}
 
@@ -220,12 +220,14 @@ func TestDBSyncSkipsMissingRemoteActivityTables(t *testing.T) {
 	}).Error)
 
 	pushed, err := app.syncTablePush(userActivityTableSessions, time.Time{})
-	require.NoError(t, err)
 	require.Equal(t, 0, pushed)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `remote table "user_activity_sessions" is missing`)
 
 	pulled, err := app.syncTablePull(userActivityTableSessions, time.Time{})
-	require.NoError(t, err)
 	require.Equal(t, 0, pulled)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `remote table "user_activity_sessions" is missing`)
 }
 
 func TestDBSyncPushUserActivityEventIsIdempotentWhenRemoteAlreadyHasSameID(t *testing.T) {

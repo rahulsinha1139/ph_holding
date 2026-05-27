@@ -26,8 +26,10 @@
     CompleteOfferFollowUp,
     GenerateOfferPDF,
     OpenExportedFile,
+    ExportReport,
     AddOfferNote,
     GetOfferNotes,
+    GetUnifiedOfferThread,
     DeleteOfferNote,
     DeleteOffer,
     GetOffersWithNoItems
@@ -61,6 +63,7 @@
     status: string;
     stage?: string;
     offer_number?: string;
+    offer_sort_key?: string;
     revision_number?: number;
     quotation_date?: string;
     validity_date?: string;
@@ -110,6 +113,8 @@
   let loading = true;
   let selectedCompany: 'PH Trading' | 'AHS Trading' = 'PH Trading';
   let selectedStage: OfferStage = 'all';
+  let searchQuery = '';
+  let extractingOffers = false;
   let offersWithNoItems: any[] = [];
   let legacyOfferShells: any[] = [];
   $: permissionList = Array.isArray($permissions) ? $permissions : [];
@@ -123,7 +128,9 @@
   // Won/Lost modal state
   let showWonModal = false;
   let showLostModal = false;
+  let showDeleteOfferModal = false;
   let actionOffer: OfferDisplay | null = null;
+  let deleteOfferTarget: OfferDisplay | null = null;
   let customerPONumber = '';
   let lostReason = '';
   let actionLoading = false;
@@ -278,10 +285,11 @@
   // DataTable columns configuration
   const columns = [
     {
-      key: 'offer_number',
+      key: 'offer_sort_key',
       label: 'Offer #',
       sortable: true,
-      width: '120px'
+      width: '120px',
+      render: (row: OfferDisplay) => escapeHtml(row.offer_number || row.id)
     },
     {
       key: 'customer_name',
@@ -448,13 +456,54 @@
   $: legacyOfferShells = offersWithNoItems.filter((item) => item?.is_legacy_shell);
   $: actionableOffersWithNoItems = offersWithNoItems.filter((item) => !item?.is_legacy_shell);
 
-  // Computed: Filter offers by selected stage
+  function offerMatchesSearch(offer: OfferDisplay, query: string): boolean {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return true;
+    const row = offer as Record<string, any>;
+    return [
+      offer.offer_number,
+      offer.customer_name,
+      row.rfq_reference,
+      row.customer_reference,
+      row.contact_person,
+      offer.issued_by,
+      row.prepared_by,
+      offer.stage,
+      offer.division
+    ].some((value) => String(value || '').toLowerCase().includes(normalizedQuery));
+  }
+
+  // Computed: Filter offers by selected stage and search query
   $: {
-    if (selectedStage === 'all') {
-      filteredOffers = companyScopedOffers;
-    } else {
-      filteredOffers = companyScopedOffers.filter(o => o.stage === selectedStage);
+    const stageScopedOffers = selectedStage === 'all'
+      ? companyScopedOffers
+      : companyScopedOffers.filter(o => o.stage === selectedStage);
+    filteredOffers = sortOffersByCommercialNumber(stageScopedOffers.filter((offer) => offerMatchesSearch(offer, searchQuery)));
+  }
+
+  function commercialOfferSortKey(value?: string): string {
+    const raw = String(value || '').trim().toUpperCase();
+    const match = raw.match(/^([A-Z]+-)?(\d+)-(\d+)$/);
+    if (!match) {
+      return `ZZZZ|9999|${raw}`;
     }
+    const prefix = (match[1] || 'PH-').replace(/-$/, '');
+    const sequence = Number(match[2]) || 0;
+    const year = Number(match[3]) || 0;
+    return `${prefix.padStart(4, '0')}|${String(year).padStart(4, '0')}|${String(sequence).padStart(8, '0')}`;
+  }
+
+  function compareCommercialOfferNumber(a: OfferDisplay, b: OfferDisplay): number {
+    const keyA = a.offer_sort_key || commercialOfferSortKey(a.offer_number);
+    const keyB = b.offer_sort_key || commercialOfferSortKey(b.offer_number);
+    if (keyA !== keyB) {
+      return keyB.localeCompare(keyA, undefined, { numeric: true, sensitivity: 'base' });
+    }
+    return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+  }
+
+  function sortOffersByCommercialNumber(rows: OfferDisplay[]): OfferDisplay[] {
+    return [...rows].sort(compareCommercialOfferNumber);
   }
 
   function handleCompanySelect(company: string) {
@@ -481,6 +530,19 @@
     }
   }
 
+  async function exportOffersExtract() {
+    extractingOffers = true;
+    try {
+      const path = await ExportReport('offer_extract', 'excel', JSON.stringify(filteredOffers));
+      await OpenExportedFile(path).catch(() => {});
+      toast.success(`Offer extract exported: ${path}`);
+    } catch (err) {
+      toast.danger(`Failed to export offers: ${String(err)}`);
+    } finally {
+      extractingOffers = false;
+    }
+  }
+
   function enrichOfferWithExpiry(offer: any): OfferDisplay {
     const now = new Date();
     const validityDate = offer.validity_date ? new Date(offer.validity_date) : new Date(offer.created_at || now);
@@ -496,6 +558,7 @@
       status: offer.stage || 'Quoted',
       stage: offer.stage || 'Quoted',
       offer_number: offer.offer_number || `OFR-${(offer.id || '').toString().slice(0, 8)}`,
+      offer_sort_key: commercialOfferSortKey(offer.offer_number || `OFR-${(offer.id || '').toString().slice(0, 8)}`),
       revision_number: Number(offer.revision_number ?? 0),
       quotation_date: offer.quotation_date || offer.created_at,
       validity_date: offer.validity_date,
@@ -939,10 +1002,6 @@
       return;
     }
 
-    if (!confirm(`Confirm marking offer ${actionOffer.offer_number} as LOST?\n\nReason: ${lostReason}\n\nThis action cannot be undone.`)) {
-      return;
-    }
-
     actionLoading = true;
     try {
       await MarkOfferLost(actionOffer.id, lostReason);
@@ -1052,7 +1111,8 @@
         openFollowUpModal(offer);
         break;
       case 'delete':
-        handleDeleteOffer(offer);
+        deleteOfferTarget = offer;
+        showDeleteOfferModal = true;
         break;
     }
   }
@@ -1060,8 +1120,6 @@
   async function handleDeleteOffer(offer: OfferDisplay) {
     if (!canDeleteOffers || actionLoading) return;
     const label = offer.offer_number || offer.id;
-    const confirmed = window.confirm(`Delete offer ${label}? This removes the live quote and keeps converted orders protected.`);
-    if (!confirmed) return;
 
     actionLoading = true;
     try {
@@ -1071,6 +1129,8 @@
         showViewModal = false;
         viewOffer = null;
       }
+      showDeleteOfferModal = false;
+      deleteOfferTarget = null;
       await loadOffers();
       await loadOffersWithNoItems();
     } catch (err) {
@@ -1141,9 +1201,27 @@
   async function loadOfferNotes(offerId: string) {
     notesLoading = true;
     try {
-      offerNotes = await GetOfferNotes(offerId) || [];
+      const thread = await GetUnifiedOfferThread(offerId).catch(() => null);
+      if (Array.isArray(thread) && thread.length > 0) {
+        offerNotes = thread.map((entry: any) => ({
+          id: entry.id,
+          content: entry.comment || entry.content || '',
+          created_by: entry.created_by || entry.source_screen || 'System',
+          created_at: entry.created_at,
+          note_date: entry.created_at,
+          source_type: entry.source_type || 'offer',
+          source_screen: entry.source_screen || 'Offer',
+          can_delete: (entry.source_type || 'offer') === 'offer' && !String(entry.id || '').includes(':')
+        }));
+      } else {
+        offerNotes = await GetOfferNotes(offerId) || [];
+      }
     } catch {
-      offerNotes = [];
+      try {
+        offerNotes = await GetOfferNotes(offerId) || [];
+      } catch {
+        offerNotes = [];
+      }
     } finally {
       notesLoading = false;
     }
@@ -1167,6 +1245,11 @@
 
   async function handleDeleteNote(noteId: string) {
     if (!viewOffer) return;
+    const note = offerNotes.find((item) => item.id === noteId);
+    if (note?.source_type && note.source_type !== 'offer') {
+      toast.warning('This note belongs to the linked RFQ or opportunity thread and is kept for audit history.');
+      return;
+    }
     notesLoading = true;
     try {
       await DeleteOfferNote(noteId);
@@ -1304,6 +1387,17 @@
             <span class="tab-count">{tab.count}</span>
           </button>
         {/each}
+      </div>
+      <div class="offers-toolbar">
+        <Input
+          type="search"
+          placeholder="Search offer #, customer, RFQ, issuer..."
+          bind:value={searchQuery}
+          class="offers-search"
+        />
+        <Button variant="secondary" on:click={exportOffersExtract} disabled={extractingOffers || loading}>
+          {extractingOffers ? 'Exporting...' : 'Extract Offers'}
+        </Button>
       </div>
     </Card>
 
@@ -1728,6 +1822,40 @@
   </svelte:fragment>
 </WabiModal>
 
+<!-- Delete Offer Modal -->
+<WabiModal bind:open={showDeleteOfferModal} title="Delete Offer" size="sm">
+  <div class="lost-form">
+    <p class="modal-desc">
+      Delete offer <strong>{deleteOfferTarget?.offer_number || deleteOfferTarget?.id}</strong>
+      for <strong>{deleteOfferTarget?.customer_name}</strong>?
+    </p>
+    <div class="modal-value lost">
+      <span class="label">This will remove:</span>
+      <span class="value">Offer, line items, notes, and follow-ups</span>
+    </div>
+    <p class="modal-desc">
+      Converted or won offers remain protected by the backend workflow.
+    </p>
+  </div>
+
+  <svelte:fragment slot="footer">
+    <Button
+      variant="ghost"
+      on:click={() => { showDeleteOfferModal = false; deleteOfferTarget = null; }}
+    >
+      Cancel
+    </Button>
+    <Button
+      variant="danger"
+      loading={actionLoading}
+      disabled={!deleteOfferTarget}
+      on:click={() => deleteOfferTarget && handleDeleteOffer(deleteOfferTarget)}
+    >
+      Delete Offer
+    </Button>
+  </svelte:fragment>
+</WabiModal>
+
 <svelte:window on:keydown={handleGlobalKeydown} />
 
 <!-- Follow-Up Modal -->
@@ -1933,7 +2061,12 @@
                 <div class="note-header">
                   <span class="note-date">{new Date(note.note_date || note.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                   <span class="note-author">{note.created_by || 'System'}</span>
-                  <button class="note-delete" on:click={() => handleDeleteNote(note.id)} title="Delete note" disabled={notesLoading}>&times;</button>
+                  {#if note.source_screen || note.source_type}
+                    <span class="note-source">{note.source_screen || note.source_type}</span>
+                  {/if}
+                  {#if note.can_delete !== false}
+                    <button class="note-delete" on:click={() => handleDeleteNote(note.id)} title="Delete note" disabled={notesLoading}>&times;</button>
+                  {/if}
                 </div>
                 <div class="note-content">{note.content}</div>
               </div>
@@ -2010,6 +2143,18 @@
     display: flex;
     gap: 8px;
     overflow-x: auto;
+  }
+
+  .offers-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .offers-toolbar :global(.input-wrapper) {
+    flex: 1;
+    min-width: 240px;
   }
 
   .stage-tab {
@@ -2836,6 +2981,16 @@
     font-size: 11px;
     color: var(--brand-indigo, #4F46E5);
     font-weight: 500;
+  }
+
+  .note-source {
+    padding: 2px 6px;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 6px;
+    color: var(--text-muted, #6B7280);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
   }
 
   .note-delete {

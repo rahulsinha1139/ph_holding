@@ -476,6 +476,7 @@
         { id: "relationships", label: "Relationships" },
         { id: "intelligence", label: "Intelligence" },
     ];
+    $: currentScreenTitle = screens.find((screen) => screen.id === currentScreen)?.label || "Workspace";
 
     let showNav = false;
     let isMobile = false;
@@ -965,7 +966,7 @@
             <!-- Main Content Area -->
             <div class="main-content-wrapper">
                 <!-- Header with Title & Actions -->
-                <EnterpriseHeader />
+                <EnterpriseHeader title={currentScreenTitle} />
                 
                 <!-- Screen Content -->
                 <main class="screen-content">

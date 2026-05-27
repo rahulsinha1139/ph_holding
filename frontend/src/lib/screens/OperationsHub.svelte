@@ -7,8 +7,9 @@
   // GRNScreen deprecated per user request - not needed
   import SupplierInvoicesScreen from './SupplierInvoicesScreen.svelte';
   import DeliveryNotesScreen from './DeliveryNotesScreen.svelte';
+  import InventoryScreen from './InventoryScreen.svelte';
   import type { Tab } from '$lib/types/components';
-  import { GetPurchaseOrders, GetSupplierInvoices, GetDeliveryNotes } from '../../../wailsjs/go/main/App';
+  import { GetPurchaseOrders, GetSupplierInvoices, GetDeliveryNotes, GetInventoryPendingFulfillmentReport } from '../../../wailsjs/go/main/App';
   import { toast } from '$lib/stores/toasts';
   import { pendingDNCreate } from '$lib/stores/navigation';
 
@@ -21,6 +22,7 @@
     { id: 'pos', label: 'Supplier POs', count: 0 },              // POs sent TO suppliers (clearly not customer orders)
     { id: 'supplier-invoices', label: 'Supplier Invoices', count: 0 },  // Invoices FROM suppliers
     { id: 'delivery-notes', label: 'Delivery Notes', count: 0 },        // DNs TO customers (links to customer invoices)
+    { id: 'inventory', label: 'Inventory', count: 0 },
   ];
 
   let activeTab = 'pos';
@@ -30,16 +32,18 @@
   async function loadCounts() {
     loading = true;
     try {
-      const [pos, invoices, deliveryNotes] = await Promise.all([
+      const [pos, invoices, deliveryNotes, pendingFulfillment] = await Promise.all([
         GetPurchaseOrders().catch(() => []),
         GetSupplierInvoices().catch(() => []),
         GetDeliveryNotes().catch(() => []),
+        GetInventoryPendingFulfillmentReport(500).catch(() => []),
       ]);
 
       // Update tab counts
       tabs[0].count = pos?.length || 0;
       tabs[1].count = invoices?.length || 0;
       tabs[2].count = deliveryNotes?.length || 0;
+      tabs[3].count = pendingFulfillment?.length || 0;
     } catch (err) {
       console.error('Failed to load counts:', err);
       toast.warning('Failed to load tab counts');
@@ -105,7 +109,7 @@
 
 <div data-embedded={embedded ? 'true' : undefined}>
   <ErrorBoundary name="Operations Hub">
-    <ModuleLayout title="Operations Hub" {tabs} {activeTab} on:tabChange={handleTabChange}>
+    <ModuleLayout title="Operations Hub" hideTitle={true} {tabs} {activeTab} on:tabChange={handleTabChange}>
       <svelte:fragment slot="header-actions">
         {#if activeTab === 'pos'}
           <Button variant="primary" on:click={handleNewPO}>
@@ -128,6 +132,8 @@
         <SupplierInvoicesScreen embedded={true} />
       {:else if activeTab === 'delivery-notes'}
         <DeliveryNotesScreen embedded={true} />
+      {:else if activeTab === 'inventory'}
+        <InventoryScreen embedded={true} />
       {/if}
     </ModuleLayout>
   </ErrorBoundary>

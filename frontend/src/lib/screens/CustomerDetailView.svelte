@@ -5,7 +5,7 @@
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import ContextTaskModal from '$lib/components/ContextTaskModal.svelte';
   import { toast } from '$lib/stores/toasts';
-  import { GetCustomerFullProfile, AddCustomerNote, UpdateCustomer, AddCustomerContact, DeleteCustomer } from '../../../wailsjs/go/main/App';
+  import { GetCustomerFullProfile, AddCustomerNote, UpdateCustomer, AddCustomerContact, UpdateCustomerContact, DeleteCustomerContact, DeleteCustomer } from '../../../wailsjs/go/main/App';
   import type { main } from '../../../wailsjs/go/models';
 
   export let customerId: string;
@@ -23,7 +23,22 @@
   let editForm: any = {};
   let saveLoading = false;
   let showContactModal = false;
-  let contactForm = { contact_name: '', job_title: '', email: '', phone: '', address: '', is_primary_contact: false };
+  let contactManagerMode = false;
+  let editingContactId = '';
+  let contactsScrollEl: HTMLDivElement;
+  const emptyContactForm = () => ({
+    contact_name: '',
+    job_title: '',
+    email: '',
+    phone: '',
+    address: '',
+    is_primary_contact: false,
+    is_decision_maker: false,
+    decision_role: '',
+    reports_to_contact_id: '',
+    reports_to_name: '',
+  });
+  let contactForm = emptyContactForm();
   let showDeleteConfirm = false;
   let deleteLoading = false;
   let customerDeleted = false;
@@ -121,14 +136,63 @@
   async function saveContact() {
     if (!contactForm.contact_name.trim()) { toast.warning('Name is required'); return; }
     try {
-      await AddCustomerContact({ ...contactForm, customer_id: customerId } as any);
-      toast.success('Contact added');
+      const payload = { ...contactForm, customer_id: customerId, id: editingContactId } as any;
+      if (editingContactId) {
+        await UpdateCustomerContact(payload);
+        toast.success('Contact updated');
+      } else {
+        await AddCustomerContact(payload);
+        toast.success('Contact added');
+      }
       showContactModal = false;
-      contactForm = { contact_name: '', job_title: '', email: '', phone: '', address: '', is_primary_contact: false };
+      editingContactId = '';
+      contactForm = emptyContactForm();
       await loadProfile();
     } catch (err) {
-      toast.danger('Failed to add contact: ' + err);
+      toast.danger('Failed to save contact: ' + err);
     }
+  }
+
+  function openAddContact() {
+    editingContactId = '';
+    contactForm = emptyContactForm();
+    showContactModal = true;
+  }
+
+  function editContact(contact: any) {
+    editingContactId = contact?.id || '';
+    contactForm = {
+      contact_name: contact?.contact_name || '',
+      job_title: contact?.job_title || '',
+      email: contact?.email || '',
+      phone: contact?.phone || '',
+      address: contact?.address || '',
+      is_primary_contact: Boolean(contact?.is_primary_contact),
+      is_decision_maker: Boolean(contact?.is_decision_maker),
+      decision_role: contact?.decision_role || '',
+      reports_to_contact_id: contact?.reports_to_contact_id || '',
+      reports_to_name: contact?.reports_to_name || '',
+    };
+    showContactModal = true;
+  }
+
+  async function deleteContact(contact: any) {
+    if (!contact?.id || !confirm(`Delete contact ${contact.contact_name || ''}?`)) return;
+    try {
+      await DeleteCustomerContact(contact.id);
+      toast.success('Contact removed');
+      await loadProfile();
+    } catch (err) {
+      toast.danger('Failed to remove contact: ' + err);
+    }
+  }
+
+  function scrollContacts(direction: number) {
+    contactsScrollEl?.scrollBy({ left: direction * 360, behavior: 'smooth' });
+  }
+
+  function customerContacts(): any[] {
+    return (profile?.contacts || []) as any[];
   }
 
   function goBack() {
@@ -145,6 +209,8 @@
 
   function closeContactModal() {
     showContactModal = false;
+    editingContactId = '';
+    contactForm = emptyContactForm();
   }
 
   function handleBackdropClick(event: MouseEvent, closeAction: () => void) {
@@ -231,11 +297,16 @@
     <div class="contacts-strip">
       <div class="contacts-strip-header">
         <h3 class="strip-title">CONTACTS</h3>
-        <button class="add-contact-btn-inline" on:click={() => showContactModal = true}>+ Add</button>
+        <div class="contacts-actions">
+          <button class="scroll-contact-btn" on:click={() => scrollContacts(-1)} aria-label="Scroll contacts left">&lt;</button>
+          <button class="scroll-contact-btn" on:click={() => scrollContacts(1)} aria-label="Scroll contacts right">&gt;</button>
+          <button class="add-contact-btn-inline" on:click={() => contactManagerMode = !contactManagerMode}>{contactManagerMode ? 'Done' : 'Manage'}</button>
+          <button class="add-contact-btn-inline" on:click={openAddContact}>+ Add</button>
+        </div>
       </div>
-      <div class="contacts-scroll-container">
-        {#if profile.contacts?.length > 0}
-          {#each profile.contacts as contact}
+      <div class="contacts-scroll-container" bind:this={contactsScrollEl}>
+        {#if customerContacts().length > 0}
+          {#each customerContacts() as contact}
             <div class="contact-card">
               <div class="contact-card-avatar">
                 {contact.contact_name?.charAt(0)?.toUpperCase() || '?'}
@@ -243,11 +314,20 @@
               <div class="contact-card-info">
                 <span class="contact-card-name">
                   {contact.contact_name}
-                  {#if contact.is_primary_contact}<span class="primary-tag">Primary</span>{/if}
+                {#if contact.is_primary_contact}<span class="primary-tag">Primary</span>{/if}
+                  {#if contact.is_decision_maker}<span class="primary-tag decision">Decision</span>{/if}
                 </span>
                 {#if contact.job_title}<span class="contact-card-role">{contact.job_title}</span>{/if}
+                {#if contact.decision_role}<span class="contact-card-detail">{contact.decision_role}</span>{/if}
+                {#if contact.reports_to_name}<span class="contact-card-detail">Reports to {contact.reports_to_name}</span>{/if}
                 {#if contact.email}<span class="contact-card-detail">{contact.email}</span>{/if}
                 {#if contact.phone}<span class="contact-card-detail">{contact.phone}</span>{/if}
+                {#if contactManagerMode}
+                  <div class="contact-card-actions">
+                    <button on:click={() => editContact(contact)}>Edit</button>
+                    <button class="danger-link" on:click={() => deleteContact(contact)}>Delete</button>
+                  </div>
+                {/if}
               </div>
             </div>
           {/each}
@@ -376,9 +456,9 @@
             <div class="metrics-grid">
               <Card padding="md">
                 <div class="metric">
-                  <span class="metric-label">Invoiced Revenue</span>
+                  <span class="metric-label">Commercial Value</span>
                   <span class="metric-value">{formatCurrency(profile.total_revenue)}</span>
-                  <span class="metric-currency">BHD</span>
+                  <span class="metric-currency">BHD all time</span>
                 </div>
               </Card>
               <Card padding="md">
@@ -403,7 +483,7 @@
             </div>
 
             <Card padding="md">
-              <h3 class="section-title">AR AGING</h3>
+              <h3 class="section-title">AR AGING · OPEN INVOICES ONLY</h3>
               <div class="aging-grid">
                 <div class="aging-item">
                   <span class="aging-label">Current</span>
@@ -598,12 +678,12 @@
     class="modal-backdrop"
     role="button"
     tabindex="0"
-    aria-label="Close add contact modal"
+    aria-label="Close contact modal"
     on:click={(event) => handleBackdropClick(event, closeContactModal)}
     on:keydown={(event) => handleBackdropKeydown(event, closeContactModal)}
   >
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-contact-title">
-      <h3 id="add-contact-title">Add Contact</h3>
+      <h3 id="add-contact-title">{editingContactId ? 'Edit Contact' : 'Add Contact'}</h3>
       <div class="form-group">
         <label for="contact-name">Name *</label>
         <input id="contact-name" type="text" bind:value={contactForm.contact_name} placeholder="Contact person name" />
@@ -625,13 +705,34 @@
         <textarea id="contact-address" bind:value={contactForm.address} rows="2" placeholder="Address"></textarea>
       </div>
       <div class="form-group">
+        <label for="contact-decision-role">Decision Role</label>
+        <select id="contact-decision-role" bind:value={contactForm.decision_role}>
+          <option value="">Not set</option>
+          <option value="Decision Maker">Decision Maker</option>
+          <option value="Influencer">Influencer</option>
+          <option value="Technical Evaluator">Technical Evaluator</option>
+          <option value="Finance Approver">Finance Approver</option>
+          <option value="End User">End User</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="contact-reports-to">Reports To</label>
+        <input id="contact-reports-to" type="text" bind:value={contactForm.reports_to_name} placeholder="Manager or decision chain" />
+      </div>
+      <div class="form-group">
         <label for="contact-primary">
           <input id="contact-primary" type="checkbox" bind:checked={contactForm.is_primary_contact} /> Primary Contact
         </label>
       </div>
+      <div class="form-group">
+        <label for="contact-decision-maker">
+          <input id="contact-decision-maker" type="checkbox" bind:checked={contactForm.is_decision_maker} /> Decision Maker
+        </label>
+      </div>
       <div class="modal-actions">
         <Button variant="ghost" on:click={closeContactModal}>Cancel</Button>
-        <Button variant="primary" on:click={saveContact}>Save Contact</Button>
+        <Button variant="primary" on:click={saveContact}>{editingContactId ? 'Update Contact' : 'Save Contact'}</Button>
       </div>
     </div>
   </div>
@@ -701,6 +802,7 @@
     align-items: center;
     margin-bottom: 12px;
   }
+  .contacts-actions { display: flex; align-items: center; gap: 6px; }
 
   .strip-title {
     font-size: 11px;
@@ -724,6 +826,17 @@
   .add-contact-btn-inline:hover {
     border-color: var(--brand-indigo, #1D1D1F);
     color: var(--text-primary);
+  }
+
+  .scroll-contact-btn {
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-weight: 700;
   }
 
   .contacts-scroll-container {
@@ -805,6 +918,11 @@
     text-transform: uppercase;
   }
 
+  .primary-tag.decision {
+    background: #eaf7ee;
+    color: #2f7d42;
+  }
+
   .contact-card-role {
     font-size: 12px;
     color: var(--text-secondary);
@@ -817,6 +935,28 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .contact-card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .contact-card-actions button {
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--surface);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 4px 8px;
+  }
+
+  .contact-card-actions .danger-link {
+    color: #b42318;
+    border-color: #f2c7c3;
+    background: #fff7f6;
   }
 
   .empty-contact {
@@ -880,7 +1020,7 @@
   .note-content { margin: 0; font-size: 14px; line-height: 1.5; }
 
   .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-  .modal { background: var(--surface); padding: 24px; border-radius: 12px; width: 400px; }
+  .modal { background: var(--surface); padding: 24px; border-radius: 12px; width: 440px; max-height: 88vh; overflow-y: auto; }
   .modal h3 { margin: 0 0 16px 0; }
   .form-group { margin-bottom: 16px; }
   .form-group label { display: block; font-size: 12px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; }

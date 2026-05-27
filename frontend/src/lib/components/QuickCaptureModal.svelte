@@ -313,6 +313,10 @@
         return typeMap[backendType] || backendType.toLowerCase();
     }
 
+    function selectDocumentType(typeID: string) {
+        selectedType = typeID;
+    }
+
     // Auto-detect document type once per OCR payload; manual operator changes must stick.
     $: if (ocrResult) {
         const sourceKey = `${fileName}:${ocrResult.document_type || ""}:${(ocrResult.text || "").slice(0, 80)}`;
@@ -1276,7 +1280,8 @@
                                     type="button"
                                     class="type-option"
                                     class:selected={selectedType === docType.id}
-                                    on:click={() => selectedType = docType.id}
+                                    on:pointerup={() => selectDocumentType(docType.id)}
+                                    on:click={() => selectDocumentType(docType.id)}
                                 >
                                     <span class="type-icon">{docType.icon}</span>
                                     <span class="type-name">{docType.label}</span>

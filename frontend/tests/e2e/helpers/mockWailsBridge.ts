@@ -182,6 +182,7 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
           ]),
         },
       ],
+      dataQualityReviews: [],
       offers: [
         {
           id: 'offer-1',
@@ -369,6 +370,35 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
           extracted_invoices: 'INV-2026-001',
         },
       ],
+      inventoryItems: [
+        {
+          id: 'stock-1',
+          product_code: 'FMR20',
+          warehouse_id: 'wh-main',
+          quantity_on_hand: 8,
+          quantity_reserved: 2,
+          quantity_available: 6,
+          unit_cost: 320,
+          total_value: 2560,
+          stock_status: 'InStock',
+          is_active: true,
+        },
+      ],
+      stockMovements: [
+        {
+          id: 'mov-1',
+          inventory_item_id: 'stock-1',
+          movement_number: 'GRN-2026-001',
+          movement_type: 'GRN',
+          direction: 'IN',
+          quantity: 8,
+          balance_before: 0,
+          balance_after: 8,
+          movement_date: '2026-03-25',
+          unit_cost: 320,
+          total_value: 2560,
+        },
+      ],
       employeeProfiles: [
         {
           id: 'emp-admin',
@@ -425,6 +455,10 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
           project_type: 'internal',
           description: 'Regression project used for E2E task routing coverage.',
           status: 'active',
+          customer_name: 'BAPCO',
+          end_user_name: 'BAPCO UPSTREAM',
+          opportunity_key: 'T-29',
+          customer_poc_name: 'Amina Yusuf',
         },
       ],
       collaborativeProjectMembers: [
@@ -553,6 +587,160 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
     const readWorkflowState = () => safeJson(window.localStorage.getItem(WORKFLOW_STATE_KEY), defaultWorkflowState());
     const writeWorkflowState = (value: any) => {
       window.localStorage.setItem(WORKFLOW_STATE_KEY, JSON.stringify(value));
+    };
+    const rolePermissionMap: Record<string, string[]> = {
+      admin: ['*'],
+      manager: [
+        'dashboard:view',
+        'customers:view',
+        'customers:edit',
+        'suppliers:view',
+        'suppliers:create',
+        'suppliers:edit',
+        'suppliers:update',
+        'invoices:view',
+        'invoices:create',
+        'invoices:update',
+        'invoices:approve',
+        'orders:view',
+        'orders:create',
+        'orders:edit',
+        'orders:update',
+        'reports:view',
+        'settings:view',
+        'settings:api_keys',
+        'data:import',
+        'documents:view',
+        'documents:create',
+        'documents:classify',
+        'intelligence:chat',
+        'projects:view',
+        'projects:create',
+        'projects:update',
+        'tasks:view',
+        'tasks:create',
+        'tasks:update',
+        'notifications:view',
+        'notifications:update',
+        'hr:view',
+        'hr:create',
+        'hr:update',
+        'offers:view',
+        'offers:create',
+        'offers:edit',
+        'po:view',
+        'po:create',
+        'po:update',
+        'po:approve',
+        'delivery_notes:view',
+        'delivery_notes:create',
+        'delivery_notes:update',
+        'delivery_notes:dispatch',
+        'delivery_notes:confirm',
+      ],
+      sales: [
+        'dashboard:view',
+        'customers:view',
+        'customers:edit',
+        'suppliers:view',
+        'suppliers:create',
+        'orders:view',
+        'orders:create',
+        'orders:update',
+        'offers:view',
+        'offers:create',
+        'offers:edit',
+        'rfq:view',
+        'rfq:create',
+        'invoices:view',
+        'invoices:create',
+        'invoices:update',
+        'payments:view',
+        'projects:view',
+        'tasks:view',
+        'tasks:create',
+        'tasks:update',
+        'notifications:view',
+        'notifications:update',
+        'po:view',
+        'po:create',
+        'delivery_notes:view',
+        'delivery_notes:create',
+        'delivery_notes:update',
+        'documents:view',
+        'documents:create',
+        'documents:classify',
+        'intelligence:chat',
+        'settings:api_keys',
+        'reports:view',
+      ],
+      operations: [
+        'dashboard:view',
+        'suppliers:view',
+        'suppliers:create',
+        'suppliers:edit',
+        'suppliers:update',
+        'po:view',
+        'po:create',
+        'po:update',
+        'po:send',
+        'projects:view',
+        'tasks:view',
+        'tasks:create',
+        'tasks:update',
+        'notifications:view',
+        'notifications:update',
+        'grn:view',
+        'grn:create',
+        'delivery_notes:view',
+        'delivery_notes:create',
+        'delivery_notes:update',
+        'delivery_notes:dispatch',
+        'delivery_notes:confirm',
+        'orders:view',
+        'orders:update',
+        'invoices:view',
+        'invoices:create',
+        'invoices:update',
+        'documents:view',
+        'documents:create',
+        'documents:classify',
+        'intelligence:chat',
+        'reports:view',
+        'settings:view',
+        'settings:api_keys',
+      ],
+      staff: [
+        'dashboard:view',
+        'customers:view',
+        'suppliers:view',
+        'invoices:view',
+        'orders:view',
+        'payments:view',
+        'documents:view',
+        'documents:create',
+        'documents:classify',
+        'intelligence:chat',
+        'reports:view',
+        'settings:view',
+        'settings:api_keys',
+        'offers:view',
+        'projects:view',
+        'tasks:view',
+        'tasks:create',
+        'tasks:update',
+        'notifications:view',
+        'notifications:update',
+      ],
+    };
+    const currentRole = () => String(opts.currentEmployeeRole || 'admin').toLowerCase();
+    const permissionsForRole = (role = currentRole()) => rolePermissionMap[String(role || 'staff').toLowerCase()] || rolePermissionMap.staff;
+    const hasMockPermission = (permission: string, role = currentRole()) => {
+      const perms = permissionsForRole(role);
+      if (perms.includes('*')) return true;
+      if (perms.includes(permission)) return true;
+      const [resource] = permission.split(':');
+      return perms.includes(`${resource}:*`);
     };
     const collaborativeDataReady = (state: any) =>
       Number(state.collaborativeWorkspaceRefreshCount || 0) >= Number(opts.collaborativeDataReadyAfterRefreshCount ?? 2);
@@ -966,6 +1154,44 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
       }
       window.setTimeout(() => resolve(value), delayMs);
     });
+    const updateMockProject = (projectID: any, updates: Record<string, any>) => {
+      if (!hasMockPermission('projects:update')) {
+        return Promise.reject(new Error("access denied: permission 'projects:update' required"));
+      }
+      const state = readWorkflowState();
+      const project = (state.collaborativeProjects || []).find((item: any) => String(item.id) === String(projectID));
+      if (!project) {
+        return Promise.reject(new Error('Project not found'));
+      }
+      const nextStatus = String((updates || {}).status || '').toLowerCase().trim();
+      if (['archived', 'shelved', 'deleted'].includes(nextStatus) && !hasMockPermission('projects:delete')) {
+        return Promise.reject(new Error("project archival/delete requires admin permission: permission 'projects:delete' required"));
+      }
+      const allowed = new Set([
+        'name',
+        'project_type',
+        'description',
+        'status',
+        'customer_id',
+        'opportunity_id',
+        'order_id',
+        'customer_name',
+        'end_user_name',
+        'opportunity_key',
+        'customer_poc_name',
+        'customer_poc_email',
+        'customer_poc_phone',
+        'starts_on',
+        'ends_on',
+      ]);
+      Object.entries(updates || {}).forEach(([key, value]) => {
+        if (!allowed.has(key)) return;
+        (project as any)[key] = typeof value === 'string' ? value.trim() : value;
+      });
+      project.updated_at = now();
+      writeWorkflowState(state);
+      return defaultValue(project);
+    };
 
     const app = new Proxy({}, {
       get(_, prop) {
@@ -974,9 +1200,9 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
             case 'ValidateLicense':
               return defaultValue({
                 valid: true,
-                role: 'admin',
-                display_name: 'Developer',
-                permissions: ['*'],
+                role: currentRole(),
+                display_name: currentRole() === 'admin' ? 'Developer Admin' : `${currentRole()} user`,
+                permissions: permissionsForRole(),
               });
             case 'NeedsSetup':
             case 'NeedsLicenseActivation':
@@ -985,10 +1211,36 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
               return defaultValue({
                 status: 'approved',
                 user_id: 'e2e-user',
-                user_name: 'Developer',
-                role_name: 'admin',
-                permissions: ['*'],
+                user_name: currentRole() === 'admin' ? 'Developer Admin' : `${currentRole()} user`,
+                role_name: currentRole(),
+                permissions: permissionsForRole(),
               });
+            case 'GetCurrentUserStub':
+              return defaultValue({
+                id: `license:${currentRole()}`,
+                username: currentRole() === 'admin' ? 'developer.admin' : `${currentRole()}.user`,
+                full_name: currentRole() === 'admin' ? 'Developer Admin' : `${currentRole()} user`,
+                display_name: currentRole() === 'admin' ? 'Developer Admin' : `${currentRole()} user`,
+                role_name: currentRole(),
+                role: {
+                  name: currentRole(),
+                  display_name: currentRole() === 'admin' ? 'Administrator' : currentRole(),
+                  permissions: JSON.stringify(permissionsForRole()),
+                },
+                is_active: true,
+              });
+            case 'ListRoles':
+              return defaultValue(Object.keys(rolePermissionMap).map((role) => ({
+                id: `role-${role}`,
+                name: role,
+                display_name: role === 'admin' ? 'Administrator' : role,
+                permissions: JSON.stringify(permissionsForRole(role)),
+                is_active: true,
+              })));
+            case 'GetUserPermissions':
+              return defaultValue(permissionsForRole());
+            case 'HasPermission':
+              return defaultValue(hasMockPermission(String(args[1] || args[0] || '')));
             case 'GetDBSyncStatus':
               return defaultValue({
                 configured: false,
@@ -996,6 +1248,75 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
                 sync_enabled: false,
                 last_sync: null,
               });
+            case 'PreviewCommercialDeploymentCleanup': {
+              if (!hasMockPermission('*')) {
+                return Promise.reject(new Error("access denied: permission '*' required"));
+              }
+              const state = readWorkflowState();
+              const tableCounts = [
+                ['supplier_payments', (state.supplierPayments || []).length],
+                ['supplier_invoice_items', (state.supplierInvoices || []).reduce((sum: number, invoice: any) => sum + Number((invoice.items || []).length), 0)],
+                ['supplier_invoices', (state.supplierInvoices || []).length],
+                ['purchase_order_items', (state.purchaseOrders || []).reduce((sum: number, po: any) => sum + Number((po.items || []).length), 0)],
+                ['purchase_orders', (state.purchaseOrders || []).length],
+                ['delivery_notes', (state.deliveryNotes || []).length],
+                ['expense_entries', (state.expenseEntries || []).length],
+                ['recurring_expenses', (state.recurringExpenses || []).length],
+                ['bank_expense_entries', (state.bankExpenseCandidates || []).length],
+              ];
+              const localTotal = tableCounts.reduce((sum: number, [, count]) => sum + Number(count || 0), 0);
+              return defaultValue({
+                dry_run: true,
+                confirmation_required: 'CONFIRM_PH_TRADING_CLEAN_DEPLOYMENT',
+                remote_required: false,
+                remote_connected: true,
+                local_total: localTotal,
+                remote_total: localTotal,
+                messages: [
+                  'Preserves customers, suppliers, products, RFQs, costing sheets, offers, orders, and customer invoices.',
+                  'Hides supplier invoices, supplier POs, GRNs, delivery notes, supplier payments, and expense actuals.',
+                ],
+                tables: tableCounts.map(([table, count]) => ({ table, local_rows: count, remote_rows: count })),
+              });
+            }
+            case 'ApplyCommercialDeploymentCleanup': {
+              if (!hasMockPermission('*')) {
+                return Promise.reject(new Error("access denied: permission '*' required"));
+              }
+              if (String(args[0] || '') !== 'CONFIRM_PH_TRADING_CLEAN_DEPLOYMENT') {
+                return Promise.reject(new Error('confirmation must equal CONFIRM_PH_TRADING_CLEAN_DEPLOYMENT'));
+              }
+              const state = readWorkflowState();
+              const tableCounts = [
+                ['supplier_payments', (state.supplierPayments || []).length],
+                ['supplier_invoice_items', (state.supplierInvoices || []).reduce((sum: number, invoice: any) => sum + Number((invoice.items || []).length), 0)],
+                ['supplier_invoices', (state.supplierInvoices || []).length],
+                ['purchase_order_items', (state.purchaseOrders || []).reduce((sum: number, po: any) => sum + Number((po.items || []).length), 0)],
+                ['purchase_orders', (state.purchaseOrders || []).length],
+                ['delivery_notes', (state.deliveryNotes || []).length],
+                ['expense_entries', (state.expenseEntries || []).length],
+                ['recurring_expenses', (state.recurringExpenses || []).length],
+                ['bank_expense_entries', (state.bankExpenseCandidates || []).length],
+              ];
+              const localTotal = tableCounts.reduce((sum: number, [, count]) => sum + Number(count || 0), 0);
+              state.supplierPayments = [];
+              state.supplierInvoices = [];
+              state.purchaseOrders = [];
+              state.deliveryNotes = [];
+              state.expenseEntries = [];
+              state.recurringExpenses = [];
+              state.bankExpenseCandidates = [];
+              writeWorkflowState(state);
+              return defaultValue({
+                dry_run: false,
+                confirmation_required: 'CONFIRM_PH_TRADING_CLEAN_DEPLOYMENT',
+                remote_required: false,
+                remote_connected: true,
+                local_total: localTotal,
+                remote_total: localTotal,
+                tables: tableCounts.map(([table, count]) => ({ table, local_rows: count, remote_rows: count })),
+              });
+            }
             case 'GetDashboardStats':
               return defaultValue({
                 total_revenue: 12000,
@@ -1155,6 +1476,58 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
             }
             case 'GetPipelineOpportunities':
               return defaultValue(readWorkflowState().pipeline);
+            case 'UpdateOpportunityCommercialFields': {
+              if (!hasMockPermission('offers:edit')) {
+                return Promise.reject(new Error("access denied: permission 'offers:edit' required"));
+              }
+              const [opportunityId, updates] = args;
+              const state = readWorkflowState();
+              const opportunity = findPipelineOpportunity(state, String(opportunityId));
+              if (!opportunity) {
+                return Promise.reject(new Error('Opportunity not found'));
+              }
+              const allowed = new Set([
+                'folder_number',
+                'folder_name',
+                'title',
+                'eh_ref',
+                'customer_id',
+                'customer_name',
+                'salesperson',
+                'division',
+                'delivery_terms',
+                'payment_terms',
+                'revenue_bhd',
+                'cost_bhd',
+                'profit_bhd',
+                'stage',
+                'spoc_status',
+                'wip_status',
+                'comment',
+                'owner_notes',
+                'product_type',
+              ]);
+              const applied: string[] = [];
+              Object.entries(updates || {}).forEach(([key, value]) => {
+                if (!allowed.has(key)) return;
+                (opportunity as any)[key] = typeof value === 'string' ? value.trim() : value;
+                applied.push(key);
+              });
+              if (applied.length === 0) {
+                return Promise.reject(new Error('no supported opportunity fields supplied'));
+              }
+              opportunity.updated_at = now();
+              state.opportunityComments = state.opportunityComments || [];
+              state.opportunityComments.unshift({
+                id: `opportunity-comment-${Date.now()}`,
+                opportunity_id: opportunity.id,
+                comment: `Updated fields: ${applied.join(', ')}`,
+                created_by: 'Developer Admin',
+                created_at: now(),
+              });
+              writeWorkflowState(state);
+              return defaultValue(opportunity);
+            }
             case 'GetOpportunityLineItems': {
               const state = readWorkflowState();
               const opportunity = findPipelineOpportunity(state, String(args[0]));
@@ -1190,8 +1563,37 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
               writeWorkflowState(state);
               return defaultValue(rfq);
             }
+            case 'PreviewTenderFolders':
+              return defaultValue([
+                {
+                  folder_path: '/tmp/tenders/29.0 BAPCO UPSTREAM-PIT',
+                  folder_name: '29.0 BAPCO UPSTREAM-PIT',
+                  workflow_key: 'T-29',
+                  title: 'BAPCO UPSTREAM-PIT',
+                  existing: false,
+                  status: 'RFQ Received / Tender',
+                },
+              ]);
+            case 'ImportTenderFolders': {
+              const state = readWorkflowState();
+              const tender = {
+                id: `tender-${Date.now()}`,
+                customer_name: 'Tender',
+                customer: 'Tender',
+                client: 'Tender',
+                title: 'BAPCO UPSTREAM-PIT',
+                folder_number: 'T-29',
+                revenue_bhd: 0,
+                stage: 'RFQ Received',
+                year: 2026,
+                comment: 'Imported from tender folder.',
+              };
+              state.pipeline = [tender, ...(state.pipeline || [])];
+              writeWorkflowState(state);
+              return defaultValue([tender]);
+            }
             case 'GetCurrentUserRole':
-              return defaultValue('admin');
+              return defaultValue(currentRole());
             case 'GetCurrentEmployeeContext':
               return defaultValue({
                 employee_id: 'emp-admin',
@@ -1383,7 +1785,11 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
             }
             case 'ListCollaborativeProjects': {
               const state = readWorkflowState();
-              return defaultValue(collaborativeDataReady(state) ? (state.collaborativeProjects || []) : []);
+              const activeOnly = Boolean(args[0]);
+              const projects = activeOnly
+                ? (state.collaborativeProjects || []).filter((project: any) => !['archived', 'shelved', 'deleted'].includes(String(project.status || '').toLowerCase()))
+                : (state.collaborativeProjects || []);
+              return defaultValue(collaborativeDataReady(state) ? projects : []);
             }
             case 'CreateCollaborativeProject': {
               const state = readWorkflowState();
@@ -1394,6 +1800,12 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
                 project_type: String(payload.project_type || 'internal'),
                 description: String(payload.description || ''),
                 status: 'active',
+                customer_name: String(payload.customer_name || ''),
+                end_user_name: String(payload.end_user_name || ''),
+                opportunity_key: String(payload.opportunity_key || ''),
+                customer_poc_name: String(payload.customer_poc_name || ''),
+                customer_poc_email: String(payload.customer_poc_email || ''),
+                customer_poc_phone: String(payload.customer_poc_phone || ''),
                 owner_employee_id: 'emp-peri',
                 owner_name: 'Peri',
                 created_at: now(),
@@ -1403,6 +1815,17 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
               writeWorkflowState(state);
               return defaultValue(project);
             }
+            case 'UpdateCollaborativeProject': {
+              const [projectID, updates] = args;
+              return updateMockProject(projectID, updates || {});
+            }
+            case 'ArchiveCollaborativeProject':
+            case 'ShelveCollaborativeProject': {
+              const status = String(prop) === 'ArchiveCollaborativeProject' ? 'archived' : 'shelved';
+              return updateMockProject(args[0], { status });
+            }
+            case 'DeleteCollaborativeProject':
+              return updateMockProject(args[0], { status: 'deleted' });
             case 'ListMyCollaborativeTasks': {
               const state = readWorkflowState();
               return defaultValue(collaborativeDataReady(state) ? (state.collaborativeTasks || []) : []);
@@ -1550,6 +1973,8 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
               return defaultValue(undefined);
             case 'PickFile':
               return defaultValue('/tmp/ph-holdings-smoke/bank-statement.pdf');
+            case 'BrowseFolder':
+              return defaultValue('/tmp/tenders');
             case 'ProcessDocumentWithOCR':
               (window as any).__wailsOCRCalls.push({
                 filePath: args[0],
@@ -1620,6 +2045,46 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
               state.opportunityComments = (state.opportunityComments || []).filter((item: any) => String(item.id) !== commentId);
               writeWorkflowState(state);
               return defaultVoid();
+            }
+            case 'DeleteOpportunity': {
+              const opportunityId = String(args[0] || '');
+              const state = readWorkflowState();
+              state.opportunities = (state.opportunities || []).filter((item: any) => String(item.id) !== opportunityId);
+              writeWorkflowState(state);
+              return defaultVoid();
+            }
+            case 'GetUnifiedOfferThread': {
+              const state = readWorkflowState();
+              const offer = (state.offers || []).find((item: any) => String(item.id) === String(args[0]));
+              if (!offer) {
+                return Promise.reject(new Error('Offer not found'));
+              }
+              const keys = new Set([offer.offer_number, offer.customer_reference, offer.folder_number].filter(Boolean).map(String));
+              const entries: any[] = [
+                {
+                  id: `offer-note-${offer.id}`,
+                  source_type: 'offer',
+                  source_id: offer.id,
+                  workflow_key: offer.customer_reference || offer.offer_number,
+                  comment: 'Mock offer commercial note',
+                  created_by: 'Developer Admin',
+                  created_at: now(),
+                },
+              ];
+              (state.pipeline || []).forEach((opportunity: any) => {
+                if (keys.has(String(opportunity.folder_number || '')) || keys.has(String(opportunity.eh_ref || ''))) {
+                  entries.push({
+                    id: `opp-note-${opportunity.id}`,
+                    source_type: 'opportunity',
+                    source_id: opportunity.id,
+                    workflow_key: opportunity.folder_number,
+                    comment: opportunity.comment || 'Mock opportunity note',
+                    created_by: 'Developer Admin',
+                    created_at: now(),
+                  });
+                }
+              });
+              return defaultValue(entries);
             }
             case 'CreateCostingSheet':
             case 'UpdateCostingSheet':
@@ -1892,6 +2357,119 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
               return defaultValue(buildBalanceSheet(readWorkflowState(), args[0], args[1]));
             case 'GetJournalEntries':
               return defaultValue(readWorkflowState().journalEntries || []);
+            case 'PreviewCustomerDataQuality':
+            {
+              const state = readWorkflowState();
+              const reviewsByIssue = new Map((state.dataQualityReviews || []).map((review: any) => [String(review.issue_id), review]));
+              const issues = [
+                {
+                  id: 'dq-duplicate-bapco',
+                  severity: 'medium',
+                  issue_type: 'duplicate_customer',
+                  entity_type: 'customer',
+                  entity_id: 'cust-1',
+                  summary: 'Possible duplicate customer group',
+                  detail: 'BAPCO / BAPCO WLL',
+                  primary_action: 'Review and merge if correct',
+                },
+                {
+                  id: 'dq-missing-link',
+                  severity: 'high',
+                  issue_type: 'missing_customer_link',
+                  entity_type: 'opportunity',
+                  entity_id: 'pipe-1',
+                  summary: 'Opportunity is missing a customer link',
+                  detail: 'Gas Analyzer Package',
+                  primary_action: 'Assign correct customer',
+                },
+              ]
+                .map((issue) => {
+                  const review = reviewsByIssue.get(issue.id) as any;
+                  if (!review) return issue;
+                  return {
+                    ...issue,
+                    review_status: review.status,
+                    review_note: review.review_note,
+                    reviewed_by: review.reviewed_by,
+                    reviewed_at: review.reviewed_at,
+                  };
+                })
+                .filter((issue: any) => !['resolved', 'dismissed'].includes(String(issue.review_status || '').toLowerCase()));
+              return defaultValue(issues);
+            }
+            case 'GetDataQualityReviewHistory':
+              return defaultValue(readWorkflowState().dataQualityReviews || []);
+            case 'GetSyncCoverageReport':
+              return defaultValue({
+                generated_at: now(),
+                sync_tables_total: 104,
+                local_tables_total: 108,
+                remote_online: true,
+                missing_local_tables: [],
+                missing_remote_tables: [],
+                untracked_local_tables: ['ocr_documents'],
+                tables: [],
+              });
+            case 'MigrateRemoteSchema':
+              return defaultValue({
+                status: 'ok',
+                remote_tables_checked: 104,
+                missing_remote_tables: [],
+                generated_at: now(),
+              });
+            case 'ReviewDataQualityIssue': {
+              if (!hasMockPermission('*')) {
+                return Promise.reject(new Error('data quality review requires admin permission'));
+              }
+              const state = readWorkflowState();
+              const issue = args[0] || {};
+              const status = String(args[1] || '').toLowerCase().trim();
+              if (!['reviewed', 'resolved', 'dismissed'].includes(status)) {
+                return Promise.reject(new Error(`unsupported data quality review action ${status}`));
+              }
+              const review = {
+                id: `dq-review-${String(issue.id || Date.now())}`,
+                issue_id: String(issue.id || ''),
+                issue_type: String(issue.issue_type || ''),
+                severity: String(issue.severity || ''),
+                entity_type: String(issue.entity_type || ''),
+                entity_id: String(issue.entity_id || ''),
+                summary: String(issue.summary || ''),
+                detail: String(issue.detail || ''),
+                primary_action: String(issue.primary_action || ''),
+                status,
+                review_note: String(args[2] || ''),
+                reviewed_by_id: `license:${currentRole()}`,
+                reviewed_by: 'Developer Admin',
+                reviewed_at: now(),
+                updated_at: now(),
+              };
+              state.dataQualityReviews = [
+                review,
+                ...(state.dataQualityReviews || []).filter((item: any) => String(item.issue_id) !== review.issue_id),
+              ];
+              writeWorkflowState(state);
+              return defaultValue(review);
+            }
+            case 'GetInventoryItems':
+              return defaultValue(readWorkflowState().inventoryItems || []);
+            case 'GetInventoryMovementsWorkspace':
+              return defaultValue(readWorkflowState().stockMovements || []);
+            case 'GetInventoryPendingFulfillmentReport':
+              return defaultValue([
+                {
+                  order_id: 'order-1',
+                  order_number: 'ORD-2026-001',
+                  customer_name: 'BAPCO',
+                  product_code: 'FMR20',
+                  description: 'Temperature transmitter',
+                  ordered_quantity: 10,
+                  delivered_quantity: 4,
+                  invoiced_quantity: 2,
+                  pending_quantity: 6,
+                  status: 'In Progress',
+                },
+              ]);
             case 'ListExpenseCategories':
               return defaultValue(readWorkflowState().expenseCategories || []);
             case 'ListExpenseVendors':

@@ -52,6 +52,7 @@ type LicenseKey struct {
 	Activated   bool       `gorm:"default:false" json:"activated"`
 	ActivatedAt *time.Time `json:"activated_at"`
 	IssuedAt    time.Time  `gorm:"autoCreateTime" json:"issued_at"`
+	UpdatedAt   time.Time  `gorm:"autoUpdateTime" json:"updated_at"`
 	ExpiresAt   *time.Time `json:"expires_at"`                 // Optional expiry
 	Notes       string     `gorm:"size:255" json:"notes"`      // Admin notes
 	CreatedBy   string     `gorm:"size:100" json:"created_by"` // Who generated this key
@@ -145,17 +146,14 @@ var rolePermissions = map[string][]string{
 		"dashboard:view",
 		"offers:view", "offers:create", "offers:edit",
 		"orders:view", "orders:create", "orders:edit", "orders:update",
-		"finance:view", "finance:create", "finance:delete", // Bank reconciliation needs finance:delete
-		"reports:view", "reports:generate", "reports:export",
-		"expenses:view", "expenses:create", "expenses:update",
-		"payroll:view", "payroll:create", "payroll:update", "payroll:approve",
+		"reports:view",
 		"invoices:view", "invoices:create", "invoices:update", // Invoice management
-		"payments:view", "payments:create", "payments:update", "payments:record", // Payment management (NO payments:delete - admin only)
 		"settings:view", "settings:api_keys",
 		"customers:view", "customers:edit", "customers:delete",
 		"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
 		"po:view", "po:create", "po:update", "po:approve", // Full PO management
 		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
+		"inventory:view", "inventory:create", "inventory:update",
 		"projects:view", "projects:create", "projects:update",
 		"tasks:view", "tasks:create", "tasks:update",
 		"notifications:view", "notifications:update",
@@ -180,6 +178,7 @@ var rolePermissions = map[string][]string{
 		"suppliers:view", "suppliers:create",
 		"po:view", "po:create", // Sales can raise supplier POs tied to their commercial flow
 		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update",
+		"inventory:view",
 		"documents:create", "documents:view", "documents:classify", // OCR features for scanning customer docs
 		"intelligence:chat",
 		"settings:api_keys",
@@ -196,6 +195,7 @@ var rolePermissions = map[string][]string{
 		"grn:view", "grn:create",
 		"po:view", "po:create", "po:update", "po:send", // Full PO lifecycle
 		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
+		"inventory:view", "inventory:create", "inventory:update",
 		"documents:create", "documents:view", "documents:classify", // OCR features for scanning supplier docs
 		"intelligence:chat",
 		"settings:view", "settings:api_keys",
@@ -207,6 +207,7 @@ var rolePermissions = map[string][]string{
 		"invoices:view",
 		"orders:view",
 		"payments:view",
+		"inventory:view",
 		"documents:create", "documents:view", "documents:classify",
 		"intelligence:chat",
 		"reports:view",

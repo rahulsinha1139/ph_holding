@@ -28,7 +28,8 @@ test.describe('Opportunity and finance regression coverage', () => {
 
     await page.getByText('Close', { exact: true }).click();
     await page.getByRole('button', { name: /ACTIUM PG/i }).first().click();
-    await expect(page.getByText('Updated regression note for deployment readiness.')).toBeVisible();
+    await expect(page.getByText('Updated regression note for deployment readiness.').first()).toBeVisible();
+    await expect(page.getByLabel('Opportunity change log').getByText('Updated regression note for deployment readiness.')).toBeVisible();
   });
 
   test('supplier invoice edit flow can mark an invoice paid and request payment entry creation', async ({ page }) => {

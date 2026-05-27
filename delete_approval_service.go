@@ -72,6 +72,21 @@ func (a *App) currentSessionHasAdminRoleOnly() bool {
 	return false
 }
 
+func (a *App) requireAdminDelete(action string) error {
+	if a.currentSessionHasAdminRoleOnly() {
+		return nil
+	}
+	role := strings.TrimSpace(a.GetCurrentUserRole())
+	if role == "" {
+		role = "unknown"
+	}
+	if strings.TrimSpace(action) == "" {
+		action = "delete this record"
+	}
+	log.Printf("🚫 ADMIN DELETE BLOCKED: role '%s' attempted to %s", role, action)
+	return fmt.Errorf("not authorized: only admins can %s (your role: %s)", action, role)
+}
+
 func (a *App) guardDeleteOrRequest(permission, entityType, entityID, entityLabel string) (bool, error) {
 	if a.currentSessionHasAdminRoleOnly() {
 		if err := a.requirePermission(permission); err != nil {

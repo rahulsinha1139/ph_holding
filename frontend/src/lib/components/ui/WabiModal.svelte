@@ -22,6 +22,13 @@
     }
   }
 
+  function handleModalKeydown(e: KeyboardEvent) {
+    e.stopPropagation();
+    if (e.key === 'Escape' && open) {
+      close();
+    }
+  }
+
   const sizes = {
     sm: '380px',
     md: '500px',
@@ -46,6 +53,7 @@
       disabled={!closeOnOverlay}
       on:click={close}
     ></button>
+    <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
     <div
       class="modal-container"
       style="max-width: {sizes[size]}"
@@ -55,6 +63,7 @@
       aria-modal="true"
       aria-labelledby={title ? modalTitleId : undefined}
       aria-label={!title ? 'Modal dialog' : undefined}
+      on:keydown={handleModalKeydown}
     >
       {#if title || showClose}
         <header class="modal-header">

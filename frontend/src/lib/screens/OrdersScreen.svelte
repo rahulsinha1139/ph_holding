@@ -14,7 +14,10 @@
     CreateProformaInvoice,
     CreatePOFromOrder,
     QuickMarkOrderDelivered,
-    GetOrdersWithNoItems
+    PreviewOrderDeleteCascade,
+    GetOrdersWithNoItems,
+    ExportReport,
+    OpenExportedFile
   } from '../../../wailsjs/go/main/App';
   import { toast } from '$lib/stores/toasts';
   import { pendingDNCreate } from '$lib/stores/navigation';
@@ -64,6 +67,7 @@
   let availableYears: string[] = [];
   let availableCustomers: string[] = [];
   let ordersWithNoItems: any[] = [];
+  let exportingExtract = false;
 
   // Create/Edit modal
   let showModal = false;
@@ -445,6 +449,19 @@
     filteredOrders = result;
   }
 
+  async function exportOrdersExtract() {
+    exportingExtract = true;
+    try {
+      const path = await ExportReport('customer_order_extract', 'excel', JSON.stringify(filteredOrders));
+      await OpenExportedFile(path).catch(() => {});
+      toast.success(`Customer order extract exported: ${path}`);
+    } catch (err) {
+      toast.danger(`Failed to export orders: ${errorMessage(err)}`);
+    } finally {
+      exportingExtract = false;
+    }
+  }
+
   $: {
     searchQuery;
     activeFilter;
@@ -783,7 +800,10 @@
 
     isProcessingAction = true;
     try {
-      const po = await CreatePOFromOrder(order.id, '', []);
+      const selectedItemIDs = orderItems
+        .map((item) => item.id)
+        .filter((id): id is string => Boolean(id));
+      const po = await CreatePOFromOrder(order.id, '', selectedItemIDs);
       toast.success(`Supplier order ${po.po_number} created`);
       showDetailModal = false;
       window.dispatchEvent(new CustomEvent('navigateToScreen', {
@@ -826,9 +846,26 @@
   async function handleDeleteOrder(order: main.Order) {
     if (isDeleting) return;
 
+    let deletePreview: any = null;
+    try {
+      deletePreview = await PreviewOrderDeleteCascade(order.id);
+    } catch (err) {
+      toast.danger('Could not inspect linked records: ' + errorMessage(err));
+      return;
+    }
+
+    if (deletePreview?.blocked) {
+      toast.danger(deletePreview.block_reason || 'This order has protected linked records and cannot be deleted.');
+      return;
+    }
+
+    const summary = Array.isArray(deletePreview?.summary) && deletePreview.summary.length > 0
+      ? deletePreview.summary.map((item: string) => `- ${item}`).join('\n')
+      : '- order record';
+
     const confirmed = await askActionConfirmation({
       title: 'Delete Order',
-      message: `Delete order ${order.order_number}? This cannot be undone.`,
+      message: `Delete order ${order.order_number}? This cannot be undone.\n\nThis will also delete:\n${summary}`,
       confirmLabel: 'Delete Order',
       variant: 'danger'
     });
@@ -926,6 +963,9 @@
           <option value={status.key}>{status.label}</option>
         {/each}
       </select>
+      <Button variant="secondary" on:click={exportOrdersExtract} disabled={exportingExtract || loading}>
+        {exportingExtract ? 'Exporting...' : 'Extract'}
+      </Button>
     </div>
 
     {#if loading}
@@ -1105,6 +1145,9 @@
           class="search-input"
         />
       </div>
+      <Button variant="secondary" on:click={exportOrdersExtract} disabled={exportingExtract || loading}>
+        {exportingExtract ? 'Exporting...' : 'Extract Orders'}
+      </Button>
     </div>
 
     <!-- DataTable -->
@@ -2152,6 +2195,7 @@
     color: var(--text-primary);
     font-size: 14px;
     line-height: 1.5;
+    white-space: pre-line;
   }
 
   .confirm-actions {

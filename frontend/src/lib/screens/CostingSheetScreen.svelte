@@ -32,7 +32,7 @@
         SetActiveCostingRevision,
         CloneCostingAsNewRevision,
         GetSettings,
-        GetPreparedByOptions,
+        GetCurrentUserStub,
         AttachCostingSheetFileWithDialog,
         ListCostingSheetAttachments,
         DeleteCostingSheetAttachment,
@@ -56,6 +56,7 @@
     let previewOpportunities: any[] = [];
     let selectedOpportunityId: string = '';
     let selectedOpportunity: any = null;
+    let linkOpportunityId: string = '';
     let sourceOfferId = '';
     let sourceOfferNumber = '';
     let showCostingForm = false;
@@ -270,36 +271,11 @@ Please find our pricing and scope below. We trust the proposal meets your requir
     // Division options (sister companies)
     const divisionOptions = ['PH Trading', 'AHS Trading'];
     let lastAppliedDivision = header.division;
-    // Staff list for "Prepared By" dropdown
-    const staffList = [
-        { name: 'EBIN CHACKO', title: 'Technical Sales Engineer', phone: '+973 36418072', email: 'ebin.chacko@platinumholdings.com.bh' },
-        { name: 'Periyasamy Neelakandan', title: 'Assistant Sales Manager', phone: '+973 34128132', email: 'periyasamy.n@platinumholdings.com.bh' },
-        { name: 'V.M.Sundar', title: 'Business Development Manager', phone: '+973 38260157', email: 'vm.sundar@platinumholdings.com.bh' },
-        { name: 'RAMYA BASKARAN', title: '', phone: '+973 38890513', email: 'support@platinumholdings.com.bh' },
-        { name: 'STANLEY VAZ', title: 'Chief Operating Officer', phone: '+973 36623662', email: '' },
-        { name: 'Abhie Kore', title: 'General Manager', phone: '+973 36771513', email: '' },
-    ];
-    let preparedByOptions: string[] = staffList.map((staff) => staff.name);
+    let currentPreparedByName = '';
 
-    function mergePreparedByNames(...groups: Array<Array<string | null | undefined>>): string[] {
-        const seen = new Set<string>();
-        const names: string[] = [];
-        for (const group of groups) {
-            for (const rawName of group) {
-                const name = String(rawName || '').trim();
-                if (name && !seen.has(name.toLowerCase())) {
-                    seen.add(name.toLowerCase());
-                    names.push(name);
-                }
-            }
-        }
-        return names;
+    function resolveUserDisplayName(user: any): string {
+        return String(user?.display_name || user?.full_name || user?.username || user?.email || '').trim();
     }
-
-    $: preparedBySelectOptions = mergePreparedByNames(
-        preparedByOptions,
-        header.preparedBy ? [header.preparedBy] : []
-    );
 
     // Dropdown options from Excel "Code" sheet
     const deliveryOptions = [
@@ -777,20 +753,20 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     async function loadData() {
         loading = true;
         try {
-            const [c, s, rfqs, pipeline, settingsResult, preparedByResult] = await Promise.all([
+            const [c, s, rfqs, pipeline, settingsResult, currentUserResult] = await Promise.all([
                 ListCustomers(500, 0),
                 GetCostingSheets(20).catch(() => []),
                 GetRFQs(200, 0).catch(() => []),
                 GetPipelineOpportunities(500, 0).catch(() => []),
                 GetSettings().catch(() => null),
-                GetPreparedByOptions().catch(() => []),
+                GetCurrentUserStub().catch(() => null),
             ]);
             customers = c || [];
             costingSheets = s || [];
-            preparedByOptions = mergePreparedByNames(
-                staffList.map((staff) => staff.name),
-                (preparedByResult || []).map((name: any) => String(name || ''))
-            );
+            currentPreparedByName = resolveUserDisplayName(currentUserResult);
+            if (currentPreparedByName && (!header.preparedBy || header.preparedBy.toLowerCase() === 'system')) {
+                header.preparedBy = currentPreparedByName;
+            }
             const pipelineNormalized = (pipeline || []).map(normalizePipelineOpportunity);
             const liveRfqs = (rfqs || [])
                 .filter((rfq: any) => String(rfq?.rfq_number || '').trim())
@@ -1164,6 +1140,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         resumeDraftRestoreForSession();
         selectedOpportunityId = '';
         selectedOpportunity = null;
+        linkOpportunityId = '';
         sourceOfferId = '';
         sourceOfferNumber = '';
         showCostingForm = true;
@@ -1175,6 +1152,41 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         costingAttachments = [];
         isDirty = true;
         persistCostingDraft();
+    }
+
+    function linkBlankCostingToOpportunity() {
+        const match = opportunities.find((opp: any) => String(opp.id) === String(linkOpportunityId));
+        if (!match) {
+            toast.warning('Select an opportunity to link this costing sheet.');
+            return;
+        }
+
+        selectedOpportunityId = String(match.id);
+        selectedOpportunity = match;
+
+        const customerName = match.client || match.customer || match.customer_name || header.customerName || '';
+        const projectName = match.project || match.project_name || match.title || '';
+        const opportunityReference = getOpportunityUserReference(match);
+        const opportunityFolder = getOpportunityFolderReference(match);
+        const customerResolution = resolveCustomerForCostingPayload('', customerName);
+
+        header = {
+            ...header,
+            customerId: customerResolution.customerId,
+            customerName: customerResolution.customerName || customerName,
+            rfqReference: opportunityReference,
+            folderNumber: opportunityFolder || opportunityReference,
+            costingId: opportunityReference || opportunityFolder || header.costingId,
+            subject: header.subject || (projectName ? `Sub: ${projectName}` : header.subject),
+            division: match.division || header.division || 'PH Trading',
+            paymentTerms: header.paymentTerms || match.payment_terms || '30 days from Date of Delivery',
+            deliveryTerms: header.deliveryTerms || match.delivery_terms || 'DAP Bahrain at your store or PH Trading',
+        };
+
+        linkOpportunityId = '';
+        isDirty = true;
+        persistCostingDraft();
+        toast.success(`Linked costing to ${getOpportunityDisplayReference(match)}`);
     }
 
     function returnToCostingList() {
@@ -1841,6 +1853,19 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         <span class="label">Blank Costing</span>
                         <span class="hint">(not linked to an opportunity)</span>
                     </div>
+                    <div class="link-opportunity-control">
+                        <select bind:value={linkOpportunityId} class="input-sm" aria-label="Link blank costing to opportunity">
+                            <option value="">Link opportunity...</option>
+                            {#each opportunities as opp}
+                                <option value={String(opp.id)}>
+                                    {getOpportunityDisplayReference(opp)} • {opp.client || opp.customer || 'Unknown'} - {opp.project || opp.project_name || 'New RFQ'}
+                                </option>
+                            {/each}
+                        </select>
+                        <Button variant="secondary" size="sm" on:click={linkBlankCostingToOpportunity} disabled={!linkOpportunityId}>
+                            Link Opportunity
+                        </Button>
+                    </div>
                 {/if}
             </div>
 
@@ -1969,10 +1994,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         </div>
                         <div class="field-group">
                             <span class="field-label">Prepared By</span>
-                            <select bind:value={header.preparedBy} class="input-sm">
-                                <option value="">Select...</option>
-                                {#each preparedBySelectOptions as staffName}<option value={staffName}>{staffName}</option>{/each}
-                            </select>
+                            <input type="text" value={header.preparedBy || currentPreparedByName || 'System'} class="input-sm readonly-input" aria-label="Prepared By" readonly />
                         </div>
                         <div class="field-group">
                             <span class="field-label">Doc Type</span>
@@ -3331,6 +3353,19 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     .selected-info .hint {
         color: var(--text-muted);
         font-style: italic;
+    }
+
+    .link-opportunity-control {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: min(520px, 48vw);
+    }
+
+    .link-opportunity-control .input-sm {
+        flex: 1;
+        min-width: 220px;
     }
 
     .costing-backdrop {

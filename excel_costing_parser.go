@@ -285,11 +285,91 @@ func normalizeCostingLabel(s string) string {
 func metadataLabelLike(s string) bool {
 	switch normalizeCostingLabel(s) {
 	case "", "REFERENCE", "EMAIL", "DATE", "PREPAREDBY", "CUSTOMER", "CONTACTPERSON", "CHOOSECONTACTPERSON",
-		"ORDERTYPE", "PAYMENTTERMS", "COUNTRYOFORIGIN", "ESTDELIVERY", "DELIVERYTERMS", "FOLDERNUMBER":
+		"ORDERTYPE", "PAYMENTTERMS", "COUNTRYOFORIGIN", "ESTDELIVERY", "DELIVERYTERMS", "FOLDERNUMBER",
+		"DIVISION", "COSTINGSHEET", "BUSINESSACCOUNTNAME", "QUOTE", "QUOTEPREPAREDBY", "ISSUEDBY":
 		return true
 	default:
 		return false
 	}
+}
+
+func metadataPlaceholderLike(s string) bool {
+	label := normalizeCostingLabel(s)
+	switch label {
+	case "", "COSTINGSHEET", "DIVISION", "BUSINESSACCOUNTNAME", "CONTACTPERSON", "CHOOSECONTACTPERSON",
+		"SELECTPAYMENTTERMS", "SELECTORDERTYPE", "COUNTRYOFORIGIN", "QUOTEPREPAREDBY", "PREPAREDBY",
+		"ISSUEDBY", "EMAIL", "REFERENCE", "REF", "RFQREFFERENCE", "RFQREFERENCE", "PH", "PHTRADING",
+		"PHTRADINGWLL", "COSTINGID", "DELIVERYTERMS", "PAYMENTTERMS", "FOLDERNUMBER", "NOTFOUND", "NA":
+		return true
+	default:
+		return strings.HasPrefix(label, "SELECT") || strings.HasPrefix(label, "INPUTMANUALLY") ||
+			strings.HasPrefix(label, "PRODUCT") || regexp.MustCompile(`^LINEITEM\d+$`).MatchString(label)
+	}
+}
+
+func cleanMetadataValue(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" || metadataPlaceholderLike(value) {
+		return ""
+	}
+	return value
+}
+
+func findMetadataValueByLabels(f *excelize.File, sheetName string, labels ...string) string {
+	wanted := map[string]bool{}
+	for _, label := range labels {
+		wanted[normalizeCostingLabel(label)] = true
+	}
+	for row := 1; row <= 18; row++ {
+		for col := 1; col <= 10; col++ {
+			label := normalizeCostingLabel(getCellValue(f, sheetName, col, row))
+			if !wanted[label] {
+				continue
+			}
+			if value := cleanMetadataValue(getCellValue(f, sheetName, col+1, row)); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func normalizePreparedByName(raw string) string {
+	normalized := normalizeCostingLabel(raw)
+	switch {
+	case normalized == "":
+		return ""
+	case strings.Contains(normalized, "QUOTE") || strings.Contains(normalized, "PREPAREDBY") ||
+		strings.Contains(normalized, "PHTRADING") || normalized == "DELL":
+		return ""
+	case strings.Contains(normalized, "EBIN"):
+		return "Ebin Chacko"
+	case strings.Contains(normalized, "PERIYASAMY") || normalized == "PERI":
+		return "Periyasamy N"
+	case strings.Contains(normalized, "RAMYA"):
+		return "Ramya Baskaran"
+	case strings.Contains(normalized, "SUNDAR") || strings.Contains(normalized, "VELMUNIRAM") || normalized == "VM":
+		return "V.M. Sundar"
+	case strings.Contains(normalized, "STANLEY") || strings.Contains(normalized, "VAZ"):
+		return "Stanley Vaz"
+	case strings.Contains(normalized, "ABHIE") || strings.Contains(normalized, "ABHI") || strings.Contains(normalized, "KORE"):
+		return "Abhie Kore"
+	default:
+		return strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
+	}
+}
+
+func inferPreparedByFromDocProps(f *excelize.File) string {
+	props, err := f.GetDocProps()
+	if err != nil || props == nil {
+		return ""
+	}
+	for _, candidate := range []string{props.LastModifiedBy, props.Creator} {
+		if preparedBy := normalizePreparedByName(candidate); preparedBy != "" {
+			return preparedBy
+		}
+	}
+	return ""
 }
 
 func normalizeExcelDateValue(raw string) string {
@@ -398,11 +478,13 @@ func findCostingRows(f *excelize.File, sheetName string) costingRowMap {
 			rows.TotalCost = row
 		case strings.Contains(labelB, "MARKUP"):
 			rows.Markup = row
+		case strings.Contains(labelA, "MARKUP"):
+			rows.Markup = row
 		case strings.Contains(labelA, "SELLINGPRICE"):
 			rows.SellingPrice = row
-		case strings.Contains(labelA, "SUGGESTEDPRICEPERUNIT"):
+		case labelA == "SUGGESTED" || strings.Contains(labelA, "SUGGESTEDPRICEPERUNIT"):
 			rows.SuggestedPrice = row
-		case strings.Contains(labelA, "TOTALSUGGESTEDPRICE"):
+		case labelA == "TOTALSP" || strings.Contains(labelA, "TOTALSUGGESTEDPRICE"):
 			rows.TotalSuggested = row
 		case strings.Contains(labelA, "TOTALPOVALUEEXPECTEDFROMCLIENT"):
 			rows.SummaryTotal = row
@@ -530,20 +612,9 @@ func ParseCostingSheet(filePath string) (*ExcelCostingData, error) {
 	}
 
 	// Find the costing sheet
-	sheetName := SHEET_COSTING
-	sheets := f.GetSheetList()
-	found := false
-	for _, s := range sheets {
-		if strings.EqualFold(s, SHEET_COSTING) || strings.Contains(strings.ToLower(s), "costing") {
-			sheetName = s
-			found = true
-			break
-		}
-	}
-	if !found && len(sheets) > 1 {
-		// Try second sheet (common pattern)
-		sheetName = sheets[1]
-		result.Warnings = append(result.Warnings, fmt.Sprintf("Costing sheet not found by name, using sheet: %s", sheetName))
+	sheetName, found := selectCostingSheetName(f)
+	if !found {
+		return nil, fmt.Errorf("no costing-like worksheet found; best candidate was %s", sheetName)
 	}
 
 	log.Printf("📊 Using sheet: %s", sheetName)
@@ -562,41 +633,156 @@ func ParseCostingSheet(filePath string) (*ExcelCostingData, error) {
 	return result, nil
 }
 
+func selectCostingSheetName(f *excelize.File) (string, bool) {
+	sheets := f.GetSheetList()
+	if len(sheets) == 0 {
+		return SHEET_COSTING, false
+	}
+
+	for _, sheet := range sheets {
+		if strings.EqualFold(sheet, SHEET_COSTING) || strings.Contains(strings.ToLower(sheet), "costing") {
+			return sheet, true
+		}
+	}
+
+	bestSheet := sheets[0]
+	bestScore := -1
+	for _, sheet := range sheets {
+		score := scoreCostingSheetCandidate(f, sheet)
+		if score > bestScore {
+			bestSheet = sheet
+			bestScore = score
+		}
+	}
+
+	return bestSheet, bestScore >= 8
+}
+
+func scoreCostingSheetCandidate(f *excelize.File, sheetName string) int {
+	score := 0
+	for row := 1; row <= 90; row++ {
+		labelA := normalizeCostingLabel(getCellValue(f, sheetName, 1, row))
+		labelB := normalizeCostingLabel(getCellValue(f, sheetName, 2, row))
+		labels := []string{labelA, labelB}
+		for _, label := range labels {
+			switch {
+			case label == "COSTINGSHEET":
+				score += 6
+			case label == "SUPPLIER", label == "QUANTITY":
+				score += 3
+			case label == "EQUIPMENT", label == "MODEL", label == "SPEC", strings.Contains(label, "SPECIFICATION"):
+				score += 2
+			case label == "FOB", strings.Contains(label, "FREIGHT"), strings.Contains(label, "EXCHANGERATE"):
+				score += 2
+			case label == "TOTALSP", strings.Contains(label, "TOTALSUGGESTED"), strings.Contains(label, "TOTALPOVALUEEXPECTEDFROMCLIENT"):
+				score += 4
+			case strings.Contains(label, "SELLINGPRICE"), label == "SUGGESTED":
+				score += 2
+			}
+		}
+	}
+	return score
+}
+
 // extractMetadata extracts header/metadata from the costing sheet
 func extractMetadata(f *excelize.File, sheetName string) ExcelCostingMetadata {
 	meta := ExcelCostingMetadata{}
 
 	// Row 2: Date (B2), Folder Number (D2), Est Delivery (F2)
-	meta.Date = normalizeExcelDateValue(getCellValue(f, sheetName, 2, 2))
-	meta.FolderNumber = getCellValue(f, sheetName, 4, 2)
-	meta.EstDelivery = getCellValue(f, sheetName, 6, 2)
+	meta.Date = normalizeExcelDateValue(cleanMetadataValue(getCellValue(f, sheetName, 2, 2)))
+	meta.FolderNumber = cleanMetadataValue(getCellValue(f, sheetName, 4, 2))
+	meta.EstDelivery = cleanMetadataValue(getCellValue(f, sheetName, 6, 2))
 
 	// Row 3: Prepared By (B3), Costing ID (D3), Delivery Terms (F3)
-	meta.PreparedBy = getCellValue(f, sheetName, 2, 3)
-	meta.CostingID = getCellValue(f, sheetName, 4, 3)
-	meta.DeliveryTerms = getCellValue(f, sheetName, 6, 3)
+	meta.PreparedBy = normalizePreparedByName(getCellValue(f, sheetName, 2, 3))
+	meta.CostingID = cleanMetadataValue(getCellValue(f, sheetName, 4, 3))
+	meta.DeliveryTerms = cleanMetadataValue(getCellValue(f, sheetName, 6, 3))
 
 	// Row 4: Customer (B4), Contact Person (D4), Order Type (F4)
-	meta.Customer = getCellValue(f, sheetName, 2, 4)
-	meta.ContactPerson = getCellValue(f, sheetName, 4, 4)
-	meta.OrderType = getCellValue(f, sheetName, 6, 4)
+	meta.Customer = cleanMetadataValue(getCellValue(f, sheetName, 2, 4))
+	meta.ContactPerson = cleanMetadataValue(getCellValue(f, sheetName, 4, 4))
+	meta.OrderType = cleanMetadataValue(getCellValue(f, sheetName, 6, 4))
 
 	// Row 5: Reference (B5), Payment Terms (D5), Country (F5)
 	refA := getCellValue(f, sheetName, 1, 5)
 	refB := getCellValue(f, sheetName, 2, 5)
-	if !metadataLabelLike(refA) {
-		meta.Reference = refA
-	} else if !metadataLabelLike(refB) {
-		meta.Reference = refB
+	if !metadataLabelLike(refA) && !metadataPlaceholderLike(refA) {
+		meta.Reference = strings.TrimSpace(refA)
+	} else if !metadataLabelLike(refB) && !metadataPlaceholderLike(refB) {
+		meta.Reference = strings.TrimSpace(refB)
 	}
-	meta.PaymentTerms = getCellValue(f, sheetName, 4, 5)
-	meta.CountryOfOrigin = getCellValue(f, sheetName, 6, 5)
+	meta.PaymentTerms = cleanMetadataValue(getCellValue(f, sheetName, 4, 5))
+	meta.CountryOfOrigin = cleanMetadataValue(getCellValue(f, sheetName, 6, 5))
+
+	if value := findMetadataValueByLabels(f, sheetName, "Date"); value != "" {
+		meta.Date = normalizeExcelDateValue(value)
+	}
+	if value := findMetadataValueByLabels(f, sheetName, "Folder Number"); value != "" {
+		meta.FolderNumber = value
+	}
+	if value := findMetadataValueByLabels(f, sheetName, "Est. Delivery", "Est Delivery"); value != "" {
+		meta.EstDelivery = value
+	}
+	if meta.PreparedBy == "" {
+		if value := findMetadataValueByLabels(f, sheetName, "Prepared By", "Done By", "Consting", "Costing"); value != "" {
+			meta.PreparedBy = normalizePreparedByName(value)
+		}
+	}
+	if meta.PreparedBy == "" {
+		meta.PreparedBy = inferPreparedByFromDocProps(f)
+	}
+	if value := findMetadataValueByLabels(f, sheetName, "Costing ID", "Quote #"); value != "" {
+		meta.CostingID = value
+	}
+	if value := findMetadataValueByLabels(f, sheetName, "Delivery Terms"); value != "" {
+		meta.DeliveryTerms = value
+	}
+	if value := findMetadataValueByLabels(f, sheetName, "Customer", "Business Account Name"); value != "" {
+		meta.Customer = value
+	}
+	if value := findMetadataValueByLabels(f, sheetName, "Contact Person", "Attention"); value != "" {
+		meta.ContactPerson = value
+	}
+	if value := findMetadataValueByLabels(f, sheetName, "Order Type"); value != "" {
+		meta.OrderType = value
+	}
+	if meta.Reference == "" {
+		if value := findMetadataValueByLabels(f, sheetName, "Reference", "RFQ Reference", "RFQ Refference", "REF", "Your Reference"); value != "" {
+			meta.Reference = value
+		}
+	}
+	if value := findMetadataValueByLabels(f, sheetName, "Payment Terms"); value != "" {
+		meta.PaymentTerms = value
+	}
+	if value := findMetadataValueByLabels(f, sheetName, "Country of Origin"); value != "" {
+		meta.CountryOfOrigin = value
+	}
 
 	return meta
 }
 
-// extractLineItems extracts product line items - HORIZONTAL iteration!
 func extractLineItems(f *excelize.File, sheetName string) []ExcelCostingLineItem {
+	standardItems := extractStandardLineItems(f, sheetName)
+	legacyItems := extractLegacyGroupedLineItems(f, sheetName)
+
+	if len(legacyItems) == 0 {
+		return standardItems
+	}
+	if len(standardItems) == 0 {
+		return legacyItems
+	}
+
+	standardTotal := costingLineItemsTotal(standardItems)
+	legacyTotal := costingLineItemsTotal(legacyItems)
+	if legacyTotal > 0 && (standardTotal == 0 || legacyTotal > standardTotal*1.5) {
+		return legacyItems
+	}
+	return standardItems
+}
+
+// extractStandardLineItems extracts product line items from the newer template
+// where each product occupies one column.
+func extractStandardLineItems(f *excelize.File, sheetName string) []ExcelCostingLineItem {
 	items := []ExcelCostingLineItem{}
 	rows := findCostingRows(f, sheetName)
 
@@ -701,6 +887,167 @@ func extractLineItems(f *excelize.File, sheetName string) []ExcelCostingLineItem
 		items = append(items, item)
 	}
 
+	return items
+}
+
+func costingLineItemsTotal(items []ExcelCostingLineItem) float64 {
+	total := 0.0
+	for _, item := range items {
+		total += item.TotalSuggestedBHD
+	}
+	return total
+}
+
+func findLegacyCostingRows(f *excelize.File, sheetName string) costingRowMap {
+	rows := costingRowMap{}
+	for row := 1; row <= 90; row++ {
+		label := normalizeCostingLabel(getCellValue(f, sheetName, 1, row))
+		switch {
+		case label == "SUPPLIER":
+			rows.Supplier = row
+		case label == "EQUIPMENT":
+			rows.Equipment = row
+		case label == "MODEL":
+			rows.Model = row
+		case label == "SPEC" || strings.Contains(label, "SPECIFICATION") || strings.Contains(label, "ORDERCODE"):
+			rows.Specification = row
+		case label == "QUANTITY":
+			rows.Quantity = row
+		case label == "CONVERSION":
+			rows.ExchangeRate = row
+		case label == "FOB":
+			rows.FobEUR = row
+		case strings.Contains(label, "FREIGHT"):
+			rows.FreightEUR = row
+		case strings.Contains(label, "CF") || strings.Contains(label, "CNF"):
+			rows.Cnf = row
+		case strings.Contains(label, "INSURANCE"):
+			rows.Insurance = row
+		case strings.Contains(label, "CUSTOM"):
+			rows.Customs = row
+		case strings.Contains(label, "LANDEDCOST"):
+			rows.LandedCost = row
+		case strings.Contains(label, "FINANCECHARGE"):
+			rows.FinanceCharges = row
+		case strings.Contains(label, "HANDLING"):
+			rows.Handling = row
+		case label == "OTHERS" || strings.Contains(label, "OTHERCOST"):
+			rows.OtherCosts = row
+		case strings.Contains(label, "TOTALCOST"):
+			rows.TotalCost = row
+		case strings.Contains(label, "MARKUP"):
+			rows.Markup = row
+		case strings.Contains(label, "SELLINGPRICE"):
+			rows.SellingPrice = row
+		case label == "SUGGESTED" || strings.Contains(label, "SUGGESTEDPRICE"):
+			rows.SuggestedPrice = row
+		case label == "TOTALSP" || strings.Contains(label, "TOTALSUGGESTED"):
+			rows.TotalSuggested = row
+		case strings.Contains(label, "TOTALPOVALUEEXPECTEDFROMCLIENT"):
+			rows.SummaryTotal = row
+		}
+	}
+	return rows
+}
+
+func extractLegacyGroupedLineItems(f *excelize.File, sheetName string) []ExcelCostingLineItem {
+	rows := findLegacyCostingRows(f, sheetName)
+	if rows.Supplier == 0 || rows.Quantity == 0 || rows.TotalSuggested == 0 {
+		return nil
+	}
+
+	items := []ExcelCostingLineItem{}
+	productNum := 0
+	for groupStart := COL_FIRST_PRODUCT; groupStart <= COL_MAX_PRODUCTS; groupStart += 3 {
+		valueCol := groupStart + 1
+		supplier := cleanProductCell(getCellValue(f, sheetName, groupStart, rows.Supplier))
+		model := firstNonEmptyCostingValue(
+			cleanProductCell(getCellValue(f, sheetName, groupStart, rows.Model)),
+			cleanProductCell(getCellValue(f, sheetName, valueCol, rows.Model)),
+		)
+		specification := firstNonEmptyCostingValue(
+			cleanProductCell(getCellValue(f, sheetName, groupStart, rows.Specification)),
+			cleanProductCell(getCellValue(f, sheetName, valueCol, rows.Specification)),
+		)
+		if groupStart == COL_FIRST_PRODUCT {
+			model = firstNonEmptyCostingValue(model, cleanProductCell(getCellValue(f, sheetName, 2, rows.Model)))
+			specification = firstNonEmptyCostingValue(specification, cleanProductCell(getCellValue(f, sheetName, 2, rows.Specification)))
+		}
+
+		quantity := getFloatCellValue(f, sheetName, valueCol, rows.Quantity)
+		fobEUR := getFloatCellValue(f, sheetName, groupStart, rows.FobEUR)
+		freightEUR := getFloatCellValue(f, sheetName, groupStart, rows.FreightEUR)
+		exchangeRate := getFloatCellValue(f, sheetName, valueCol, rows.ExchangeRate)
+		fobBHD := getFloatCellValue(f, sheetName, valueCol, rows.FobEUR)
+		if fobBHD == 0 && fobEUR > 0 && exchangeRate > 0 {
+			fobBHD = fobEUR * exchangeRate
+		}
+		freightBHD := getFloatCellValue(f, sheetName, valueCol, rows.FreightEUR)
+		if freightBHD == 0 && freightEUR > 0 && exchangeRate > 0 {
+			freightBHD = freightEUR * exchangeRate
+		}
+		cnfBHD := getFloatCellValue(f, sheetName, valueCol, rows.Cnf)
+		insurance := getFloatCellValue(f, sheetName, valueCol, rows.Insurance)
+		customs := getFloatCellValue(f, sheetName, valueCol, rows.Customs)
+		landedCost := getFloatCellValue(f, sheetName, valueCol, rows.LandedCost)
+		handling := getFloatCellValue(f, sheetName, valueCol, rows.Handling)
+		financeCharges := getFloatCellValue(f, sheetName, valueCol, rows.FinanceCharges)
+		otherCosts := getFloatCellValue(f, sheetName, valueCol, rows.OtherCosts)
+		totalCost := getFloatCellValue(f, sheetName, valueCol, rows.TotalCost)
+		markupPercent := getFloatCellValue(f, sheetName, groupStart-1, rows.Markup)
+		sellingPrice := getFloatCellValue(f, sheetName, valueCol, rows.SellingPrice)
+		suggestedPrice := getFloatCellValue(f, sheetName, valueCol, rows.SuggestedPrice)
+		totalSuggested := getFloatCellValue(f, sheetName, valueCol, rows.TotalSuggested)
+
+		hasDescriptor := firstNonEmptyCostingValue(model, specification, supplier) != ""
+		hasCommercialSignal := quantity > 0 || fobEUR > 0 || freightEUR > 0 || fobBHD > 0 ||
+			freightBHD > 0 || cnfBHD > 0 || totalCost > 0 || sellingPrice > 0 ||
+			suggestedPrice > 0 || totalSuggested > 0
+		if !hasDescriptor || !hasCommercialSignal {
+			continue
+		}
+
+		productNum++
+		if quantity == 0 {
+			quantity = 1
+		}
+		if totalSuggested == 0 && suggestedPrice > 0 {
+			totalSuggested = suggestedPrice * quantity
+		}
+		if suggestedPrice == 0 && quantity > 0 && totalSuggested > 0 {
+			suggestedPrice = totalSuggested / quantity
+		}
+		if markupPercent == 0 && totalCost > 0 && totalSuggested > 0 {
+			markupPercent = ((totalSuggested - totalCost) / totalCost) * 100
+		}
+
+		items = append(items, ExcelCostingLineItem{
+			ProductNumber:     productNum,
+			ColumnIndex:       groupStart,
+			Supplier:          supplier,
+			Equipment:         firstNonEmptyCostingValue(model, specification, supplier),
+			Model:             model,
+			Specification:     specification,
+			Quantity:          quantity,
+			FobEUR:            fobEUR,
+			FreightEUR:        freightEUR,
+			ExchangeRate:      exchangeRate,
+			FobBHD:            fobBHD,
+			FreightBHD:        freightBHD,
+			CnfBHD:            cnfBHD,
+			Insurance:         insurance,
+			Customs:           customs,
+			LandedCost:        landedCost,
+			Handling:          handling,
+			FinanceCharges:    financeCharges,
+			OtherCosts:        otherCosts,
+			TotalCost:         totalCost,
+			MarkupPercent:     markupPercent,
+			SellingPriceBHD:   sellingPrice,
+			SuggestedPriceBHD: suggestedPrice,
+			TotalSuggestedBHD: totalSuggested,
+		})
+	}
 	return items
 }
 

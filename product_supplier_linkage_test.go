@@ -57,6 +57,33 @@ func TestResolveSupplierForProduct_FallsBackToSupplierCode(t *testing.T) {
 	require.Equal(t, supplier.ID, resolved.ID)
 }
 
+func TestResolveSupplierForProduct_FallsBackToCommercialSupplierAlias(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&ProductMaster{}))
+
+	supplier := SupplierMaster{
+		Base:         Base{ID: "supplier-servomex"},
+		SupplierCode: "SUP-25",
+		SupplierName: "SERVOMEX",
+		Country:      "UK",
+		PaymentTerms: "Net 45",
+		Rating:       5,
+	}
+	require.NoError(t, app.db.Create(&supplier).Error)
+
+	product := ProductMaster{
+		ProductCode:  "SVX-2200",
+		ProductName:  "Servomex 2200 Oxygen Analyzer",
+		SupplierID:   "sup_svx",
+		SupplierCode: "SVX",
+		Description:  "Paramagnetic O2 analyzer for industrial gas",
+	}
+
+	resolved, err := app.resolveSupplierForProduct(product)
+	require.NoError(t, err)
+	require.Equal(t, supplier.ID, resolved.ID)
+}
+
 func TestInferSupplierForOrderItems_FallsBackToSupplierCodeLink(t *testing.T) {
 	app := setupTestApp(t)
 	require.NoError(t, app.db.AutoMigrate(&ProductMaster{}))
@@ -96,6 +123,86 @@ func TestInferSupplierForOrderItems_FallsBackToSupplierCodeLink(t *testing.T) {
 	inferred, err := app.inferSupplierForOrderItems(order, nil)
 	require.NoError(t, err)
 	require.Equal(t, supplier.ID, inferred.ID)
+}
+
+func TestInferSupplierForOrderItems_FallsBackToCommercialText(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&ProductMaster{}))
+
+	supplier := SupplierMaster{
+		Base:         Base{ID: "supplier-servomex"},
+		SupplierCode: "SUP-25",
+		SupplierName: "SERVOMEX",
+		Country:      "UK",
+		PaymentTerms: "Net 45",
+		Rating:       5,
+	}
+	require.NoError(t, app.db.Create(&supplier).Error)
+
+	order := Order{
+		Items: []OrderItem{
+			{
+				Base:        Base{ID: "item-servomex-1"},
+				ProductCode: "02500E1",
+				Description: "SERVOMEX - 02500E1",
+				Quantity:    1,
+				UnitPrice:   15485,
+			},
+			{
+				Base:        Base{ID: "item-servomex-2"},
+				ProductCode: "01910B1",
+				Description: "SERVOMEX - 01910B1",
+				Quantity:    1,
+				UnitPrice:   9702,
+			},
+		},
+	}
+
+	inferred, err := app.inferSupplierForOrderItems(order, nil)
+	require.NoError(t, err)
+	require.Equal(t, supplier.ID, inferred.ID)
+}
+
+func TestCreatePOFromOrder_UsesVisibleSelectedItemsAndCommercialSupplier(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&PurchaseOrder{}, &PurchaseOrderItem{}))
+
+	customerID := seedTestCustomer(t, app.db, "SULB COMPANY B.S.C CLOSED")
+	supplier := SupplierMaster{
+		Base:         Base{ID: "supplier-servomex"},
+		SupplierCode: "SUP-25",
+		SupplierName: "SERVOMEX",
+		Country:      "UK",
+		PaymentTerms: "Net 45",
+		Rating:       5,
+	}
+	require.NoError(t, app.db.Create(&supplier).Error)
+
+	order := Order{
+		Base:          Base{ID: "order-oth-3-26"},
+		OrderNumber:   "OTH-3-26",
+		CustomerID:    customerID,
+		CustomerName:  "SULB COMPANY B.S.C CLOSED",
+		OrderDate:     time.Now(),
+		Status:        "Confirmed",
+		TotalValueBHD: 42501,
+	}
+	require.NoError(t, app.db.Create(&order).Error)
+
+	items := []OrderItem{
+		{Base: Base{ID: "item-visible-1"}, OrderID: order.ID, ProductCode: "02500E1", Description: "SERVOMEX - 02500E1", Equipment: "SERVOMEX", Model: "02500E1", Quantity: 1, UnitPrice: 15485, TotalPrice: 15485},
+		{Base: Base{ID: "item-visible-2"}, OrderID: order.ID, ProductCode: "02500E1", Description: "SERVOMEX - 02500E1", Equipment: "SERVOMEX", Model: "02500E1", Quantity: 1, UnitPrice: 17314, TotalPrice: 17314},
+		{Base: Base{ID: "item-visible-3"}, OrderID: order.ID, ProductCode: "01910B1", Description: "SERVOMEX - 01910B1", Equipment: "SERVOMEX", Model: "01910B1", Quantity: 1, UnitPrice: 9702, TotalPrice: 9702},
+		{Base: Base{ID: "item-duplicate-hidden"}, OrderID: order.ID, ProductCode: "01910B1", Description: "SERVOMEX - 01910B1", Equipment: "SERVOMEX", Model: "01910B1", Quantity: 1, UnitPrice: 9702, TotalPrice: 9702},
+	}
+	for _, item := range items {
+		require.NoError(t, app.db.Create(&item).Error)
+	}
+
+	po, err := app.CreatePOFromOrder(order.ID, "", []string{"item-visible-1", "item-visible-2", "item-visible-3"})
+	require.NoError(t, err)
+	require.Equal(t, supplier.ID, po.SupplierID)
+	require.Len(t, po.Items, 3)
 }
 
 func TestGetInventoryAlertsLowStock_UsesResolvedSupplierLink(t *testing.T) {

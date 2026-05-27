@@ -531,6 +531,14 @@ func (a *App) performBidirectionalSync() {
 	}
 	a.dbSyncService.syncMutex.Unlock()
 
+	if !syncFailed {
+		if summary, err := a.applyPendingDataUpdatesInternal(false, "periodic_sync"); err != nil {
+			log.Printf("[SYNC] Published data update auto-apply failed: %v", err)
+		} else if summary.AppliedCount > 0 {
+			log.Printf("[SYNC] Applied %d published data update(s)", summary.AppliedCount)
+		}
+	}
+
 	log.Println("[SYNC] === Bidirectional sync complete ===")
 }
 

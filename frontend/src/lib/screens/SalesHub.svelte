@@ -58,9 +58,6 @@
     <div class="hub" in:fade={{ duration: 200 }}>
         <!-- Header with Tabs -->
         <header class="header">
-            <h1 class="page-title">Opportunities</h1>
-
-            <!-- Tab Bar -->
             <Tabs
                 tabs={tabs}
                 activeTab={activeTab}
@@ -96,10 +93,6 @@
         padding-bottom: 0;
         border-bottom: 1px solid var(--border);
         background: var(--surface);
-    }
-
-    .header h1 {
-        margin-bottom: var(--section-spacing);
     }
 
     .content {

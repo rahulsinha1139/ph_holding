@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -285,6 +286,69 @@ func TestDeleteExpenseEntryAllowsApprovedUnpostedAndBlocksPostedRegardlessOfCase
 	require.NoError(t, err)
 
 	err = app.DeleteExpenseEntry(posted.ID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "posted or paid expenses cannot be deleted")
+}
+
+func TestPostedExpenseFeedsLedgerProfitLossAndJournalAudit(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.EnsureExpenseFoundation())
+
+	category, err := app.CreateExpenseCategory(ExpenseCategory{
+		Name: "Stress Test Compliance",
+		Code: "STRESS_COMPLIANCE",
+	})
+	require.NoError(t, err)
+
+	entry, err := app.CreateExpenseEntry(ExpenseEntry{
+		EntryNumber:   "EXP-STRESS-LEDGER",
+		Description:   "Stress test locked finance expense",
+		CategoryID:    category.ID,
+		Amount:        123.456,
+		TotalAmount:   123.456,
+		Currency:      "BHD",
+		Division:      "PH Trading",
+		ExpenseDate:   time.Date(2026, time.May, 25, 0, 0, 0, 0, time.UTC),
+		Status:        "approved",
+		PaymentStatus: "unpaid",
+	})
+	require.NoError(t, err)
+
+	posted, err := app.PostExpenseEntry(entry.ID)
+	require.NoError(t, err)
+	require.Equal(t, "posted", strings.ToLower(posted.Status))
+	require.NotNil(t, posted.JournalEntryID)
+
+	ledger, err := app.GetExpenseLedger(OperationalLedgerFilter{
+		Division:   "PH Trading",
+		StartDate:  "2026-05-01",
+		EndDate:    "2026-05-31",
+		SourceType: "EXPENSE",
+	})
+	require.NoError(t, err)
+	require.Len(t, ledger, 1)
+	require.Equal(t, entry.ID, ledger[0].SourceID)
+	require.InDelta(t, 123.456, ledger[0].DebitBHD, 0.001)
+
+	pl, err := app.GetOperationalProfitLoss(OperationalLedgerFilter{
+		Division:  "PH Trading",
+		StartDate: "2026-05-01",
+		EndDate:   "2026-05-31",
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, pl.ExpenseCount)
+	require.InDelta(t, 123.456, pl.ExpensesBHD, 0.001)
+	require.InDelta(t, -123.456, pl.NetIncomeBHD, 0.001)
+
+	isPosted := true
+	journals, err := app.GetJournalEntries(2026, 0, &isPosted, 50)
+	require.NoError(t, err)
+	require.NotEmpty(t, journals)
+	require.Equal(t, *posted.JournalEntryID, journals[0].ID)
+	require.Equal(t, "expense_entry", journals[0].SourceType)
+	require.Equal(t, entry.ID, journals[0].SourceID)
+
+	err = app.DeleteExpenseEntry(entry.ID)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "posted or paid expenses cannot be deleted")
 }

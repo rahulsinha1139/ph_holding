@@ -49,6 +49,7 @@
   let confirmDeleteVendorID = "";
   let confirmDeleteEntryID = "";
   let confirmDeleteRecurringID = "";
+  let showSetupTools = false;
 
   let categories: ExpenseCategory[] = [];
   let vendors: ExpenseVendor[] = [];
@@ -75,6 +76,9 @@
   let vatAmount = "";
   let expenseDate = new Date().toISOString().slice(0, 10);
   let dueDate = new Date().toISOString().slice(0, 10);
+  let paymentMethod = "Bank Transfer";
+  let inventoryLinked = false;
+  let inventoryReference = "";
   let costCenter = "";
   let notes = "";
 
@@ -134,7 +138,7 @@
     };
   }
 
-  const expensePaymentMethods = ["NEFT", "Bank Transfer", "Cheque", "Cash", "Card", "Wire Transfer"];
+  const expenseMethods = ["Cash", "Bank Transfer", "Credit Card", "Cheque", "Other"];
 
   function toISODate(value: string) {
     return value ? `${value}T00:00:00Z` : undefined;
@@ -266,12 +270,18 @@
         vat_amount: Number(vatAmount || 0),
         expense_date: toISODate(expenseDate),
         due_date: toISODate(dueDate),
+        payment_method: paymentMethod,
+        inventory_linked: inventoryLinked,
+        inventory_reference: inventoryLinked ? inventoryReference.trim() : "",
         cost_center: costCenter.trim(),
         notes: notes.trim(),
       } as any);
       description = "";
       amount = "";
       vatAmount = "";
+      paymentMethod = "Bank Transfer";
+      inventoryLinked = false;
+      inventoryReference = "";
       costCenter = "";
       notes = "";
       vendorID = "";
@@ -548,79 +558,87 @@
       <article class="panel">
         <div class="panel-head">
           <h2>Quick Entry</h2>
-          <span>Draft-first expense capture</span>
+          <button class="secondary compact-btn" type="button" on:click={() => showSetupTools = !showSetupTools}>
+            {showSetupTools ? "Hide Setup" : "Setup"}
+          </button>
         </div>
 
-        <div class="mini-tools">
-          <div class="tool-row">
-            <input bind:value={categoryName} placeholder="New category" />
-            <button class="secondary" on:click={handleCreateCategory}>Add Category</button>
-          </div>
-          <div class="tool-row">
-            <input bind:value={vendorName} placeholder="New vendor" />
-            <button class="secondary" on:click={handleCreateVendor}>Add Vendor</button>
-          </div>
-        </div>
-
-        <div class="category-manager">
-          <div class="category-manager-head">
-            <strong>Manage Categories</strong>
-            <span>{categories.length} active</span>
-          </div>
-          {#if categories.length === 0}
-            <div class="empty compact">No expense categories available.</div>
-          {:else}
-            <div class="category-list">
-              {#each categories as category}
-                <div class="category-chip" class:selected={category.id === categoryID || category.id === recurringCategoryID}>
-                  <div class="category-copy">
-                    <strong>{category.name}</strong>
-                    <span>{category.code || "No code"}</span>
-                  </div>
-                  <button
-                    type="button"
-                    class="danger ghost"
-                    class:confirming={confirmDeleteCategoryID === category.id}
-                    disabled={deletingCategoryID === category.id}
-                    on:click|stopPropagation={() => handleDeleteCategory(category)}
-                  >
-                    {deletingCategoryID === category.id ? "Deleting..." : confirmDeleteCategoryID === category.id ? "Confirm Delete" : "Delete"}
-                  </button>
-                </div>
-              {/each}
+        {#if showSetupTools}
+          <div class="setup-drawer">
+            <div class="mini-tools">
+              <div class="tool-row">
+                <input bind:value={categoryName} placeholder="New category" />
+                <button class="secondary" on:click={handleCreateCategory}>Add Category</button>
+              </div>
+              <div class="tool-row">
+                <input bind:value={vendorName} placeholder="New vendor" />
+                <button class="secondary" on:click={handleCreateVendor}>Add Vendor</button>
+              </div>
             </div>
-          {/if}
-        </div>
 
-        <div class="category-manager">
-          <div class="category-manager-head">
-            <strong>Manage Vendors</strong>
-            <span>{vendors.length} active</span>
-          </div>
-          {#if vendors.length === 0}
-            <div class="empty compact">No expense vendors available.</div>
-          {:else}
-            <div class="category-list">
-              {#each vendors as vendor}
-                <div class="category-chip" class:selected={vendor.id === vendorID || vendor.id === recurringVendorID}>
-                  <div class="category-copy">
-                    <strong>{vendor.name}</strong>
-                    <span>{vendor.payment_terms || vendor.email || vendor.phone || "No extra details"}</span>
-                  </div>
-                  <button
-                    type="button"
-                    class="danger ghost"
-                    class:confirming={confirmDeleteVendorID === vendor.id}
-                    disabled={deletingVendorID === vendor.id}
-                    on:click|stopPropagation={() => handleDeleteVendor(vendor)}
-                  >
-                    {deletingVendorID === vendor.id ? "Deleting..." : confirmDeleteVendorID === vendor.id ? "Confirm Delete" : "Delete"}
-                  </button>
+            <div class="setup-grid">
+              <div class="category-manager">
+                <div class="category-manager-head">
+                  <strong>Categories</strong>
+                  <span>{categories.length} active</span>
                 </div>
-              {/each}
+                {#if categories.length === 0}
+                  <div class="empty compact">No expense categories available.</div>
+                {:else}
+                  <div class="category-list compact-list">
+                    {#each categories as category}
+                      <div class="category-chip" class:selected={category.id === categoryID || category.id === recurringCategoryID}>
+                        <div class="category-copy">
+                          <strong>{category.name}</strong>
+                          <span>{category.code || "No code"}</span>
+                        </div>
+                        <button
+                          type="button"
+                          class="danger ghost"
+                          class:confirming={confirmDeleteCategoryID === category.id}
+                          disabled={deletingCategoryID === category.id}
+                          on:click|stopPropagation={() => handleDeleteCategory(category)}
+                        >
+                          {deletingCategoryID === category.id ? "Deleting..." : confirmDeleteCategoryID === category.id ? "Confirm Delete" : "Delete"}
+                        </button>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+
+              <div class="category-manager">
+                <div class="category-manager-head">
+                  <strong>Vendors</strong>
+                  <span>{vendors.length} active</span>
+                </div>
+                {#if vendors.length === 0}
+                  <div class="empty compact">No expense vendors available.</div>
+                {:else}
+                  <div class="category-list compact-list">
+                    {#each vendors as vendor}
+                      <div class="category-chip" class:selected={vendor.id === vendorID || vendor.id === recurringVendorID}>
+                        <div class="category-copy">
+                          <strong>{vendor.name}</strong>
+                          <span>{vendor.payment_terms || vendor.email || vendor.phone || "No extra details"}</span>
+                        </div>
+                        <button
+                          type="button"
+                          class="danger ghost"
+                          class:confirming={confirmDeleteVendorID === vendor.id}
+                          disabled={deletingVendorID === vendor.id}
+                          on:click|stopPropagation={() => handleDeleteVendor(vendor)}
+                        >
+                          {deletingVendorID === vendor.id ? "Deleting..." : confirmDeleteVendorID === vendor.id ? "Confirm Delete" : "Delete"}
+                        </button>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
             </div>
-          {/if}
-        </div>
+          </div>
+        {/if}
 
         <div class="form-grid">
           <input bind:value={description} placeholder="Expense description" />
@@ -638,6 +656,11 @@
           </select>
           <input bind:value={amount} min="0" step="0.001" type="number" placeholder="Amount" />
           <input bind:value={vatAmount} min="0" step="0.001" type="number" placeholder="VAT amount" />
+          <select bind:value={paymentMethod}>
+            {#each expenseMethods as method}
+              <option value={method}>{method}</option>
+            {/each}
+          </select>
           <input bind:value={costCenter} placeholder="Cost center / memo" />
           <label>
             <span>Expense Date</span>
@@ -647,6 +670,15 @@
             <span>Due Date</span>
             <input bind:value={dueDate} type="date" />
           </label>
+        </div>
+        <div class="inventory-link-row">
+          <label class="toggle compact-toggle">
+            <input bind:checked={inventoryLinked} type="checkbox" />
+            <span>Inventory-linked expense?</span>
+          </label>
+          {#if inventoryLinked}
+            <input bind:value={inventoryReference} placeholder="Item, PO, order, or allocation reference" />
+          {/if}
         </div>
         <textarea bind:value={notes} placeholder="Notes"></textarea>
         <div class="actions">
@@ -882,7 +914,7 @@
         <label>
           <span>Method</span>
           <select bind:value={expensePaymentForm.paymentMethod}>
-            {#each expensePaymentMethods as method}
+            {#each expenseMethods as method}
               <option value={method}>{method}</option>
             {/each}
           </select>
@@ -914,7 +946,7 @@
 <style>
   .page {
     display: grid;
-    gap: 18px;
+    gap: 12px;
   }
 
   .page.embedded {
@@ -926,7 +958,7 @@
   .form-grid,
   .list {
     display: grid;
-    gap: 12px;
+    gap: 10px;
   }
 
   .summary-grid {
@@ -938,16 +970,16 @@
   }
 
   .form-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .summary-card,
   .panel,
   .modal {
     border: 1px solid var(--border, #e5e7eb);
-    border-radius: 16px;
+    border-radius: 10px;
     background: var(--surface, #fff);
-    padding: 16px;
+    padding: 12px;
   }
 
   .summary-card span,
@@ -959,8 +991,8 @@
 
   .summary-card strong {
     display: block;
-    margin-top: 8px;
-    font-size: 1.3rem;
+    margin-top: 6px;
+    font-size: 1.18rem;
   }
 
   .panel-head,
@@ -976,13 +1008,27 @@
   .mini-tools {
     display: grid;
     gap: 10px;
-    margin: 14px 0;
+  }
+
+  .setup-drawer {
+    display: grid;
+    gap: 12px;
+    margin: 8px 0 14px;
+    padding: 12px;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    background: rgba(248, 250, 252, 0.78);
+  }
+
+  .setup-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
   }
 
   .category-manager {
     display: grid;
     gap: 10px;
-    margin-bottom: 14px;
   }
 
   .category-manager-head,
@@ -997,9 +1043,22 @@
   .category-list {
     display: grid;
     gap: 8px;
-    max-height: 180px;
+    max-height: 132px;
     overflow: auto;
     padding-right: 4px;
+  }
+
+  .compact-btn {
+    padding: 6px 10px;
+    min-height: 32px;
+  }
+
+  .inventory-link-row {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    margin-top: 10px;
   }
 
   .inline-actions {
@@ -1050,13 +1109,13 @@
   }
 
   .list {
-    margin-top: 14px;
+    margin-top: 10px;
   }
 
   .list-row {
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 14px;
-    padding: 12px;
+    padding: 10px 12px;
     background: color-mix(in srgb, var(--surface, #fff) 92%, var(--accent-primary, #2563eb) 8%);
   }
 
@@ -1163,7 +1222,8 @@
   }
 
   .toggle {
-    grid-template-columns: 1fr auto;
+    display: inline-flex;
+    gap: 8px;
     align-items: center;
   }
 

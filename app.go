@@ -663,6 +663,9 @@ func (a *App) startup(ctx context.Context) {
 				// Device Registration & Approval System
 				&Device{},
 				&DeviceUser{},
+				&DataUpdateManifest{},
+				&DataUpdateOperation{},
+				&DataUpdateReceipt{},
 				&Employee{},
 				&EmployeeAccessLink{},
 				&UserActivitySession{},
@@ -688,6 +691,10 @@ func (a *App) startup(ctx context.Context) {
 				&SupplierInvoiceItem{},
 				&DeliveryNote{},
 				&DeliveryNoteItem{},
+				&Warehouse{},
+				&InventoryItem{},
+				&StockMovement{},
+				&StockAdjustment{},
 
 				// Chat Persistence (Butler AI Conversations)
 				&Conversation{},
@@ -699,6 +706,9 @@ func (a *App) startup(ctx context.Context) {
 				// Offer Follow-Ups
 				&OfferFollowUp{},
 				&OfferNote{},
+				&RFQComment{},
+				&OpportunityComment{},
+				&DataQualityReview{},
 
 				// Sync Infrastructure
 				&SyncRecord{},
@@ -706,6 +716,9 @@ func (a *App) startup(ctx context.Context) {
 				// Tally Data Imports
 				&TallyInvoiceImport{},
 				&TallyPurchaseImport{},
+				&IntelligenceOpportunityEnrichment{},
+				&IntelligenceLineItemEnrichment{},
+				&IntelligenceOrderEnrichment{},
 
 				// Phase 23: E-Invoicing & Serial Tracking
 				&CreditNote{},
@@ -1359,8 +1372,15 @@ func (a *App) runCustomMigrations() {
 	a.addColumnIfNotExists("rfq_datas", "visit_locations", "TEXT")
 	a.addColumnIfNotExists("rfq_datas", "product_details", "TEXT")
 	a.addColumnIfNotExists("rfq_datas", "source_doc_path", "TEXT")
+	a.addColumnIfNotExists("rfq_datas", "created_by", "TEXT")
 	a.addColumnIfNotExists("opportunities", "product_details", "TEXT")
 	a.addColumnIfNotExists("opportunities", "division", "TEXT DEFAULT 'PH Trading'")
+	for _, table := range []string{"customer_contacts", "supplier_contacts"} {
+		a.addColumnIfNotExists(table, "is_decision_maker", "BOOLEAN DEFAULT 0")
+		a.addColumnIfNotExists(table, "decision_role", "TEXT")
+		a.addColumnIfNotExists(table, "reports_to_contact_id", "TEXT")
+		a.addColumnIfNotExists(table, "reports_to_name", "TEXT")
+	}
 
 	// Migration 3: Repair legacy generated offer numbers from folder/reference values.
 	a.migrateOfferNumbers()
@@ -1496,6 +1516,9 @@ func (a *App) ensureCrossModuleSchemaExtensions() {
 	a.addColumnIfNotExists("offers", "subject", "TEXT")
 	a.addColumnIfNotExists("offers", "body", "TEXT")
 	a.addColumnIfNotExists("offers", "attachment_scope_id", "TEXT")
+	a.addColumnIfNotExists("rfq_comments", "updated_at", "DATETIME")
+	a.addColumnIfNotExists("opportunity_comments", "updated_at", "DATETIME")
+	a.addColumnIfNotExists("costing_line_items", "updated_at", "DATETIME")
 	if err := repairImportedCommercialDocuments(a.db); err != nil {
 		log.Printf("⚠️ Commercial document repair skipped: %v", err)
 	}
@@ -3541,9 +3564,7 @@ func (a *App) GetReceivablesAging(customerID string) ReceivablesAgingSummary {
 		return ReceivablesAgingSummary{}
 	}
 	invoices := a.linkedInvoicesForCustomer(linkIndex, customer)
-	orders := a.linkedOrdersForCustomer(linkIndex, customer)
-	orderExposure := linkedOrderExposure(orders, invoices)
-	aging := linkedReceivablesAging(invoices, orderExposure)
+	aging := linkedReceivablesAging(invoices, 0)
 
 	log.Printf("Receivables aging for customer %s: Total %.2f BHD (Current: %.2f, 30-60: %.2f, 60-90: %.2f, 90-120: %.2f, 120+: %.2f)",
 		customerID, aging.TotalOutstanding, aging.Current, aging.Days30_60, aging.Days60_90, aging.Days90_120, aging.Days120Plus)
@@ -3773,8 +3794,7 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 	}
 	profile.RecentOrders = recentOrders
 
-	orderExposure := linkedOrderExposure(orders, invoices)
-	profile.ARAgingBuckets = linkedReceivablesAging(invoices, orderExposure)
+	profile.ARAgingBuckets = linkedReceivablesAging(invoices, 0)
 	profile.OutstandingBHD = profile.ARAgingBuckets.TotalOutstanding
 
 	// Calculate overdue
@@ -4243,6 +4263,7 @@ type RFQData struct {
 	Stage     string    `json:"stage" gorm:"index;size:50;default:'RFQ Received'"` // 9-stage pipeline
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	CreatedBy string    `json:"created_by" gorm:"size:100"`
 	// New fields for enhanced opportunity management
 	DocumentHash   string `json:"document_hash" gorm:"size:64"`     // SHA-256 hash of source document for duplicate detection
 	VisitLocations string `json:"visit_locations" gorm:"type:text"` // JSON array of site visit locations
@@ -4257,6 +4278,7 @@ type RFQComment struct {
 	Comment   string    `json:"comment" gorm:"type:text"`
 	CreatedBy string    `json:"created_by" gorm:"size:100"`
 	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func (RFQComment) TableName() string { return "rfq_comments" }
@@ -4268,6 +4290,7 @@ type OpportunityComment struct {
 	Comment       string    `json:"comment" gorm:"type:text"`
 	CreatedBy     string    `json:"created_by" gorm:"size:100"`
 	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func (OpportunityComment) TableName() string { return "opportunity_comments" }
@@ -4322,6 +4345,7 @@ func (a *App) createRFQ(client, project, reference string, value float64, notes 
 		Notes:     notes,
 		Status:    "pending",
 		Stage:     "RFQ Received",
+		CreatedBy: a.resolveCurrentPreparedByName(""),
 	}
 
 	result := a.db.Create(rfq)
@@ -5001,7 +5025,18 @@ func repairImportedOpportunityMetadata(db *gorm.DB) error {
 	}
 
 	var imported []Opportunity
-	if err := db.Where("source = ? OR source LIKE ?", "onedrive_import", "%_onedrive").Find(&imported).Error; err != nil {
+	if err := db.Where(`
+		deleted_at IS NULL
+		AND (
+			source = ?
+			OR source LIKE ?
+			OR source LIKE ?
+			OR year IS NULL
+			OR year = 0
+			OR year < 2024
+			OR year > 2030
+		)
+	`, "onedrive_import", "%_onedrive", "%_excel").Find(&imported).Error; err != nil {
 		return err
 	}
 
@@ -5010,7 +5045,7 @@ func repairImportedOpportunityMetadata(db *gorm.DB) error {
 		normalized := normalizeOpportunityForList(opp)
 		updates := map[string]interface{}{}
 
-		if normalized.FolderNumber != "" && normalized.FolderNumber != opp.FolderNumber {
+		if normalized.FolderNumber != "" && normalized.FolderNumber != opp.FolderNumber && importedOpportunityFolderNumberAvailable(db, normalized.FolderNumber, opp.ID) {
 			updates["folder_number"] = normalized.FolderNumber
 		}
 		if normalized.Title != "" && normalized.Title != opp.Title {
@@ -5019,8 +5054,13 @@ func repairImportedOpportunityMetadata(db *gorm.DB) error {
 		if normalized.FolderName != "" && normalized.FolderName != opp.FolderName {
 			updates["folder_name"] = normalized.FolderName
 		}
-		if normalized.Year != 0 && normalized.Year != opp.Year {
-			updates["year"] = normalized.Year
+		normalizedYear := normalized.Year
+		if inferredYear := inferImportedOpportunityYear(opp, normalized); inferredYear != 0 &&
+			(normalizedYear == 0 || normalizedYear < 2024 || normalizedYear > 2030 || opp.Year == 0 || opp.Year < 2024 || opp.Year > 2030) {
+			normalizedYear = inferredYear
+		}
+		if normalizedYear != 0 && normalizedYear != opp.Year {
+			updates["year"] = normalizedYear
 		}
 		if normalized.OppNumber != 0 && normalized.OppNumber != opp.OppNumber {
 			updates["opp_number"] = normalized.OppNumber
@@ -5057,6 +5097,95 @@ func repairImportedOpportunityMetadata(db *gorm.DB) error {
 	}
 
 	return nil
+}
+
+func importedOpportunityFolderNumberAvailable(db *gorm.DB, folderNumber string, currentID string) bool {
+	if db == nil || strings.TrimSpace(folderNumber) == "" {
+		return false
+	}
+	var count int64
+	if err := db.Model(&Opportunity{}).
+		Unscoped().
+		Where("folder_number = ? AND id <> ?", strings.TrimSpace(folderNumber), currentID).
+		Count(&count).Error; err != nil {
+		return false
+	}
+	return count == 0
+}
+
+func inferImportedOpportunityYear(original Opportunity, normalized Opportunity) int {
+	for _, value := range []string{
+		normalized.FolderNumber,
+		original.FolderNumber,
+		normalized.FolderName,
+		original.FolderName,
+		normalized.Title,
+		original.Title,
+	} {
+		if year := fullYearFromText(value); year != 0 {
+			return year
+		}
+	}
+
+	for _, value := range []string{normalized.Source, original.Source} {
+		if year := fullYearFromText(value); year != 0 {
+			return year
+		}
+	}
+
+	for _, value := range []string{
+		normalized.FolderNumber,
+		original.FolderNumber,
+		normalized.FolderName,
+		original.FolderName,
+		normalized.Title,
+		original.Title,
+	} {
+		if year := shortCommercialYearFromText(value); year != 0 {
+			return year
+		}
+	}
+
+	for _, value := range []string{normalized.Source, original.Source} {
+		if strings.Contains(value, "2026") {
+			return 2026
+		}
+		if strings.Contains(value, "2025") {
+			return 2025
+		}
+		if strings.Contains(value, "2024") {
+			return 2024
+		}
+	}
+
+	return 0
+}
+
+func fullYearFromText(value string) int {
+	m := regexp.MustCompile(`\b(20[2-3][0-9])\b`).FindStringSubmatch(value)
+	if len(m) != 2 {
+		return 0
+	}
+	year, _ := strconv.Atoi(m[1])
+	if year < 2024 || year > 2030 {
+		return 0
+	}
+	return year
+}
+
+func shortCommercialYearFromText(value string) int {
+	matches := regexp.MustCompile(`(?:^|[^0-9])(2[4-9]|30)(?:$|[^0-9])`).FindAllStringSubmatch(value, -1)
+	for _, match := range matches {
+		if len(match) != 2 {
+			continue
+		}
+		yy, _ := strconv.Atoi(match[1])
+		year := 2000 + yy
+		if year >= 2024 && year <= 2030 {
+			return year
+		}
+	}
+	return 0
 }
 
 type convertedOfferItemRestore struct {
@@ -5517,7 +5646,7 @@ func (a *App) generateRFQNumber() string {
 //   - Forward progress allowed: RFQ Received → Offer Sent → Follow-up → PO → Order → In Process → Delivered → Closed (Payment)
 //   - Any stage → Closed (Lost) allowed (one-way terminal)
 func (a *App) UpdateRFQStage(rfqID uint, stage string) error {
-	if err := a.requirePermission("offers:edit"); err != nil {
+	if err := a.requirePermission("dashboard:view"); err != nil {
 		return err
 	}
 	if a.db == nil {
@@ -5528,6 +5657,7 @@ func (a *App) UpdateRFQStage(rfqID uint, stage string) error {
 		"RFQ Received", "Offer Sent", "Follow-up/Eval",
 		"PO/LOI Received", "Order Placed", "In Process",
 		"Delivered", "Closed (Payment)", "Closed (Lost)",
+		"New", "Qualified", "Proposal", "Quoted", "Won", "Lost", "On Hold",
 	}
 	valid := false
 	for _, s := range validStages {
@@ -5588,13 +5718,12 @@ func (a *App) DeleteRFQ(id uint) error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
-	if ok, err := a.guardDeleteOrRequest("offers:edit", "rfq", strconv.FormatUint(uint64(id), 10), fmt.Sprintf("RFQ #%d", id)); !ok {
+	if err := a.requireAdminDelete("delete RFQs"); err != nil {
+		log.Printf("🔒 DeleteRFQ blocked: %v", err)
 		return err
 	}
-
-	// SERVER-SIDE PERMISSION CHECK: Require offers:edit for RFQ deletion
-	if err := a.requirePermission("offers:edit"); err != nil {
-		log.Printf("🔒 DeleteRFQ blocked: %v", err)
+	if err := a.requirePermission("offers:delete"); err != nil {
+		log.Printf("🔒 DeleteRFQ permission blocked: %v", err)
 		return err
 	}
 
@@ -5629,8 +5758,8 @@ func (a *App) UpdateRFQ(id uint, updates RFQUpdateRequest) (*RFQData, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	// SERVER-SIDE PERMISSION CHECK: Require offers:edit for RFQ updates
-	if err := a.requirePermission("offers:edit"); err != nil {
+	// RFQ/opportunity corrections are allowed for all licensed employees.
+	if err := a.requirePermission("dashboard:view"); err != nil {
 		log.Printf("🔒 UpdateRFQ blocked: %v", err)
 		return nil, err
 	}
@@ -5644,6 +5773,9 @@ func (a *App) UpdateRFQ(id uint, updates RFQUpdateRequest) (*RFQData, error) {
 	validStatuses := map[string]bool{
 		"New": true, "In Progress": true, "Quoted": true, "Proposal": true,
 		"Won": true, "Lost": true, "Closed": true, "On Hold": true, "": true,
+		"RFQ Received": true, "Qualified": true, "Offer Sent": true,
+		"Follow-up/Eval": true, "PO/LOI Received": true, "Order Placed": true,
+		"In Process": true, "Delivered": true, "Closed (Payment)": true, "Closed (Lost)": true,
 	}
 
 	// Update only provided fields with validation
@@ -5682,6 +5814,7 @@ func (a *App) UpdateRFQ(id uint, updates RFQUpdateRequest) (*RFQData, error) {
 			return nil, fmt.Errorf("invalid status: %s", updates.Status)
 		}
 		rfq.Status = updates.Status
+		rfq.Stage = updates.Status
 	}
 	if updates.VisitLocations != "" {
 		if len(updates.VisitLocations) > 2000 {
@@ -5810,17 +5943,12 @@ func (a *App) DeleteRFQWithCascade(id uint, cascade bool) (*DeleteCascadeResult,
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
-	entityType := "rfq"
-	if cascade {
-		entityType = "rfq_cascade"
-	}
-	if ok, err := a.guardDeleteOrRequest("offers:edit", entityType, strconv.FormatUint(uint64(id), 10), fmt.Sprintf("RFQ #%d", id)); !ok {
+	if err := a.requireAdminDelete("delete RFQs"); err != nil {
+		log.Printf("🔒 DeleteRFQWithCascade blocked: %v", err)
 		return nil, err
 	}
-
-	// SERVER-SIDE PERMISSION CHECK: Require offers:edit for RFQ cascade delete
-	if err := a.requirePermission("offers:edit"); err != nil {
-		log.Printf("🔒 DeleteRFQWithCascade blocked: %v", err)
+	if err := a.requirePermission("offers:delete"); err != nil {
+		log.Printf("🔒 DeleteRFQWithCascade permission blocked: %v", err)
 		return nil, err
 	}
 
@@ -6021,8 +6149,8 @@ func (a *App) GetRFQComments(rfqID uint) ([]RFQComment, error) {
 }
 
 func (a *App) GetOpportunityComments(opportunityID string) ([]OpportunityComment, error) {
-	if !a.currentSessionIsManagementOrAbove() {
-		return nil, fmt.Errorf("opportunity comments are limited to authorized roles")
+	if err := a.requirePermission("offers:view"); err != nil {
+		return nil, err
 	}
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
@@ -6251,6 +6379,7 @@ func (a *App) CreateCostingSheet(rfqID uint, itemsJSON string, createdBy string)
 		log.Printf("🔒 CreateCostingSheet blocked: %v", err)
 		return nil, err
 	}
+	createdBy = a.resolveCurrentPreparedByName(createdBy)
 
 	// Fetch RFQ to get name
 	var rfq RFQData
@@ -6498,6 +6627,7 @@ func (a *App) UpdateCostingSheet(id uint, data CostingSheetData) (*CostingSheetD
 	// Preserve ID and timestamps
 	data.ID = existing.ID
 	data.CreatedAt = existing.CreatedAt
+	data.CreatedBy = a.resolveCurrentPreparedByName(data.CreatedBy)
 
 	// Update costing sheet
 	if err := a.db.Model(&existing).Updates(data).Error; err != nil {
@@ -7098,7 +7228,7 @@ func (a *App) ensureOfferNumberAvailable(tx *gorm.DB, offerNumber, excludeOfferI
 		return fmt.Errorf("offer number is required")
 	}
 
-	query := tx.Model(&Offer{}).Where("offer_number = ?", strings.TrimSpace(offerNumber))
+	query := tx.Unscoped().Model(&Offer{}).Where("offer_number = ?", strings.TrimSpace(offerNumber))
 	if strings.TrimSpace(excludeOfferID) != "" {
 		query = query.Where("id <> ?", strings.TrimSpace(excludeOfferID))
 	}
@@ -7111,6 +7241,101 @@ func (a *App) ensureOfferNumberAvailable(tx *gorm.DB, offerNumber, excludeOfferI
 		return fmt.Errorf("offer number %q already exists; use the correct unique folder/reference number", offerNumber)
 	}
 	return nil
+}
+
+func (a *App) availableOfferNumberForCosting(tx *gorm.DB, data CostingExportData, preferred, excludeOfferID string) (string, error) {
+	if tx == nil {
+		return "", fmt.Errorf("database not initialized")
+	}
+
+	candidates := []string{}
+	addCandidate := func(value string) {
+		value = cleanOfferNumber(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if strings.EqualFold(existing, value) {
+				return
+			}
+		}
+		candidates = append(candidates, value)
+	}
+
+	addCandidate(preferred)
+	addCandidate(data.OfferNumber)
+	addCandidate(data.CostingId)
+	addCandidate(data.FolderNumber)
+	addCandidate(data.RfqReference)
+
+	if len(candidates) == 0 {
+		addCandidate(a.generateOfferNumber())
+	}
+
+	for _, candidate := range candidates {
+		available, err := offerNumberAvailable(tx, candidate, excludeOfferID)
+		if err != nil {
+			return "", err
+		}
+		if available {
+			return candidate, nil
+		}
+	}
+
+	revisionRoot := cleanOfferNumber(firstNonEmptyString(data.FolderNumber, preferred, data.CostingId, data.RfqReference))
+	if revisionRoot == "" {
+		revisionRoot = a.generateOfferNumber()
+	}
+	revisionRoot = stripOfferRevisionSuffix(revisionRoot)
+	for revision := 1; revision <= 99; revision++ {
+		candidate := cleanOfferNumber(fmt.Sprintf("%s-R%d", revisionRoot, revision))
+		available, err := offerNumberAvailable(tx, candidate, excludeOfferID)
+		if err != nil {
+			return "", err
+		}
+		if available {
+			return candidate, nil
+		}
+	}
+
+	return "", fmt.Errorf("offer number %q already exists and no revision number is available", preferred)
+}
+
+func offerNumberAvailable(tx *gorm.DB, offerNumber, excludeOfferID string) (bool, error) {
+	offerNumber = strings.TrimSpace(offerNumber)
+	if offerNumber == "" {
+		return false, nil
+	}
+	query := tx.Unscoped().Model(&Offer{}).Where("offer_number = ?", offerNumber)
+	if strings.TrimSpace(excludeOfferID) != "" {
+		query = query.Where("id <> ?", strings.TrimSpace(excludeOfferID))
+	}
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count == 0, nil
+}
+
+func stripOfferRevisionSuffix(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	re := regexp.MustCompile(`(?i)[-_\s]*(?:rev\.?|r)\s*\d+$`)
+	return strings.TrimSpace(re.ReplaceAllString(value, ""))
+}
+
+func friendlyOfferSaveError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "UNIQUE constraint failed: offers.offer_number") ||
+		strings.Contains(msg, "duplicate key value") && strings.Contains(msg, "offers") && strings.Contains(msg, "offer_number") {
+		return fmt.Errorf("offer number already exists; use the existing offer edit flow or create a new revision")
+	}
+	return err
 }
 
 func shouldConvertForeignCommercialSubtotal(rawSubtotal, convertedSubtotal, totalCost float64) bool {
@@ -7222,6 +7447,7 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
+	data.PreparedBy = a.resolveCurrentPreparedByName(data.PreparedBy)
 
 	// Validate VatRate bounds (0-100)
 	if data.VatRate < 0 || data.VatRate > 100 {
@@ -7297,6 +7523,14 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 	if offerNumber == "" {
 		offerNumber = a.generateOfferNumber()
 	}
+	if resolvedOfferNumber, err := a.availableOfferNumberForCosting(a.db, data, offerNumber, ""); err == nil {
+		if resolvedOfferNumber != offerNumber {
+			log.Printf("ℹ️ Costing offer number %s already exists; using revision offer number %s", offerNumber, resolvedOfferNumber)
+		}
+		offerNumber = resolvedOfferNumber
+	} else {
+		return nil, err
+	}
 
 	offer := &Offer{
 		Base:            Base{ID: uuid.New().String()},
@@ -7356,11 +7590,16 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 				return fmt.Errorf("an active offer already exists for this RFQ (RFQ #%d)", data.OpportunityId)
 			}
 		}
+		resolvedOfferNumber, err := a.availableOfferNumberForCosting(tx, data, offer.OfferNumber, "")
+		if err != nil {
+			return err
+		}
+		offer.OfferNumber = resolvedOfferNumber
 		if err := a.ensureOfferNumberAvailable(tx, offer.OfferNumber, ""); err != nil {
 			return err
 		}
 		if err := tx.Create(offer).Error; err != nil {
-			return err
+			return friendlyOfferSaveError(err)
 		}
 		if err := a.syncRFQReferenceFromCosting(tx, data.OpportunityId, customerReference); err != nil {
 			log.Printf("⚠️ Warning: Failed to sync RFQ #%d reference from costing: %v", data.OpportunityId, err)
@@ -7431,6 +7670,7 @@ func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error)
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
+	data.PreparedBy = a.resolveCurrentPreparedByName(data.PreparedBy)
 	if data.VatRate < 0 || data.VatRate > 100 {
 		return nil, fmt.Errorf("VAT rate must be between 0%% and 100%%, got %.1f%%", data.VatRate)
 	}
@@ -8283,8 +8523,12 @@ func (a *App) AddOfferNote(offerID string, content string) (OfferNote, error) {
 	}
 	// Sanitize HTML to prevent stored XSS
 	trimmed = html.EscapeString(trimmed)
+	createdBy := a.getCurrentUserDisplayName()
+	if strings.TrimSpace(createdBy) == "" {
+		createdBy = a.getCurrentUserID()
+	}
 	note := OfferNote{
-		Base:     Base{CreatedBy: "System"},
+		Base:     Base{CreatedBy: createdBy},
 		OfferID:  offerID,
 		NoteDate: time.Now(),
 		Content:  trimmed,
@@ -9039,7 +9283,160 @@ func (a *App) UpdateOrder(id string, order Order) (*Order, error) {
 	return &existing, nil
 }
 
-// DeleteOrder deletes an order and its items (only if no invoices/POs/DNs linked)
+type orderDeleteCascadeSnapshot struct {
+	Order             Order
+	InvoiceIDs        []string
+	PurchaseOrderIDs  []string
+	DeliveryNoteIDs   []string
+	OrderItemCount    int64
+	InvoiceItemCount  int64
+	PurchaseItemCount int64
+	DeliveryItemCount int64
+	PaymentCount      int64
+}
+
+func appendOrderLinkClause(clauses *[]string, args *[]interface{}, column string, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	*clauses = append(*clauses, fmt.Sprintf("%s = ?", column))
+	*args = append(*args, value)
+}
+
+func orderLinkedInvoiceCondition(order Order) (string, []interface{}) {
+	clauses := []string{}
+	args := []interface{}{}
+	appendOrderLinkClause(&clauses, &args, "order_id", order.ID)
+	appendOrderLinkClause(&clauses, &args, "order_id", order.OrderNumber)
+	appendOrderLinkClause(&clauses, &args, "customer_reference", order.OrderNumber)
+	appendOrderLinkClause(&clauses, &args, "customer_reference", order.CustomerReference)
+	appendOrderLinkClause(&clauses, &args, "customer_po_number", order.CustomerPONumber)
+	appendOrderLinkClause(&clauses, &args, "offer_id", order.OfferID)
+	appendOrderLinkClause(&clauses, &args, "offer_number", order.OfferNumber)
+	if len(clauses) == 0 {
+		return "order_id = ?", []interface{}{order.ID}
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")", args
+}
+
+func orderLinkedChildCondition(order Order) (string, []interface{}) {
+	clauses := []string{}
+	args := []interface{}{}
+	appendOrderLinkClause(&clauses, &args, "order_id", order.ID)
+	appendOrderLinkClause(&clauses, &args, "order_id", order.OrderNumber)
+	if len(clauses) == 0 {
+		return "order_id = ?", []interface{}{order.ID}
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")", args
+}
+
+func (a *App) collectOrderDeleteCascade(db *gorm.DB, orderID string) (*orderDeleteCascadeSnapshot, error) {
+	var order Order
+	if err := db.First(&order, "id = ?", strings.TrimSpace(orderID)).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, newError("ORDER_NOT_FOUND", "Order does not exist", orderID)
+		}
+		return nil, fmt.Errorf("failed to load order: %w", err)
+	}
+
+	invoiceWhere, invoiceArgs := orderLinkedInvoiceCondition(order)
+	childWhere, childArgs := orderLinkedChildCondition(order)
+
+	snapshot := &orderDeleteCascadeSnapshot{Order: order}
+	if err := db.Model(&Invoice{}).Where(invoiceWhere, invoiceArgs...).Pluck("id", &snapshot.InvoiceIDs).Error; err != nil {
+		return nil, fmt.Errorf("failed to find linked invoices: %w", err)
+	}
+	if err := db.Model(&PurchaseOrder{}).Where(childWhere, childArgs...).Pluck("id", &snapshot.PurchaseOrderIDs).Error; err != nil {
+		return nil, fmt.Errorf("failed to find linked purchase orders: %w", err)
+	}
+	if err := db.Model(&DeliveryNote{}).Where(childWhere, childArgs...).Pluck("id", &snapshot.DeliveryNoteIDs).Error; err != nil {
+		return nil, fmt.Errorf("failed to find linked delivery notes: %w", err)
+	}
+	if err := db.Model(&OrderItem{}).Where("order_id = ?", order.ID).Count(&snapshot.OrderItemCount).Error; err != nil {
+		return nil, fmt.Errorf("failed to count order items: %w", err)
+	}
+	if len(snapshot.InvoiceIDs) > 0 {
+		if err := db.Model(&DBInvoiceItem{}).Where("invoice_id IN ?", snapshot.InvoiceIDs).Count(&snapshot.InvoiceItemCount).Error; err != nil {
+			return nil, fmt.Errorf("failed to count invoice items: %w", err)
+		}
+		if err := db.Model(&Payment{}).Where("invoice_id IN ?", snapshot.InvoiceIDs).Count(&snapshot.PaymentCount).Error; err != nil {
+			return nil, fmt.Errorf("failed to count linked payments: %w", err)
+		}
+	}
+	if len(snapshot.PurchaseOrderIDs) > 0 {
+		if err := db.Model(&PurchaseOrderItem{}).Where("purchase_order_id IN ?", snapshot.PurchaseOrderIDs).Count(&snapshot.PurchaseItemCount).Error; err != nil {
+			return nil, fmt.Errorf("failed to count purchase order items: %w", err)
+		}
+	}
+	if len(snapshot.DeliveryNoteIDs) > 0 {
+		if err := db.Model(&DeliveryNoteItem{}).Where("delivery_note_id IN ?", snapshot.DeliveryNoteIDs).Count(&snapshot.DeliveryItemCount).Error; err != nil {
+			return nil, fmt.Errorf("failed to count delivery note items: %w", err)
+		}
+	}
+	return snapshot, nil
+}
+
+func orderDeletePreviewMap(snapshot *orderDeleteCascadeSnapshot) map[string]interface{} {
+	summary := []string{fmt.Sprintf("%d order item(s)", snapshot.OrderItemCount)}
+	if len(snapshot.InvoiceIDs) > 0 {
+		summary = append(summary, fmt.Sprintf("%d customer invoice(s)", len(snapshot.InvoiceIDs)))
+	}
+	if snapshot.InvoiceItemCount > 0 {
+		summary = append(summary, fmt.Sprintf("%d invoice line item(s)", snapshot.InvoiceItemCount))
+	}
+	if len(snapshot.PurchaseOrderIDs) > 0 {
+		summary = append(summary, fmt.Sprintf("%d purchase order(s)", len(snapshot.PurchaseOrderIDs)))
+	}
+	if snapshot.PurchaseItemCount > 0 {
+		summary = append(summary, fmt.Sprintf("%d purchase order line item(s)", snapshot.PurchaseItemCount))
+	}
+	if len(snapshot.DeliveryNoteIDs) > 0 {
+		summary = append(summary, fmt.Sprintf("%d delivery note(s)", len(snapshot.DeliveryNoteIDs)))
+	}
+	if snapshot.DeliveryItemCount > 0 {
+		summary = append(summary, fmt.Sprintf("%d delivery note line item(s)", snapshot.DeliveryItemCount))
+	}
+
+	blocked := snapshot.PaymentCount > 0
+	blockReason := ""
+	if blocked {
+		blockReason = fmt.Sprintf("cannot delete order with %d linked payment(s); cancel or reverse payments first", snapshot.PaymentCount)
+	}
+
+	return map[string]interface{}{
+		"order_id":                  snapshot.Order.ID,
+		"order_number":              snapshot.Order.OrderNumber,
+		"invoice_count":             len(snapshot.InvoiceIDs),
+		"invoice_item_count":        snapshot.InvoiceItemCount,
+		"purchase_order_count":      len(snapshot.PurchaseOrderIDs),
+		"purchase_order_item_count": snapshot.PurchaseItemCount,
+		"delivery_note_count":       len(snapshot.DeliveryNoteIDs),
+		"delivery_note_item_count":  snapshot.DeliveryItemCount,
+		"order_item_count":          snapshot.OrderItemCount,
+		"payment_count":             snapshot.PaymentCount,
+		"blocked":                   blocked,
+		"block_reason":              blockReason,
+		"summary":                   summary,
+	}
+}
+
+// PreviewOrderDeleteCascade tells the UI exactly which dependent records will be removed.
+func (a *App) PreviewOrderDeleteCascade(orderID string) (map[string]interface{}, error) {
+	if err := a.requirePermission("orders:delete"); err != nil {
+		return nil, err
+	}
+	if a.db == nil {
+		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+	snapshot, err := a.collectOrderDeleteCascade(a.db, orderID)
+	if err != nil {
+		return nil, err
+	}
+	return orderDeletePreviewMap(snapshot), nil
+}
+
+// DeleteOrder deletes an order and its dependent records after payment checks.
 func (a *App) DeleteOrder(orderID string) error {
 	if ok, err := a.guardDeleteOrRequest("orders:delete", "order", orderID, "Order"); !ok {
 		return err
@@ -9051,78 +9448,59 @@ func (a *App) DeleteOrder(orderID string) error {
 		return newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
-	// SECURITY: Check for payments before allowing deletion (audit requirement)
-	var paymentCount int64
-	if err := a.db.Model(&Payment{}).
-		Joins("JOIN invoices ON invoices.id = payments.invoice_id").
-		Where("invoices.order_id = ?", orderID).
-		Count(&paymentCount).Error; err != nil {
-		log.Printf("⚠️ Failed to check payment count for order %s: %v", orderID, err)
+	snapshot, err := a.collectOrderDeleteCascade(a.db, orderID)
+	if err != nil {
+		return err
 	}
-	if paymentCount > 0 {
+	if snapshot.PaymentCount > 0 {
 		return newError("PAYMENT_EXISTS",
-			fmt.Sprintf("cannot delete order with %d payment(s) - use Cancel instead (audit requirement)", paymentCount),
+			fmt.Sprintf("cannot delete order with %d payment(s) - use Cancel instead (audit requirement)", snapshot.PaymentCount),
 			"")
 	}
 
-	// Cascade delete all linked records in a transaction
-	// Frontend already shows confirm() dialog, so user explicitly approved deletion
-	err := a.db.Transaction(func(tx *gorm.DB) error {
-		// 1. Delete invoice items for linked invoices
-		var invoices []Invoice
-		if err := tx.Where("order_id = ?", orderID).Find(&invoices).Error; err != nil {
-			return fmt.Errorf("failed to find linked invoices: %w", err)
+	err = a.db.Transaction(func(tx *gorm.DB) error {
+		fresh, err := a.collectOrderDeleteCascade(tx, orderID)
+		if err != nil {
+			return err
 		}
-		for _, invoice := range invoices {
-			if err := tx.Where("invoice_id = ?", invoice.ID).Delete(&DBInvoiceItem{}).Error; err != nil {
-				return fmt.Errorf("failed to delete invoice items for invoice %s: %w", invoice.ID, err)
+		if fresh.PaymentCount > 0 {
+			return newError("PAYMENT_EXISTS",
+				fmt.Sprintf("cannot delete order with %d payment(s) - use Cancel instead (audit requirement)", fresh.PaymentCount),
+				"")
+		}
+
+		if len(fresh.InvoiceIDs) > 0 {
+			if err := tx.Where("invoice_id IN ?", fresh.InvoiceIDs).Delete(&DBInvoiceItem{}).Error; err != nil {
+				return fmt.Errorf("failed to delete invoice items: %w", err)
+			}
+			if err := tx.Where("id IN ?", fresh.InvoiceIDs).Delete(&Invoice{}).Error; err != nil {
+				return fmt.Errorf("failed to delete invoices: %w", err)
 			}
 		}
 
-		// 2. Delete invoices
-		if err := tx.Where("order_id = ?", orderID).Delete(&Invoice{}).Error; err != nil {
-			return fmt.Errorf("failed to delete invoices: %w", err)
-		}
-
-		// 3. Delete purchase order items for linked purchase orders
-		var purchaseOrders []PurchaseOrder
-		if err := tx.Where("order_id = ?", orderID).Find(&purchaseOrders).Error; err != nil {
-			return fmt.Errorf("failed to find linked purchase orders: %w", err)
-		}
-		for _, po := range purchaseOrders {
-			if err := tx.Where("purchase_order_id = ?", po.ID).Delete(&PurchaseOrderItem{}).Error; err != nil {
-				return fmt.Errorf("failed to delete PO items for PO %s: %w", po.ID, err)
+		if len(fresh.PurchaseOrderIDs) > 0 {
+			if err := tx.Where("purchase_order_id IN ?", fresh.PurchaseOrderIDs).Delete(&PurchaseOrderItem{}).Error; err != nil {
+				return fmt.Errorf("failed to delete purchase order items: %w", err)
+			}
+			if err := tx.Where("id IN ?", fresh.PurchaseOrderIDs).Delete(&PurchaseOrder{}).Error; err != nil {
+				return fmt.Errorf("failed to delete purchase orders: %w", err)
 			}
 		}
 
-		// 4. Delete purchase orders
-		if err := tx.Where("order_id = ?", orderID).Delete(&PurchaseOrder{}).Error; err != nil {
-			return fmt.Errorf("failed to delete purchase orders: %w", err)
-		}
-
-		// 5. Delete delivery note items for linked delivery notes
-		var deliveryNotes []DeliveryNote
-		if err := tx.Where("order_id = ?", orderID).Find(&deliveryNotes).Error; err != nil {
-			return fmt.Errorf("failed to find linked delivery notes: %w", err)
-		}
-		for _, dn := range deliveryNotes {
-			if err := tx.Where("delivery_note_id = ?", dn.ID).Delete(&DeliveryNoteItem{}).Error; err != nil {
-				return fmt.Errorf("failed to delete delivery note items for DN %s: %w", dn.ID, err)
+		if len(fresh.DeliveryNoteIDs) > 0 {
+			if err := tx.Where("delivery_note_id IN ?", fresh.DeliveryNoteIDs).Delete(&DeliveryNoteItem{}).Error; err != nil {
+				return fmt.Errorf("failed to delete delivery note items: %w", err)
+			}
+			if err := tx.Where("id IN ?", fresh.DeliveryNoteIDs).Delete(&DeliveryNote{}).Error; err != nil {
+				return fmt.Errorf("failed to delete delivery notes: %w", err)
 			}
 		}
 
-		// 6. Delete delivery notes
-		if err := tx.Where("order_id = ?", orderID).Delete(&DeliveryNote{}).Error; err != nil {
-			return fmt.Errorf("failed to delete delivery notes: %w", err)
-		}
-
-		// 7. Delete order items
-		if err := tx.Where("order_id = ?", orderID).Delete(&OrderItem{}).Error; err != nil {
+		if err := tx.Where("order_id = ?", fresh.Order.ID).Delete(&OrderItem{}).Error; err != nil {
 			return fmt.Errorf("failed to delete order items: %w", err)
 		}
 
-		// 8. Delete the order itself
-		if err := tx.Delete(&Order{}, "id = ?", orderID).Error; err != nil {
+		if err := tx.Delete(&Order{}, "id = ?", fresh.Order.ID).Error; err != nil {
 			return fmt.Errorf("failed to delete order: %w", err)
 		}
 
@@ -9133,7 +9511,7 @@ func (a *App) DeleteOrder(orderID string) error {
 		return fmt.Errorf("cascade delete order failed: %w", err)
 	}
 
-	log.Printf("🗑️ Cascade deleted order %s and all linked records (invoices, POs, delivery notes)", orderID)
+	log.Printf("🗑️ Cascade deleted order %s and dependent records: %v", orderID, orderDeletePreviewMap(snapshot)["summary"])
 	return nil
 }
 
@@ -14507,6 +14885,7 @@ func (a *App) routeToBankStatement(data map[string]interface{}, fileName string,
 	explicitBankAccountID := strings.TrimSpace(getStringField(data, "bank_account_id"))
 	bankName := getStringField(data, "bank_name")
 	accountNumber := getStringField(data, "account_number")
+	iban := getStringField(data, "iban")
 	butlerSummary := strings.TrimSpace(getStringField(data, "butler_summary"))
 	userNotes := strings.TrimSpace(getStringField(data, "notes"))
 	statementNotes := butlerSummary
@@ -14641,6 +15020,14 @@ func (a *App) routeToBankStatement(data map[string]interface{}, fileName string,
 		if acct.ID == bankAccountID {
 			matchedAccount = acct
 			break
+		}
+	}
+	if explicitBankAccountID != "" {
+		if err := validateParsedStatementMatchesSelectedAccount(&parsedStatement{
+			AccountNumber: accountNumber,
+			IBAN:          iban,
+		}, matchedAccount); err != nil {
+			return "", err
 		}
 	}
 
@@ -16159,29 +16546,26 @@ func (a *App) SeedDefaultRoles() error {
 			ID:          "role_manager",
 			Name:        "manager",
 			DisplayName: "Manager",
-			Description: "All operations INCLUDING finance (no device/user management)",
+			Description: "Commercial and operations management without company financials",
 			Permissions: `[
 				"dashboard:view",
 				"customers:view", "customers:edit",
 				"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
 				"invoices:view", "invoices:create", "invoices:update", "invoices:approve",
 				"orders:view", "orders:create", "orders:edit", "orders:update",
-				"payments:view", "payments:create", "payments:update", "payments:record",
-				"reports:view", "reports:generate",
+				"reports:view",
 				"settings:view", "settings:api_keys",
 				"data:import",
 				"documents:view", "documents:create", "documents:classify",
 				"intelligence:chat",
-				"finance:view", "finance:create",
-				"expenses:view", "expenses:create", "expenses:update",
-				"payroll:view", "payroll:create", "payroll:update", "payroll:approve",
 				"projects:view", "projects:create", "projects:update",
 				"tasks:view", "tasks:create", "tasks:update",
 				"notifications:view", "notifications:update",
 				"hr:view", "hr:create", "hr:update",
 				"offers:view", "offers:create", "offers:edit",
 				"po:view", "po:create", "po:update", "po:approve",
-				"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm"
+				"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
+				"inventory:view", "inventory:create", "inventory:update"
 			]`,
 		},
 		{
@@ -16203,6 +16587,7 @@ func (a *App) SeedDefaultRoles() error {
 				"notifications:view", "notifications:update",
 				"po:view", "po:create",
 				"delivery_notes:view", "delivery_notes:create", "delivery_notes:update",
+				"inventory:view",
 				"documents:view", "documents:create", "documents:classify",
 				"intelligence:chat",
 				"settings:api_keys",
@@ -16223,6 +16608,7 @@ func (a *App) SeedDefaultRoles() error {
 				"notifications:view", "notifications:update",
 				"grn:view", "grn:create",
 				"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
+				"inventory:view", "inventory:create", "inventory:update",
 				"orders:view", "orders:update",
 				"invoices:view", "invoices:create", "invoices:update",
 				"documents:view", "documents:create", "documents:classify",
@@ -16243,6 +16629,7 @@ func (a *App) SeedDefaultRoles() error {
 				"invoices:view",
 				"orders:view",
 				"payments:view",
+				"inventory:view",
 				"documents:view", "documents:create", "documents:classify",
 				"intelligence:chat",
 				"reports:view",
@@ -16795,8 +17182,13 @@ func permissionAliases(permission string) []string {
 }
 
 func permissionGranted(granted, required string) bool {
-	if granted == "*" || required == "*" {
+	granted = strings.TrimSpace(granted)
+	required = strings.TrimSpace(required)
+	if granted == "*" {
 		return true
+	}
+	if required == "*" {
+		return false
 	}
 
 	grantedAliases := permissionAliases(granted)
@@ -17020,9 +17412,9 @@ func (a *App) currentSessionCanViewFinanceDashboard() bool {
 			roleName = strings.ToLower(strings.TrimSpace(a.currentUser.Role.DisplayName))
 		}
 		switch roleName {
-		case "admin", "administrator", "developer", "manager", "finance":
+		case "admin", "administrator", "developer", "finance":
 			return true
-		case "sales", "operations", "staff":
+		case "manager", "management", "sales", "operations", "staff":
 			return false
 		}
 
@@ -17042,9 +17434,9 @@ func (a *App) currentSessionCanViewFinanceDashboard() bool {
 
 	roleName := strings.ToLower(strings.TrimSpace(a.GetCurrentUserRole()))
 	switch roleName {
-	case "admin", "administrator", "developer", "manager", "finance":
+	case "admin", "administrator", "developer", "finance":
 		return true
-	case "sales", "operations", "staff":
+	case "manager", "management", "sales", "operations", "staff":
 		return false
 	}
 
@@ -17314,6 +17706,16 @@ func (a *App) getCurrentUserDisplayName() string {
 	}
 
 	return a.getCurrentUserID()
+}
+
+func (a *App) resolveCurrentPreparedByName(fallback string) string {
+	for _, candidate := range []string{a.getCurrentUserDisplayName(), fallback} {
+		name := strings.TrimSpace(candidate)
+		if name != "" && !strings.EqualFold(name, "system") {
+			return name
+		}
+	}
+	return "System"
 }
 
 // getCurrentUserID returns the ID of the currently authenticated user.
@@ -20382,7 +20784,7 @@ func (a *App) SeedDefaultChartOfAccounts() error {
 // ============================================================================
 
 // GetInventoryItems retrieves inventory items with optional filters
-func (a *App) GetInventoryItems(warehouseID *uint, stockStatus string, lowStockOnly bool) ([]InventoryItem, error) {
+func (a *App) GetInventoryItems(warehouseID *string, stockStatus string, lowStockOnly bool) ([]InventoryItem, error) {
 	if err := a.requirePermission("inventory:view"); err != nil {
 		return nil, err
 	}
@@ -20393,8 +20795,8 @@ func (a *App) GetInventoryItems(warehouseID *uint, stockStatus string, lowStockO
 	var items []InventoryItem
 	query := a.db.Where("deleted_at IS NULL AND is_active = ?", true).Order("product_code ASC")
 
-	if warehouseID != nil && *warehouseID > 0 {
-		query = query.Where("warehouse_id = ?", *warehouseID)
+	if warehouseID != nil && strings.TrimSpace(*warehouseID) != "" {
+		query = query.Where("warehouse_id = ?", strings.TrimSpace(*warehouseID))
 	}
 
 	if stockStatus != "" && stockStatus != "All" {
@@ -20414,7 +20816,7 @@ func (a *App) GetInventoryItems(warehouseID *uint, stockStatus string, lowStockO
 }
 
 // GetInventoryItem retrieves a single inventory item by ID
-func (a *App) GetInventoryItem(itemID uint) (*InventoryItem, error) {
+func (a *App) GetInventoryItem(itemID string) (*InventoryItem, error) {
 	if err := a.requirePermission("inventory:view"); err != nil {
 		return nil, err
 	}
@@ -20422,8 +20824,13 @@ func (a *App) GetInventoryItem(itemID uint) (*InventoryItem, error) {
 		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return nil, newError("INVALID_INPUT", "Inventory item ID is required", "")
+	}
+
 	var item InventoryItem
-	if err := a.db.Preload("Movements").First(&item, itemID).Error; err != nil {
+	if err := a.db.First(&item, "id = ?", itemID).Error; err != nil {
 		return nil, newError("ITEM_NOT_FOUND", "Inventory item not found", err.Error())
 	}
 
@@ -20439,13 +20846,36 @@ func (a *App) CreateInventoryItem(item InventoryItem) (*InventoryItem, error) {
 		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
-	// Validate
+	item.ProductID = strings.TrimSpace(item.ProductID)
+	item.ProductCode = strings.TrimSpace(item.ProductCode)
+	item.WarehouseID = strings.TrimSpace(item.WarehouseID)
+	item.StockStatus = strings.TrimSpace(item.StockStatus)
+
+	if item.ProductID == "" && item.ProductCode == "" {
+		return nil, newError("INVALID_INPUT", "Product code or product ID is required", "")
+	}
+
+	// Validate/enrich from product master when present.
 	if item.ProductID != "" {
 		var product ProductMaster
 		if err := a.db.First(&product, "id = ?", item.ProductID).Error; err == nil {
-			// result["product_name"] = product.ProductName
-			// result["product_code"] = product.ProductCode
+			if item.ProductCode == "" {
+				item.ProductCode = product.ProductCode
+			}
 		}
+	}
+
+	var existing InventoryItem
+	duplicate := a.db.Where("deleted_at IS NULL AND warehouse_id = ?", item.WarehouseID)
+	if item.ProductID != "" {
+		duplicate = duplicate.Where("product_id = ?", item.ProductID)
+	} else {
+		duplicate = duplicate.Where("product_code = ?", item.ProductCode)
+	}
+	if err := duplicate.First(&existing).Error; err == nil {
+		return nil, newError("DUPLICATE_INVENTORY_ITEM", "Inventory item already exists for this product and warehouse", existing.ID)
+	} else if err != gorm.ErrRecordNotFound {
+		return nil, newError("DB_QUERY_FAILED", "Failed to check existing inventory item", err.Error())
 	}
 
 	// Set defaults
@@ -20465,7 +20895,7 @@ func (a *App) CreateInventoryItem(item InventoryItem) (*InventoryItem, error) {
 }
 
 // UpdateInventoryItem updates an inventory item
-func (a *App) UpdateInventoryItem(itemID uint, updates map[string]interface{}) error {
+func (a *App) UpdateInventoryItem(itemID string, updates map[string]interface{}) error {
 	if err := a.requirePermission("inventory:update"); err != nil {
 		return err
 	}
@@ -20473,11 +20903,16 @@ func (a *App) UpdateInventoryItem(itemID uint, updates map[string]interface{}) e
 		return newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return newError("INVALID_INPUT", "Inventory item ID is required", "")
+	}
+
 	if err := a.db.Model(&InventoryItem{}).Where("id = ?", itemID).Updates(updates).Error; err != nil {
 		return newError("DB_UPDATE_FAILED", "Failed to update inventory item", err.Error())
 	}
 
-	log.Printf("✅ Updated inventory item #%d", itemID)
+	log.Printf("✅ Updated inventory item %s", itemID)
 	return nil
 }
 
@@ -20498,6 +20933,20 @@ func (a *App) RecordStockMovement(movement StockMovement) (*StockMovement, error
 	if movement.Direction != "IN" && movement.Direction != "OUT" {
 		return nil, newError("INVALID_INPUT", "Direction must be IN or OUT", "")
 	}
+	if movement.MovementDate.IsZero() {
+		movement.MovementDate = time.Now()
+	}
+	movement.MovementType = strings.TrimSpace(movement.MovementType)
+	if movement.MovementType == "" {
+		movement.MovementType = "Manual Adjustment"
+	}
+	movement.MovementNumber = strings.TrimSpace(movement.MovementNumber)
+	movement.ReferenceType = strings.TrimSpace(movement.ReferenceType)
+	movement.ReferenceID = strings.TrimSpace(movement.ReferenceID)
+	movement.ReferenceNumber = strings.TrimSpace(movement.ReferenceNumber)
+	movement.CounterpartyID = strings.TrimSpace(movement.CounterpartyID)
+	movement.CounterpartyName = strings.TrimSpace(movement.CounterpartyName)
+	movement.Notes = strings.TrimSpace(movement.Notes)
 
 	// Start transaction
 	tx := a.db.Begin()
@@ -20591,7 +21040,7 @@ func (a *App) calculateStockStatus(onHand, reorderPoint, minStock, maxStock floa
 }
 
 // GetStockMovements retrieves stock movements with filters
-func (a *App) GetStockMovements(itemID *uint, movementType string, startDate, endDate time.Time, limit int) ([]StockMovement, error) {
+func (a *App) GetStockMovements(itemID *string, movementType string, startDate, endDate time.Time, limit int) ([]StockMovement, error) {
 	if err := a.requirePermission("inventory:view"); err != nil {
 		return nil, err
 	}
@@ -20606,8 +21055,8 @@ func (a *App) GetStockMovements(itemID *uint, movementType string, startDate, en
 	var movements []StockMovement
 	query := a.db.Where("deleted_at IS NULL").Order("movement_date DESC, created_at DESC").Limit(limit)
 
-	if itemID != nil && *itemID > 0 {
-		query = query.Where("inventory_item_id = ?", *itemID)
+	if itemID != nil && strings.TrimSpace(*itemID) != "" {
+		query = query.Where("inventory_item_id = ?", strings.TrimSpace(*itemID))
 	}
 
 	if movementType != "" && movementType != "All" {
@@ -20773,7 +21222,7 @@ func (a *App) GetLowStockItems() ([]InventoryItem, error) {
 }
 
 // GetInventoryValuation calculates total inventory value
-func (a *App) GetInventoryValuation(warehouseID *uint) (map[string]interface{}, error) {
+func (a *App) GetInventoryValuation(warehouseID *string) (map[string]interface{}, error) {
 	if err := a.requirePermission("inventory:view"); err != nil {
 		return nil, err
 	}
@@ -20783,8 +21232,8 @@ func (a *App) GetInventoryValuation(warehouseID *uint) (map[string]interface{}, 
 
 	query := a.db.Where("deleted_at IS NULL AND is_active = ?", true)
 
-	if warehouseID != nil && *warehouseID > 0 {
-		query = query.Where("warehouse_id = ?", fmt.Sprint(*warehouseID))
+	if warehouseID != nil && strings.TrimSpace(*warehouseID) != "" {
+		query = query.Where("warehouse_id = ?", strings.TrimSpace(*warehouseID))
 	}
 
 	var items []InventoryItem

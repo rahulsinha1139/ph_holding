@@ -14,6 +14,7 @@ This documentation pack is written from the current Wails, Go, and Svelte code i
 | `OPERATIONS_USER_GUIDE.md` | Procurement, logistics, delivery team | Supplier orders, supplier invoices, delivery notes, order fulfillment |
 | `STAFF_USER_GUIDE.md` | General staff | Dashboard, work board, notifications, basic collaboration |
 | `FIELD_AND_WORKFLOW_REFERENCE.md` | All users and trainers | What to enter in each major field and what each action does |
+| `PH_TRADING_WORKFLOW_REPORT_GUIDE.md` | PH Trading operators and managers | Exact RFQ-to-cash, purchase, expense, bank, and extract/report usage guide |
 
 ## Main Application Areas
 
@@ -73,4 +74,3 @@ The manual pack was created from these live code areas:
 | `customer_invoice_service.go`, `payment_service.go`, `supplier_payment_service.go` | Finance rules and transaction behavior |
 | `purchase_order_service.go`, `delivery_note_service.go`, `supplier_invoice_service.go` | Procurement, delivery, matching, and status behavior |
 | `business_invariants.go` | Business rules such as minimum margin, customer grade payment expectations, and ABB competition constraints |
-

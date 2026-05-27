@@ -139,7 +139,7 @@ func TestButlerSalesRoleFinancialQueryBlockedBeforeModel(t *testing.T) {
 
 	resp, err := app.ChatWithButlerPersistent("", "show pipeline revenue and profit margin for open offers")
 	require.NoError(t, err)
-	require.Contains(t, resp.Response, "Financial data access requires manager or admin privileges")
+	require.Contains(t, resp.Response, "Financial data access requires finance or admin privileges")
 	require.Contains(t, resp.Response, "Sales pipeline status without revenue")
 	require.Empty(t, resp.Actions)
 	require.Equal(t, "blocked", resp.Metadata.ContextMode)

@@ -1203,13 +1203,93 @@ func TestSaveCostingAsOffer_UsesCostingOfferNumberAndPreparedBy(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, "64-26", offer.OfferNumber)
-	require.Equal(t, "Periyasamy N", offer.IssuedBy)
+	require.Equal(t, app.resolveCurrentPreparedByName("Periyasamy N"), offer.IssuedBy)
 
 	var stored Offer
 	require.NoError(t, app.db.Preload("Items").First(&stored, "id = ?", offer.ID).Error)
 	require.Equal(t, "64-26", stored.OfferNumber)
-	require.Equal(t, "Periyasamy N", stored.IssuedBy)
+	require.Equal(t, app.resolveCurrentPreparedByName("Periyasamy N"), stored.IssuedBy)
 	require.Len(t, stored.Items, 1)
+}
+
+func TestSaveCostingAsOffer_UsesRevisionNumberWhenFolderOfferExists(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	seedTestCustomer(t, app.db, "SULB COMPANY B.S.C CLOSED")
+	require.NoError(t, app.db.Create(&Offer{
+		Base:              Base{ID: "existing-oth-03-26"},
+		OfferNumber:       "OTH-03-26",
+		CustomerName:      "SULB COMPANY B.S.C CLOSED",
+		CustomerReference: "2911335453",
+		Stage:             "Quoted",
+		QuoteType:         "Quotation",
+		VatRate:           10,
+	}).Error)
+
+	offer, err := app.SaveCostingAsOffer(CostingExportData{
+		Date:          time.Now().Format("2006-01-02"),
+		PreparedBy:    "Periyasamy Neelakandan",
+		CustomerName:  "SULB COMPANY B.S.C CLOSED",
+		RfqReference:  "2911335453",
+		FolderNumber:  "OTH-03-26",
+		CostingId:     "OTH-03-26-R1",
+		QuoteType:     "Quotation",
+		VatRate:       10,
+		PaymentTerms:  "60 days from Date of Delivery",
+		DeliveryTerms: "Delivered Duty Paid (DDP)",
+		EstDelivery:   "16-18 weeks",
+		GrandTotal:    48229.720,
+		Subtotal:      43845.200,
+		NetAmount:     43845.200,
+		Profit:        7642.352,
+		LineItems: []CostingExportLineItem{
+			{SlNo: 1, Equipment: "Servomex analyzer", Model: "02500E1", Quantity: 1, SuggestedPrice: 15485, TotalPrice: 15485, TotalCost: 12000},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "OTH-03-26-R1", offer.OfferNumber)
+}
+
+func TestSaveCostingAsOffer_UsesRevisionNumberWhenArchivedFolderOfferExists(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	seedTestCustomer(t, app.db, "SULB COMPANY B.S.C CLOSED")
+	archived := Offer{
+		Base:              Base{ID: "archived-oth-03-26"},
+		OfferNumber:       "OTH-03-26",
+		CustomerName:      "SULB COMPANY B.S.C CLOSED",
+		CustomerReference: "2911335453",
+		Stage:             "Quoted",
+		QuoteType:         "Quotation",
+		VatRate:           10,
+	}
+	require.NoError(t, app.db.Create(&archived).Error)
+	require.NoError(t, app.db.Delete(&archived).Error)
+
+	offer, err := app.SaveCostingAsOffer(CostingExportData{
+		Date:          time.Now().Format("2006-01-02"),
+		PreparedBy:    "Periyasamy Neelakandan",
+		CustomerName:  "SULB COMPANY B.S.C CLOSED",
+		RfqReference:  "2911335453",
+		FolderNumber:  "OTH-03-26",
+		CostingId:     "OTH-03-26-R1",
+		QuoteType:     "Quotation",
+		VatRate:       10,
+		PaymentTerms:  "60 days from Date of Delivery",
+		DeliveryTerms: "Delivered Duty Paid (DDP)",
+		EstDelivery:   "16-18 weeks",
+		GrandTotal:    48229.720,
+		Subtotal:      43845.200,
+		NetAmount:     43845.200,
+		Profit:        7642.352,
+		LineItems: []CostingExportLineItem{
+			{SlNo: 1, Equipment: "Servomex analyzer", Model: "02500E1", Quantity: 1, SuggestedPrice: 15485, TotalPrice: 15485, TotalCost: 12000},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "OTH-03-26-R1", offer.OfferNumber)
 }
 
 func TestOfferNumberPrefersReferenceWhenCurrentValueIsGeneratedSequence(t *testing.T) {
@@ -1322,7 +1402,7 @@ func TestSaveCostingAsOffer_UpdatesSourceOfferFromCosting(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, created.ID, updated.ID)
-	require.Equal(t, "Stanley Vaz", updated.IssuedBy)
+	require.Equal(t, app.resolveCurrentPreparedByName("Stanley Vaz"), updated.IssuedBy)
 	require.Equal(t, "Budgetary Quote", updated.QuoteType)
 	require.Equal(t, 0.0, updated.VatRate)
 	require.Equal(t, "Updated terms", updated.TermsAndConditions)

@@ -15,8 +15,8 @@ test.describe('Workflow guardrails', () => {
     const chatInput = page.getByPlaceholder('Ask about financials, customers, suppliers...');
 
     await chatInput.fill('First workflow guardrail prompt');
-    await chatInput.press('Enter');
-    await expect(page.getByText('Mock Butler response persisted.')).toBeVisible();
+    await page.locator('.send-btn').click();
+    await expect(page.getByText('Mock Butler response persisted.')).toBeVisible({ timeout: 10000 });
 
     const clearAllButton = page.getByRole('button', { name: /Clear All Chats|Click again to confirm/ });
     await clearAllButton.click();

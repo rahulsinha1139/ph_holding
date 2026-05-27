@@ -40,7 +40,7 @@ html {
 
 body {
   font-family: var(--font-family);
-  font-size: var(--table-text-size);
+  font-size: var(--body-text-size-scaled, var(--table-text-size));
   font-weight: var(--font-weight-regular);
   line-height: 1.5;
   color: var(--text-primary);
@@ -60,11 +60,11 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 h1 {
-  font-size: var(--page-title-size);
+  font-size: var(--page-title-size-scaled, var(--page-title-size));
 }
 
 h2 {
-  font-size: var(--section-title-size);
+  font-size: var(--section-title-size-scaled, var(--section-title-size));
 }
 
 p {
@@ -113,7 +113,7 @@ input,
 textarea,
 select {
   font-family: inherit;
-  font-size: inherit;
+  font-size: var(--control-text-size-scaled, var(--modal-body-size, inherit));
   line-height: inherit;
   color: inherit;
   border: 1px solid var(--border);

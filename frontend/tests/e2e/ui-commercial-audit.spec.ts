@@ -18,15 +18,6 @@ const TOP_LEVEL_NAV = [
   'Settings',
 ];
 
-const CANONICAL_PREPARED_BY = [
-  'EBIN CHACKO',
-  'Periyasamy Neelakandan',
-  'V.M.Sundar',
-  'RAMYA BASKARAN',
-  'STANLEY VAZ',
-  'Abhie Kore',
-];
-
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -195,7 +186,7 @@ test.describe('Commercial UI control audit', () => {
     expect(pageErrors, 'No unhandled browser errors during hub/action audit').toEqual([]);
   });
 
-  test('costing prepared-by dropdown carries the exact document signature team', async ({ page }) => {
+  test('costing prepared-by is a read-only current-user accountability field', async ({ page }) => {
     await page.goto(BASE_URL);
     await waitForScreenIdle(page);
 
@@ -203,14 +194,8 @@ test.describe('Commercial UI control audit', () => {
     await clickButtonLike(page, 'Costing');
     await page.getByRole('button', { name: 'Start Blank Costing' }).click();
 
-    const preparedBySelect = page.locator('.field-group', { hasText: 'Prepared By' }).locator('select').first();
-    await expect(preparedBySelect).toBeVisible();
-    const options = await preparedBySelect.locator('option').evaluateAll((nodes) => (
-      nodes.map((node) => (node.textContent || '').trim()).filter(Boolean)
-    ));
-
-    for (const name of CANONICAL_PREPARED_BY) {
-      expect(options, `Prepared By options should include ${name}`).toContain(name);
-    }
+    const preparedByField = page.locator('.field-group', { hasText: 'Prepared By' }).locator('input[readonly]').first();
+    await expect(preparedByField).toBeVisible();
+    await expect(preparedByField).not.toHaveValue('System');
   });
 });

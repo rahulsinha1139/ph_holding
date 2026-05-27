@@ -1,19 +1,23 @@
 <script lang="ts">
+    import { createEventDispatcher } from "svelte";
     import { fade } from "svelte/transition";
     import CRMCustomerDashboard from "./CRMCustomerDashboard.svelte";
     import CRMSupplierDashboard from "./CRMSupplierDashboard.svelte";
     import CustomerDetailView from "./CustomerDetailView.svelte";
     import SupplierDetailView from "./SupplierDetailView.svelte";
+    import DataQualityScreen from "./DataQualityScreen.svelte";
     import ErrorBoundary from "../components/ErrorBoundary.svelte";
 
     let activeTab = "customers";
     let selectedCustomer: string | null = null;
     let selectedSupplier: string | null = null;
+    const dispatch = createEventDispatcher();
 
     // Text-only tabs - Living Minimalist
     const tabs = [
         { id: "customers", label: "Customers" },
         { id: "suppliers", label: "Suppliers" },
+        { id: "data_quality", label: "Data Quality" },
     ];
 
     function handleTabChange(tabId: string) {
@@ -37,19 +41,44 @@
     function handleSupplierBack() {
         selectedSupplier = null;
     }
+
+    function handleDataQualityOpenIssue(event: CustomEvent<{ issue: any }>) {
+        const issue = event.detail?.issue || {};
+        const entityType = String(issue.entity_type || "").toLowerCase();
+        const entityID = String(issue.entity_id || "");
+
+        if (entityType.includes("customer") && entityID) {
+            activeTab = "customers";
+            selectedSupplier = null;
+            selectedCustomer = entityID;
+            return;
+        }
+        if (entityType.includes("supplier") && entityID) {
+            activeTab = "suppliers";
+            selectedCustomer = null;
+            selectedSupplier = entityID;
+            return;
+        }
+        if (entityType.includes("offer")) {
+            dispatch("navigate", { screen: "opportunities", tab: "offers" });
+            return;
+        }
+        if (entityType.includes("opportun")) {
+            dispatch("navigate", { screen: "opportunities" });
+        }
+    }
 </script>
 
 <ErrorBoundary name="CRM Hub">
     <div class="hub" in:fade={{ duration: 200 }}>
         <header class="header">
-            <div class="header-row">
-                <h1>Relationships</h1>
-                {#if selectedCustomer || selectedSupplier}
+            {#if selectedCustomer || selectedSupplier}
+                <div class="header-row">
                     <button class="back-btn" on:click={() => { selectedCustomer = null; selectedSupplier = null; }}>
                         Back to Dashboard
                     </button>
-                {/if}
-            </div>
+                </div>
+            {/if}
 
             {#if !selectedCustomer && !selectedSupplier}
                 <nav class="tabs">
@@ -79,6 +108,8 @@
                 {:else}
                     <CRMSupplierDashboard on:select={handleSupplierSelect} />
                 {/if}
+            {:else if activeTab === "data_quality"}
+                <DataQualityScreen on:openIssue={handleDataQualityOpenIssue} />
             {/if}
         </main>
     </div>
@@ -102,15 +133,6 @@
         justify-content: space-between;
         align-items: center;
         margin-bottom: var(--section-spacing);
-    }
-
-    .header h1 {
-        font-family: var(--font-family);
-        font-size: var(--page-title-size);
-        font-weight: var(--page-title-weight);
-        color: var(--text-primary);
-        margin: 0;
-        letter-spacing: var(--page-title-tracking);
     }
 
     .back-btn {
@@ -166,10 +188,6 @@
     @media (max-width: 768px) {
         .header {
             padding: 16px 16px 0;
-        }
-
-        .header h1 {
-            font-size: 20px;
         }
 
         .header-row {

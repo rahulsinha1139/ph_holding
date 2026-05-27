@@ -1012,6 +1012,7 @@ func copyDeploymentFile(src, dst string) error {
 
 func deploymentVerificationHoldSyncTables() string {
 	return strings.Join([]string{
+		"license_keys",
 		"payments",
 		"supplier_invoices",
 		"supplier_invoice_items",

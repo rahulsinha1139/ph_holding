@@ -30,7 +30,7 @@
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
 
   // Backend APIs
-  import { GetRFQs, CreateRFQ, UpdateRFQStatus, UpdateRFQStage, DeleteRFQ, ListCustomers } from '../../../wailsjs/go/main/App';
+  import { GetRFQs, CreateRFQ, UpdateRFQStatus, UpdateRFQStage, DeleteRFQ, ListCustomers, ExportReport, OpenExportedFile } from '../../../wailsjs/go/main/App';
 
   // Toast notifications
   import { toast } from '$lib/stores/toasts';
@@ -47,6 +47,7 @@
   // Filters
   let activeStage = 'All';
   let searchQuery = '';
+  let exportingExtract = false;
 
   // Modal state
   let showCreateModal = false;
@@ -298,6 +299,19 @@
     }
   }
 
+  async function exportRFQExtract() {
+    exportingExtract = true;
+    try {
+      const path = await ExportReport('rfq_extract', 'excel', JSON.stringify(filteredRFQs));
+      await OpenExportedFile(path).catch(() => {});
+      toast.success(`RFQ extract exported: ${path}`);
+    } catch (err) {
+      toast.danger(`Failed to export RFQs: ${String(err)}`);
+    } finally {
+      exportingExtract = false;
+    }
+  }
+
   // ========================================
   // FORM MANAGEMENT
   // ========================================
@@ -467,7 +481,12 @@
       await loadData();
     } catch (err) {
       console.error('Failed to delete RFQ:', err);
-      toast.danger(`Failed to delete RFQ: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      const message = err instanceof Error ? err.message : String(err || 'Unknown error');
+      if (message.toLowerCase().includes('not authorized') || message.toLowerCase().includes('only admins')) {
+        toast.warning('You are not authorised to delete RFQs. Please ask an admin.');
+      } else {
+        toast.danger(`Failed to delete RFQ: ${message}`);
+      }
     } finally {
       rfqDeleting = false;
     }
@@ -564,6 +583,9 @@
         placeholder="Search RFQs..."
         bind:value={searchQuery}
       />
+      <Button variant="secondary" on:click={exportRFQExtract} disabled={exportingExtract || loading}>
+        {exportingExtract ? 'Exporting...' : 'Extract RFQs'}
+      </Button>
     </div>
 
     <!-- RFQ Table -->

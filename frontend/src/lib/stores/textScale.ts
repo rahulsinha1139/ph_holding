@@ -22,7 +22,7 @@ function presetForScale(scale: number): TextScalePreset {
 
 export function scaleForPreset(preset: TextScalePreset) {
     if (preset === "large") return 1.25;
-    if (preset === "comfortable") return 1.14;
+    if (preset === "comfortable") return 1.12;
     return 1;
 }
 
@@ -30,7 +30,23 @@ function applyTextScale(scale: number) {
     if (typeof document === "undefined") return;
     const clamped = clampScale(scale);
     const preset = presetForScale(clamped);
+    const layoutScale = Math.min(clamped, 1.2);
+    const modalScale = Math.min(clamped, 1.25);
+    const navScale = Math.min(clamped, 1.18);
     document.documentElement.style.setProperty("--ui-font-scale", clamped.toFixed(2));
+    document.documentElement.style.setProperty("--body-text-size-scaled", `${(14 * layoutScale).toFixed(1)}px`);
+    document.documentElement.style.setProperty("--control-text-size-scaled", `${(13 * layoutScale).toFixed(1)}px`);
+    document.documentElement.style.setProperty("--tab-text-size-scaled", `${(12.5 * navScale).toFixed(1)}px`);
+    document.documentElement.style.setProperty("--meta-text-size-scaled", `${(12 * layoutScale).toFixed(1)}px`);
+    document.documentElement.style.setProperty("--card-title-size-scaled", `${(15 * layoutScale).toFixed(1)}px`);
+    document.documentElement.style.setProperty("--kpi-value-size-scaled", `${(24 * modalScale).toFixed(1)}px`);
+    document.documentElement.style.setProperty("--table-text-size", `${(13 * layoutScale).toFixed(1)}px`);
+    document.documentElement.style.setProperty("--table-row-height", `${(44 * layoutScale).toFixed(1)}px`);
+    document.documentElement.style.setProperty("--table-row-min-height", `${(44 * layoutScale).toFixed(1)}px`);
+    document.documentElement.style.setProperty("--modal-label-size", `${(12 * modalScale).toFixed(1)}px`);
+    document.documentElement.style.setProperty("--modal-body-size", `${(14 * modalScale).toFixed(1)}px`);
+    document.documentElement.style.setProperty("--section-title-size-scaled", `${(16 * layoutScale).toFixed(1)}px`);
+    document.documentElement.style.setProperty("--page-title-size-scaled", `${(24 * layoutScale).toFixed(1)}px`);
     document.documentElement.dataset.textScale = preset;
 }
 
@@ -57,4 +73,3 @@ export function initTextScale() {
     }
     setTextScale(scale);
 }
-

@@ -404,7 +404,7 @@ func (am *AuthManager) startCallbackServer() error {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PH Holdings - Login Successful</title>
+    <title>PH Trading WLL - Login Successful</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -432,7 +432,7 @@ func (am *AuthManager) startCallbackServer() error {
     <div class="container">
         <div class="icon">✅</div>
         <h1>Login Successful!</h1>
-        <p>You can close this window and return to PH Holdings.</p>
+        <p>You can close this window and return to PH Trading WLL.</p>
     </div>
 </body>
 </html>
@@ -441,7 +441,7 @@ func (am *AuthManager) startCallbackServer() error {
 
 	// Health check
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "PH Holdings OAuth2 callback server running")
+		fmt.Fprintf(w, "PH Trading WLL OAuth2 callback server running")
 	})
 
 	am.httpServer = &http.Server{

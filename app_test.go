@@ -403,6 +403,24 @@ func TestApplyDeploymentLicenseActivationFlushIgnoresReseedFlagWithoutExplicitSt
 	require.Equal(t, "device-a", persisted.DeviceHash)
 }
 
+func TestActiveDBSyncTablesKeepsLicenseKeysLocalOnly(t *testing.T) {
+	t.Setenv("ASYMMFLOW_SYNC_EXCLUDE_TABLES", "")
+
+	require.True(t, localOnlyDBSyncTables["license_keys"])
+	require.NotContains(t, activeDBSyncTables(), "license_keys")
+
+	t.Setenv("ASYMMFLOW_SYNC_EXCLUDE_TABLES", "customers")
+	tables := activeDBSyncTables()
+	require.NotContains(t, tables, "license_keys")
+	require.NotContains(t, tables, "customers")
+	require.Contains(t, tables, "suppliers")
+}
+
+func TestDeploymentVerificationHoldSyncTablesExcludesLicenseKeys(t *testing.T) {
+	excluded := strings.Split(deploymentVerificationHoldSyncTables(), ",")
+	require.Contains(t, excluded, "license_keys")
+}
+
 // seedTestCustomer creates a test customer and returns its ID
 func seedTestCustomer(t *testing.T, db *gorm.DB, businessName string) string {
 	t.Helper()

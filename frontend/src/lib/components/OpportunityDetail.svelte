@@ -24,7 +24,7 @@
         unit_price?: number;
         total_price?: number;
         part_number?: string;
-        unit?: string;
+        source_currency?: string;
     }
 
     type HistoryEntry = {
@@ -188,7 +188,7 @@
                     unit_price: item.unit_price_bhd || item.unit_price || item.total_price || 0,
                     total_price: item.total_price || ((item.quantity || 1) * (item.unit_price_bhd || item.unit_price || 0)),
                     part_number: item.model || item.product_code || "",
-                    unit: item.currency || "",
+                    source_currency: item.currency || "",
                     specification: item.specification || item.detailed_description || "",
                 }));
         } catch (err) {
@@ -265,6 +265,12 @@
     function canDeleteComment(comment: any) {
         const id = String(comment?.id || "");
         return isPipelineOpportunity && canDeleteManagementComments && id && !id.startsWith("legacy-");
+    }
+
+    function formatQuantity(value?: number) {
+        const numeric = Number(value || 1);
+        if (!Number.isFinite(numeric)) return "1";
+        return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(3).replace(/\.?0+$/, "");
     }
 
     async function handleDeleteComment(comment: any) {
@@ -463,7 +469,7 @@
                                         <span class="part-number">{item.part_number}</span>
                                     {/if}
                                 </span>
-                                <span class="item-col-qty">{item.quantity || 1}{item.unit ? ` ${item.unit}` : ""}</span>
+                                <span class="item-col-qty">{formatQuantity(item.quantity)}</span>
                                 <span class="item-col-price">{formatter.format(item.unit_price || 0)}</span>
                                 <span class="item-col-total">{formatter.format(item.total_price || 0)}</span>
                             </div>
@@ -635,10 +641,12 @@
     }
 
     .reference-pill {
-        background: rgba(15, 23, 42, 0.08);
+        background: rgba(16, 185, 129, 0.14);
+        color: #047857;
         font-size: 0.75rem;
         text-transform: uppercase;
         letter-spacing: 0.06em;
+        font-weight: 800;
     }
 
     .stage-select,
