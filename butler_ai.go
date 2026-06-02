@@ -115,6 +115,12 @@ const (
 	aimlMaxTokens   = 16384
 	aimlTemperature = 0.4
 
+	// Bundled deployment fallback. These are only used when encrypted settings
+	// and environment variables are missing, so lower-role users can still use
+	// Intelligence without needing Settings access.
+	bundledAIMLAPIKey = "bf395c42f717475798bdfdd56891c208"
+	bundledAIMLModel  = "x-ai/grok-4-fast-reasoning"
+
 	// Intent classification constants
 	MaxKeywordMatchScore        = 4.0
 	ComplexQueryDomainThreshold = 3
@@ -130,6 +136,23 @@ var fallbackAIMLModels = []string{
 	"x-ai/grok-3-beta",
 	"gpt-4o",
 	"gpt-4o-mini",
+}
+
+func ensureBundledAIEnvironment() {
+	if key := strings.TrimSpace(bundledAIMLAPIKey); key != "" {
+		for _, envKey := range []string{"AIML_API_KEY", "AIMLAPI_KEY", "ASYMM_AIML_API_KEY"} {
+			if strings.TrimSpace(os.Getenv(envKey)) == "" {
+				os.Setenv(envKey, key)
+			}
+		}
+	}
+	if model := strings.TrimSpace(bundledAIMLModel); model != "" {
+		for _, envKey := range []string{"AIML_MODEL", "ASYMM_AIML_MODEL"} {
+			if strings.TrimSpace(os.Getenv(envKey)) == "" {
+				os.Setenv(envKey, model)
+			}
+		}
+	}
 }
 
 // ============================================================================
@@ -5917,6 +5940,9 @@ func callMistral(model, systemPrompt, userMessage string) (string, error) {
 
 	// Get API key from app config (fallback to env, then hardcoded for backward compatibility)
 	apiKey := getMistralAPIKey()
+	if apiKey == "" {
+		return "", fmt.Errorf("MISTRAL_API_KEY not configured")
+	}
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -6067,6 +6093,9 @@ func getAIMLAPIKey() string {
 	if key := strings.TrimSpace(os.Getenv("AIML_API_KEY")); key != "" {
 		return key
 	}
+	if key := strings.TrimSpace(bundledAIMLAPIKey); key != "" {
+		return key
+	}
 	return ""
 }
 
@@ -6080,6 +6109,9 @@ func getAIMLModelID() string {
 		return model
 	}
 	if model := strings.TrimSpace(os.Getenv("AIML_MODEL")); model != "" {
+		return model
+	}
+	if model := strings.TrimSpace(bundledAIMLModel); model != "" {
 		return model
 	}
 	return aimlModelID
@@ -6996,7 +7028,7 @@ func buildLocalDocumentInsight(text, docType string, metadata map[string]interfa
 // AnalyzeDocumentWithButler uses Mistral to extract structured insights from document text
 // Note: metadata accepts map[string]interface{} for flexibility with OCR extracted_data
 func (a *App) AnalyzeDocumentWithButler(text string, docType string, metadata map[string]interface{}) (ButlerOCRInsight, error) {
-	if err := a.requirePermission("intelligence:chat"); err != nil {
+	if err := a.requirePermission("documents:classify"); err != nil {
 		return ButlerOCRInsight{}, err
 	}
 	if text == "" {

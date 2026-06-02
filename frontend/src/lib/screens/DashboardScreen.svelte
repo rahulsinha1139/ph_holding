@@ -1161,14 +1161,14 @@
     .brand-kicker {
         margin: 0 0 12px;
         color: var(--brand-indigo, #3E8F47);
-        font-size: 12px;
+        font-size: var(--text-12, 12px);
         font-weight: 700;
     }
 
     .dashboard-header h1 {
         margin: 0;
         color: var(--onyx, #25312B);
-        font-size: 28px;
+        font-size: var(--text-28, 28px);
         font-weight: 500;
         line-height: 1.1;
     }
@@ -1176,7 +1176,7 @@
     .dashboard-subtitle {
         margin: 6px 0 0;
         color: var(--text-secondary, #667569);
-        font-size: 12px;
+        font-size: var(--text-12, 12px);
         font-weight: 600;
     }
 
@@ -1188,7 +1188,7 @@
 
     .dashboard-header time {
         color: var(--text-muted, #8A978B);
-        font-size: 12px;
+        font-size: var(--text-12, 12px);
         white-space: nowrap;
     }
 
@@ -1198,7 +1198,7 @@
         background: var(--surface, #FFFFFF);
         color: var(--brand-indigo, #3E8F47);
         cursor: pointer;
-        font-size: 12px;
+        font-size: var(--text-12, 12px);
         font-weight: 700;
         min-height: 34px;
         padding: 0 14px;
@@ -1266,7 +1266,7 @@
     .metric-label,
     .panel-head span {
         color: var(--text-muted, #8A978B);
-        font-size: 10px;
+        font-size: var(--text-10, 10px);
         font-weight: 800;
         letter-spacing: 0;
         text-transform: uppercase;
@@ -1275,7 +1275,7 @@
     .metric-value {
         margin-top: 10px;
         color: var(--onyx, #25312B);
-        font-size: 24px;
+        font-size: var(--text-24, 24px);
         line-height: 1;
         font-weight: 700;
     }
@@ -1286,7 +1286,7 @@
         gap: 10px;
         margin-top: 8px;
         color: var(--text-secondary, #667569);
-        font-size: 11px;
+        font-size: var(--text-11, 11px);
         line-height: 1.3;
     }
 
@@ -1326,7 +1326,7 @@
 
     .panel-head strong {
         color: var(--text-muted, #8A978B);
-        font-size: 11px;
+        font-size: var(--text-11, 11px);
         font-weight: 700;
         line-height: 1.25;
         text-align: right;
@@ -1338,7 +1338,7 @@
         border-radius: 5px;
         background: #ffffff;
         color: var(--brand-indigo, #3E8F47);
-        font-size: 11px;
+        font-size: var(--text-11, 11px);
         font-weight: 800;
         cursor: pointer;
     }
@@ -1351,7 +1351,7 @@
     .operating-panel h2 {
         margin: 0 0 18px;
         color: var(--onyx, #25312B);
-        font-size: 18px;
+        font-size: var(--text-18, 18px);
         line-height: 1.35;
         font-weight: 700;
     }
@@ -1401,7 +1401,7 @@
     .receivable-row strong {
         display: block;
         color: var(--onyx, #25312B);
-        font-size: 13px;
+        font-size: var(--text-13, 13px);
         font-weight: 800;
     }
 
@@ -1412,7 +1412,7 @@
         display: block;
         margin-top: 4px;
         color: var(--text-secondary, #667569);
-        font-size: 11px;
+        font-size: var(--text-11, 11px);
         line-height: 1.35;
     }
 
@@ -1423,7 +1423,7 @@
         border-radius: 5px;
         background: var(--brand-indigo, #3E8F47);
         color: white;
-        font-size: 11px;
+        font-size: var(--text-11, 11px);
         font-weight: 800;
         text-align: center;
         cursor: pointer;
@@ -1474,7 +1474,7 @@
     .alert-row strong {
         min-width: 96px;
         color: var(--onyx, #25312B);
-        font-size: 12px;
+        font-size: var(--text-12, 12px);
     }
 
     .chart-panel {
@@ -1527,7 +1527,7 @@
     .pipeline-selected span,
     .aging-selected span {
         color: var(--text-muted, #8A978B);
-        font-size: 10px;
+        font-size: var(--text-10, 10px);
         font-weight: 800;
         text-transform: uppercase;
         letter-spacing: 0;
@@ -1536,7 +1536,7 @@
     .pipeline-selected strong,
     .aging-selected strong {
         color: var(--onyx, #25312B);
-        font-size: 15px;
+        font-size: var(--text-15, 15px);
         font-weight: 850;
         white-space: nowrap;
     }
@@ -1545,7 +1545,7 @@
     .aging-selected small {
         grid-column: 1 / -1;
         color: var(--text-secondary, #667569);
-        font-size: 11px;
+        font-size: var(--text-11, 11px);
         font-weight: 700;
         text-transform: capitalize;
     }
@@ -1590,7 +1590,7 @@
         min-width: 0;
         overflow: hidden;
         color: var(--onyx, #25312B);
-        font-size: 12px;
+        font-size: var(--text-12, 12px);
         font-weight: 800;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -1599,7 +1599,7 @@
     .pipeline-row strong,
     .pipeline-row em {
         color: var(--text-secondary, #667569);
-        font-size: 11px;
+        font-size: var(--text-11, 11px);
         font-style: normal;
         font-weight: 800;
         font-variant-numeric: tabular-nums;
@@ -1630,7 +1630,7 @@
 
     .receivable-row small {
         color: #C94B4B;
-        font-size: 11px;
+        font-size: var(--text-11, 11px);
         font-weight: 800;
         white-space: nowrap;
     }
@@ -1656,7 +1656,7 @@
         gap: 8px;
         align-items: center;
         color: var(--text-muted, #8A978B);
-        font-size: 11px;
+        font-size: var(--text-11, 11px);
     }
 
     .receivable-meta strong {
@@ -1686,7 +1686,7 @@
         align-items: center;
         justify-content: center;
         color: var(--text-muted, #8A978B);
-        font-size: 12px;
+        font-size: var(--text-12, 12px);
         border: 1px dashed var(--border, #DDE8DD);
         border-radius: 8px;
         background: #F7FAF7;
@@ -1718,7 +1718,7 @@
         border-radius: 5px;
         background: #E8F1E5;
         color: var(--brand-indigo, #3E8F47);
-        font-size: 10px;
+        font-size: var(--text-10, 10px);
         font-weight: 800;
         line-height: 1;
         text-align: center;
@@ -1732,7 +1732,7 @@
 
     .activity-row time {
         color: var(--text-muted, #8A978B);
-        font-size: 10px;
+        font-size: var(--text-10, 10px);
         font-weight: 700;
         white-space: nowrap;
     }
@@ -1743,7 +1743,7 @@
         align-items: center;
         justify-content: center;
         color: var(--text-muted, #8A978B);
-        font-size: 12px;
+        font-size: var(--text-12, 12px);
     }
 
     .empty-action {

@@ -1014,6 +1014,11 @@ func (a *App) StartBackgroundDBSync() {
 	a.bgSyncStop = make(chan struct{})
 	a.bgSyncWG.Add(1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Background DB sync", r)
+			}
+		}()
 		defer a.bgSyncWG.Done()
 
 		// Initial delay to let app fully start

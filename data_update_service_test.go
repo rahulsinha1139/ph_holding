@@ -207,10 +207,10 @@ func TestDataUpdateRejectsUnknownTablesAndDeletes(t *testing.T) {
 		},
 		DataUpdateOperation{
 			Base:        Base{ID: "op-unknown", CreatedAt: time.Now(), UpdatedAt: time.Now()},
-			TargetTable: "supplier_invoices",
+			TargetTable: "payroll_runs",
 			Operation:   "upsert",
-			PrimaryKey:  "supplier-invoice-x",
-			RowJSON:     dataUpdateJSON(t, map[string]interface{}{"id": "supplier-invoice-x"}),
+			PrimaryKey:  "payroll-run-x",
+			RowJSON:     dataUpdateJSON(t, map[string]interface{}{"id": "payroll-run-x"}),
 		},
 	)
 
@@ -228,6 +228,112 @@ func TestDataUpdateRejectsUnknownTablesAndDeletes(t *testing.T) {
 	if globErr == nil {
 		require.Empty(t, backups)
 	}
+}
+
+func TestDataUpdateAllowsProcurementAndMasterDataCorrections(t *testing.T) {
+	app := setupDataUpdateTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(
+		&SupplierMaster{},
+		&ProductMaster{},
+		&PurchaseOrder{},
+		&PurchaseOrderItem{},
+	))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	supplierRow := map[string]interface{}{
+		"id":            "supplier-remote-1",
+		"supplier_code": "SUP-REMOTE",
+		"supplier_name": "Remote Corrected Supplier",
+		"payment_terms": "Net 45",
+	}
+	productRow := map[string]interface{}{
+		"id":                 "product-remote-1",
+		"product_code":       "REMOTE-PROD",
+		"product_name":       "Remote Product",
+		"supplier_id":        "supplier-remote-1",
+		"supplier_code":      "SUP-REMOTE",
+		"standard_cost_bhd":  42.5,
+		"standard_price_bhd": 70.0,
+		"is_active":          true,
+	}
+	poRow := map[string]interface{}{
+		"id":                "po-remote-1",
+		"po_number":         "PO-REMOTE-1",
+		"supplier_id":       "supplier-remote-1",
+		"supplier_name":     "Remote Corrected Supplier",
+		"po_date":           now,
+		"expected_delivery": now.AddDate(0, 0, 14),
+		"currency":          "BHD",
+		"exchange_rate":     1,
+		"subtotal_foreign":  85.0,
+		"subtotal_bhd":      85.0,
+		"vat_amount":        8.5,
+		"total_foreign":     93.5,
+		"total_bhd":         93.5,
+		"status":            "Draft",
+	}
+	poItemRow := map[string]interface{}{
+		"id":                 "po-item-remote-1",
+		"purchase_order_id":  "po-remote-1",
+		"product_id":         "product-remote-1",
+		"product_code":       "REMOTE-PROD",
+		"description":        "Remote corrected PO line",
+		"quantity":           2,
+		"unit_price_foreign": 42.5,
+		"unit_price_bhd":     42.5,
+		"total_foreign":      85.0,
+		"total_bhd":          85.0,
+		"quantity_received":  0,
+	}
+
+	manifest := seedDataUpdateManifest(t, app, "procurement-v1",
+		DataUpdateOperation{
+			Base:        Base{ID: "op-supplier", CreatedAt: now, UpdatedAt: now},
+			TargetTable: "suppliers",
+			Operation:   "upsert",
+			PrimaryKey:  "supplier-remote-1",
+			RowJSON:     dataUpdateJSON(t, supplierRow),
+			RowHash:     dataUpdateHashRecord(supplierRow),
+		},
+		DataUpdateOperation{
+			Base:        Base{ID: "op-product", CreatedAt: now, UpdatedAt: now},
+			TargetTable: "products",
+			Operation:   "upsert",
+			PrimaryKey:  "product-remote-1",
+			RowJSON:     dataUpdateJSON(t, productRow),
+			RowHash:     dataUpdateHashRecord(productRow),
+		},
+		DataUpdateOperation{
+			Base:        Base{ID: "op-po", CreatedAt: now, UpdatedAt: now},
+			TargetTable: "purchase_orders",
+			Operation:   "upsert",
+			PrimaryKey:  "po-remote-1",
+			RowJSON:     dataUpdateJSON(t, poRow),
+			RowHash:     dataUpdateHashRecord(poRow),
+		},
+		DataUpdateOperation{
+			Base:        Base{ID: "op-po-item", CreatedAt: now, UpdatedAt: now},
+			TargetTable: "purchase_order_items",
+			Operation:   "upsert",
+			PrimaryKey:  "po-item-remote-1",
+			RowJSON:     dataUpdateJSON(t, poItemRow),
+			RowHash:     dataUpdateHashRecord(poItemRow),
+		},
+	)
+
+	validation, err := app.ValidateDataUpdateManifest(manifest.ID)
+	require.NoError(t, err)
+	require.True(t, validation.Valid, strings.Join(validation.Issues, " | "))
+
+	result, err := app.ApplyDataUpdateManifest(manifest.ID, false)
+	require.NoError(t, err)
+	require.True(t, result.Applied)
+
+	var po PurchaseOrder
+	require.NoError(t, app.db.Preload("Items").First(&po, "id = ?", "po-remote-1").Error)
+	require.Equal(t, "Remote Corrected Supplier", po.SupplierName)
+	require.Len(t, po.Items, 1)
+	require.Equal(t, "REMOTE-PROD", po.Items[0].ProductCode)
 }
 
 func (a *App) getTestDBPath(t *testing.T) string {

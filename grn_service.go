@@ -43,8 +43,14 @@ func (a *App) CreateGRN(grn GoodsReceivedNote) (GoodsReceivedNote, error) {
 		return GoodsReceivedNote{}, newError("PO_NOT_FOUND", "Purchase Order not found", err.Error())
 	}
 
-	// Validate PO status - cannot create GRN against Draft or Cancelled POs
-	if po.Status == "Cancelled" || po.Status == "Draft" {
+	// Validate PO status - receiving starts only after the supplier PO has been sent.
+	po.Status = canonicalizePurchaseOrderStatus(po.Status)
+	receivableStatuses := map[string]bool{
+		"Sent":               true,
+		"Acknowledged":       true,
+		"Partially Received": true,
+	}
+	if !receivableStatuses[po.Status] {
 		return GoodsReceivedNote{}, newError("INVALID_PO_STATUS", fmt.Sprintf("cannot create GRN against %s purchase order", po.Status), "")
 	}
 
@@ -577,6 +583,15 @@ func (a *App) ReceiveAgainstPO(poID string, items []GRNItem) (GoodsReceivedNote,
 	var po PurchaseOrder
 	if err := a.db.Preload("Items").First(&po, "id = ?", poID).Error; err != nil {
 		return GoodsReceivedNote{}, newError("PO_NOT_FOUND", "Purchase Order not found", err.Error())
+	}
+	po.Status = canonicalizePurchaseOrderStatus(po.Status)
+	receivableStatuses := map[string]bool{
+		"Sent":               true,
+		"Acknowledged":       true,
+		"Partially Received": true,
+	}
+	if !receivableStatuses[po.Status] {
+		return GoodsReceivedNote{}, newError("INVALID_PO_STATUS", fmt.Sprintf("cannot receive goods against %s purchase order", po.Status), "")
 	}
 
 	// Generate GRN number

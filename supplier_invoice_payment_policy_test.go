@@ -45,7 +45,7 @@ func TestDeleteSupplierPayment_RecalculatesInvoicePaymentState(t *testing.T) {
 	require.NoError(t, app.db.AutoMigrate(&SupplierInvoice{}, &SupplierPayment{}))
 
 	supplierID := seedTestSupplier(t, app.db, "Lifecycle Supplier")
-	baseDate := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	baseDate := time.Now().AddDate(0, 0, -10)
 	invoice := createTestSupplierInvoice(t, app, supplierID, "Lifecycle Supplier", "SI-LIFE-1", baseDate, baseDate.AddDate(0, 0, 30), 100)
 
 	firstPayment, err := app.RecordSupplierPayment(invoice.ID, 40, "BHD", "Bank Transfer", "2026-04-02", "SUP-PMT-1")
@@ -95,7 +95,7 @@ func TestGetSupplierFullProfile_UsesAllOpenInvoiceOutstanding(t *testing.T) {
 	require.NoError(t, app.db.AutoMigrate(&SupplierContact{}, &PurchaseOrder{}, &SupplierInvoice{}, &SupplierPayment{}, &SupplierIssue{}))
 
 	supplierID := seedTestSupplier(t, app.db, "Profile Supplier")
-	baseDate := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	baseDate := time.Now().AddDate(0, 0, -10)
 	for i := 0; i < 6; i++ {
 		invoiceDate := baseDate.AddDate(0, 0, i)
 		createTestSupplierInvoice(t, app, supplierID, "Profile Supplier", "SI-PROFILE-"+uuid.New().String()[:8], invoiceDate, invoiceDate.AddDate(0, 0, 30), 10)

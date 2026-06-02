@@ -1,57 +1,15 @@
 ===============================================================================
                     ASYMMFLOW ERP - LICENSE KEYS
-                    Generated: 2026-04-08
+                    Generated: 2026-06-02
 ===============================================================================
 
-INSTRUCTIONS:
-  1. Copy the deploy_package folder to your PC
-  2. Run AsymmFlow.exe (Windows) or AsymmFlow (Mac)
-  3. Enter YOUR license key when prompted
-  4. Each key works on ONE PC only - do not share keys
+This tracked top-level file is intentionally a placeholder.
 
--------------------------------------------------------------------------------
-ADMIN (Full Access - Dashboard, Finance, Operations, CRM, Intelligence)
--------------------------------------------------------------------------------
+The employee license keys are generated only inside the timestamped deployment
+package produced by TestPrepareDeploymentPackage:
 
-  Abhie            PH-ADM-4A0185
-  Daniel           PH-ADM-CD4680
-  Stanley          PH-ADM-E2E4C2
+  deploy_package/AsymmFlow_Deploy_<stamp>/LICENSE_KEYS.txt
 
--------------------------------------------------------------------------------
-MANAGER (Dashboard, Finance, Operations, CRM, Intelligence)
--------------------------------------------------------------------------------
-
-  Sundar           PH-MGR-CE8180
-
--------------------------------------------------------------------------------
-SALES (Dashboard, Opportunities, CRM, Intelligence)
--------------------------------------------------------------------------------
-
-  Ebin             PH-SLS-62C4D4
-  Peri             PH-SLS-9A70F9
-  Sales Test       PH-SLS-B4AA10
-  Support          PH-SLS-3C37C1
-
--------------------------------------------------------------------------------
-OPERATIONS (Dashboard, Operations Hub, Intelligence)
--------------------------------------------------------------------------------
-
-  Clinton          PH-OPS-206C69
-
-===============================================================================
-                    ROLE ACCESS MATRIX
-===============================================================================
-
-  Screen            Admin   Manager   Sales   Operations
-  -------           -----   -------   -----   ----------
-  Dashboard           Y       Y         Y        Y
-  Opportunities       Y       Y         Y        -
-  Operations          Y       Y         -        Y
-  Finance Hub         Y       Y         -        -
-  Relationships       Y       Y         Y        -
-  Intelligence        Y       Y         Y        Y
-
-===============================================================================
-  SUPPORT: Contact Abhie (SPOC) for key issues or new key requests
-  CLOUD SYNC: Auto-syncs every 10 minutes when online
+Do not commit generated employee keys, packaged .env files, packaged databases,
+or historical deployment package snapshots back to source control.
 ===============================================================================

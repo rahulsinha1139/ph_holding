@@ -1,12 +1,15 @@
 package main
 
 import (
+	crypto_rand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -18,72 +21,41 @@ import (
 
 // DeviceRegistrationResult represents the result of device registration
 type DeviceRegistrationResult struct {
-	DeviceID      string `json:"device_id"`
-	MachineID     string `json:"machine_id"`
-	Status        string `json:"status"`       // "first_setup", "pending", "approved", "blocked"
-	IsFirstSetup  bool   `json:"is_first_setup"`
-	UserID        string `json:"user_id,omitempty"`
-	UserName      string `json:"user_name,omitempty"`
-	RoleName      string `json:"role_name,omitempty"`
-	Permissions   []string `json:"permissions,omitempty"`
+	DeviceID     string   `json:"device_id"`
+	MachineID    string   `json:"machine_id"`
+	Status       string   `json:"status"` // "first_setup", "pending", "approved", "blocked"
+	IsFirstSetup bool     `json:"is_first_setup"`
+	UserID       string   `json:"user_id,omitempty"`
+	UserName     string   `json:"user_name,omitempty"`
+	RoleName     string   `json:"role_name,omitempty"`
+	Permissions  []string `json:"permissions,omitempty"`
 }
 
-// GetMachineID generates a unique hardware fingerprint for this device
-// Uses MAC address + hostname, hashed for privacy
+// GetMachineID returns a stable local device fingerprint.
+// It is persisted in app data so changing Wi-Fi, IP, interface order, or app
+// bundle location does not invalidate a previously activated license.
 func GetMachineID() string {
 	log.Println("🖥️ GetMachineID: Starting...")
-	var identifiers []string
 
-	// Get hostname (fast operation)
-	log.Println("🖥️ GetMachineID: Getting hostname...")
-	hostname, err := os.Hostname()
-	if err == nil {
-		identifiers = append(identifiers, strings.TrimSpace(strings.ToLower(hostname)))
-		log.Printf("🖥️ GetMachineID: Hostname=%s", hostname)
-	} else {
-		log.Printf("🖥️ GetMachineID: Hostname error: %v", err)
+	if override := strings.TrimSpace(os.Getenv("ASYMMFLOW_MACHINE_ID")); isMachineIDHash(override) {
+		log.Printf("🖥️ GetMachineID: Using ASYMMFLOW_MACHINE_ID override, hash=%s...", override[:16])
+		return strings.ToLower(override)
 	}
 
-	// Get MAC addresses with timeout (can hang on Windows after updates)
-	// Use a goroutine with timeout to prevent blocking
-	log.Println("🖥️ GetMachineID: Starting network interfaces check (2s timeout)...")
-	type ifaceResult struct {
-		addrs []string
-	}
-	ifaceChan := make(chan ifaceResult, 1)
-
-	go func() {
-		var addrs []string
-		interfaces, err := net.Interfaces()
-		if err == nil {
-			for _, iface := range interfaces {
-				// Skip loopback and interfaces without MAC
-				if iface.Flags&net.FlagLoopback != 0 || len(iface.HardwareAddr) == 0 {
-					continue
-				}
-				addrs = append(addrs, iface.HardwareAddr.String())
-			}
-		}
-		ifaceChan <- ifaceResult{addrs: addrs}
-	}()
-
-	// Wait for interfaces with 2 second timeout
-	select {
-	case result := <-ifaceChan:
-		sort.Strings(result.addrs)
-		log.Printf("🖥️ GetMachineID: Got %d MAC addresses", len(result.addrs))
-		identifiers = append(identifiers, result.addrs...)
-	case <-time.After(2 * time.Second):
-		log.Println("⚠️ GetMachineID: Network interfaces check timed out (2s), using hostname only")
-		// Still works - hostname + OS provides uniqueness
+	if persisted, ok := readPersistedMachineID(); ok {
+		log.Printf("🖥️ GetMachineID: Using persisted machine id, hash=%s...", persisted[:16])
+		return persisted
 	}
 
-	// Add OS info for additional uniqueness
-	identifiers = append(identifiers, runtime.GOOS, runtime.GOARCH)
-	log.Printf("🖥️ GetMachineID: Building hash from %d identifiers", len(identifiers))
+	seed, source := stableMachineSeed()
+	if strings.TrimSpace(seed) == "" {
+		seed = randomMachineSeed()
+		source = "random"
+	}
 
-	result := buildMachineIDHash(identifiers)
-	log.Printf("🖥️ GetMachineID: Complete, hash=%s...", result[:16])
+	result := buildMachineIDHash([]string{"asymmflow-device-v2", source, strings.TrimSpace(strings.ToLower(seed)), runtime.GOOS, runtime.GOARCH})
+	persistMachineID(result)
+	log.Printf("🖥️ GetMachineID: Complete from %s seed, hash=%s...", source, result[:16])
 	return result
 }
 
@@ -91,6 +63,181 @@ func buildMachineIDHash(identifiers []string) string {
 	combined := strings.Join(identifiers, "|")
 	hash := sha256.Sum256([]byte(combined))
 	return hex.EncodeToString(hash[:])
+}
+
+func isMachineIDHash(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func machineIDFilePath() string {
+	if appDataDir := appDataDirPath(); appDataDir != "" {
+		return filepath.Join(appDataDir, "machine_id")
+	}
+	return ""
+}
+
+func readPersistedMachineID() (string, bool) {
+	path := machineIDFilePath()
+	if path == "" {
+		return "", false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	id := strings.ToLower(strings.TrimSpace(string(raw)))
+	if !isMachineIDHash(id) {
+		log.Printf("⚠️ Ignoring invalid persisted machine id at %s", path)
+		return "", false
+	}
+	return id, true
+}
+
+func persistMachineID(machineID string) {
+	path := machineIDFilePath()
+	if path == "" || !isMachineIDHash(machineID) {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		log.Printf("⚠️ Could not create machine id directory: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, []byte(strings.ToLower(machineID)+"\n"), 0600); err != nil {
+		log.Printf("⚠️ Could not persist machine id at %s: %v", path, err)
+	}
+}
+
+func randomMachineSeed() string {
+	buf := make([]byte, 32)
+	if _, err := crypto_rand.Read(buf); err == nil {
+		return hex.EncodeToString(buf)
+	}
+	return fmt.Sprintf("%s-%s", runtime.GOOS, uuid.NewString())
+}
+
+func stableMachineSeed() (string, string) {
+	switch runtime.GOOS {
+	case "darwin":
+		if seed := darwinPlatformUUID(); seed != "" {
+			return seed, "darwin-platform-uuid"
+		}
+	case "linux":
+		if seed := linuxMachineID(); seed != "" {
+			return seed, "linux-machine-id"
+		}
+	case "windows":
+		if seed := windowsMachineUUID(); seed != "" {
+			return seed, "windows-machine-uuid"
+		}
+	}
+
+	if seed := networkHardwareSeed(); seed != "" {
+		return seed, "network-hardware"
+	}
+	return "", ""
+}
+
+func darwinPlatformUUID() string {
+	out, err := exec.Command("/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output()
+	if err != nil {
+		log.Printf("⚠️ GetMachineID: ioreg platform UUID lookup failed: %v", err)
+		return ""
+	}
+	for _, key := range []string{"IOPlatformUUID", "IOPlatformSerialNumber"} {
+		if value := parseQuotedIoregValue(string(out), key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func parseQuotedIoregValue(output, key string) string {
+	needle := `"` + key + `"`
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(line, needle) {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		value := strings.TrimSpace(parts[1])
+		value = strings.Trim(value, `"`)
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+func linuxMachineID() string {
+	for _, path := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
+		raw, err := os.ReadFile(path)
+		if err == nil && strings.TrimSpace(string(raw)) != "" {
+			return strings.TrimSpace(string(raw))
+		}
+	}
+	return ""
+}
+
+func windowsMachineUUID() string {
+	out, err := exec.Command("wmic", "csproduct", "get", "UUID").Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		value := strings.TrimSpace(line)
+		if value == "" || strings.EqualFold(value, "UUID") {
+			continue
+		}
+		if strings.Contains(value, "00000000-0000-0000-0000-000000000000") {
+			continue
+		}
+		return value
+	}
+	return ""
+}
+
+func networkHardwareSeed() string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		log.Printf("⚠️ GetMachineID: network interface lookup failed: %v", err)
+		return ""
+	}
+	addrs := make([]string, 0, len(interfaces))
+	for _, iface := range interfaces {
+		if !isStableHardwareInterface(iface) {
+			continue
+		}
+		addrs = append(addrs, strings.ToLower(iface.HardwareAddr.String()))
+	}
+	sort.Strings(addrs)
+	if len(addrs) == 0 {
+		return ""
+	}
+	log.Printf("🖥️ GetMachineID: Using %d stable hardware addresses", len(addrs))
+	return strings.Join(addrs, "|")
+}
+
+func isStableHardwareInterface(iface net.Interface) bool {
+	name := strings.ToLower(iface.Name)
+	if iface.Flags&net.FlagLoopback != 0 || len(iface.HardwareAddr) == 0 {
+		return false
+	}
+	skipPrefixes := []string{"awdl", "llw", "utun", "bridge", "gif", "stf", "p2p", "ap", "anpi", "vmenet", "vmnet"}
+	for _, prefix := range skipPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return false
+		}
+	}
+	// Locally-administered MACs are often randomized or virtual.
+	if len(iface.HardwareAddr) > 0 && iface.HardwareAddr[0]&0x02 != 0 {
+		return false
+	}
+	return true
 }
 
 // GetDeviceInfo returns information about the current device

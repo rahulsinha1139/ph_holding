@@ -288,12 +288,24 @@ func (a *App) StartLogin() (string, error) {
 
 	// Open in default browser
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("OAuth browser opener", r)
+			}
+		}()
 		time.Sleep(100 * time.Millisecond) // Give server time to start
 		openBrowser(authURL)
 	}()
 
 	// Wait for callback in background
-	go a.authManager.waitForCallback()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("OAuth callback waiter", r)
+			}
+		}()
+		a.authManager.waitForCallback()
+	}()
 
 	log.Printf("🔐 OAuth2 login initiated. Auth URL: %s", authURL)
 	return authURL, nil
@@ -451,6 +463,11 @@ func (am *AuthManager) startCallbackServer() error {
 
 	// Start in goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil && am.app != nil {
+				am.app.recordBackgroundPanic("OAuth callback server", r)
+			}
+		}()
 		if err := am.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("⚠️ Callback server error: %v", err)
 		}

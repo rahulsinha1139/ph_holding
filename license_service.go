@@ -114,6 +114,17 @@ func shortLicenseDeviceHash(hash string) string {
 	return hash[:16]
 }
 
+func redactedLicenseKeyForLog(key string) string {
+	key = strings.TrimSpace(strings.ToUpper(key))
+	if len(key) >= 7 {
+		return key[:7] + "******"
+	}
+	if key == "" {
+		return "unknown"
+	}
+	return "******"
+}
+
 func (a *App) getRebindableRahulAdminLicense(deviceHash string) (LicenseKey, bool, error) {
 	var license LicenseKey
 	if a == nil || a.db == nil {
@@ -136,6 +147,65 @@ func (a *App) getRebindableRahulAdminLicense(deviceHash string) (LicenseKey, boo
 		log.Printf("🔑 Rahul admin key rebound from device %s... to %s...", shortLicenseDeviceHash(oldHash), shortLicenseDeviceHash(deviceHash))
 	}
 	return license, true, nil
+}
+
+func (a *App) getActiveLicenseForDevice(deviceHash string) (LicenseKey, bool, error) {
+	var license LicenseKey
+	if a == nil || a.db == nil {
+		return license, false, fmt.Errorf("database not initialized")
+	}
+	if err := a.db.Where("device_hash = ? AND activated = 1", deviceHash).First(&license).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return license, false, nil
+		}
+		return license, false, err
+	}
+	return license, true, nil
+}
+
+func (a *App) migrateSingleActiveLicenseToDevice(deviceHash string) (LicenseKey, bool, error) {
+	var license LicenseKey
+	if a == nil || a.db == nil {
+		return license, false, fmt.Errorf("database not initialized")
+	}
+
+	var licenses []LicenseKey
+	if err := a.db.Where("activated = 1 AND COALESCE(device_hash, '') <> ''").Find(&licenses).Error; err != nil {
+		return license, false, err
+	}
+	if len(licenses) != 1 {
+		return license, false, nil
+	}
+
+	license = licenses[0]
+	if strings.TrimSpace(license.DeviceHash) == deviceHash {
+		return license, true, nil
+	}
+
+	oldHash := license.DeviceHash
+	if err := a.db.Model(&license).Updates(map[string]interface{}{
+		"device_hash": deviceHash,
+	}).Error; err != nil {
+		return license, false, err
+	}
+	license.DeviceHash = deviceHash
+	log.Printf(
+		"🔑 Migrated existing local activation %s from previous device hash %s... to %s...",
+		redactedLicenseKeyForLog(license.Key),
+		shortLicenseDeviceHash(oldHash),
+		shortLicenseDeviceHash(deviceHash),
+	)
+	return license, true, nil
+}
+
+func (a *App) resolveDeviceBoundLicense(deviceHash string) (LicenseKey, bool, error) {
+	if license, ok, err := a.getActiveLicenseForDevice(deviceHash); err != nil || ok {
+		return license, ok, err
+	}
+	if rebound, ok, err := a.getRebindableRahulAdminLicense(deviceHash); err != nil || ok {
+		return rebound, ok, err
+	}
+	return a.migrateSingleActiveLicenseToDevice(deviceHash)
 }
 
 // Role permissions mapping
@@ -335,38 +405,44 @@ func (a *App) ActivateLicense(key string) (LicenseActivationResult, error) {
 			}, nil
 		}
 
-		// Master key — reusable, never device-bound, works across rebuilds
-		// Return success immediately; persist to DB in background (startup AutoMigrate may hold the connection)
-		go func() {
-			err := a.db.Transaction(func(tx *gorm.DB) error {
-				var existing LicenseKey
-				if err := tx.Where("key = ?", masterKey).First(&existing).Error; err != nil {
-					now := time.Now()
-					return tx.Create(&LicenseKey{
-						Key:         masterKey,
-						Role:        "admin",
-						DisplayName: "Developer",
-						DeviceHash:  deviceHash,
-						Activated:   true,
-						ActivatedAt: &now,
-						Notes:       "Reusable master key",
-						CreatedBy:   "system",
-					}).Error
+		// Master key — reusable, never device-bound, works across rebuilds.
+		// Persist before returning so immediate Wails calls use the same backend
+		// authorization state the frontend just received.
+		err := a.db.Transaction(func(tx *gorm.DB) error {
+			var existing LicenseKey
+			if err := tx.Where("key = ?", masterKey).First(&existing).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
 				}
-				if existing.DeviceHash != "" && existing.DeviceHash != deviceHash {
-					log.Printf("CRITICAL: Master key device transfer from %s... to %s...", existing.DeviceHash[:16], deviceHash[:16])
-				}
-				return tx.Model(&existing).Updates(map[string]interface{}{
-					"device_hash": deviceHash,
-					"activated":   true,
+				now := time.Now()
+				return tx.Create(&LicenseKey{
+					Key:         masterKey,
+					Role:        "admin",
+					DisplayName: "Developer",
+					DeviceHash:  deviceHash,
+					Activated:   true,
+					ActivatedAt: &now,
+					Notes:       "Reusable master key",
+					CreatedBy:   "system",
 				}).Error
-			})
-			if err != nil {
-				log.Printf("Warning: Master key DB persist failed: %v (will retry on next startup)", err)
-			} else {
-				log.Printf("Master key persisted to DB for device: %s...", deviceHash[:16])
 			}
-		}()
+			if existing.DeviceHash != "" && existing.DeviceHash != deviceHash {
+				log.Printf("CRITICAL: Master key device transfer from %s... to %s...", existing.DeviceHash[:16], deviceHash[:16])
+			}
+			now := time.Now()
+			return tx.Model(&existing).Updates(map[string]interface{}{
+				"device_hash":  deviceHash,
+				"activated":    true,
+				"activated_at": &now,
+			}).Error
+		})
+		if err != nil {
+			log.Printf("Warning: Master key DB persist failed: %v", err)
+			return LicenseActivationResult{
+				Success: false,
+				Message: "Could not activate master key. Please try again.",
+			}, nil
+		}
 
 		log.Printf("Master key activated on device: %s...", deviceHash[:16])
 		return LicenseActivationResult{
@@ -424,13 +500,21 @@ func (a *App) ActivateLicense(key string) (LicenseActivationResult, error) {
 	// Check if already activated on another device
 	if license.Activated && license.DeviceHash != deviceHash {
 		if !isRahulAdminLicenseKey(license.Key) {
-			tx.Rollback()
-			return LicenseActivationResult{
-				Success: false,
-				Message: "This license key is already activated on another device.",
-			}, nil
+			var currentDeviceLicense LicenseKey
+			if err := tx.Where("device_hash = ? AND activated = 1", deviceHash).First(&currentDeviceLicense).Error; err == nil && currentDeviceLicense.Key != license.Key {
+				tx.Rollback()
+				return LicenseActivationResult{
+					Success: false,
+					Message: "This device is already licensed with another key.",
+				}, nil
+			} else if err != nil && err != gorm.ErrRecordNotFound {
+				tx.Rollback()
+				return LicenseActivationResult{Success: false, Message: "Database error"}, err
+			}
+			log.Printf("🔑 License %s rebinding from previous device hash %s... to %s...", redactedLicenseKeyForLog(license.Key), shortLicenseDeviceHash(license.DeviceHash), shortLicenseDeviceHash(deviceHash))
+		} else {
+			log.Printf("🔑 Rahul admin key activation rebinding from device %s... to %s...", shortLicenseDeviceHash(license.DeviceHash), shortLicenseDeviceHash(deviceHash))
 		}
-		log.Printf("🔑 Rahul admin key activation rebinding from device %s... to %s...", shortLicenseDeviceHash(license.DeviceHash), shortLicenseDeviceHash(deviceHash))
 	}
 
 	// Check expiry
@@ -499,40 +583,23 @@ func (a *App) ValidateLicense() (LicenseValidationResult, error) {
 				a.db.Model(&license).Update("device_hash", deviceHash)
 			}
 			log.Printf("🔑 ValidateLicense: Master key valid (role: %s)", license.Role)
-		} else if err := a.db.Where("device_hash = ? AND activated = 1", deviceHash).First(&license).Error; err != nil {
-			// No master key, no device-bound license
-			if err == gorm.ErrRecordNotFound {
-				if rebound, ok, rebindErr := a.getRebindableRahulAdminLicense(deviceHash); rebindErr != nil {
-					log.Printf("🔑 ValidateLicense: Rahul admin rebind failed: %v", rebindErr)
-					return LicenseValidationResult{Valid: false}, rebindErr
-				} else if ok {
-					license = rebound
-				} else {
-					log.Printf("🔑 ValidateLicense: No active license found for device hash: %s", deviceHash[:16])
-					return LicenseValidationResult{Valid: false}, nil
-				}
-			}
-			if err != gorm.ErrRecordNotFound {
-				log.Printf("🔑 ValidateLicense: Database error: %v", err)
-				return LicenseValidationResult{Valid: false}, err
-			}
-		}
-	} else if err := a.db.Where("device_hash = ? AND activated = 1", deviceHash).First(&license).Error; err != nil {
-		// No master key, no device-bound license
-		if err == gorm.ErrRecordNotFound {
-			if rebound, ok, rebindErr := a.getRebindableRahulAdminLicense(deviceHash); rebindErr != nil {
-				log.Printf("🔑 ValidateLicense: Rahul admin rebind failed: %v", rebindErr)
-				return LicenseValidationResult{Valid: false}, rebindErr
-			} else if ok {
-				license = rebound
-			} else {
-				log.Printf("🔑 ValidateLicense: No active license found for device hash: %s", deviceHash[:16])
-				return LicenseValidationResult{Valid: false}, nil
-			}
-		} else {
+		} else if err != gorm.ErrRecordNotFound {
 			log.Printf("🔑 ValidateLicense: Database error: %v", err)
 			return LicenseValidationResult{Valid: false}, err
 		}
+	}
+
+	if strings.TrimSpace(license.Key) == "" {
+		resolved, ok, err := a.resolveDeviceBoundLicense(deviceHash)
+		if err != nil {
+			log.Printf("🔑 ValidateLicense: Device-bound license lookup failed: %v", err)
+			return LicenseValidationResult{Valid: false}, err
+		}
+		if !ok {
+			log.Printf("🔑 ValidateLicense: No active license found for device hash: %s", deviceHash[:16])
+			return LicenseValidationResult{Valid: false}, nil
+		}
+		license = resolved
 	}
 	log.Printf("🔑 ValidateLicense: Found license: %s (role: %s)", license.Key, license.Role)
 

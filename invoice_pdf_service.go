@@ -123,8 +123,10 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 
 	profile := companyDocumentProfile(invoice.Division)
 
-	// 3. Fetch bank accounts for bank details section
-	bankAccounts, err := a.GetActiveBankAccounts()
+	// 3. Fetch bank accounts for bank details section. Document rendering has
+	// already passed invoices:view; it should not fail because the operator lacks
+	// general finance screen access.
+	bankAccounts, err := a.getActiveBankAccountsForDocuments()
 	if err != nil {
 		log.Printf("⚠️ Could not fetch bank accounts: %v", err)
 	}

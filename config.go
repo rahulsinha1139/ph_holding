@@ -252,15 +252,22 @@ func packagedDatabasePath() string {
 	return ""
 }
 
-func appDataDatabasePath() string {
+func appDataDirPath() string {
 	if runtime.GOOS == "windows" {
 		if appData := os.Getenv("APPDATA"); appData != "" {
-			return filepath.Join(appData, appDataDirName, appDatabaseFileName)
+			return filepath.Join(appData, appDataDirName)
 		}
 		return ""
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "share", appDataDirName, appDatabaseFileName)
+		return filepath.Join(home, ".local", "share", appDataDirName)
+	}
+	return ""
+}
+
+func appDataDatabasePath() string {
+	if appDataDir := appDataDirPath(); appDataDir != "" {
+		return filepath.Join(appDataDir, appDatabaseFileName)
 	}
 	return ""
 }

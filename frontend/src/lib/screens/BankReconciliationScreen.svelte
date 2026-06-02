@@ -1212,26 +1212,26 @@
     {:else}
       <!-- Cash Position KPIs -->
       <div class="kpi-grid">
-        <Card variant="elevated">
+        <Card variant="elevated" padding="sm">
           <div class="kpi">
             <span class="kpi-label">Total Cash Position</span>
             <span class="kpi-value primary">{formatBHD(totalVisibleCashPosition || cashPosition?.total_bhd || 0)} BHD</span>
             <span class="kpi-note">Latest statement closings</span>
           </div>
         </Card>
-        <Card variant="elevated">
+        <Card variant="elevated" padding="sm">
           <div class="kpi">
             <span class="kpi-label">Statements Open</span>
             <span class="kpi-value success">{openStatements}</span>
           </div>
         </Card>
-        <Card variant="elevated">
+        <Card variant="elevated" padding="sm">
           <div class="kpi">
             <span class="kpi-label">Statements Reconciled</span>
             <span class="kpi-value success">{reconciliationStats?.reconciled_statements || 0}</span>
           </div>
         </Card>
-        <Card variant="elevated">
+        <Card variant="elevated" padding="sm">
           <div class="kpi">
             <span class="kpi-label">Current Statement</span>
             <span class="kpi-value">{currentStatementLabel()}</span>
@@ -1309,6 +1309,7 @@
               onRowClick={loadStatementLines}
               selectedId={selectedStatement?.id}
               emptyMessage="No statements imported"
+              compact={true}
             />
           {/if}
         </div>
@@ -1357,6 +1358,7 @@
               onRowClick={openMatchModal}
               emptyMessage="No transactions"
               rowClass={(row) => row.is_matched ? '' : 'unmatched-row'}
+              compact={true}
             />
           {:else}
             <div class="empty-state">
@@ -1822,7 +1824,7 @@
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 12px;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
   }
 
   .kpi {
@@ -1832,14 +1834,14 @@
   }
 
   .kpi-label {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
 
   .kpi-value {
-    font-size: 24px;
+    font-size: 18px;
     font-weight: 600;
     font-family: var(--font-mono);
   }
@@ -1873,8 +1875,8 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
-    padding: 8px 12px;
+    margin-bottom: 10px;
+    padding: 8px;
     background: var(--surface-elevated);
     border-radius: var(--radius-md);
   }
@@ -1883,7 +1885,7 @@
   .toolbar .right {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
   }
 
   .account-select,
@@ -1892,8 +1894,8 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     background: var(--surface-default);
-    font-size: 14px;
-    min-width: 250px;
+    font-size: 13px;
+    min-width: 220px;
   }
 
   .form-input {
@@ -1908,8 +1910,8 @@
     display: grid;
     grid-template-columns: minmax(620px, 1.05fr) minmax(760px, 1.55fr);
     gap: 12px;
-    height: calc(100vh - 300px);
-    min-height: 400px;
+    height: calc(100vh - 270px);
+    min-height: 340px;
     overflow-x: auto;
   }
 
@@ -1917,12 +1919,12 @@
     background: var(--surface-default);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    padding: 16px;
+    padding: 10px;
     overflow: auto;
   }
 
   .panel h3 {
-    margin: 0 0 12px 0;
+    margin: 0 0 8px 0;
     font-size: 14px;
     font-weight: 600;
     color: var(--text-primary);
@@ -1932,7 +1934,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: 8px;
   }
 
   .panel-header h3 {

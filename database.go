@@ -239,8 +239,12 @@ func (ProductMaster) TableName() string { return "products" }
 // Maps to RFQ opportunities and can be won/lost to create Orders.
 type Offer struct {
 	Base
-	OfferNumber    string `gorm:"uniqueIndex;size:50" json:"offer_number"`
-	RevisionNumber int    `gorm:"index" json:"revision_number"`
+	OfferNumber         string     `gorm:"uniqueIndex;size:50" json:"offer_number"`
+	RevisionNumber      int        `gorm:"index" json:"revision_number"`
+	RevisionOfOfferID   string     `gorm:"index;size:36" json:"revision_of_offer_id"`
+	RevisionRootOfferID string     `gorm:"index;size:36" json:"revision_root_offer_id"`
+	SupersededByOfferID string     `gorm:"index;size:36" json:"superseded_by_offer_id"`
+	SupersededAt        *time.Time `json:"superseded_at"`
 
 	// Relationships
 	RFQID        string `gorm:"index;size:36" json:"rfq_id"` // Fixed: was uint, now string for consistency with Order.RFQID
@@ -1753,6 +1757,7 @@ func (SupplierPayment) TableName() string { return "supplier_payments" }
 type OfferFollowUp struct {
 	Base
 	OfferID      string     `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:OfferID;references:ID" json:"offer_id"`
+	TaskID       string     `gorm:"index;size:36" json:"task_id"`
 	FollowUpDate time.Time  `gorm:"index;autoCreateTime:false" json:"follow_up_date"`
 	Notes        string     `gorm:"type:varchar(2000)" json:"notes"`
 	Status       string     `gorm:"index;size:20;default:'pending';check:status IN ('pending','completed','cancelled','overdue')" json:"status"` // pending, completed, cancelled

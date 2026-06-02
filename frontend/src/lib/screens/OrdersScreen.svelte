@@ -12,7 +12,7 @@
     GetOrderFulfillmentStatus,
     CreateInvoiceFromOrder,
     CreateProformaInvoice,
-    CreatePOFromOrder,
+    CreatePOsFromOrder,
     QuickMarkOrderDelivered,
     PreviewOrderDeleteCascade,
     GetOrdersWithNoItems,
@@ -790,7 +790,7 @@
 
     const confirmed = await askActionConfirmation({
       title: 'Create Supplier Order',
-      message: `Create a draft supplier order from ${order.order_number}? If the order contains items from multiple suppliers, create supplier orders separately.`,
+      message: `Create draft supplier order(s) from ${order.order_number}? Items will be split by supplier when the order contains multiple suppliers.`,
       confirmLabel: 'Create Supplier Order',
       variant: 'secondary'
     });
@@ -803,8 +803,12 @@
       const selectedItemIDs = orderItems
         .map((item) => item.id)
         .filter((id): id is string => Boolean(id));
-      const po = await CreatePOFromOrder(order.id, '', selectedItemIDs);
-      toast.success(`Supplier order ${po.po_number} created`);
+      const pos = await CreatePOsFromOrder(order.id, selectedItemIDs);
+      if (pos.length === 1) {
+        toast.success(`Supplier order ${pos[0].po_number} created`);
+      } else {
+        toast.success(`${pos.length} supplier orders created`);
+      }
       showDetailModal = false;
       window.dispatchEvent(new CustomEvent('navigateToScreen', {
         detail: { screen: 'operations', tab: 'pos' }

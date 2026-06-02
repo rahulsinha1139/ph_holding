@@ -4,9 +4,9 @@
 // Date: December 17, 2025
 //
 // Purpose: Convert messy workspace (folder/ZIP) into three artifacts:
-//   1. Workspace Index (filesystem map - no AI)
-//   2. Evidence Extracts (ACE OCR batch processing)
-//   3. Archaeology Report (human-readable analysis)
+//  1. Workspace Index (filesystem map - no AI)
+//  2. Evidence Extracts (ACE OCR batch processing)
+//  3. Archaeology Report (human-readable analysis)
 //
 // Philosophy: NO RECONCILIATION. NO PRICING. NO AUTOMATION. JUST SEEING.
 package main
@@ -51,9 +51,9 @@ type ArchaeologyScan struct {
 	Status    string // "running", "completed", "failed", "cancelled"
 
 	// Progress tracking
-	Progress  *ScanProgress
-	Result    *ScanResult
-	Error     error
+	Progress *ScanProgress
+	Result   *ScanResult
+	Error    error
 
 	// Cancellation support
 	ctx    context.Context
@@ -76,32 +76,32 @@ type ScanRequest struct {
 
 // ScanProgress represents current scan progress (for streaming to frontend)
 type ScanProgress struct {
-	Phase          string   `json:"phase"`            // "indexing", "ocr", "report_generation", "completed"
-	CurrentFile    string   `json:"current_file"`     // Currently processing file
-	FilesProcessed int      `json:"files_processed"`  // Number of files completed
-	TotalFiles     int      `json:"total_files"`      // Total files to process
-	Percentage     float64  `json:"percentage"`       // Overall completion (0-100)
-	Messages       []string `json:"messages"`         // Human-readable log messages
+	Phase          string    `json:"phase"`           // "indexing", "ocr", "report_generation", "completed"
+	CurrentFile    string    `json:"current_file"`    // Currently processing file
+	FilesProcessed int       `json:"files_processed"` // Number of files completed
+	TotalFiles     int       `json:"total_files"`     // Total files to process
+	Percentage     float64   `json:"percentage"`      // Overall completion (0-100)
+	Messages       []string  `json:"messages"`        // Human-readable log messages
 	LastUpdate     time.Time `json:"last_update"`     // Timestamp of last update
 }
 
 // ScanResult contains final scan results and artifact paths
 type ScanResult struct {
-	WorkspaceIndexPath   string                  `json:"workspace_index_path"`   // Path to workspace index JSON
-	EvidenceExtractsPath string                  `json:"evidence_extracts_path"` // Path to evidence extracts JSON
+	WorkspaceIndexPath    string                 `json:"workspace_index_path"`    // Path to workspace index JSON
+	EvidenceExtractsPath  string                 `json:"evidence_extracts_path"`  // Path to evidence extracts JSON
 	ArchaeologyReportPath string                 `json:"archaeology_report_path"` // Path to human-readable report
-	Summary              ArchaeologyScanSummary `json:"summary"`                // High-level summary stats
+	Summary               ArchaeologyScanSummary `json:"summary"`                 // High-level summary stats
 }
 
 // ArchaeologyScanSummary provides high-level statistics
 type ArchaeologyScanSummary struct {
-	TotalFiles         int            `json:"total_files"`          // Total files discovered
-	ProcessedFiles     int            `json:"processed_files"`      // Files successfully processed
-	SkippedFiles       int            `json:"skipped_files"`        // Files skipped (unsupported)
-	FailedFiles        int            `json:"failed_files"`         // Files failed to process
-	FileTypeBreakdown  map[string]int `json:"file_type_breakdown"`  // Count by extension
-	AverageConfidence  float64        `json:"average_confidence"`   // Average OCR confidence
-	TotalProcessingTime time.Duration `json:"total_processing_time"` // Total time taken
+	TotalFiles          int            `json:"total_files"`           // Total files discovered
+	ProcessedFiles      int            `json:"processed_files"`       // Files successfully processed
+	SkippedFiles        int            `json:"skipped_files"`         // Files skipped (unsupported)
+	FailedFiles         int            `json:"failed_files"`          // Files failed to process
+	FileTypeBreakdown   map[string]int `json:"file_type_breakdown"`   // Count by extension
+	AverageConfidence   float64        `json:"average_confidence"`    // Average OCR confidence
+	TotalProcessingTime time.Duration  `json:"total_processing_time"` // Total time taken
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -110,13 +110,13 @@ type ArchaeologyScanSummary struct {
 
 // WorkspaceIndex represents the complete filesystem structure
 type WorkspaceIndex struct {
-	SourcePath   string          `json:"source_path"`   // Original source path
-	IsZIP        bool            `json:"is_zip"`        // Was source a ZIP?
-	IndexedAt    time.Time       `json:"indexed_at"`    // When was this indexed
-	TotalFiles   int             `json:"total_files"`   // Total files discovered
-	TotalSizeMB  float64         `json:"total_size_mb"` // Total size in megabytes
-	Files        []FileIndexEntry `json:"files"`        // All files found
-	Directories  []string        `json:"directories"`   // All directories found
+	SourcePath  string           `json:"source_path"`   // Original source path
+	IsZIP       bool             `json:"is_zip"`        // Was source a ZIP?
+	IndexedAt   time.Time        `json:"indexed_at"`    // When was this indexed
+	TotalFiles  int              `json:"total_files"`   // Total files discovered
+	TotalSizeMB float64          `json:"total_size_mb"` // Total size in megabytes
+	Files       []FileIndexEntry `json:"files"`         // All files found
+	Directories []string         `json:"directories"`   // All directories found
 }
 
 // FileIndexEntry represents a single file in the workspace
@@ -135,11 +135,11 @@ type FileIndexEntry struct {
 
 // EvidenceExtracts contains all OCR-extracted content
 type EvidenceExtracts struct {
-	SourcePath      string            `json:"source_path"`      // Original source
-	ProcessedAt     time.Time         `json:"processed_at"`     // When processed
-	TotalProcessed  int               `json:"total_processed"`  // Files processed
-	AverageConfidence float64         `json:"average_confidence"` // Mean confidence
-	Extracts        []EvidenceExtract `json:"extracts"`         // Individual extracts
+	SourcePath        string            `json:"source_path"`        // Original source
+	ProcessedAt       time.Time         `json:"processed_at"`       // When processed
+	TotalProcessed    int               `json:"total_processed"`    // Files processed
+	AverageConfidence float64           `json:"average_confidence"` // Mean confidence
+	Extracts          []EvidenceExtract `json:"extracts"`           // Individual extracts
 }
 
 // EvidenceExtract represents OCR result for one file
@@ -162,31 +162,31 @@ type EvidenceExtract struct {
 
 // ArchaeologyReportData is the final human-readable output
 type ArchaeologyReportData struct {
-	Title           string                      `json:"title"`
-	GeneratedAt     time.Time                   `json:"generated_at"`
-	SourcePath      string                      `json:"source_path"`
-	Summary         ArchaeologyReportSummary    `json:"summary"`
-	FileCategories  []ArchaeologyFileCategory   `json:"file_categories"`
-	Recommendations []string                    `json:"recommendations"`
+	Title           string                    `json:"title"`
+	GeneratedAt     time.Time                 `json:"generated_at"`
+	SourcePath      string                    `json:"source_path"`
+	Summary         ArchaeologyReportSummary  `json:"summary"`
+	FileCategories  []ArchaeologyFileCategory `json:"file_categories"`
+	Recommendations []string                  `json:"recommendations"`
 }
 
 // ArchaeologyReportSummary provides executive summary
 type ArchaeologyReportSummary struct {
-	TotalFiles       int            `json:"total_files"`
-	ProcessedFiles   int            `json:"processed_files"`
-	SkippedFiles     int            `json:"skipped_files"`
-	FailedFiles      int            `json:"failed_files"`
-	TotalSizeMB      float64        `json:"total_size_mb"`
+	TotalFiles        int            `json:"total_files"`
+	ProcessedFiles    int            `json:"processed_files"`
+	SkippedFiles      int            `json:"skipped_files"`
+	FailedFiles       int            `json:"failed_files"`
+	TotalSizeMB       float64        `json:"total_size_mb"`
 	FileTypeBreakdown map[string]int `json:"file_type_breakdown"`
-	ProcessingTime   time.Duration  `json:"processing_time"`
+	ProcessingTime    time.Duration  `json:"processing_time"`
 }
 
 // ArchaeologyFileCategory groups files by type with insights
 type ArchaeologyFileCategory struct {
-	Category    string   `json:"category"`     // e.g., "Invoices", "Spreadsheets"
-	Count       int      `json:"count"`        // Number of files
-	Files       []string `json:"files"`        // File paths
-	Observation string   `json:"observation"`  // Human insight
+	Category    string   `json:"category"`    // e.g., "Invoices", "Spreadsheets"
+	Count       int      `json:"count"`       // Number of files
+	Files       []string `json:"files"`       // File paths
+	Observation string   `json:"observation"` // Human insight
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -585,6 +585,11 @@ func (a *App) processDocuments(scan *ArchaeologyScan, index *WorkspaceIndex, emi
 	// Progress channel - emit to both internal state and frontend
 	progressChan := make(chan ocr.BatchProgress, 10)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("🔥 Archaeologist OCR progress emitter panic: %v", r)
+			}
+		}()
 		for progress := range progressChan {
 			pct := 30 + (progress.Percentage * 0.5) // Map 0-100% to 30-80%
 			scan.updateProgress("ocr", fmt.Sprintf("Processing %s", progress.CurrentFile), pct)
@@ -663,12 +668,12 @@ func (a *App) generateReport(scan *ArchaeologyScan, index *WorkspaceIndex, extra
 		GeneratedAt: time.Now(),
 		SourcePath:  scan.Request.SourcePath,
 		Summary: ArchaeologyReportSummary{
-			TotalFiles:       index.TotalFiles,
-			ProcessedFiles:   extracts.TotalProcessed,
-			SkippedFiles:     index.TotalFiles - extracts.TotalProcessed,
-			TotalSizeMB:      index.TotalSizeMB,
+			TotalFiles:        index.TotalFiles,
+			ProcessedFiles:    extracts.TotalProcessed,
+			SkippedFiles:      index.TotalFiles - extracts.TotalProcessed,
+			TotalSizeMB:       index.TotalSizeMB,
 			FileTypeBreakdown: make(map[string]int),
-			ProcessingTime:   time.Since(scan.StartTime),
+			ProcessingTime:    time.Since(scan.StartTime),
 		},
 	}
 
@@ -770,15 +775,15 @@ func (a *App) saveArtifacts(scan *ArchaeologyScan, index *WorkspaceIndex, extrac
 
 	// Build result summary
 	result := &ScanResult{
-		WorkspaceIndexPath:   indexPath,
-		EvidenceExtractsPath: extractsPath,
+		WorkspaceIndexPath:    indexPath,
+		EvidenceExtractsPath:  extractsPath,
 		ArchaeologyReportPath: reportPath,
 		Summary: ArchaeologyScanSummary{
-			TotalFiles:         index.TotalFiles,
-			ProcessedFiles:     extracts.TotalProcessed,
-			SkippedFiles:       index.TotalFiles - extracts.TotalProcessed,
-			FileTypeBreakdown:  report.Summary.FileTypeBreakdown,
-			AverageConfidence:  extracts.AverageConfidence,
+			TotalFiles:          index.TotalFiles,
+			ProcessedFiles:      extracts.TotalProcessed,
+			SkippedFiles:        index.TotalFiles - extracts.TotalProcessed,
+			FileTypeBreakdown:   report.Summary.FileTypeBreakdown,
+			AverageConfidence:   extracts.AverageConfidence,
 			TotalProcessingTime: time.Since(scan.StartTime),
 		},
 	}

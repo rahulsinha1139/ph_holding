@@ -33,113 +33,113 @@ import (
 // ReconciliationResult contains the full reconciliation analysis
 type ReconciliationResult struct {
 	// Offer Matching
-	TotalOffers         int                 `json:"total_offers"`
-	MatchedOffers       int                 `json:"matched_offers"`
-	NewOffers           int                 `json:"new_offers"`
-	WonOffers           int                 `json:"won_offers"`           // Offers with EXECUTION status
-	PendingOffers       int                 `json:"pending_offers"`       // Offers without EXECUTION
+	TotalOffers   int `json:"total_offers"`
+	MatchedOffers int `json:"matched_offers"`
+	NewOffers     int `json:"new_offers"`
+	WonOffers     int `json:"won_offers"`     // Offers with EXECUTION status
+	PendingOffers int `json:"pending_offers"` // Offers without EXECUTION
 
 	// Invoice Matching
-	TotalInvoices       int                 `json:"total_invoices"`
-	MatchedInvoices     int                 `json:"matched_invoices"`
-	MissingInvoices     int                 `json:"missing_invoices"`
-	InvoicesWithItems   int                 `json:"invoices_with_items"`  // Invoices where we filled line items
+	TotalInvoices     int `json:"total_invoices"`
+	MatchedInvoices   int `json:"matched_invoices"`
+	MissingInvoices   int `json:"missing_invoices"`
+	InvoicesWithItems int `json:"invoices_with_items"` // Invoices where we filled line items
 
 	// Customer Matching
-	CustomerMatches     map[string]string   `json:"customer_matches"`     // extracted name -> canonical CustomerID
-	UnmatchedCustomers  []string            `json:"unmatched_customers"`
-	FuzzyMatches        []FuzzyMatchResult  `json:"fuzzy_matches"`
+	CustomerMatches    map[string]string  `json:"customer_matches"` // extracted name -> canonical CustomerID
+	UnmatchedCustomers []string           `json:"unmatched_customers"`
+	FuzzyMatches       []FuzzyMatchResult `json:"fuzzy_matches"`
 
 	// PO Matching
-	TotalPOs            int                 `json:"total_pos"`
-	MatchedCustomerPOs  int                 `json:"matched_customer_pos"`
-	MatchedSupplierPOs  int                 `json:"matched_supplier_pos"`
+	TotalPOs           int `json:"total_pos"`
+	MatchedCustomerPOs int `json:"matched_customer_pos"`
+	MatchedSupplierPOs int `json:"matched_supplier_pos"`
 
 	// Discrepancies
-	Discrepancies       []DataDiscrepancy   `json:"discrepancies"`
+	Discrepancies []DataDiscrepancy `json:"discrepancies"`
 
 	// Summary
-	ProcessingTime      time.Duration       `json:"processing_time"`
-	ConfidenceScore     float64             `json:"confidence_score"`     // Overall confidence 0-1
-	ReadyToApply        bool                `json:"ready_to_apply"`       // Safe to run ApplyReconciliation
+	ProcessingTime  time.Duration `json:"processing_time"`
+	ConfidenceScore float64       `json:"confidence_score"` // Overall confidence 0-1
+	ReadyToApply    bool          `json:"ready_to_apply"`   // Safe to run ApplyReconciliation
 }
 
 // DataDiscrepancy represents a mismatch between extracted and database data
 type DataDiscrepancy struct {
-	Type           string    `json:"type"`            // AMOUNT_MISMATCH, DATE_MISMATCH, MISSING_RECORD, NAME_MISMATCH
+	Type           string    `json:"type"` // AMOUNT_MISMATCH, DATE_MISMATCH, MISSING_RECORD, NAME_MISMATCH
 	OfferNumber    string    `json:"offer_number"`
 	InvoiceNumber  string    `json:"invoice_number"`
 	Field          string    `json:"field"`
 	ExtractedValue string    `json:"extracted_value"`
 	DatabaseValue  string    `json:"database_value"`
-	Severity       string    `json:"severity"`        // LOW, MEDIUM, HIGH, CRITICAL
-	Confidence     float64   `json:"confidence"`      // 0-1
+	Severity       string    `json:"severity"`   // LOW, MEDIUM, HIGH, CRITICAL
+	Confidence     float64   `json:"confidence"` // 0-1
 	Timestamp      time.Time `json:"timestamp"`
 }
 
 // FuzzyMatchResult represents a fuzzy customer name match
 type FuzzyMatchResult struct {
-	ExtractedName   string  `json:"extracted_name"`
-	CanonicalName   string  `json:"canonical_name"`
-	CustomerID      string  `json:"customer_id"`
-	MatchScore      float64 `json:"match_score"`      // 0-1 (1 = exact match)
-	MatchMethod     string  `json:"match_method"`     // "exact", "acronym", "fuzzy", "manual"
-	NeedsReview     bool    `json:"needs_review"`     // Human review required
+	ExtractedName string  `json:"extracted_name"`
+	CanonicalName string  `json:"canonical_name"`
+	CustomerID    string  `json:"customer_id"`
+	MatchScore    float64 `json:"match_score"`  // 0-1 (1 = exact match)
+	MatchMethod   string  `json:"match_method"` // "exact", "acronym", "fuzzy", "manual"
+	NeedsReview   bool    `json:"needs_review"` // Human review required
 }
 
 // ExtractedOfferData represents data extracted from offer PDFs
 type ExtractedOfferData struct {
-	OfferNumber    string    `json:"offer_number"`
-	RevisionNumber int       `json:"revision_number"`
-	CustomerName   string    `json:"customer_name"`
-	QuotationDate  time.Time `json:"quotation_date"`
-	ValidityDate   time.Time `json:"validity_date"`
-	TotalValueBHD  float64   `json:"total_value_bhd"`
-	HasExecution   bool      `json:"has_execution"`     // True if "EXECUTION" appears in PDF
+	OfferNumber    string               `json:"offer_number"`
+	RevisionNumber int                  `json:"revision_number"`
+	CustomerName   string               `json:"customer_name"`
+	QuotationDate  time.Time            `json:"quotation_date"`
+	ValidityDate   time.Time            `json:"validity_date"`
+	TotalValueBHD  float64              `json:"total_value_bhd"`
+	HasExecution   bool                 `json:"has_execution"` // True if "EXECUTION" appears in PDF
 	Items          []ExtractedOfferItem `json:"items"`
-	RawText        string    `json:"raw_text"`          // Full extracted text for analysis
+	RawText        string               `json:"raw_text"` // Full extracted text for analysis
 }
 
 // ExtractedOfferItem represents a line item from offer PDF
 type ExtractedOfferItem struct {
-	LineNumber   int     `json:"line_number"`
-	Description  string  `json:"description"`
-	Model        string  `json:"model"`
-	Quantity     float64 `json:"quantity"`
-	UnitPrice    float64 `json:"unit_price_bhd"`
-	TotalPrice   float64 `json:"total_price_bhd"`
+	LineNumber  int     `json:"line_number"`
+	Description string  `json:"description"`
+	Model       string  `json:"model"`
+	Quantity    float64 `json:"quantity"`
+	UnitPrice   float64 `json:"unit_price_bhd"`
+	TotalPrice  float64 `json:"total_price_bhd"`
 }
 
 // ExtractedInvoiceData represents data extracted from invoice PDFs
 type ExtractedInvoiceData struct {
-	InvoiceNumber    string    `json:"invoice_number"`
-	InvoiceDate      time.Time `json:"invoice_date"`
-	CustomerName     string    `json:"customer_name"`
-	CustomerPONumber string    `json:"customer_po_number"`
-	GrandTotalBHD    float64   `json:"grand_total_bhd"`
+	InvoiceNumber    string                 `json:"invoice_number"`
+	InvoiceDate      time.Time              `json:"invoice_date"`
+	CustomerName     string                 `json:"customer_name"`
+	CustomerPONumber string                 `json:"customer_po_number"`
+	GrandTotalBHD    float64                `json:"grand_total_bhd"`
 	Items            []ExtractedInvoiceItem `json:"items"`
 }
 
 // ExtractedInvoiceItem represents a line item from invoice PDF
 type ExtractedInvoiceItem struct {
-	LineNumber   int     `json:"line_number"`
-	Description  string  `json:"description"`
-	Quantity     float64 `json:"quantity"`
-	Rate         float64 `json:"rate"`
-	TotalBHD     float64 `json:"total_bhd"`
+	LineNumber  int     `json:"line_number"`
+	Description string  `json:"description"`
+	Quantity    float64 `json:"quantity"`
+	Rate        float64 `json:"rate"`
+	TotalBHD    float64 `json:"total_bhd"`
 }
 
 // CustomerNameMapping stores canonical customer name mappings
 type CustomerNameMapping struct {
-	ID             string    `gorm:"primaryKey;size:36" json:"id"`
-	ExtractedName  string    `gorm:"uniqueIndex;size:500" json:"extracted_name"`
-	CanonicalName  string    `gorm:"size:255" json:"canonical_name"`
-	CustomerID     string    `gorm:"index;size:36" json:"customer_id"`
-	MatchScore     float64   `json:"match_score"`
-	MatchMethod    string    `gorm:"size:50" json:"match_method"`
-	Verified       bool      `gorm:"default:false" json:"verified"`      // Human verified
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID            string    `gorm:"primaryKey;size:36" json:"id"`
+	ExtractedName string    `gorm:"uniqueIndex;size:500" json:"extracted_name"`
+	CanonicalName string    `gorm:"size:255" json:"canonical_name"`
+	CustomerID    string    `gorm:"index;size:36" json:"customer_id"`
+	MatchScore    float64   `json:"match_score"`
+	MatchMethod   string    `gorm:"size:50" json:"match_method"`
+	Verified      bool      `gorm:"default:false" json:"verified"` // Human verified
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func (CustomerNameMapping) TableName() string { return "customer_name_mappings" }
@@ -150,6 +150,9 @@ func (CustomerNameMapping) TableName() string { return "customer_name_mappings" 
 
 // ReconcileOfferData performs full reconciliation of extracted PDF data
 func (a *App) ReconcileOfferData(basePath string) (*ReconciliationResult, error) {
+	if err := a.requirePermission("documents:view"); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 
 	log.Printf("🔄 Starting data reconciliation from path: %s", basePath)

@@ -434,6 +434,11 @@ func (a *App) StartPeriodicSync(interval time.Duration) {
 
 	a.dbSyncService.wg.Add(1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Periodic document sync", r)
+			}
+		}()
 		defer a.dbSyncService.wg.Done()
 
 		ticker := time.NewTicker(a.dbSyncService.syncInterval)

@@ -1,6 +1,6 @@
 <script lang="ts">
     import { createEventDispatcher, onMount } from "svelte";
-    import { ActivateLicense, FirstRunSyncWithProgress, GetFirstRunSyncStatus } from "../../../wailsjs/go/main/App";
+    import { ActivateLicense, FirstRunSyncWithProgress, GetFirstRunSyncStatus, GetBackendHealth } from "../../../wailsjs/go/main/App";
     import { toast } from "$lib/stores/toasts";
     import SyncProgress from "../components/ui/SyncProgress.svelte";
 
@@ -51,6 +51,13 @@
         licenseInput?.focus({ preventScroll: true });
     });
 
+    function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+        return Promise.race([
+            promise,
+            new Promise<T>((_, reject) => setTimeout(() => reject(new Error(message)), timeoutMs)),
+        ]);
+    }
+
     async function handleActivate() {
         if (loading || !keyValid) return;
 
@@ -58,11 +65,23 @@
         error = "";
 
         try {
+            const backendHealth = await withTimeout(
+                GetBackendHealth() as Promise<any>,
+                5000,
+                "Backend health check timed out"
+            );
+            if (!backendHealth?.healthy || !backendHealth?.database_ready) {
+                error = backendHealth?.startup_error || "Backend startup failed before activation could run.";
+                toast.danger(error);
+                return;
+            }
+
             // Wrap activation in 15s timeout — backend can hang if DB is slow on startup
-            const result = await Promise.race([
-                ActivateLicense(licenseKey),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Activation timed out — please try again')), 15000))
-            ]) as any;
+            const result = await withTimeout(
+                ActivateLicense(licenseKey) as Promise<any>,
+                15000,
+                "Backend did not respond during activation. Quit and reopen the app."
+            ) as any;
 
             if (result.success) {
                 toast.success(result.message);
@@ -81,7 +100,7 @@
                 toast.danger(result.message);
             }
         } catch (err: any) {
-            error = err?.message || "Activation timed out. The app may still be starting up — wait 10 seconds and try again.";
+            error = err?.message || "Backend did not respond during activation. Quit and reopen the app.";
             toast.danger(error);
         } finally {
             loading = false;

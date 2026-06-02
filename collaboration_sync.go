@@ -242,6 +242,11 @@ func (a *App) queueCollaborativeSync(trigger string) {
 	}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Queued collaboration sync", r)
+			}
+		}()
 		if err := a.runCollaborativeSync(trigger); err != nil && !strings.Contains(strings.ToLower(err.Error()), "offline") {
 			log.Printf("collaboration sync (%s) failed: %v", trigger, err)
 		}
@@ -275,6 +280,11 @@ func (a *App) startCollaborativeSyncLoopInternal(interval time.Duration) {
 
 	a.collaborationSyncWG.Add(1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Collaboration sync loop", r)
+			}
+		}()
 		defer a.collaborationSyncWG.Done()
 
 		select {

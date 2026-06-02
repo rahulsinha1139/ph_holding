@@ -9,7 +9,7 @@ test.describe('People employee archive workflow', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'People' }).click();
-    await expect(page.getByRole('heading', { name: 'People.' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'People' })).toBeVisible();
 
     await page.getByPlaceholder('Full name').first().fill('Archive Demo');
     await page.getByPlaceholder('Department').first().fill('Operations');

@@ -20,7 +20,7 @@
     <!-- Left: current workspace title -->
     <div class="header-left" aria-live="polite">
         {#if title}
-            <strong>{title}</strong>
+            <h1>{title}</h1>
             {#if subtitle}
                 <span>{subtitle}</span>
             {/if}
@@ -76,7 +76,8 @@
         gap: 10px;
     }
 
-    .header-left strong {
+    .header-left h1 {
+        margin: 0;
         color: var(--text-primary);
         font-family: var(--font-display);
         font-size: var(--section-title-size-scaled, 18px);

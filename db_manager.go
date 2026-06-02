@@ -32,6 +32,7 @@ type DBManager struct {
 	stopChan                  chan struct{}
 	stopOnce                  sync.Once
 	wg                        sync.WaitGroup
+	periodicStarted           bool
 }
 
 // NewDBManager creates a new dual-database manager
@@ -445,6 +446,14 @@ func (m *DBManager) StartPeriodicSync(interval time.Duration) {
 		log.Println("Periodic sync disabled (no Supabase config)")
 		return
 	}
+	m.mu.Lock()
+	if m.periodicStarted {
+		m.mu.Unlock()
+		log.Println("DBManager periodic sync already started")
+		return
+	}
+	m.periodicStarted = true
+	m.mu.Unlock()
 
 	runCycle := func() {
 		// Try to connect if not online
@@ -485,6 +494,11 @@ func (m *DBManager) StartPeriodicSync(interval time.Duration) {
 
 	m.wg.Add(1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("🔥 DBManager periodic sync panic: %v", r)
+			}
+		}()
 		defer m.wg.Done()
 
 		// Initial delay to let app start
@@ -781,6 +795,11 @@ func (a *App) InitDBManager() {
 	// Try to connect to Supabase (non-blocking)
 	if cfg.Enabled {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					a.recordBackgroundPanic("Supabase startup sync", r)
+				}
+			}()
 			// Delay to not block app startup
 			time.Sleep(2 * time.Second)
 

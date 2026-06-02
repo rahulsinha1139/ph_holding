@@ -18,6 +18,7 @@
     GetAllOffers,
     SaveCostingAsOffer,
     UpdateOfferFull,
+    CreateOfferRevision,
     MarkOfferWon,
     MarkOfferLost,
     ListCustomers,
@@ -256,6 +257,7 @@
     attention_phone: '',
     attention_address: '',
     issued_by: '',
+    vat_rate: 10,
     items: [] as EditableItem[]
   };
   let formLoading = false;
@@ -349,6 +351,7 @@
         const isQuoted = row.stage === 'Quoted';
         const isLost = row.stage === 'Lost';
         const isWon = row.stage === 'Won';
+        const canEditOffer = !isWon && !isLost;
         const hasItems = (row.items?.length || 0) > 0;
         return `
           <div style="display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap;">
@@ -362,14 +365,16 @@
                 View
               </button>
             ` : ''}
-            <button
-              class="action-btn action-btn-edit"
-              data-action="edit"
-              data-id="${row.id}"
-              aria-label="Edit offer"
-            >
-              Edit
-            </button>
+            ${canEditOffer ? `
+              <button
+                class="action-btn action-btn-edit"
+                data-action="edit"
+                data-id="${row.id}"
+                aria-label="Edit offer"
+              >
+                Edit
+              </button>
+            ` : ''}
             <button
               class="action-btn action-btn-pdf"
               data-action="pdf"
@@ -938,6 +943,7 @@
         attention_phone: formData.attention_phone,
         attention_address: formData.attention_address,
         issued_by: formData.issued_by,
+        vat_rate: Number(formData.vat_rate ?? editingOffer.vat_rate ?? 10),
         discount: 0,
         items: formData.items.map(item => ({
           description: item.description,
@@ -1022,49 +1028,13 @@
     if (!confirm(`Create a new revision of ${offer.offer_number} for ${offer.customer_name}?`)) return;
 
     try {
-      // Open edit modal pre-filled with the lost offer's data for a new quote
-      const resolvedCustomer = resolveCustomerFromOffer((offer as any).customer_id || '', offer.customer_name || '');
-      formData = {
-        ...formData,
-        offer_number: '',
-        customer_id: resolvedCustomer.customer_id,
-        customer_name: resolvedCustomer.customer_name,
-        project_name: offer.project_name || '',
-        folder_number: offer.folder_number || '',
-        quotation_date: new Date().toISOString().split('T')[0],
-        validity_date: new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0],
-        payment_terms: offer.payment_terms || '',
-        delivery_terms: offer.delivery_terms || '',
-        delivery_weeks: offer.delivery_weeks || '',
-        country_of_origin: offer.country_of_origin || '',
-        contact_phone: offer.contact_phone || '',
-        customer_reference: offer.customer_reference || '',
-        attention_person: offer.attention_person || '',
-        attention_company: offer.attention_company || '',
-        attention_phone: offer.attention_phone || '',
-        attention_address: offer.attention_address || '',
-        issued_by: offer.issued_by || '',
-        items: (offer.items || []).map((item: any) => ({
-          product_id: item.product_code || '',
-          description: item.description || '',
-          equipment: item.equipment || item.description || '',
-          model: item.model || item.product_code || '',
-          specification: item.specification || '',
-          detailed_description: item.detailed_description || '',
-          currency: item.currency || 'BHD',
-          quantity: item.quantity || 0,
-          fob: item.fob || 0,
-          freight: item.freight || 0,
-          total_cost: item.total_cost || 0,
-          margin_percent: item.margin_percent || 0,
-          unit_price: item.unit_price_bhd || item.unit_price || 0,
-          total_price: item.total_price || 0
-        }))
-      };
-      showCreateModal = true;
-      toast.info(`Re-quoting ${offer.offer_number} - adjust pricing and save as new offer`);
+      const revised = await CreateOfferRevision(offer.id);
+      const revisedOffer = enrichOfferWithExpiry(revised as any);
+      toast.success(`Revision ${revisedOffer.offer_number} created`);
+      await loadOffers();
+      openEditModal(revisedOffer);
     } catch (err) {
-      toast.danger('Failed to prepare re-quote');
+      toast.danger('Failed to create revision: ' + (err as Error).message);
     }
   }
 
@@ -1089,6 +1059,10 @@
         loadOfferNotes(offer.id);
         break;
       case 'edit':
+        if (offer.stage === 'Won' || offer.stage === 'Lost') {
+          toast.warning('Won/Lost offers are locked. Create a revision for further commercial changes.');
+          return;
+        }
         openEditModal(offer);
         break;
       case 'pdf':
@@ -1162,6 +1136,10 @@
   // Save editable header fields from view modal
   async function handleSaveViewOffer() {
     if (!viewOffer || viewSaving) return;
+    if (viewOffer.stage === 'Won' || viewOffer.stage === 'Lost') {
+      toast.warning('Won/Lost offers are locked. Create a revision for further commercial changes.');
+      return;
+    }
     viewSaving = true;
     try {
       await UpdateOfferFull(viewOffer.id, {
@@ -1183,6 +1161,7 @@
         attention_phone: viewOffer.attention_phone || '',
         attention_address: viewOffer.attention_address || '',
         issued_by: viewOffer.issued_by || '',
+        vat_rate: Number(viewOffer.vat_rate ?? 10),
         discount: 0,
         stage: '',
         items: [],
@@ -2091,9 +2070,11 @@
     <Button variant="secondary" on:click={() => viewOffer && handleDownloadPDF(viewOffer)}>
       Download PDF
     </Button>
-    <Button variant="primary" loading={viewSaving} on:click={handleSaveViewOffer}>
-      Save Changes
-    </Button>
+    {#if viewOffer && viewOffer.stage !== 'Won' && viewOffer.stage !== 'Lost'}
+      <Button variant="primary" loading={viewSaving} on:click={handleSaveViewOffer}>
+        Save Changes
+      </Button>
+    {/if}
   </svelte:fragment>
 </WabiModal>
 

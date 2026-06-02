@@ -65,6 +65,8 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	if err := a.db.Preload("Items").First(&po, "id = ?", poID).Error; err != nil {
 		return "", fmt.Errorf("failed to fetch purchase order: %w", err)
 	}
+	po.Status = canonicalizePurchaseOrderStatus(po.Status)
+	approvalPending := po.Status == "Draft" || po.Status == "Pending Approval"
 
 	// Validate PO has items
 	if len(po.Items) == 0 {
@@ -109,6 +111,13 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	pdf.SetTextColor(29, 29, 31)
 	pdf.CellFormat(0, 10, "PURCHASE ORDER", "", 0, "C", false, 0, "")
 	pdf.Ln(12)
+	if approvalPending {
+		pdf.SetFont("Helvetica", "B", 9)
+		pdf.SetTextColor(180, 40, 40)
+		pdf.CellFormat(0, 5, "DRAFT / PENDING APPROVAL - NOT VALID FOR SUPPLIER ISSUE", "", 0, "C", false, 0, "")
+		pdf.Ln(8)
+		pdf.SetTextColor(29, 29, 31)
+	}
 
 	// ========================================================================
 	// SUPPLIER AND DELIVERY BLOCKS (2 columns)
@@ -601,10 +610,18 @@ func (a *App) GeneratePurchaseOrderPDF(poID string) (string, error) {
 	pdf.SetTextColor(29, 29, 31)
 	pdf.Cell(0, 6, fmt.Sprintf("For %s", sanitizeForPDF(profile.LegalName)))
 	signatureY := pdf.GetY() + 7
-	signerName := a.resolveDocumentSignerName(po.ApprovedBy, po.CreatedBy)
-	signatureBlock := a.resolvePreparedBySignatureBlock(signerName)
-	endY := drawPHSignaturePDFLines(pdf, 20, signatureY, 95, 4.4, 8.2, signatureBlock, false)
-	pdf.SetY(endY + 4)
+	if approvalPending || strings.TrimSpace(po.ApprovedBy) == "" {
+		pdf.SetY(signatureY)
+		pdf.SetFont("Helvetica", "B", 9)
+		pdf.SetTextColor(180, 40, 40)
+		pdf.Cell(0, 5, "Approval pending - authorized signature withheld")
+		pdf.Ln(9)
+	} else {
+		signerName := a.resolveDocumentSignerName(po.ApprovedBy)
+		signatureBlock := a.resolvePreparedBySignatureBlock(signerName)
+		endY := drawPHSignaturePDFLines(pdf, 20, signatureY, 95, 4.4, 8.2, signatureBlock, false)
+		pdf.SetY(endY + 4)
+	}
 
 	pdf.SetFont("Helvetica", "I", 8)
 	pdf.SetTextColor(120, 120, 120)

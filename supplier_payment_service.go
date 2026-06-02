@@ -202,6 +202,9 @@ func (a *App) GetAllSupplierPayments() ([]SupplierPayment, error) {
 	if err := a.requirePermission("payments:view"); err != nil {
 		return nil, err
 	}
+	if a.db == nil {
+		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
 
 	var payments []SupplierPayment
 

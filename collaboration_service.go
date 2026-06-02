@@ -434,10 +434,21 @@ func (a *App) GetCurrentEmployeeContext() (CurrentEmployeeContext, error) {
 		if err := a.db.Where("user_id = ? AND access_status = ?", a.currentUserID, "active").Order("is_primary DESC").First(&link).Error; err == nil {
 			if err := a.db.First(&employee, "id = ?", link.EmployeeID).Error; err == nil {
 				perms, _ := a.GetUserPermissions(a.currentUserID)
+				licenseRole := ""
+				if strings.TrimSpace(link.LicenseKey) != "" {
+					var license LicenseKey
+					if err := a.db.Where("key = ?", link.LicenseKey).First(&license).Error; err == nil {
+						licenseRole = license.Role
+					}
+				}
+				if licenseRole == "" && a.currentUser != nil {
+					licenseRole = a.currentUser.RoleName
+				}
 				return CurrentEmployeeContext{
 					EmployeeID:   employee.ID,
 					EmployeeName: employee.FullName,
 					LicenseKey:   link.LicenseKey,
+					LicenseRole:  licenseRole,
 					DeviceID:     link.DeviceID,
 					UserID:       link.UserID,
 					ResolvedBy:   "user",
@@ -2322,6 +2333,9 @@ func (a *App) ReassignCollaborativeTask(taskID, assigneeEmployeeID string) error
 		var employee Employee
 		if err := a.db.First(&employee, "id = ?", assigneeEmployeeID).Error; err != nil {
 			return fmt.Errorf("assignee not found: %w", err)
+		}
+		if !employee.IsActive || strings.EqualFold(strings.TrimSpace(employee.EmploymentStatus), "archived") {
+			return fmt.Errorf("cannot assign task to archived or inactive employee %s", employee.FullName)
 		}
 		newAssigneeID = &employee.ID
 		newAssigneeName = employee.FullName

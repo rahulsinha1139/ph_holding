@@ -43,6 +43,10 @@ func TestBuildMachineIDHash_IsStableAcrossMACOrder(t *testing.T) {
 }
 
 func TestGetMachineID_CurrentDeviceIsStable(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("APPDATA", tempHome)
+
 	first := GetMachineID()
 	second := GetMachineID()
 	if first == "" || second == "" {
@@ -52,4 +56,24 @@ func TestGetMachineID_CurrentDeviceIsStable(t *testing.T) {
 		t.Fatalf("expected stable machine id across consecutive calls, got %s and %s", first, second)
 	}
 	t.Logf("current_machine_id=%s", first)
+}
+
+func TestParseQuotedIoregValue(t *testing.T) {
+	const sample = `
+      "IOPlatformSerialNumber" = "SERIAL123"
+      "IOPlatformUUID" = "AD2D3714-BD70-50EA-897F-EA1101425DE6"
+`
+	if got := parseQuotedIoregValue(sample, "IOPlatformUUID"); got != "AD2D3714-BD70-50EA-897F-EA1101425DE6" {
+		t.Fatalf("unexpected platform UUID: %q", got)
+	}
+}
+
+func TestMachineIDHashValidation(t *testing.T) {
+	valid := buildMachineIDHash([]string{"stable", "device"})
+	if !isMachineIDHash(valid) {
+		t.Fatalf("expected generated hash to be valid")
+	}
+	if isMachineIDHash("not-a-hash") {
+		t.Fatalf("expected invalid hash to be rejected")
+	}
 }

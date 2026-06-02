@@ -151,6 +151,79 @@ func TestReassignCollaborativeTaskCreatesSelfAssignmentNotification(t *testing.T
 	require.True(t, seen["task/reassign"], "task reassignment must be queued for remote devices")
 }
 
+func TestReassignCollaborativeTaskRejectsArchivedAssignee(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:archived_assignment_guard?mode=memory&cache=shared"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(
+		&LicenseKey{},
+		&Employee{},
+		&EmployeeAccessLink{},
+		&TaskItem{},
+		&TaskActivity{},
+		&Notification{},
+		&NotificationReceipt{},
+		&CollaborativePendingOperation{},
+	))
+
+	app := &App{db: db}
+	currentEmployee := Employee{
+		Base:             Base{ID: "employee-current", CreatedBy: "test"},
+		EmployeeCode:     "EMP-CURRENT",
+		FullName:         "Current User",
+		EmploymentStatus: "active",
+		IsActive:         true,
+	}
+	archivedEmployee := Employee{
+		Base:             Base{ID: "employee-archived", CreatedBy: "test"},
+		EmployeeCode:     "EMP-ARCHIVED",
+		FullName:         "Archived User",
+		EmploymentStatus: "archived",
+		IsActive:         false,
+	}
+	require.NoError(t, db.Create(&currentEmployee).Error)
+	require.NoError(t, db.Create(&archivedEmployee).Error)
+
+	now := time.Now()
+	licenseKey := "PH-ADM-ARCH01"
+	require.NoError(t, db.Create(&LicenseKey{
+		Key:         licenseKey,
+		Role:        "admin",
+		DisplayName: currentEmployee.FullName,
+		DeviceHash:  app.getDeviceHash(),
+		Activated:   true,
+		ActivatedAt: &now,
+		CreatedBy:   "test",
+	}).Error)
+	require.NoError(t, db.Create(&EmployeeAccessLink{
+		Base:         Base{ID: "link-current", CreatedBy: "test"},
+		EmployeeID:   currentEmployee.ID,
+		LicenseKey:   licenseKey,
+		AccessStatus: "active",
+		IsPrimary:    true,
+	}).Error)
+
+	task := TaskItem{
+		Base:              Base{ID: "task-archived-assignment", CreatedBy: "test"},
+		Title:             "Should stay unassigned",
+		Status:            "open",
+		Priority:          "medium",
+		CreatorEmployeeID: currentEmployee.ID,
+	}
+	require.NoError(t, db.Create(&task).Error)
+
+	err = app.ReassignCollaborativeTask(task.ID, archivedEmployee.ID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "archived or inactive")
+
+	var saved TaskItem
+	require.NoError(t, db.First(&saved, "id = ?", task.ID).Error)
+	require.Nil(t, saved.AssigneeEmployeeID)
+
+	var pendingCount int64
+	require.NoError(t, db.Model(&CollaborativePendingOperation{}).Count(&pendingCount).Error)
+	require.EqualValues(t, 0, pendingCount)
+}
+
 func TestListNotificationFeedHidesReadItemsAfterThirtyDays(t *testing.T) {
 	app := setupHybridFeatureTestApp(t)
 	current := seedCurrentAdminContext(t, app, "Rahul")

@@ -49,6 +49,9 @@ type DeploymentDataAudit struct {
 }
 
 var criticalDeploymentTableNames = []string{
+	"chart_of_accounts",
+	"journal_entries",
+	"journal_lines",
 	"account_mappings",
 	"fiscal_periods",
 	"employees",
@@ -68,6 +71,8 @@ var criticalDeploymentTableNames = []string{
 	"recurring_expenses",
 	"expense_attachments",
 	"expense_approvals",
+	"bank_statements",
+	"bank_statement_lines",
 	"employee_compensation_profiles",
 	"payroll_periods",
 	"payroll_runs",
@@ -98,6 +103,9 @@ func criticalDeploymentModels() []interface{} {
 		&LicenseKey{},
 		&CompanyBankAccount{},
 		&Setting{},
+		&ChartOfAccount{},
+		&JournalEntry{},
+		&JournalLine{},
 		&AccountMapping{},
 		&FiscalPeriod{},
 		&Employee{},
@@ -117,8 +125,8 @@ func criticalDeploymentModels() []interface{} {
 		&RecurringExpense{},
 		&ExpenseAttachment{},
 		&ExpenseApproval{},
-		&JournalEntry{},
-		&JournalLine{},
+		&BankStatement{},
+		&BankStatementLine{},
 		&EmployeeCompensationProfile{},
 		&PayrollPeriod{},
 		&PayrollRun{},
@@ -207,6 +215,10 @@ func (a *App) shouldBlockStartupOnDeploymentAudit() bool {
 		}
 	}
 	return false
+}
+
+func (a *App) shouldExitOnCriticalDeploymentFailure() bool {
+	return strings.TrimSpace(os.Getenv("ASYMMFLOW_EXIT_ON_DEPLOYMENT_FAILURE")) == "1"
 }
 
 func (a *App) logDeploymentAuditResult(message string, audit DeploymentDataAudit) {
@@ -569,6 +581,11 @@ func (a *App) enforceCriticalDeploymentState(stage string, foundationErr error) 
 	}
 	hardFailure := foundationErr != nil || auditErr != nil || len(audit.MissingTables) > 0
 	if !hardFailure && !a.shouldBlockStartupOnDeploymentAudit() {
+		return
+	}
+	a.setStartupStatus(true, false, message, "", "")
+	if !a.shouldExitOnCriticalDeploymentFailure() {
+		log.Printf("🚨 Continuing in degraded mode; set ASYMMFLOW_EXIT_ON_DEPLOYMENT_FAILURE=1 to fail fast")
 		return
 	}
 	if a.logFile != nil {

@@ -40,3 +40,26 @@ func TestSupportedOCRFileDialogPattern(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeDocumentTypeDetectionCoversOCRFormats(t *testing.T) {
+	tests := map[string]string{
+		"customer_invoice.pdf": "invoice",
+		"rfq_2026.pdf":         "rfq",
+		"supplier_po.pdf":      "purchase_order",
+		"quotation.msg":        "email",
+		"rfq.xlsx":             "spreadsheet",
+		"rfq.xls":              "spreadsheet",
+		"terms.docx":           "document",
+		"terms.rtf":            "document",
+		"scan.png":             "image",
+		"scan.jpg":             "image",
+		"scan.jpeg":            "image",
+		"scan.tiff":            "image",
+	}
+
+	for path, expected := range tests {
+		if actual := detectDocumentType(path); actual != expected {
+			t.Fatalf("detectDocumentType(%q) = %q, want %q", path, actual, expected)
+		}
+	}
+}

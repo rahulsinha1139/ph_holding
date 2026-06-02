@@ -756,6 +756,9 @@ func (a *App) GetAvailableFinancialYears() ([]int, error) {
 	if err := a.requirePermission("finance:view"); err != nil {
 		return nil, err
 	}
+	if a.db == nil {
+		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
 	yearsMap := make(map[int]bool)
 
 	// Always include audited years

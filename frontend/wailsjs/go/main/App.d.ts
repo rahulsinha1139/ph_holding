@@ -277,9 +277,13 @@ export function CreateOffer(arg1:string):Promise<main.OfferData>;
 
 export function CreateOfferDraftFromButler(arg1:main.ButlerOfferDraftRequest):Promise<main.Offer>;
 
+export function CreateOfferRevision(arg1:string):Promise<main.Offer>;
+
 export function CreateOrder(arg1:string,arg2:string,arg3:number,arg4:string,arg5:string):Promise<main.Order>;
 
 export function CreatePOFromOrder(arg1:string,arg2:string,arg3:Array<string>):Promise<main.PurchaseOrder>;
+
+export function CreatePOsFromOrder(arg1:string,arg2:Array<string>):Promise<Array<main.PurchaseOrder>>;
 
 export function CreatePayrollPeriod(arg1:main.PayrollPeriod):Promise<main.PayrollPeriod>;
 
@@ -584,6 +588,8 @@ export function GetAvailableDeliveryNotesForOrder(arg1:string):Promise<Array<mai
 export function GetAvailableFinancialYears():Promise<Array<number>>;
 
 export function GetAvailableSerials(arg1:string):Promise<Array<main.SerialNumber>>;
+
+export function GetBackendHealth():Promise<main.BackendHealth>;
 
 export function GetBackupInfo():Promise<Record<string, any>>;
 

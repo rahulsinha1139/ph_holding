@@ -1,37 +1,71 @@
 ===============================================================================
                 ASYMMFLOW ERP - INSTALLATION GUIDE
-                Version: 2026-04-08 | Deployment Package
+                Version: 2026-06-02 | Deployment Package
 ===============================================================================
 
 QUICK START (3 Steps)
 ---------------------
 
-  1. COPY this entire folder to your PC
+  1. WINDOWS: run the installer if present
+     - Double-click AsymmFlow_PH_Setup_*.exe
+     - Finish the installer, then open AsymmFlow from the Desktop or Start Menu
+     - Keep LICENSE_KEYS.txt available for the first activation prompt
+
+  2. PORTABLE / MAC: copy this entire folder to your PC as-is
      - Windows: C:\AsymmFlow\
      - Mac: ~/AsymmFlow/
+     - Do NOT move AsymmFlow.exe or AsymmFlow.app out of this folder
+     - Do NOT separate the app from the data/ folder
 
-  2. RUN the application
+  3. RUN the application if you did not use the Windows installer
      - Windows: Double-click AsymmFlow.exe
-     - Mac: Run ./AsymmFlow from Terminal
+     - Mac: Open AsymmFlow.app
 
-  3. ENTER your license key when prompted
-     - See LICENSE_KEYS.txt for your personal key
+  4. ENTER your license key when prompted
+     - See LICENSE_KEYS.txt for your personal employee key
      - Key activates on first use and binds to your PC
 
 That's it! The app will open to the Dashboard.
+
+
+IMPORTANT DATABASE RULE
+-----------------------
+
+  - The packaged data/ph_holdings.db is a first-run seed database.
+  - On first launch, AsymmFlow copies it to the machine app-data folder and uses that persistent copy.
+  - This full training installer carries a one-time reseed stamp. If an older app-data database exists, it is backed up and replaced from the clean packaged seed.
+  - License activation is preserved during that reseed unless the package explicitly includes a license reset stamp.
+  - Pending-verification workflow/procurement/payment tables are held out of cloud sync until SPOC sign-off.
+  - On normal future upgrades, replace the app/package; do not delete the app-data folder unless you intend to reset local data.
+
+
+ADMIN DATA SAFETY
+-----------------
+
+  - Only Admin keys can complete record deletion.
+  - Sales, Operations, Staff, and Manager delete attempts are converted into admin approval requests.
+  - Admin users review delete requests from the Notifications screen and can Approve Delete or Reject.
+  - Admin users can create a database backup from Settings > Supabase Sync > Database Backups.
+  - Auto Backup is enabled by default on a weekly schedule; Admin can change the frequency from 1 to 30 days.
+  - Backup files are stored next to the app-data database in the backups/ folder and the last 7 are retained.
 
 
 FOLDER STRUCTURE
 ----------------
 
   deploy_package/
-  ├── AsymmFlow              <- The application (Mac)
+  ├── AsymmFlow_PH_Setup_*.exe
+  │                         <- Windows installer, use this first on Windows
+  ├── AsymmFlow.app          <- The application (Mac)
   ├── AsymmFlow.exe          <- The application (Windows)
   ├── .env                   <- Cloud sync configuration
   ├── data/
   │   ├── ph_holdings.db     <- Database with all company data
   │   └── PH Trading Quotation Template.png
-  ├── LICENSE_KEYS.txt       <- Employee license keys
+  ├── LICENSE_KEYS.txt       <- Named PH employee license keys
+  ├── DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md
+  ├── DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf
+  ├── MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md
   └── INSTALL_GUIDE.txt      <- This file
 
 
@@ -62,10 +96,11 @@ TROUBLESHOOTING
   "Already activated"         Each key works on ONE PC only
   Database locked             Close other app instances
   Data not syncing            Check internet connection, wait 10 min
-  Empty dashboard             Make sure data/ph_holdings.db exists
+  Empty dashboard             Make sure data/ph_holdings.db exists for first launch
+  Wrong or old database       Confirm the app-data database is the intended live database
+  Wrong or old database       Replace the whole package folder, not just the app binary
 
   For all issues: Contact Abhie (SPOC)
-
 ===============================================================================
   PH Trading WLL | Powered by Asymmetrica Mathematical Organism
 ===============================================================================

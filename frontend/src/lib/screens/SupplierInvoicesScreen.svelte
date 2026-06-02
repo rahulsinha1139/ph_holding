@@ -275,10 +275,10 @@
       key: 'actions',
       label: 'Actions',
       type: 'actions' as const,
-      width: '150px',
+      width: '140px',
       render: (row: SupplierInvoiceDisplay) => {
         return `
-          <div style="display: flex; gap: 6px; justify-content: flex-start; flex-wrap: wrap;">
+          <div style="display: flex; gap: 4px; justify-content: flex-start; flex-wrap: wrap;">
             <button
               class="action-btn action-btn-view"
               data-action="view"
@@ -1001,6 +1001,7 @@
         stickyHeader={true}
         maxHeight="400px"
         showBorder={false}
+        compact={true}
       />
     </Card>
   </div>
@@ -1068,19 +1069,20 @@
           stickyHeader={true}
           maxHeight="calc(100vh - 300px)"
           showBorder={false}
+          compact={true}
         />
       </Card>
 
       <!-- Summary Stats -->
       <div class="stats-grid">
-        <Card padding="md">
+        <Card padding="sm">
           <div class="stat">
             <div class="stat-label">Total Invoices</div>
             <div class="stat-value">{invoices.length}</div>
           </div>
         </Card>
 
-        <Card padding="md">
+        <Card padding="sm">
           <div class="stat">
             <div class="stat-label">Total Amount (BHD)</div>
             <div class="stat-value">
@@ -1089,7 +1091,7 @@
           </div>
         </Card>
 
-        <Card padding="md">
+        <Card padding="sm">
           <div class="stat">
             <div class="stat-label">Open</div>
             <div class="stat-value stat-warning">
@@ -1098,7 +1100,7 @@
           </div>
         </Card>
 
-        <Card padding="md">
+        <Card padding="sm">
           <div class="stat">
             <div class="stat-label">Overdue</div>
             <div class="stat-value stat-danger">
@@ -1107,7 +1109,7 @@
           </div>
         </Card>
 
-        <Card padding="md">
+        <Card padding="sm">
           <div class="stat">
             <div class="stat-label">Match Rate</div>
             <div class="stat-value stat-success">
@@ -1562,13 +1564,13 @@
   .supplier-invoices-container {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 10px;
   }
 
   .supplier-invoices-embedded {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
   }
 
   .header-embedded {
@@ -1603,7 +1605,7 @@
 
   .header-embedded h2 {
     margin: 0;
-    font-size: 18px;
+    font-size: 16px;
     font-weight: 600;
     color: var(--text-primary);
   }
@@ -1611,19 +1613,19 @@
   /* Filter Tabs */
   .filter-tabs {
     display: flex;
-    gap: 8px;
+    gap: 6px;
     overflow-x: auto;
   }
 
   .filter-tab {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
+    gap: 6px;
+    padding: 6px 10px;
     background: transparent;
     border: none;
     border-radius: var(--border-radius-sm);
-    font-size: 14px;
+    font-size: 12.5px;
     font-weight: 500;
     color: var(--text-secondary);
     cursor: pointer;
@@ -1645,8 +1647,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 24px;
-    height: 20px;
+    min-width: 20px;
+    height: 18px;
     padding: 0 6px;
     background: rgba(0, 0, 0, 0.1);
     border-radius: 10px;
@@ -1661,8 +1663,8 @@
   /* Stats Grid */
   .stats-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
   }
 
   .stat {
@@ -1679,7 +1681,7 @@
   }
 
   .stat-value {
-    font-size: 24px;
+    font-size: 18px;
     font-weight: 600;
     color: var(--text-primary);
   }
@@ -1698,8 +1700,8 @@
 
   /* Action Buttons */
   :global(.action-btn) {
-    padding: 4px 10px;
-    font-size: 12px;
+    padding: 3px 7px;
+    font-size: 11.5px;
     font-weight: 500;
     border: none;
     border-radius: var(--border-radius-sm);
@@ -1848,11 +1850,20 @@
   }
 
   :global(.supplier-invoices-container .data-table th),
-  :global(.supplier-invoices-container .data-table td) {
+  :global(.supplier-invoices-container .data-table td),
+  :global(.supplier-invoices-embedded .data-table th),
+  :global(.supplier-invoices-embedded .data-table td) {
     vertical-align: top;
+    padding: 6px 8px;
   }
 
-  :global(.supplier-invoices-container .data-table .text-right) {
+  :global(.supplier-invoices-container .table-row),
+  :global(.supplier-invoices-embedded .table-row) {
+    height: 34px;
+  }
+
+  :global(.supplier-invoices-container .data-table .text-right),
+  :global(.supplier-invoices-embedded .data-table .text-right) {
     white-space: nowrap;
   }
 

@@ -164,6 +164,7 @@ func (a *App) EnsureExpenseFoundation() error {
 
 	models := []interface{}{
 		&CompanyBankAccount{},
+		&ChartOfAccount{},
 		&ExpenseCategory{},
 		&ExpenseVendor{},
 		&ExpenseEntry{},

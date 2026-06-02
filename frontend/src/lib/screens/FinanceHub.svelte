@@ -13,10 +13,8 @@
 
     // Bank Reconciliation Screens (Feature B)
     import BankReconciliationScreen from "./BankReconciliationScreen.svelte";
-    // Commented out - developing later
-    // import ChequeRegisterScreen from "./ChequeRegisterScreen.svelte";
-    // import BookBankReconciliationScreen from "./BookBankReconciliationScreen.svelte";
-    // import FXRevaluationScreen from "./FXRevaluationScreen.svelte";
+    import ChequeRegisterScreen from "./ChequeRegisterScreen.svelte";
+    import FXRevaluationScreen from "./FXRevaluationScreen.svelte";
     import AHSDashboard from "./AHSDashboard.svelte";
     import ErrorBoundary from "../components/ErrorBoundary.svelte";
 
@@ -55,21 +53,27 @@
         { id: "expense_approvals", label: "Approvals" },
         { id: "payroll_runs", label: "Payroll" },
         { id: "bank_recon", label: "Bank Recon" },
-        // Developing later:
-        // { id: "cheques", label: "Cheques" },
-        // { id: "book_bank", label: "Book-Bank" },
-        // { id: "fx", label: "FX" },
-        // { id: "audit", label: "Audit Trail" },
+        { id: "cheques", label: "Cheques" },
+        { id: "fx", label: "FX" },
     ];
+
+    function normalizeFinanceTab(value) {
+        const raw = String(value || "");
+        if (raw === "bank-recon" || raw === "book-bank" || raw === "book_bank") {
+            return "bank_recon";
+        }
+        return raw;
+    }
+
     function handleNavigate(event) {
-        const nextTab = event?.detail?.tab;
+        const nextTab = normalizeFinanceTab(event?.detail?.tab);
         if (nextTab && tabs.some((tab) => tab.id === nextTab)) {
             activeTab = nextTab;
         }
     }
 
     function handleFinanceNavigate(event) {
-        const nextTab = event?.detail?.tab;
+        const nextTab = normalizeFinanceTab(event?.detail?.tab);
         const nextCompany = event?.detail?.company;
         if (nextTab && tabs.some((tab) => tab.id === nextTab)) {
             activeTab = nextTab;
@@ -89,7 +93,7 @@
     });
 
     $: {
-        const requestedTab = params?.tab;
+        const requestedTab = normalizeFinanceTab(params?.tab);
         const requestedCompany = params?.company;
         const nextRouteKey = JSON.stringify({
             tab: requestedTab || "",
@@ -167,14 +171,10 @@
                 <PayrollScreen embedded={true} mode="workspace" company={selectedCompany} />
             {:else if activeTab === "bank_recon"}
                 <BankReconciliationScreen embedded={true} company={selectedCompany} />
-            <!-- Developing later:
             {:else if activeTab === "cheques"}
                 <ChequeRegisterScreen embedded={true} />
-            {:else if activeTab === "book_bank"}
-                <BookBankReconciliationScreen embedded={true} />
             {:else if activeTab === "fx"}
                 <FXRevaluationScreen embedded={true} />
-            -->
             {/if}
         </main>
     </div>
@@ -190,7 +190,7 @@
     }
 
     .header {
-        padding: 16px 20px 0;
+        padding: 10px 16px 0;
         border-bottom: 1px solid #e5e5e5;
         flex-shrink: 0;
     }
@@ -199,7 +199,7 @@
         display: flex;
         justify-content: flex-end;
         align-items: center;
-        margin-bottom: 12px;
+        margin-bottom: 8px;
     }
 
     /* E2: Company Selector */
@@ -212,7 +212,7 @@
     }
 
     .company-btn {
-        padding: 7px 14px;
+        padding: 6px 12px;
         background: transparent;
         border: none;
         border-right: 1px solid #e5e5e5;
@@ -240,9 +240,9 @@
 
     .tabs {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-        gap: 8px;
-        padding-bottom: 10px;
+        grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+        gap: 6px;
+        padding-bottom: 8px;
         height: auto;
         min-height: 0;
         border-bottom: 0;
@@ -252,11 +252,11 @@
 
     .tab {
         width: 100%;
-        min-height: 36px;
-        padding: 8px 13px;
+        min-height: 30px;
+        padding: 6px 9px;
         background: rgba(255, 255, 255, 0.72);
         border: 1px solid rgba(29, 29, 31, 0.08);
-        border-radius: 11px;
+        border-radius: 8px;
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
         font-family: var(--font-body);
         font-size: var(--tab-text-size-scaled, 12.5px);
@@ -264,7 +264,7 @@
         color: #6e6e73;
         cursor: pointer;
         transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
-        line-height: 1.15;
+        line-height: 1.1;
         white-space: normal;
         overflow-wrap: anywhere;
         text-align: center;
@@ -288,7 +288,7 @@
     .content {
         flex: 1;
         min-height: 0;
-        padding: 16px 20px;
+        padding: 12px 16px;
         overflow: auto;
     }
 

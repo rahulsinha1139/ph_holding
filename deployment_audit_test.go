@@ -56,6 +56,34 @@ func newDeploymentAuditAppForDB(t *testing.T, db *gorm.DB, dbPath string) *App {
 	}
 }
 
+func TestBackendHealthReportsStartupFailureBeforeLicense(t *testing.T) {
+	app := &App{}
+	app.setStartupStatus(true, false, "Database connection failed", "/tmp/ph_holdings.db", "/tmp/app_debug.log")
+
+	health := app.GetBackendHealth()
+	require.True(t, health.Ready)
+	require.False(t, health.Healthy)
+	require.False(t, health.DatabaseReady)
+	require.Equal(t, "Database connection failed", health.StartupError)
+	require.Equal(t, "/tmp/ph_holdings.db", health.DBPath)
+	require.Equal(t, "/tmp/app_debug.log", health.LogPath)
+}
+
+func TestBackendHealthReportsHealthyWhenDatabaseReady(t *testing.T) {
+	tempPath := filepath.Join(t.TempDir(), "backend_health.db")
+	db := openDeploymentAuditTestDB(t, tempPath)
+	app := newDeploymentAuditAppForDB(t, db, tempPath)
+	app.appStartTime = time.Now().Add(-2 * time.Second)
+	app.setStartupStatus(true, true, "", tempPath, "/tmp/app_debug.log")
+
+	health := app.GetBackendHealth()
+	require.True(t, health.Ready)
+	require.True(t, health.Healthy)
+	require.True(t, health.DatabaseReady)
+	require.Empty(t, health.StartupError)
+	require.GreaterOrEqual(t, health.UptimeSeconds, int64(1))
+}
+
 func seedOfferAuditCustomer(t *testing.T, db *gorm.DB, customerID, businessName string) CustomerMaster {
 	t.Helper()
 
@@ -215,6 +243,76 @@ func TestDeploymentRuntimeDBBootstrapAndAudit(t *testing.T) {
 	for _, table := range criticalDeploymentTableNames {
 		require.Truef(t, db.Migrator().HasTable(table), "expected table %s to exist after bootstrap", table)
 	}
+}
+
+func TestCriticalDeploymentFoundationBootstrapsAccountingDependenciesOnFreshDatabase(t *testing.T) {
+	tempPath := filepath.Join(t.TempDir(), "fresh_runtime.db")
+	db := openDeploymentAuditTestDB(t, tempPath)
+	app := newDeploymentAuditAppForDB(t, db, tempPath)
+
+	require.False(t, db.Migrator().HasTable(&ChartOfAccount{}))
+	require.NoError(t, app.ensureCriticalDeploymentFoundations())
+
+	for _, model := range []interface{}{
+		&ChartOfAccount{},
+		&JournalEntry{},
+		&JournalLine{},
+		&BankStatement{},
+		&BankStatementLine{},
+	} {
+		require.Truef(t, db.Migrator().HasTable(model), "expected %T to be bootstrapped", model)
+	}
+
+	var accountCount int64
+	require.NoError(t, db.Model(&ChartOfAccount{}).Count(&accountCount).Error)
+	require.Greater(t, accountCount, int64(0), "expense category seeding should create supporting GL accounts")
+}
+
+func TestCriticalDeploymentFoundationSkipsMatureBankStatementTablesWithRows(t *testing.T) {
+	tempPath := filepath.Join(t.TempDir(), "bank_recon_runtime.db")
+	db := openDeploymentAuditTestDB(t, tempPath)
+	app := newDeploymentAuditAppForDB(t, db, tempPath)
+
+	require.NoError(t, db.AutoMigrate(&CompanyBankAccount{}, &BankStatement{}, &BankStatementLine{}))
+	account := CompanyBankAccount{
+		ID:            "bank-foundation-account",
+		AccountName:   "Foundation Account",
+		BankName:      "NBB",
+		AccountNumber: "FOUNDATION-001",
+		Currency:      "BHD",
+		IsActive:      true,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	statement := BankStatement{
+		Base:            Base{ID: "bank-foundation-statement"},
+		BankAccountID:   account.ID,
+		StatementNumber: "FOUNDATION-STMT-001",
+		StatementDate:   time.Now(),
+		PeriodStart:     time.Now().AddDate(0, 0, -30),
+		PeriodEnd:       time.Now(),
+		Status:          "Imported",
+		Currency:        "BHD",
+	}
+	line := BankStatementLine{
+		Base:            Base{ID: "bank-foundation-line"},
+		BankStatementID: statement.ID,
+		LineNumber:      1,
+		TransactionDate: time.Now(),
+		ValueDate:       time.Now(),
+		Description:     "Seeded bank line",
+		Credit:          100,
+		Balance:         100,
+	}
+	require.NoError(t, db.Create(&account).Error)
+	require.NoError(t, db.Create(&statement).Error)
+	require.NoError(t, db.Create(&line).Error)
+
+	require.NoError(t, app.ensureCriticalDeploymentFoundations())
+
+	var lineCount int64
+	require.NoError(t, db.Model(&BankStatementLine{}).Where("bank_statement_id = ?", statement.ID).Count(&lineCount).Error)
+	require.Equal(t, int64(1), lineCount)
 }
 
 func TestDeploymentFoundationRecreatesCurrentExtensionTablesOnExistingDB(t *testing.T) {

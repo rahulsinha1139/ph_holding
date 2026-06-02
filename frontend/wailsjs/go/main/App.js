@@ -542,12 +542,20 @@ export function CreateOfferDraftFromButler(arg1) {
   return window['go']['main']['App']['CreateOfferDraftFromButler'](arg1);
 }
 
+export function CreateOfferRevision(arg1) {
+  return window['go']['main']['App']['CreateOfferRevision'](arg1);
+}
+
 export function CreateOrder(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['CreateOrder'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function CreatePOFromOrder(arg1, arg2, arg3) {
   return window['go']['main']['App']['CreatePOFromOrder'](arg1, arg2, arg3);
+}
+
+export function CreatePOsFromOrder(arg1, arg2) {
+  return window['go']['main']['App']['CreatePOsFromOrder'](arg1, arg2);
 }
 
 export function CreatePayrollPeriod(arg1) {
@@ -1156,6 +1164,10 @@ export function GetAvailableFinancialYears() {
 
 export function GetAvailableSerials(arg1) {
   return window['go']['main']['App']['GetAvailableSerials'](arg1);
+}
+
+export function GetBackendHealth() {
+  return window['go']['main']['App']['GetBackendHealth']();
 }
 
 export function GetBackupInfo() {

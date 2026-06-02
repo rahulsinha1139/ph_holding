@@ -40,6 +40,11 @@ func (a *App) registerFileWatcherHandlers() {
 		// Sync to OneDrive (async)
 		if a.syncService != nil {
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						a.recordBackgroundPanic("E+H basket watcher sync", r)
+					}
+				}()
 				syncEvent := &FileSyncState{
 					Path:      event.Path,
 					EventType: "modified",
@@ -82,6 +87,11 @@ func (a *App) registerFileWatcherHandlers() {
 		// Sync to OneDrive (async)
 		if a.syncService != nil {
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						a.recordBackgroundPanic("Offer folder watcher sync", r)
+					}
+				}()
 				syncEvent := &FileSyncState{
 					Path:      event.Path,
 					EventType: "modified",
@@ -134,6 +144,11 @@ func (a *App) registerFileWatcherHandlers() {
 		// Sync to OneDrive (async)
 		if a.syncService != nil {
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						a.recordBackgroundPanic("Invoice watcher sync", r)
+					}
+				}()
 				syncEvent := &FileSyncState{
 					Path:      event.Path,
 					EventType: "created",
@@ -188,6 +203,11 @@ func (a *App) registerFileWatcherHandlers() {
 		// Sync to OneDrive (async)
 		if a.syncService != nil {
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						a.recordBackgroundPanic("RFQ watcher sync", r)
+					}
+				}()
 				syncEvent := &FileSyncState{
 					Path:      event.Path,
 					EventType: "created",

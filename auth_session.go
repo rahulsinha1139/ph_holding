@@ -277,6 +277,11 @@ func (am *AuthManager) CleanupExpiredSessions() error {
 // StartSessionCleanupWorker starts background worker for periodic cleanup
 func (am *AuthManager) StartSessionCleanupWorker() {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil && am.app != nil {
+				am.app.recordBackgroundPanic("Auth session cleanup worker", r)
+			}
+		}()
 		ticker := time.NewTicker(SessionCleanupInterval)
 		defer ticker.Stop()
 

@@ -88,6 +88,8 @@
   --modal-label-size: 12px;
   --modal-label-weight: 500;
   --modal-line-height: 1.6;
+  --kpi-value-size: 32px;
+  --north-star-kpi-value-size: 48px;
 
   /* Tabular numerals for financial data alignment */
   --font-numeric: 'Space Grotesk', 'Rubik', sans-serif;
@@ -261,7 +263,7 @@ body {
 
 .card-north-star .kpi-value {
   color: var(--canvas);
-  font-size: 48px;
+  font-size: var(--north-star-kpi-value-size, 48px);
 }
 
 .card-north-star .kpi-meta {
@@ -286,7 +288,7 @@ body {
 }
 
 .kpi-value {
-  font-size: 32px;
+  font-size: var(--kpi-value-size, 32px);
   font-weight: 700;
   color: var(--text-primary);
   line-height: 1.1;
@@ -372,7 +374,7 @@ body {
 .data-table td.numeric {
   font-variant-numeric: tabular-nums lining-nums;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-12, 12px);
 }
 
 /* ===== TAB COMPONENTS ===== */
@@ -388,7 +390,7 @@ body {
   background: none;
   border: none;
   padding: 0 20px;
-  font-size: 13px;
+  font-size: var(--tab-text-size-scaled, 13px);
   font-weight: 500;
   color: var(--text-muted);
   cursor: pointer;
@@ -423,7 +425,7 @@ body {
 .btn {
   padding: 10px 20px;
   border-radius: var(--border-radius-sm);
-  font-size: 13px;
+  font-size: var(--control-text-size-scaled, 13px);
   font-weight: 500;
   cursor: pointer;
   transition: all var(--transition-fast);
@@ -581,7 +583,7 @@ body {
 .input {
   width: 100%;
   padding: 10px 14px;
-  font-size: 14px;
+  font-size: var(--modal-body-size, 14px);
   font-family: var(--font-family);
   color: var(--text-primary);
   background: var(--surface);

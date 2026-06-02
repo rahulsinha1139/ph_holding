@@ -1197,6 +1197,17 @@ export async function installMockWailsBridge(page: Page, options: MockWailsBridg
       get(_, prop) {
         return (...args: any[]) => {
           switch (String(prop)) {
+            case 'GetBackendHealth':
+              return defaultValue({
+                ready: true,
+                healthy: true,
+                database_ready: true,
+                startup_error: '',
+                db_path: '/tmp/ph-holdings-e2e.db',
+                log_path: '/tmp/ph-holdings-e2e.log',
+                updated_at: now(),
+                uptime_seconds: 1,
+              });
             case 'ValidateLicense':
               return defaultValue({
                 valid: true,

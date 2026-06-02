@@ -233,8 +233,7 @@
     try {
       if (refreshRemote) {
         remoteRefreshing = true;
-        void forceRemote;
-        await refreshCollaborativeWorkspace().catch(() => undefined);
+        await refreshCollaborativeWorkspace({ force: forceRemote }).catch(() => undefined);
       }
       const [employee, myTaskRows, teamTaskRows, projectRows, employeeRows] = await Promise.all([
         getCurrentEmployeeContext(),
@@ -1507,6 +1506,33 @@
         </div>
       </article>
 
+      <article class="panel roster-panel">
+        <div class="section-head">
+          <div>
+            <h2>Assignment Roster</h2>
+            <p>Choose an employee here to prefill the task assignee while you are working inside projects.</p>
+          </div>
+          <span class="count">{employees.length} people</span>
+        </div>
+        {#if employees.length === 0}
+          <div class="empty">No employees available for assignment yet.</div>
+        {:else}
+          <div class="roster-strip">
+            {#each workload as person}
+              <button
+                class="employee-chip"
+                class:selected={selectedAssignee === person.id}
+                on:click={() => selectedAssignee = person.id}
+              >
+                <strong>{person.name}</strong>
+                <span>{person.department || "Team"}</span>
+                <span>{person.openCount} active • {person.blockedCount} blocked</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </article>
+
       <Modal bind:open={projectModalOpen} title={selectedProject?.name || "Project Detail"} size="xl" on:close={() => { projectModalOpen = false; }}>
         <div class="section-head">
           <h2>{selectedProject?.name || "Project Detail"}</h2>
@@ -1857,9 +1883,9 @@
 
 <style>
   .page {
-    padding: 24px;
+    padding: 16px;
     display: grid;
-    gap: 20px;
+    gap: 12px;
   }
 
   .header,
@@ -1881,7 +1907,8 @@
 
   .work-topbar {
     align-items: stretch;
-    min-height: 56px;
+    min-height: 44px;
+    gap: 8px;
   }
 
   h2,
@@ -1910,20 +1937,20 @@
 
   .identity-card,
   .metric-card {
-    padding: 14px 16px;
+    padding: 10px 12px;
   }
 
   .identity-card {
-    min-width: 220px;
-    max-width: 280px;
+    min-width: 180px;
+    max-width: 240px;
     display: grid;
-    gap: 4px;
+    gap: 2px;
   }
 
   .tabs {
     display: flex;
-    gap: 8px;
-    padding: 8px;
+    gap: 4px;
+    padding: 4px;
     align-items: center;
     flex: 1;
   }
@@ -1940,8 +1967,8 @@
     justify-content: center;
     border: none;
     border-radius: 999px;
-    min-height: 40px;
-    padding: 10px 16px;
+    min-height: 32px;
+    padding: 7px 12px;
     background: transparent;
     color: var(--text-secondary);
     line-height: 1;
@@ -1957,7 +1984,7 @@
 
   .composer,
   .panel {
-    padding: 18px;
+    padding: 12px;
   }
 
   .composer-grid,
@@ -1970,13 +1997,13 @@
   .task-modal-grid,
   .insight-grid {
     display: grid;
-    gap: 12px;
+    gap: 8px;
   }
 
   .composer-grid {
     grid-template-columns: 2fr repeat(4, 1fr);
-    margin-top: 12px;
-    margin-bottom: 12px;
+    margin-top: 8px;
+    margin-bottom: 8px;
   }
 
   .workspace {
@@ -2038,7 +2065,7 @@
     width: 100%;
     border: 1px solid var(--border);
     border-radius: 10px;
-    padding: 10px 12px;
+    padding: 8px 10px;
     background: var(--bg-base);
   }
 
@@ -2046,7 +2073,7 @@
     display: flex;
     justify-content: flex-end;
     gap: 8px;
-    margin-top: 12px;
+    margin-top: 8px;
   }
 
   .section-loading,
@@ -2062,7 +2089,7 @@
   .primary {
     border: none;
     border-radius: 10px;
-    padding: 10px 14px;
+    padding: 8px 12px;
     background: var(--onyx);
     color: white;
   }
@@ -2124,13 +2151,13 @@
     width: 100%;
     border: 1px solid var(--border);
     border-radius: 14px;
-    padding: 14px;
+    padding: 10px 12px;
     background: var(--bg-base);
     text-align: left;
   }
 
   .project-row {
-    min-height: 112px;
+    min-height: 82px;
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
@@ -2152,8 +2179,8 @@
 
   .task-shell {
     display: grid;
-    gap: 12px;
-    min-height: 176px;
+    gap: 8px;
+    min-height: 136px;
     transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
   }
 
@@ -2173,21 +2200,21 @@
 
   .task-shell-body {
     display: grid;
-    gap: 8px;
+    gap: 5px;
     align-content: start;
   }
 
   .task-shell-body h3 {
-    font-size: 16px;
+    font-size: 14px;
     line-height: 1.3;
   }
 
   .task-shell-body p {
     color: var(--text-secondary);
     font-size: 13px;
-    line-height: 1.45;
+    line-height: 1.35;
     display: -webkit-box;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
@@ -2205,7 +2232,7 @@
   }
 
   .task-shell-meta span {
-    padding: 4px 8px;
+    padding: 3px 7px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--bg-base) 82%, #e2e8f0 18%);
   }
@@ -2257,8 +2284,8 @@
 
   .pill {
     border-radius: 999px;
-    padding: 6px 10px;
-    font-size: 12px;
+    padding: 4px 8px;
+    font-size: 11.5px;
     text-transform: capitalize;
     background: #eef2ff;
     color: #312e81;
@@ -2272,7 +2299,7 @@
 
   .subpanel {
     border-top: 1px solid var(--border);
-    padding-top: 16px;
+    padding-top: 12px;
     display: grid;
     gap: 12px;
   }
@@ -2402,22 +2429,22 @@
   }
 
   .board-filters {
-    padding: 14px 18px;
+    padding: 8px 10px;
   }
 
   .board-sections {
     display: grid;
-    gap: 18px;
-    margin-top: 12px;
+    gap: 10px;
+    margin-top: 8px;
   }
 
   .board-lane {
     border: 1px solid var(--border);
     border-radius: 14px;
     background: var(--bg-base);
-    padding: 14px;
+    padding: 10px;
     display: grid;
-    gap: 12px;
+    gap: 8px;
   }
 
   .lane-gallery {
@@ -2440,8 +2467,8 @@
     display: grid;
     gap: 2px;
     background: color-mix(in srgb, var(--bg-base) 88%, #dbeafe 12%);
-    min-width: 210px;
-    flex: 0 0 210px;
+    min-width: 170px;
+    flex: 0 0 170px;
   }
 
   .employee-chip.dragging {
@@ -2450,7 +2477,7 @@
 
   .roster-strip {
     display: flex;
-    gap: 12px;
+    gap: 8px;
     overflow-x: auto;
     padding-bottom: 4px;
   }
@@ -2461,8 +2488,10 @@
 
   .insight-row {
     display: grid;
-    gap: 4px;
-    padding: 12px;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
     border: 1px solid var(--border);
     border-radius: 12px;
     background: var(--bg-base);
@@ -2479,7 +2508,7 @@
   }
 
   .empty {
-    padding: 24px 8px;
+    padding: 16px 8px;
     color: var(--text-secondary);
     text-align: center;
   }
@@ -2490,17 +2519,17 @@
 
   .task-gallery-panel {
     display: grid;
-    gap: 16px;
+    gap: 10px;
   }
 
   .roster-panel {
     display: grid;
-    gap: 16px;
+    gap: 10px;
   }
 
   .task-modal-body {
     display: grid;
-    gap: 18px;
+    gap: 12px;
   }
 
   .task-modal-grid {
@@ -2517,7 +2546,7 @@
   }
 
   .task-meta.chips span {
-    padding: 6px 10px;
+    padding: 4px 8px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--bg-base) 85%, #e2e8f0 15%);
   }

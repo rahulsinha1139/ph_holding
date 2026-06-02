@@ -1160,6 +1160,9 @@ func (a *App) PickExcelFile() (string, error) {
 
 // ScanOfferFolders scans the OneDrive folder for all offer data
 func (a *App) ScanOfferFolders(basePath string) (*ExcelBatchImportResult, error) {
+	if err := a.requirePermission("documents:create"); err != nil {
+		return nil, err
+	}
 	log.Printf("📂 Scanning offer folders: %s", basePath)
 
 	result := &ExcelBatchImportResult{

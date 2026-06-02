@@ -857,11 +857,21 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		// Step 1: Credit limit check with row lock (SELECT FOR UPDATE)
 		var customer CustomerMaster
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("customer_id = ?", order.CustomerID).First(&customer).Error; err == nil {
+			Where("id = ? OR customer_id = ?", order.CustomerID, order.CustomerID).First(&customer).Error; err == nil {
 			// Customer found and locked — check credit limit atomically
+			if customer.IsCreditBlocked {
+				log.Printf("BLOCKED: Customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
+				return fmt.Errorf("customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
+			}
+
+			customerRefs := []string{customer.ID}
+			if strings.TrimSpace(customer.CustomerID) != "" && customer.CustomerID != customer.ID {
+				customerRefs = append(customerRefs, customer.CustomerID)
+			}
+
 			var totalOutstanding float64
 			if err := tx.Model(&Invoice{}).
-				Where("customer_id = ? AND status NOT IN ?", order.CustomerID, []string{"Paid", "Cancelled", "Void", "Proforma"}).
+				Where("customer_id IN ? AND status NOT IN ?", customerRefs, []string{"Paid", "Cancelled", "Void", "Proforma"}).
 				Select("COALESCE(SUM(outstanding_bhd), 0)").
 				Scan(&totalOutstanding).Error; err != nil {
 				log.Printf("⚠️ Failed to calculate customer outstanding AR: %v", err)
@@ -880,10 +890,6 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 						creditLimit)
 				}
 
-				if customer.IsCreditBlocked {
-					log.Printf("BLOCKED: Customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
-					return fmt.Errorf("customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
-				}
 				if newTotalOutstanding > creditLimit {
 					log.Printf("BLOCKED: Customer %s exceeds credit limit (%.3f BHD > %.3f BHD)",
 						customer.BusinessName, newTotalOutstanding, creditLimit)

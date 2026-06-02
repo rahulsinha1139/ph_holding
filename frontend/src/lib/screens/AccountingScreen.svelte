@@ -319,7 +319,7 @@
 <style>
   .accounting-page {
     min-height: 100%;
-    padding: 24px;
+    padding: 16px;
     background: var(--bg-base);
     color: var(--text-primary);
   }
@@ -332,30 +332,30 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 18px;
-    margin-bottom: 18px;
+    gap: 12px;
+    margin-bottom: 12px;
   }
 
   .accounting-header h1 {
     margin: 0;
-    font-size: 26px;
+    font-size: 22px;
     font-weight: 650;
   }
 
   .accounting-header p {
-    margin: 6px 0 0;
+    margin: 4px 0 0;
     color: var(--text-secondary);
   }
 
   .tabs {
     display: flex;
     flex-wrap: nowrap;
-    gap: 8px;
-    margin-bottom: 16px;
+    gap: 6px;
+    margin-bottom: 10px;
     border-bottom: 1px solid var(--border-subtle, #dde8dd);
     overflow-x: auto;
     overflow-y: hidden;
-    padding-bottom: 6px;
+    padding-bottom: 4px;
     scrollbar-width: thin;
   }
 
@@ -367,7 +367,7 @@
     border-radius: 8px;
     background: #fff;
     color: var(--text-primary);
-    padding: 9px 13px;
+    padding: 7px 10px;
     font-weight: 700;
     cursor: pointer;
   }
@@ -399,10 +399,10 @@
   .filters {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 12px;
+    gap: 8px;
     align-items: end;
-    margin-bottom: 18px;
-    padding: 14px;
+    margin-bottom: 12px;
+    padding: 10px;
     border: 1px solid var(--border-subtle, #dde8dd);
     border-radius: 8px;
     background: #fff;
@@ -410,7 +410,7 @@
 
   .preset-group {
     display: flex;
-    gap: 6px;
+    gap: 5px;
     flex-wrap: wrap;
   }
 
@@ -427,19 +427,19 @@
   input,
   select {
     width: 100%;
-    min-height: 38px;
+    min-height: 32px;
     border: 1px solid var(--border-subtle, #dde8dd);
     border-radius: 8px;
-    padding: 8px 10px;
+    padding: 6px 9px;
     background: #fff;
     color: var(--text-primary);
   }
 
   .metric-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 12px;
-    margin-bottom: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
   }
 
   .metric-grid article,
@@ -451,12 +451,12 @@
   }
 
   .metric-grid article {
-    padding: 18px;
+    padding: 10px 12px;
   }
 
   .metric-grid span {
     display: block;
-    margin-bottom: 8px;
+    margin-bottom: 5px;
     font-size: 11px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -465,7 +465,8 @@
   }
 
   .metric-grid strong {
-    font-size: 24px;
+    font-size: 19px;
+    line-height: 1.25;
   }
 
   .positive strong { color: #4f8f45; }
@@ -473,18 +474,18 @@
 
   .statement {
     max-width: 820px;
-    padding: 18px;
+    padding: 12px;
   }
 
   .statement h3 {
-    margin: 24px 0 10px;
+    margin: 16px 0 8px;
   }
 
   .statement-row {
     display: flex;
     justify-content: space-between;
     gap: 18px;
-    padding: 12px 0;
+    padding: 8px 0;
     border-bottom: 1px solid #edf2ed;
   }
 
@@ -493,9 +494,9 @@
   }
 
   .statement-row.grand {
-    margin-top: 8px;
+    margin-top: 6px;
     border-bottom: 0;
-    font-size: 20px;
+    font-size: 18px;
     font-weight: 800;
   }
 
@@ -515,7 +516,7 @@
 
   th,
   td {
-    padding: 12px 14px;
+    padding: 8px 10px;
     border-bottom: 1px solid #edf2ed;
     text-align: left;
     vertical-align: top;
@@ -536,7 +537,7 @@
 
   .empty,
   .loading {
-    padding: 36px;
+    padding: 24px;
     text-align: center;
     color: var(--text-secondary);
   }

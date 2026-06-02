@@ -74,6 +74,13 @@ type App struct {
 	collaborationSyncMu       sync.Mutex                  // Prevent overlapping collaboration sync runs
 	collaborationSyncInitMu   sync.Mutex                  // Guards collaboration loop initialization/reset
 	shutdownOnce              sync.Once                   // Ensures app shutdown cleanup runs exactly once
+	startupMu                 sync.RWMutex                // Guards startup health fields read by pre-license UI
+	startupReady              bool                        // Startup completed enough for frontend calls
+	startupHealthy            bool                        // Backend initialized without fatal startup errors
+	startupError              string                      // Sanitized startup failure for UI diagnostics
+	startupDBPath             string                      // Resolved DB path used at startup
+	startupLogPath            string                      // App log path for support
+	startupUpdatedAt          time.Time                   // Last startup status update
 	startupImporting          bool                        // Bypass RBAC during startup data import
 	startupImportStartTime    time.Time                   // Timestamp when startup import began (for timeout enforcement)
 	currentUser               *User                       // Current logged-in user
@@ -105,7 +112,14 @@ var (
 // GetCSRFToken generates a new CSRF token valid for 1 hour
 // Used for defense-in-depth on critical operations (payments, invoices)
 func (a *App) GetCSRFToken() string {
-	token := generateSecureToken(32)
+	token, err := generateSecureToken(32)
+	if err != nil {
+		log.Printf("CRITICAL: CSRF token generation failed: %v", err)
+		if AppLogger != nil {
+			AppLogger.Error("CSRF token generation failed", err, nil)
+		}
+		return ""
+	}
 
 	csrfTokenMutex.Lock()
 	defer csrfTokenMutex.Unlock()
@@ -142,14 +156,14 @@ func (a *App) ValidateCSRFToken(token string) bool {
 }
 
 // generateSecureToken creates a cryptographically secure random token
-func generateSecureToken(length int) string {
+func generateSecureToken(length int) (string, error) {
 	bytes := make([]byte, length)
 	if _, err := rand.Read(bytes); err != nil {
 		// SECURITY: crypto/rand failure is a critical system issue.
 		// Do NOT fall back to predictable tokens - that silently degrades security.
-		log.Fatalf("CRITICAL: crypto/rand.Read failed, cannot generate secure token: %v", err)
+		return "", fmt.Errorf("crypto/rand.Read failed: %w", err)
 	}
-	return hex.EncodeToString(bytes)
+	return hex.EncodeToString(bytes), nil
 }
 
 // sanitizeSearchQuery removes SQL special characters from user search input
@@ -182,6 +196,19 @@ type ApplicationPaths struct {
 	TestData      string `json:"test_data"`
 	ReportOutput  string `json:"report_output"`
 	AsymmMathRoot string `json:"asymm_math_root"`
+}
+
+// BackendHealth is intentionally pre-license: the activation UI needs to know
+// whether it is talking to a healthy Wails backend before blaming the license.
+type BackendHealth struct {
+	Ready         bool   `json:"ready"`
+	Healthy       bool   `json:"healthy"`
+	DatabaseReady bool   `json:"database_ready"`
+	StartupError  string `json:"startup_error,omitempty"`
+	DBPath        string `json:"db_path,omitempty"`
+	LogPath       string `json:"log_path,omitempty"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
 }
 
 // getAppPaths returns application paths without RBAC check (for internal backend use).
@@ -240,6 +267,96 @@ func (a *App) GetApplicationPaths() *ApplicationPaths {
 	return a.getAppPaths()
 }
 
+func (a *App) setStartupStatus(ready bool, healthy bool, startupErr string, dbPath string, logPath string) {
+	if a == nil {
+		return
+	}
+	a.startupMu.Lock()
+	defer a.startupMu.Unlock()
+	a.startupReady = ready
+	a.startupHealthy = healthy
+	a.startupError = strings.TrimSpace(startupErr)
+	if strings.TrimSpace(dbPath) != "" {
+		a.startupDBPath = strings.TrimSpace(dbPath)
+	}
+	if strings.TrimSpace(logPath) != "" {
+		a.startupLogPath = strings.TrimSpace(logPath)
+	}
+	a.startupUpdatedAt = time.Now()
+}
+
+func (a *App) completeStartupStatus(dbPath string, logPath string) {
+	if a == nil {
+		return
+	}
+	a.startupMu.Lock()
+	defer a.startupMu.Unlock()
+	a.startupReady = true
+	a.startupHealthy = strings.TrimSpace(a.startupError) == ""
+	if strings.TrimSpace(dbPath) != "" {
+		a.startupDBPath = strings.TrimSpace(dbPath)
+	}
+	if strings.TrimSpace(logPath) != "" {
+		a.startupLogPath = strings.TrimSpace(logPath)
+	}
+	a.startupUpdatedAt = time.Now()
+}
+
+func (a *App) recordBackgroundPanic(component string, recovered interface{}) {
+	if recovered == nil {
+		return
+	}
+	component = strings.TrimSpace(component)
+	if component == "" {
+		component = "background worker"
+	}
+	message := fmt.Sprintf("%s panic: %v", component, recovered)
+	log.Printf("🔥 %s", message)
+	if AppLogger != nil {
+		AppLogger.Error(message, fmt.Errorf("%v", recovered), nil)
+	}
+}
+
+func (a *App) GetBackendHealth() BackendHealth {
+	if a == nil {
+		return BackendHealth{
+			Ready:        false,
+			Healthy:      false,
+			StartupError: "Backend is not initialized",
+		}
+	}
+
+	a.startupMu.RLock()
+	health := BackendHealth{
+		Ready:        a.startupReady,
+		Healthy:      a.startupHealthy,
+		StartupError: a.startupError,
+		DBPath:       a.startupDBPath,
+		LogPath:      a.startupLogPath,
+	}
+	updatedAt := a.startupUpdatedAt
+	a.startupMu.RUnlock()
+
+	health.DatabaseReady = a.db != nil
+	if health.LogPath == "" {
+		health.LogPath = appDebugLogPath()
+	}
+	if !updatedAt.IsZero() {
+		health.UpdatedAt = updatedAt.Format(time.RFC3339)
+	}
+	if !a.appStartTime.IsZero() {
+		health.UptimeSeconds = int64(time.Since(a.appStartTime).Seconds())
+	}
+	if !health.Ready && health.StartupError == "" {
+		health.StartupError = "Backend is still starting"
+	}
+	if health.Ready && !health.DatabaseReady && health.StartupError == "" {
+		health.StartupError = "Database is not initialized"
+		health.Healthy = false
+	}
+	return health
+}
+
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{}
@@ -274,6 +391,7 @@ func rotateLogFile(logPath string, maxSize int64, keepCount int) {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.appStartTime = time.Now()
+	a.setStartupStatus(false, false, "", "", "")
 
 	appendStartupDiagnostic("ONSTARTUP: begin")
 	appendStartupDiagnostic("ONSTARTUP: cwd=%s", func() string { d, _ := os.Getwd(); return d }())
@@ -283,6 +401,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// 1. Setup File Logging with rotation (FIX: Handle error, store file handle for cleanup)
 	logPath := appDebugLogPath()
+	a.setStartupStatus(false, false, "", "", logPath)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
 		appendStartupDiagnostic("ONSTARTUP: failed to create log directory for %s: %v", logPath, err)
 	}
@@ -312,10 +431,11 @@ func (a *App) startup(ctx context.Context) {
 
 	defer func() {
 		if r := recover(); r != nil {
+			a.setStartupStatus(true, false, fmt.Sprintf("Backend startup panic: %v", r), "", logPath)
 			appendStartupDiagnostic("ONSTARTUP: panic: %v", r)
 			log.Printf("🔥 CRITICAL PANIC: %v", r)
 			if AppLogger != nil {
-				AppLogger.Fatal("Application panic", fmt.Errorf("%v", r), map[string]interface{}{
+				AppLogger.Error("Application startup panic", fmt.Errorf("%v", r), map[string]interface{}{
 					"stack_trace": AppLogger.GetStackTrace(2),
 				})
 			}
@@ -365,6 +485,7 @@ func (a *App) startup(ctx context.Context) {
 	if dbPath == "" {
 		dbPath = getDatabasePath()
 	}
+	a.setStartupStatus(false, false, "", dbPath, logPath)
 
 	// Production fix: packaged apps may launch with an unexpected CWD.
 	// Resolve relative DB paths against executable-relative locations first,
@@ -483,6 +604,7 @@ func (a *App) startup(ctx context.Context) {
 	if err != nil {
 		// FIX 3: Sanitize error message - don't expose internal paths to user
 		sanitizedMsg := "Failed to connect to database. Please check your installation and ensure the application has proper file permissions."
+		a.setStartupStatus(true, false, sanitizedMsg, dbPath, logPath)
 
 		// Log detailed error internally for debugging
 		AppLogger.Error("Database connection failed", err, map[string]interface{}{
@@ -505,6 +627,7 @@ func (a *App) startup(ctx context.Context) {
 	AppLogger.Info("SQLite database connected successfully", map[string]interface{}{
 		"path": dbPath,
 	})
+	a.setStartupStatus(false, false, "", dbPath, logPath)
 
 	// Configure connection pool for SQLite (limited settings)
 	sqlDB, poolErr := a.db.DB()
@@ -752,6 +875,7 @@ func (a *App) startup(ctx context.Context) {
 		// Ensure release-critical workflow foundations exist regardless of main migration path.
 		foundationErr := a.ensureCriticalDeploymentFoundations()
 		if foundationErr != nil {
+			a.setStartupStatus(true, false, fmt.Sprintf("Critical deployment foundation initialization failed: %v", foundationErr), dbPath, logPath)
 			AppLogger.Error("Critical deployment foundation initialization failed", foundationErr, nil)
 		}
 		a.enforceCriticalDeploymentState("startup", foundationErr)
@@ -848,6 +972,7 @@ func (a *App) startup(ctx context.Context) {
 	AppLogger.Info("Geometry Bridge initialized", map[string]interface{}{
 		"pipelines": 4,
 	})
+	ensureBundledAIEnvironment()
 
 	// Register Mistral API key provider (encrypted DB -> settings.json -> env fallback)
 	SetMistralKeyProvider(func() string {
@@ -1153,6 +1278,12 @@ func (a *App) startup(ctx context.Context) {
 			}
 			resultChan := make(chan importResult, 1)
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						a.recordBackgroundPanic("Tally startup import", r)
+						resultChan <- importResult{nil, fmt.Errorf("tally startup import panic: %v", r)}
+					}
+				}()
 				r, e := a.ImportAllTallyData()
 				resultChan <- importResult{r, e}
 			}()
@@ -1208,6 +1339,8 @@ func (a *App) startup(ctx context.Context) {
 	} else {
 		log.Println("✓ File Watcher disabled in config")
 	}
+
+	a.completeStartupStatus(dbPath, logPath)
 }
 
 func shouldSkipCriticalAutoMigrate(db *gorm.DB, model interface{}) bool {
@@ -1217,26 +1350,42 @@ func shouldSkipCriticalAutoMigrate(db *gorm.DB, model interface{}) bool {
 
 	switch model.(type) {
 	case *RFQComment:
-		namedModel, ok := model.(tableNamer)
-		if !ok {
-			return false
-		}
-		tableName := namedModel.TableName()
-		if !db.Migrator().HasTable(tableName) {
-			return false
-		}
-
-		requiredColumns := []string{"id", "rfq_id", "comment", "created_by", "created_at"}
-		for _, column := range requiredColumns {
-			if !db.Migrator().HasColumn(model, column) {
-				return false
-			}
-		}
-		log.Printf("ℹ️ Skipping AutoMigrate for %s: existing SQLite table already matches required columns", tableName)
-		return true
+		return shouldSkipCriticalAutoMigrateWhenColumnsExist(db, model, []string{"id", "rfq_id", "comment", "created_by", "created_at"})
+	case *BankStatement:
+		return shouldSkipCriticalAutoMigrateWhenColumnsExist(db, model, []string{
+			"id", "bank_account_id", "statement_number", "statement_date", "period_start", "period_end",
+			"opening_balance", "closing_balance", "currency", "total_debits", "total_credits",
+			"status", "imported_from", "import_method", "balance_verified", "division", "notes",
+		})
+	case *BankStatementLine:
+		return shouldSkipCriticalAutoMigrateWhenColumnsExist(db, model, []string{
+			"id", "bank_statement_id", "line_number", "transaction_date", "value_date", "description",
+			"reference", "debit", "credit", "balance", "transaction_type", "is_matched",
+			"match_type", "match_confidence", "matched_payment_id", "matched_invoice_ids",
+			"matched_expense_id", "verified_by", "verified_at",
+		})
 	default:
 		return false
 	}
+}
+
+func shouldSkipCriticalAutoMigrateWhenColumnsExist(db *gorm.DB, model interface{}, requiredColumns []string) bool {
+	namedModel, ok := model.(tableNamer)
+	if !ok {
+		return false
+	}
+	tableName := namedModel.TableName()
+	if !db.Migrator().HasTable(tableName) {
+		return false
+	}
+
+	for _, column := range requiredColumns {
+		if !db.Migrator().HasColumn(model, column) {
+			return false
+		}
+	}
+	log.Printf("ℹ️ Skipping AutoMigrate for %s: existing SQLite table already matches required columns", tableName)
+	return true
 }
 
 // beforeClose owns the desktop close path. Wails on macOS cancels the native
@@ -1244,8 +1393,19 @@ func shouldSkipCriticalAutoMigrate(db *gorm.DB, model interface{}) bool {
 // the app from lingering if a background sync or WebKit quit callback stalls.
 func (a *App) beforeClose(ctx context.Context) bool {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Close cleanup", r)
+				os.Exit(1)
+			}
+		}()
 		done := make(chan struct{})
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					a.recordBackgroundPanic("Shutdown cleanup", r)
+				}
+			}()
 			a.shutdown(ctx)
 			close(done)
 		}()
@@ -1264,8 +1424,13 @@ func (a *App) beforeClose(ctx context.Context) bool {
 func waitForShutdownStep(label string, timeout time.Duration, wait func()) bool {
 	done := make(chan struct{})
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("WARNING: Shutdown step panicked: %s: %v", label, r)
+			}
+			close(done)
+		}()
 		wait()
-		close(done)
 	}()
 
 	select {
@@ -3218,6 +3383,11 @@ func withTimeout(ctx context.Context, operation func() error) error {
 
 	// Run operation in goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				errChan <- fmt.Errorf("database operation panic: %v", r)
+			}
+		}()
 		errChan <- operation()
 	}()
 
@@ -4123,7 +4293,7 @@ func (a *App) GetSupplierFullProfile(supplierID string) (SupplierFullProfile, er
 
 	var openInvoices []SupplierInvoice
 	var outstanding, overdue float64
-	if err := a.db.Where("supplier_id = ? AND deleted_at IS NULL", supplierID).Find(&openInvoices).Error; err != nil {
+	if err := a.db.Where("supplier_id = ?", supplierID).Find(&openInvoices).Error; err != nil {
 		log.Printf("⚠️ Failed to load supplier invoices for profile aging: %v", err)
 	} else if states, err := a.buildSupplierInvoicePaymentStateMap(a.db, openInvoices); err != nil {
 		log.Printf("⚠️ Failed to build supplier profile payment states: %v", err)
@@ -5498,6 +5668,24 @@ func repairImportedCommercialDocuments(db *gorm.DB) error {
 
 	if err := repairImportedOpportunityProductDetails(db); err != nil {
 		return err
+	}
+
+	if results, err := backfillWonOfferItemsFromOpportunityProductDetailsDB(db); err != nil {
+		return err
+	} else if repaired, _ := results["repaired"].(int); repaired > 0 {
+		log.Printf("✅ Repaired won offer item shells: %v", results)
+	}
+
+	if repaired, err := repairOrdersWithNoItemsFromOfferItems(db); err != nil {
+		return err
+	} else if repaired > 0 {
+		log.Printf("✅ Backfilled %d orders from linked offer items", repaired)
+	}
+
+	if repaired, err := repairTerminalOfferOpportunityStages(db); err != nil {
+		return err
+	} else if repaired > 0 {
+		log.Printf("✅ Reconciled %d terminal offer/opportunity stages", repaired)
 	}
 
 	return nil
@@ -7223,6 +7411,32 @@ func offerNumberWithRevision(offerNumber string, revisionNumber int) string {
 	return fmt.Sprintf("%s-R%d", base, revisionNumber)
 }
 
+func isTerminalOfferStage(stage string) bool {
+	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case "won", "lost":
+		return true
+	default:
+		return false
+	}
+}
+
+func canonicalOfferStage(stage string) string {
+	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case "won":
+		return "Won"
+	case "lost":
+		return "Lost"
+	case "quoted":
+		return "Quoted"
+	case "rfq":
+		return "RFQ"
+	case "expired":
+		return "Expired"
+	default:
+		return strings.TrimSpace(stage)
+	}
+}
+
 func (a *App) ensureOfferNumberAvailable(tx *gorm.DB, offerNumber, excludeOfferID string) error {
 	if strings.TrimSpace(offerNumber) == "" {
 		return fmt.Errorf("offer number is required")
@@ -7324,6 +7538,18 @@ func stripOfferRevisionSuffix(value string) string {
 	}
 	re := regexp.MustCompile(`(?i)[-_\s]*(?:rev\.?|r)\s*\d+$`)
 	return strings.TrimSpace(re.ReplaceAllString(value, ""))
+}
+
+func offerRevisionSuffixNumber(value string) int {
+	matches := regexp.MustCompile(`(?i)(?:[-_\s]*(?:rev\.?|r)\s*)(\d+)$`).FindStringSubmatch(strings.TrimSpace(value))
+	if len(matches) != 2 {
+		return 0
+	}
+	parsed, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0
+	}
+	return parsed
 }
 
 func friendlyOfferSaveError(err error) error {
@@ -7601,6 +7827,12 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 		if err := tx.Create(offer).Error; err != nil {
 			return friendlyOfferSaveError(err)
 		}
+		if data.VatRate == 0 {
+			if err := tx.Model(offer).Update("vat_rate", 0).Error; err != nil {
+				return fmt.Errorf("failed to persist zero VAT rate: %w", err)
+			}
+			offer.VatRate = 0
+		}
 		if err := a.syncRFQReferenceFromCosting(tx, data.OpportunityId, customerReference); err != nil {
 			log.Printf("⚠️ Warning: Failed to sync RFQ #%d reference from costing: %v", data.OpportunityId, err)
 		}
@@ -7690,7 +7922,7 @@ func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error)
 	if err := a.db.Preload("Items").First(&offer, "id = ?", offerID).Error; err != nil {
 		return nil, fmt.Errorf("offer not found: %w", err)
 	}
-	if offer.Stage == "Won" || offer.Stage == "Lost" {
+	if isTerminalOfferStage(offer.Stage) {
 		return nil, fmt.Errorf("cannot edit terminal offer stage '%s'", offer.Stage)
 	}
 
@@ -8096,6 +8328,149 @@ func (a *App) DeleteOffer(offerID string) error {
 	})
 }
 
+func (a *App) nextOfferRevisionIdentity(tx *gorm.DB, source Offer) (int, string, error) {
+	if tx == nil {
+		return 0, "", fmt.Errorf("database not initialized")
+	}
+	revisionRoot := stripOfferRevisionSuffix(firstNonEmptyString(source.OfferNumber, source.CustomerReference))
+	if revisionRoot == "" {
+		revisionRoot = a.generateOfferNumber()
+	}
+
+	start := source.RevisionNumber + 1
+	if suffix := offerRevisionSuffixNumber(source.OfferNumber); suffix >= start {
+		start = suffix + 1
+	}
+	if start < 1 {
+		start = 1
+	}
+
+	for revision := start; revision <= 99; revision++ {
+		candidate := cleanOfferNumber(fmt.Sprintf("%s-R%d", revisionRoot, revision))
+		available, err := offerNumberAvailable(tx, candidate, "")
+		if err != nil {
+			return 0, "", err
+		}
+		if available {
+			return revision, candidate, nil
+		}
+	}
+	return 0, "", fmt.Errorf("no available revision number for offer %s", source.OfferNumber)
+}
+
+func cloneOfferItemsForRevision(sourceItems []OfferItem, newOfferID string) []OfferItem {
+	items := make([]OfferItem, 0, len(sourceItems))
+	for idx, sourceItem := range sourceItems {
+		item := sourceItem
+		item.Base = Base{ID: uuid.New().String()}
+		item.OfferID = newOfferID
+		if item.LineNumber <= 0 {
+			item.LineNumber = idx + 1
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+// CreateOfferRevision creates a new quoted offer from an existing offer while
+// preserving the source commercial document for audit and order traceability.
+func (a *App) CreateOfferRevision(sourceOfferID string) (*Offer, error) {
+	if err := a.requirePermission("offers:create"); err != nil {
+		if editErr := a.requirePermission("offers:edit"); editErr != nil {
+			return nil, err
+		}
+	}
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	sourceOfferID = strings.TrimSpace(sourceOfferID)
+	if sourceOfferID == "" {
+		return nil, fmt.Errorf("source offer id is required")
+	}
+
+	var created Offer
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		var source Offer
+		if err := tx.Preload("Items").First(&source, "id = ?", sourceOfferID).Error; err != nil {
+			return fmt.Errorf("source offer not found: %w", err)
+		}
+		if strings.EqualFold(strings.TrimSpace(source.Stage), "Won") {
+			return fmt.Errorf("won offers cannot be re-quoted; create an amendment/order workflow instead")
+		}
+		if len(source.Items) == 0 {
+			return fmt.Errorf("cannot create revision for offer %s because it has no line items", source.OfferNumber)
+		}
+
+		revisionNumber, offerNumber, err := a.nextOfferRevisionIdentity(tx, source)
+		if err != nil {
+			return err
+		}
+
+		now := time.Now()
+		rootOfferID := strings.TrimSpace(source.RevisionRootOfferID)
+		if rootOfferID == "" {
+			rootOfferID = strings.TrimSpace(source.RevisionOfOfferID)
+		}
+		if rootOfferID == "" {
+			rootOfferID = source.ID
+		}
+
+		newOffer := source
+		newOffer.Base = Base{ID: uuid.New().String(), CreatedBy: a.getCurrentUserID()}
+		newOffer.OfferNumber = offerNumber
+		newOffer.RevisionNumber = revisionNumber
+		newOffer.RevisionOfOfferID = source.ID
+		newOffer.RevisionRootOfferID = rootOfferID
+		newOffer.SupersededByOfferID = ""
+		newOffer.SupersededAt = nil
+		newOffer.Stage = "Quoted"
+		newOffer.LostReason = ""
+		newOffer.QuotationDate = now
+		newOffer.ValidityDate = now.AddDate(0, 0, 30)
+		newOffer.Items = nil
+
+		if err := tx.Create(&newOffer).Error; err != nil {
+			return friendlyOfferSaveError(err)
+		}
+
+		items := cloneOfferItemsForRevision(source.Items, newOffer.ID)
+		if err := tx.Create(&items).Error; err != nil {
+			return fmt.Errorf("failed to create revision line items: %w", err)
+		}
+
+		sourceUpdates := map[string]interface{}{
+			"superseded_by_offer_id": newOffer.ID,
+			"superseded_at":          now,
+			"updated_at":             now,
+		}
+		if strings.EqualFold(source.Stage, "Quoted") || strings.EqualFold(source.Stage, "RFQ") {
+			sourceUpdates["stage"] = "Expired"
+		}
+		if err := tx.Model(&Offer{}).Where("id = ?", source.ID).Updates(sourceUpdates).Error; err != nil {
+			return fmt.Errorf("failed to mark source offer as superseded: %w", err)
+		}
+
+		if err := tx.Model(&Opportunity{}).Where("offer_id = ?", source.ID).Updates(map[string]interface{}{
+			"offer_id":    newOffer.ID,
+			"stage":       "Quoted",
+			"updated_at":  now,
+			"closed_date": nil,
+		}).Error; err != nil {
+			log.Printf("⚠️ Failed to relink opportunity to offer revision %s: %v", newOffer.OfferNumber, err)
+		}
+
+		newOffer.Items = items
+		created = newOffer
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("✅ Created Offer revision %s from %s", created.OfferNumber, sourceOfferID)
+	return &created, nil
+}
+
 func deriveCanonicalOpportunityFolderFromOfferNumber(offerNumber string) string {
 	normalized := normalizeImportedOfferNumber(offerNumber)
 	if normalized == "" {
@@ -8119,15 +8494,24 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 		return nil, fmt.Errorf("database not initialized")
 	}
 
+	return backfillWonOfferItemsFromOpportunityProductDetailsDB(a.db)
+}
+
+func backfillWonOfferItemsFromOpportunityProductDetailsDB(db *gorm.DB) (map[string]interface{}, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
 	type offerShell struct {
 		ID            string  `gorm:"column:id"`
 		OfferNumber   string  `gorm:"column:offer_number"`
 		TotalValueBHD float64 `gorm:"column:total_value_bhd"`
+		VatRate       float64 `gorm:"column:vat_rate"`
 	}
 
 	var shells []offerShell
-	if err := a.db.Raw(`
-		SELECT o.id, o.offer_number, COALESCE(o.total_value_bhd, 0) AS total_value_bhd
+	if err := db.Raw(`
+		SELECT o.id, o.offer_number, COALESCE(o.total_value_bhd, 0) AS total_value_bhd, COALESCE(o.vat_rate, 10) AS vat_rate
 		FROM offers o
 		LEFT JOIN offer_items oi ON oi.offer_id = o.id AND oi.deleted_at IS NULL
 		WHERE o.deleted_at IS NULL
@@ -8156,18 +8540,24 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 	repaired := 0
 
 	for _, shell := range shells {
-		folderNumber := deriveCanonicalOpportunityFolderFromOfferNumber(shell.OfferNumber)
-		if folderNumber == "" {
-			skipReasons = append(skipReasons, fmt.Sprintf("%s:no_folder_match", shell.OfferNumber))
-			continue
-		}
-
 		var opportunity Opportunity
-		if err := a.db.
-			Where("deleted_at IS NULL AND (source = ? OR source LIKE ?) AND folder_number = ? AND stage = ?", "onedrive_import", "%_onedrive", folderNumber, "Won").
-			First(&opportunity).Error; err != nil {
-			if err != gorm.ErrRecordNotFound {
-				return nil, fmt.Errorf("failed to load opportunity for offer %s: %w", shell.OfferNumber, err)
+		opportunityErr := db.
+			Where("deleted_at IS NULL AND offer_id = ?", shell.ID).
+			Order("CASE WHEN LOWER(COALESCE(stage, '')) = 'won' THEN 0 ELSE 1 END").
+			First(&opportunity).Error
+		if opportunityErr == gorm.ErrRecordNotFound {
+			folderNumber := deriveCanonicalOpportunityFolderFromOfferNumber(shell.OfferNumber)
+			if folderNumber == "" {
+				skipReasons = append(skipReasons, fmt.Sprintf("%s:no_opportunity_link", shell.OfferNumber))
+				continue
+			}
+			opportunityErr = db.
+				Where("deleted_at IS NULL AND (source = ? OR source LIKE ?) AND folder_number = ? AND stage = ?", "onedrive_import", "%_onedrive", folderNumber, "Won").
+				First(&opportunity).Error
+		}
+		if opportunityErr != nil {
+			if opportunityErr != gorm.ErrRecordNotFound {
+				return nil, fmt.Errorf("failed to load opportunity for offer %s: %w", shell.OfferNumber, opportunityErr)
 			}
 			skipReasons = append(skipReasons, fmt.Sprintf("%s:no_verified_opportunity", shell.OfferNumber))
 			continue
@@ -8175,9 +8565,9 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 
 		items := parseOpportunityProductDetails(opportunity.ProductDetails)
 		if len(items) == 0 {
-			fallbackTotal := opportunity.RevenueBHD
+			fallbackTotal := commercialNetFromGross(opportunity.RevenueBHD, shell.VatRate)
 			if fallbackTotal <= 0 {
-				fallbackTotal = shell.TotalValueBHD
+				fallbackTotal = commercialNetFromGross(shell.TotalValueBHD, shell.VatRate)
 			}
 			if fallbackTotal <= 0 {
 				skipReasons = append(skipReasons, fmt.Sprintf("%s:no_product_details", shell.OfferNumber))
@@ -8199,7 +8589,7 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 		needsRelink := previousOfferID != "" && previousOfferID != shell.ID
 		now := time.Now()
 
-		err := a.db.Transaction(func(tx *gorm.DB) error {
+		err := db.Transaction(func(tx *gorm.DB) error {
 			if err := tx.Where("offer_id = ?", shell.ID).Delete(&OfferItem{}).Error; err != nil {
 				return fmt.Errorf("failed to clear stale items for %s: %w", shell.OfferNumber, err)
 			}
@@ -8235,6 +8625,7 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 				Where("id = ?", shell.ID).
 				Updates(map[string]interface{}{
 					"total_value_bhd": opportunity.RevenueBHD,
+					"vat_rate":        shell.VatRate,
 					"updated_at":      now,
 				}).Error; err != nil {
 				return fmt.Errorf("failed to update offer total for %s: %w", shell.OfferNumber, err)
@@ -8258,12 +8649,16 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 
 		if needsRelink {
 			relinked++
-			if err := a.softDeleteOfferIfUnlinked(previousOfferID); err == nil {
+			if err := softDeleteOfferIfUnlinkedDB(db, previousOfferID); err == nil {
 				cleaned++
 			}
 		}
 		repaired++
-		repairedExamples = append(repairedExamples, fmt.Sprintf("%s→%s", shell.OfferNumber, folderNumber))
+		matchLabel := strings.TrimSpace(opportunity.FolderNumber)
+		if matchLabel == "" {
+			matchLabel = strings.TrimSpace(opportunity.ID)
+		}
+		repairedExamples = append(repairedExamples, fmt.Sprintf("%s→%s", shell.OfferNumber, matchLabel))
 	}
 
 	results["repaired"] = repaired
@@ -8273,6 +8668,185 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 	results["examples"] = repairedExamples
 	results["skips"] = skipReasons
 	return results, nil
+}
+
+func softDeleteOfferIfUnlinkedDB(db *gorm.DB, offerID string) error {
+	offerID = strings.TrimSpace(offerID)
+	if db == nil || offerID == "" {
+		return nil
+	}
+
+	var refCount int64
+	if err := db.Model(&Opportunity{}).
+		Where("offer_id = ? AND deleted_at IS NULL", offerID).
+		Count(&refCount).Error; err != nil {
+		return err
+	}
+	if refCount > 0 {
+		return nil
+	}
+
+	now := time.Now()
+	if err := db.Model(&Offer{}).
+		Where("id = ? AND deleted_at IS NULL", offerID).
+		Update("deleted_at", now).Error; err != nil {
+		return err
+	}
+	return db.Model(&OfferItem{}).
+		Where("offer_id = ? AND deleted_at IS NULL", offerID).
+		Update("deleted_at", now).Error
+}
+
+func commercialNetFromGross(gross float64, vatRate float64) float64 {
+	if gross <= 0 {
+		return 0
+	}
+	if vatRate <= 0 {
+		return roundTo3(gross)
+	}
+	return roundTo3(gross / (1 + (vatRate / 100.0)))
+}
+
+func repairOrdersWithNoItemsFromOfferItems(db *gorm.DB) (int, error) {
+	if db == nil {
+		return 0, nil
+	}
+
+	var orders []Order
+	if err := db.Raw(`
+		SELECT o.*
+		FROM orders o
+		LEFT JOIN order_items oi ON oi.order_id = o.id AND oi.deleted_at IS NULL
+		WHERE o.deleted_at IS NULL
+		  AND TRIM(COALESCE(o.offer_id, '')) != ''
+		GROUP BY o.id
+		HAVING COUNT(oi.id) = 0
+	`).Scan(&orders).Error; err != nil {
+		return 0, fmt.Errorf("failed to query empty orders for offer backfill: %w", err)
+	}
+
+	repaired := 0
+	now := time.Now()
+	for _, order := range orders {
+		var offerItems []OfferItem
+		if err := db.
+			Where("offer_id = ? AND deleted_at IS NULL", order.OfferID).
+			Order("line_number ASC, created_at ASC").
+			Find(&offerItems).Error; err != nil {
+			return repaired, fmt.Errorf("failed to load offer items for order %s: %w", order.OrderNumber, err)
+		}
+		if len(offerItems) == 0 {
+			continue
+		}
+
+		dbItems := make([]OrderItem, 0, len(offerItems))
+		computedTotal := 0.0
+		for index, item := range offerItems {
+			lineTotal := commercialLineTotal(item.Quantity, item.UnitPrice, item.TotalPrice)
+			computedTotal += lineTotal
+			dbItems = append(dbItems, OrderItem{
+				Base:                Base{ID: uuid.New().String(), CreatedAt: now, UpdatedAt: now},
+				OrderID:             order.ID,
+				LineNumber:          index + 1,
+				ProductID:           item.ProductID,
+				ProductCode:         item.ProductCode,
+				Description:         item.Description,
+				Quantity:            item.Quantity,
+				UnitPrice:           item.UnitPrice,
+				Equipment:           item.Equipment,
+				Model:               item.Model,
+				Specification:       item.Specification,
+				DetailedDescription: item.DetailedDescription,
+				Currency:            item.Currency,
+				FOB:                 item.FOB,
+				Freight:             item.Freight,
+				TotalCost:           item.TotalCost,
+				MarginPercent:       item.MarginPercent,
+				TotalPrice:          lineTotal,
+			})
+		}
+		if len(dbItems) == 0 {
+			continue
+		}
+
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(&dbItems).Error; err != nil {
+				return fmt.Errorf("failed to create order items for %s: %w", order.OrderNumber, err)
+			}
+			if computedTotal <= 0 {
+				return nil
+			}
+			return tx.Model(&Order{}).Where("id = ?", order.ID).Updates(map[string]interface{}{
+				"total_value_bhd": computedTotal,
+				"grand_total_bhd": computedTotal,
+				"updated_at":      now,
+			}).Error
+		}); err != nil {
+			return repaired, err
+		}
+		repaired++
+	}
+
+	return repaired, nil
+}
+
+func repairTerminalOfferOpportunityStages(db *gorm.DB) (int, error) {
+	if db == nil {
+		return 0, nil
+	}
+
+	type terminalStageMismatch struct {
+		OfferID          string `gorm:"column:offer_id"`
+		OfferNumber      string `gorm:"column:offer_number"`
+		OfferStage       string `gorm:"column:offer_stage"`
+		OpportunityID    string `gorm:"column:opportunity_id"`
+		OpportunityStage string `gorm:"column:opportunity_stage"`
+	}
+
+	var rows []terminalStageMismatch
+	if err := db.Raw(`
+		SELECT o.id AS offer_id,
+		       o.offer_number,
+		       o.stage AS offer_stage,
+		       opp.id AS opportunity_id,
+		       opp.stage AS opportunity_stage
+		FROM offers o
+		JOIN opportunities opp ON opp.offer_id = o.id AND opp.deleted_at IS NULL
+		WHERE o.deleted_at IS NULL
+		  AND LOWER(COALESCE(o.stage, '')) IN ('won', 'lost')
+		  AND LOWER(COALESCE(opp.stage, '')) != LOWER(COALESCE(o.stage, ''))
+	`).Scan(&rows).Error; err != nil {
+		return 0, fmt.Errorf("failed to query terminal offer/opportunity stage mismatches: %w", err)
+	}
+
+	now := time.Now()
+	repaired := 0
+	for _, row := range rows {
+		stage := canonicalOfferStage(row.OfferStage)
+		if !isTerminalOfferStage(stage) {
+			continue
+		}
+
+		var opportunity Opportunity
+		if err := db.First(&opportunity, "id = ?", row.OpportunityID).Error; err != nil {
+			return repaired, fmt.Errorf("failed to load opportunity %s for terminal stage repair: %w", row.OpportunityID, err)
+		}
+
+		updates := map[string]interface{}{
+			"stage":      stage,
+			"updated_at": now,
+		}
+		if opportunity.ClosedDate == nil {
+			updates["closed_date"] = now
+		}
+
+		if err := db.Model(&Opportunity{}).Where("id = ?", row.OpportunityID).Updates(updates).Error; err != nil {
+			return repaired, fmt.Errorf("failed to reconcile opportunity %s for offer %s: %w", row.OpportunityID, row.OfferNumber, err)
+		}
+		repaired++
+	}
+
+	return repaired, nil
 }
 
 // GetOrdersWithNoItems returns orders that have zero line items in order_items.
@@ -8340,11 +8914,11 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 		return nil, fmt.Errorf("offer not found: %v", err)
 	}
 
-	// SECURITY: Won and Lost stages are terminal - block regression (audit requirement)
-	if offer.Stage == "Won" || offer.Stage == "Lost" {
-		if data.Stage != "" && data.Stage != offer.Stage {
-			return nil, fmt.Errorf("cannot change terminal offer stage '%s' (audit requirement)", offer.Stage)
-		}
+	// SECURITY: Won and Lost stages are terminal. Commercial corrections must
+	// happen through notes/follow-ups or a new revision so order/invoice history
+	// remains traceable.
+	if isTerminalOfferStage(offer.Stage) {
+		return nil, fmt.Errorf("cannot edit terminal offer stage '%s'; create a revision for further commercial changes", offer.Stage)
 	}
 
 	// Update header fields. PH Trading offer numbers follow the folder/reference
@@ -8402,7 +8976,7 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 	if data.QuoteType != "" {
 		offer.QuoteType = data.QuoteType
 	}
-	if data.VatRate >= 0 && data.VatRate <= 100 {
+	if (data.VatRate != 0 || len(data.Items) > 0) && data.VatRate >= 0 && data.VatRate <= 100 {
 		offer.VatRate = data.VatRate
 	}
 	if strings.TrimSpace(data.Division) != "" {
@@ -8729,49 +9303,7 @@ func (a *App) MarkOfferWon(offerID string, customerPO string) (*Order, error) {
 
 		log.Printf("✅ Offer %s WON → Created Order %s (%.3f BHD, %d items, RFQID=%s)", offer.OfferNumber, orderNumber, offer.TotalValueBHD, len(newOrder.Items), newOrder.RFQID)
 
-		// Auto-create Draft Purchase Order in Operations pipeline
-		// Generate PO number inline (using tx, not a.db) to avoid nested transaction deadlock on SQLite
-		poYear := time.Now().Year()
-		var poSeq InvoiceSequence
-		if err := tx.Where("prefix = ? AND year = ?", "PO", poYear).First(&poSeq).Error; err != nil {
-			poSeq = InvoiceSequence{Prefix: "PO", Year: poYear, LastNumber: 0}
-			tx.Create(&poSeq)
-		}
-		poSeq.LastNumber++
-		tx.Model(&InvoiceSequence{}).Where("prefix = ? AND year = ?", "PO", poYear).Update("last_number", poSeq.LastNumber)
-		poNumber := fmt.Sprintf("PO-%d/%03d", poYear, poSeq.LastNumber)
-		{
-			po := &PurchaseOrder{
-				Base:             Base{ID: uuid.New().String()},
-				OrderID:          newOrder.ID,
-				PONumber:         poNumber,
-				PODate:           time.Now(),
-				ExpectedDelivery: time.Now().AddDate(0, 0, 42), // 6 weeks default
-				Currency:         "EUR",
-				ExchangeRate:     0.0,
-				SubtotalForeign:  0,
-				SubtotalBHD:      offer.TotalValueBHD,
-				TotalBHD:         offer.TotalValueBHD,
-				PaymentTerms:     "Net 30",
-				Status:           "Draft",
-			}
-			// Map order items to PO items
-			for _, oi := range newOrder.Items {
-				po.Items = append(po.Items, PurchaseOrderItem{
-					Base:        Base{ID: uuid.New().String()},
-					OrderItemID: oi.ID,
-					ProductID:   oi.ProductID,
-					ProductCode: oi.ProductCode,
-					Description: oi.Description,
-					Quantity:    oi.Quantity,
-				})
-			}
-			if err := tx.Create(po).Error; err != nil {
-				log.Printf("⚠ Failed to auto-create Draft PO for order %s: %v", orderNumber, err)
-			} else {
-				log.Printf("✅ Auto-created Draft PO %s → Operations pipeline", poNumber)
-			}
-		}
+		log.Printf("ℹ️ Supplier PO creation deferred for order %s; use CreatePOFromOrder so supplier, costing, approval, and line validation are enforced", orderNumber)
 
 		order = newOrder
 		return nil
@@ -13634,6 +14166,11 @@ func (a *App) WatchInboxForTestFile(inboxPath string) error {
 	// For now, just log that we're watching
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Setup inbox watcher", r)
+			}
+		}()
 		// Simple polling approach for setup test
 		for i := 0; i < 60; i++ { // Watch for 60 seconds
 			time.Sleep(1 * time.Second)
@@ -14563,6 +15100,15 @@ func (a *App) routeToInvoice(data map[string]interface{}, fileName string) (stri
 	return invoice.ID, nil
 }
 
+func firstPositiveFloat(values ...float64) float64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
 func (a *App) routeToPurchaseOrder(data map[string]interface{}, fileName string) (string, error) {
 	division := normalizeDivisionName(getStringField(data, "division"))
 	poNumber := getStringField(data, "po_number")
@@ -14570,74 +15116,101 @@ func (a *App) routeToPurchaseOrder(data map[string]interface{}, fileName string)
 		poNumber = fmt.Sprintf("PO-OCR-%s", time.Now().Format("20060102-150405"))
 	}
 
-	// Look up supplier
+	// Look up supplier. OCR-created POs must still use the normal PO creation path
+	// so supplier, item, threshold, and approval rules are enforced.
 	supplierName := getStringField(data, "supplier_name")
 	var supplierID string
-	if supplierName != "" {
+	if suppliedID := strings.TrimSpace(getStringField(data, "supplier_id")); suppliedID != "" {
 		var supplier SupplierMaster
-		if err := a.db.Where("business_name LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(supplierName)+"%").First(&supplier).Error; err == nil {
+		if err := a.db.First(&supplier, "id = ?", suppliedID).Error; err == nil {
 			supplierID = supplier.ID
+			supplierName = supplier.SupplierName
 		}
+	} else if supplierName != "" {
+		var supplier SupplierMaster
+		like := "%" + escapeLikeWildcards(supplierName) + "%"
+		if err := a.db.Where("supplier_name LIKE ? ESCAPE '\\\\' OR supplier_code LIKE ? ESCAPE '\\\\'", like, like).First(&supplier).Error; err == nil {
+			supplierID = supplier.ID
+			supplierName = supplier.SupplierName
+		}
+	}
+	if strings.TrimSpace(supplierID) == "" {
+		return "", newError("SUPPLIER_REQUIRED", "Supplier is required before creating a purchase order from OCR", fmt.Sprintf("file=%s supplier=%s", fileName, supplierName))
 	}
 
 	poDate := parseDate(getStringField(data, "invoice_date"))
 	if poDate.IsZero() {
 		poDate = time.Now()
 	}
+	expectedDelivery := parseDate(firstNonEmptyString(getStringField(data, "expected_delivery"), getStringField(data, "delivery_date")))
+	if expectedDelivery.IsZero() {
+		expectedDelivery = poDate.AddDate(0, 0, 30)
+	}
 
-	total := getFloatField(data, "total")
 	currency := getStringField(data, "currency")
 	if currency == "" {
 		currency = "BHD"
 	}
+	exchangeRate := getFloatField(data, "exchange_rate")
+	paymentTerms := firstNonEmptyString(getStringField(data, "payment_terms"), "Net 30")
 
-	po := &PurchaseOrder{
-		PONumber:     poNumber,
-		PODate:       poDate,
-		SupplierID:   supplierID,
-		Currency:     currency,
-		SubtotalBHD:  total - getFloatField(data, "vat"),
-		VATAmount:    getFloatField(data, "vat"),
-		TotalBHD:     total,
-		TotalForeign: total,
-		Status:       "Draft",
-		PaymentTerms: "Net 30",
-		Division:     division,
+	lineItems, _ := data["line_items"].([]interface{})
+	items := make([]PurchaseOrderItem, 0, len(lineItems))
+	for i, item := range lineItems {
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		description := strings.TrimSpace(getStringField(itemMap, "description"))
+		quantity := getFloatField(itemMap, "quantity")
+		unitPrice := firstPositiveFloat(
+			getFloatField(itemMap, "unit_price"),
+			getFloatField(itemMap, "unit_price_foreign"),
+			getFloatField(itemMap, "price"),
+		)
+		totalPrice := firstPositiveFloat(
+			getFloatField(itemMap, "total_price"),
+			getFloatField(itemMap, "total"),
+			getFloatField(itemMap, "amount"),
+		)
+		if quantity <= 0 && totalPrice > 0 {
+			quantity = 1
+		}
+		if unitPrice <= 0 && totalPrice > 0 && quantity > 0 {
+			unitPrice = totalPrice / quantity
+		}
+		if description == "" {
+			description = fmt.Sprintf("OCR line item %d", i+1)
+		}
+		items = append(items, PurchaseOrderItem{
+			Description:      description,
+			Quantity:         quantity,
+			UnitPriceForeign: unitPrice,
+		})
+	}
+	if len(items) == 0 {
+		return "", newError("ITEMS_REQUIRED", "At least one valid line item is required before creating a purchase order from OCR", fileName)
 	}
 
-	if err := a.db.Create(po).Error; err != nil {
+	po := PurchaseOrder{
+		PONumber:         poNumber,
+		PODate:           poDate,
+		ExpectedDelivery: expectedDelivery,
+		SupplierID:       supplierID,
+		Currency:         currency,
+		ExchangeRate:     exchangeRate,
+		PaymentTerms:     paymentTerms,
+		Division:         division,
+		Items:            items,
+	}
+
+	created, err := a.CreatePurchaseOrder(po)
+	if err != nil {
 		return "", err
 	}
 
-	// Save line items if present
-	if lineItems, ok := data["line_items"]; ok && lineItems != nil {
-		if items, ok := lineItems.([]interface{}); ok && len(items) > 0 {
-			for i, item := range items {
-				if itemMap, ok := item.(map[string]interface{}); ok {
-					poItem := PurchaseOrderItem{
-						PurchaseOrderID:  po.ID,
-						Description:      getStringField(itemMap, "description"),
-						Quantity:         getFloatField(itemMap, "quantity"),
-						UnitPriceBHD:     getFloatField(itemMap, "unit_price"),
-						UnitPriceForeign: getFloatField(itemMap, "unit_price"),
-						TotalBHD:         getFloatField(itemMap, "total_price"),
-						TotalForeign:     getFloatField(itemMap, "total_price"),
-					}
-					if poItem.TotalBHD == 0 && poItem.Quantity > 0 && poItem.UnitPriceBHD > 0 {
-						poItem.TotalBHD = poItem.Quantity * poItem.UnitPriceBHD
-						poItem.TotalForeign = poItem.TotalBHD
-					}
-					if err := a.db.Create(&poItem).Error; err != nil {
-						log.Printf("⚠️ Failed to save PO item %d: %v", i+1, err)
-					}
-				}
-			}
-			log.Printf("📦 Saved %d line items for PO %s", len(items), po.ID)
-		}
-	}
-
-	log.Printf("📦 PurchaseOrder created from OCR: ID=%s, PO=%s, Total=%.3f", po.ID, poNumber, total)
-	return po.ID, nil
+	log.Printf("📦 PurchaseOrder created from OCR: ID=%s, PO=%s, Total=%.3f", created.ID, created.PONumber, created.TotalBHD)
+	return created.ID, nil
 }
 
 func (a *App) routeToSupplierInvoice(data map[string]interface{}, fileName string, ocrDocID string, ocrConfidence float64) (string, error) {
@@ -15507,6 +16080,11 @@ func (a *App) ProcessOffersBatch(offersFolder string) (*BatchOfferResult, error)
 
 	// Start goroutine to emit progress events to frontend via Wails runtime
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Batch offer progress emitter", r)
+			}
+		}()
 		for progress := range progressChan {
 			errStr := ""
 			if progress.Error != nil {
@@ -17560,6 +18138,11 @@ func (a *App) logAudit(userID *string, action, resource string, resourceID *stri
 
 	// Use background context to ensure log is written even if request cancels
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Audit log writer", r)
+			}
+		}()
 		a.db.Create(&logEntry)
 	}()
 }
@@ -18152,8 +18735,8 @@ func (a *App) CreateOfferDraftFromButler(req ButlerOfferDraftRequest) (*Offer, e
 	}
 
 	vatRate := req.VatRate
-	if vatRate == 0 {
-		vatRate = 10
+	if vatRate < 0 || vatRate > 100 {
+		return nil, fmt.Errorf("VAT rate must be between 0%% and 100%%, got %.1f%%", vatRate)
 	}
 
 	exportData := CostingExportData{
@@ -19055,18 +19638,9 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 	outputDir := a.getExportDir("customer", data.CustomerName, "RFQ", time.Now().Year())
 	outputPath := filepath.Join(outputDir, xlsxFileName)
 
-	templatePath := findCostingTemplatePath(paths.ProjectRoot)
-	if templatePath == "" {
-		log.Printf("⚠️ Costing template not found; generating standalone workbook: %s", outputPath)
-		if err := writeStandaloneCostingWorkbook(data, outputPath); err != nil {
-			return "", err
-		}
-		return outputPath, nil
-	}
-
-	workbook, err := excelize.OpenFile(templatePath)
+	workbook, templateSource, err := openCostingTemplateWorkbook(paths.ProjectRoot)
 	if err != nil {
-		return "", fmt.Errorf("failed to open costing template: %v", err)
+		return "", fmt.Errorf("failed to open PH costing template: %v", err)
 	}
 	defer workbook.Close()
 
@@ -19223,12 +19797,15 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 	if err := appendDetailedCostingWorkbookSheet(workbook, data); err != nil {
 		return "", err
 	}
+	if sheetIndex, err := workbook.GetSheetIndex(costingSheet); err == nil && sheetIndex >= 0 {
+		workbook.SetActiveSheet(sheetIndex)
+	}
 
 	if err := workbook.SaveAs(outputPath); err != nil {
 		return "", fmt.Errorf("failed to write XLSX file: %v", err)
 	}
 
-	log.Printf("✅ Generated Excel costing sheet from template: %s", outputPath)
+	log.Printf("✅ Generated Excel costing sheet from PH template (%s): %s", templateSource, outputPath)
 	return outputPath, nil
 }
 
@@ -19238,11 +19815,9 @@ func appendDetailedCostingWorkbookSheet(workbook *excelize.File, data CostingExp
 		_ = workbook.DeleteSheet(sheet)
 	}
 
-	index, err := workbook.NewSheet(sheet)
-	if err != nil {
+	if _, err := workbook.NewSheet(sheet); err != nil {
 		return fmt.Errorf("failed to create detailed costing sheet: %v", err)
 	}
-	workbook.SetActiveSheet(index)
 
 	titleStyle, _ := workbook.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 16, Color: "1D1D1F"},

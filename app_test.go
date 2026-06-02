@@ -176,6 +176,58 @@ func TestActivateLicenseRebindsRahulAdminKeyWhenMachineHashChanges(t *testing.T)
 	require.Equal(t, result.DeviceHash, persisted.DeviceHash)
 }
 
+func TestValidateLicenseMigratesSingleActiveLicenseWhenMachineHashChanges(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&LicenseKey{}).Error)
+
+	staleActivatedAt := time.Now().Add(-time.Hour)
+	require.NoError(t, app.db.Create(&LicenseKey{
+		Key:         "PH-ADM-STABLE",
+		Role:        "admin",
+		DisplayName: "Admin Test",
+		Activated:   true,
+		DeviceHash:  "old-network-derived-hash",
+		ActivatedAt: &staleActivatedAt,
+	}).Error)
+
+	currentHash := app.getDeviceHash()
+	result, err := app.ValidateLicense()
+	require.NoError(t, err)
+	require.True(t, result.Valid)
+	require.Equal(t, "PH-ADM-STABLE", result.Key)
+	require.Equal(t, "Admin Test", result.DisplayName)
+
+	var persisted LicenseKey
+	require.NoError(t, app.db.Where("key = ?", "PH-ADM-STABLE").First(&persisted).Error)
+	require.Equal(t, currentHash, persisted.DeviceHash)
+}
+
+func TestActivateLicenseRebindsPresentedKeyWhenMachineHashChanges(t *testing.T) {
+	resetLicenseAttemptLimiterForTest(t)
+	app := setupTestApp(t)
+	require.NoError(t, app.db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&LicenseKey{}).Error)
+
+	staleActivatedAt := time.Now().Add(-time.Hour)
+	require.NoError(t, app.db.Create(&LicenseKey{
+		Key:         "PH-MGR-STABLE",
+		Role:        "manager",
+		DisplayName: "Manager Test",
+		Activated:   true,
+		DeviceHash:  "old-network-derived-hash",
+		ActivatedAt: &staleActivatedAt,
+	}).Error)
+
+	result, err := app.ActivateLicense("PH-MGR-STABLE")
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, "manager", result.Role)
+	require.Equal(t, "Manager Test", result.DisplayName)
+
+	var persisted LicenseKey
+	require.NoError(t, app.db.Where("key = ?", "PH-MGR-STABLE").First(&persisted).Error)
+	require.Equal(t, result.DeviceHash, persisted.DeviceHash)
+}
+
 func alignTestAppWithCurrentWorkflow(t *testing.T, app *App) {
 	t.Helper()
 

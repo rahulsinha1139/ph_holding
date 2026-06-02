@@ -394,25 +394,25 @@
   {:else}
     <!-- KPIs -->
     <div class="kpi-grid">
-      <Card variant="elevated">
+      <Card variant="elevated" padding="sm">
         <div class="kpi">
           <span class="kpi-label">FX Exposure</span>
           <span class="kpi-value primary">{formatBHD(totalExposure)} BHD</span>
         </div>
       </Card>
-      <Card variant="elevated">
+      <Card variant="elevated" padding="sm">
         <div class="kpi">
           <span class="kpi-label">YTD Gain</span>
           <span class="kpi-value success">+{formatBHD(ytdGain)}</span>
         </div>
       </Card>
-      <Card variant="elevated">
+      <Card variant="elevated" padding="sm">
         <div class="kpi">
           <span class="kpi-label">YTD Loss</span>
           <span class="kpi-value danger-text">{formatBHD(ytdLoss)}</span>
         </div>
       </Card>
-      <Card variant="elevated">
+      <Card variant="elevated" padding="sm">
         <div class="kpi">
           <span class="kpi-label">Net (Unposted)</span>
           <span class="kpi-value" class:success={netGainLoss >= 0} class:danger-text={netGainLoss < 0}>
@@ -457,6 +457,7 @@
         data={exposureReport}
         columns={exposureColumns}
         emptyMessage="No foreign currency exposure"
+        compact={true}
       />
     {:else if activeTab === 'revaluations'}
       <div class="reval-actions">
@@ -469,6 +470,7 @@
         columns={revalColumns}
         emptyMessage="No revaluations for this account"
         onRowClick={(row) => !row.is_posted && handlePost(row)}
+        compact={true}
       />
     {/if}
   {/if}
@@ -504,41 +506,37 @@
 </Modal>
 
 <style>
-  .embedded-container {
-    padding: var(--space-4);
-  }
-
   .loading-container {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: var(--space-8);
-    gap: var(--space-4);
+    padding: 32px;
+    gap: 14px;
   }
 
   .kpi-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: var(--space-4);
-    margin-bottom: var(--space-6);
+    gap: 10px;
+    margin-bottom: 12px;
   }
 
   .kpi {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: 4px;
   }
 
   .kpi-label {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
 
   .kpi-value {
-    font-size: 24px;
+    font-size: 18px;
     font-weight: 600;
     font-family: var(--font-mono);
   }
@@ -551,31 +549,31 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: var(--space-4);
-    padding: var(--space-3);
+    margin-bottom: 10px;
+    padding: 8px;
     background: var(--surface-elevated);
     border-radius: var(--radius-md);
     flex-wrap: wrap;
-    gap: var(--space-3);
+    gap: 8px;
   }
 
   .toolbar .left,
   .toolbar .right {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: 8px;
   }
 
   .tabs {
     display: flex;
-    gap: var(--space-1);
+    gap: 4px;
   }
 
   .tabs button {
-    padding: var(--space-2) var(--space-3);
+    padding: 7px 10px;
     border: none;
     background: transparent;
-    font-size: 13px;
+    font-size: 12.5px;
     color: var(--text-secondary);
     cursor: pointer;
     border-radius: var(--radius-sm);
@@ -593,22 +591,22 @@
 
   .account-select,
   .form-select {
-    padding: var(--space-2) var(--space-3);
+    padding: 7px 10px;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     background: var(--surface-default);
-    font-size: 14px;
+    font-size: 13px;
     min-width: 200px;
   }
 
   .reval-actions {
-    margin-bottom: var(--space-3);
+    margin-bottom: 8px;
   }
 
   .form-grid {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: 12px;
   }
 
   @media (max-width: 900px) {
