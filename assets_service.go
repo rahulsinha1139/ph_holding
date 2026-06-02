@@ -235,7 +235,10 @@ func (a *App) ensureDefaultLetterheadAsset(assetName, letterheadFile, descriptio
 	// Check various locations - GetApplicationPaths may return nil if no license is activated
 	paths := a.getAppPaths()
 	if paths != nil {
-		candidatePaths = append(candidatePaths, filepath.Join(paths.ProjectRoot, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile))
+		candidatePaths = append(candidatePaths,
+			filepath.Join(paths.ProjectRoot, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile),
+			filepath.Join(paths.ProjectRoot, "deploy_package", "data", letterheadFile),
+		)
 	}
 
 	if exePath, err := os.Executable(); err == nil {
@@ -249,7 +252,10 @@ func (a *App) ensureDefaultLetterheadAsset(assetName, letterheadFile, descriptio
 	}
 
 	if cwd, err := os.Getwd(); err == nil {
-		candidatePaths = append(candidatePaths, filepath.Join(cwd, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile))
+		candidatePaths = append(candidatePaths,
+			filepath.Join(cwd, "CRITICAL_PH_CONTEXT_SSOT", letterheadFile),
+			filepath.Join(cwd, "deploy_package", "data", letterheadFile),
+		)
 	}
 
 	// Find and upload

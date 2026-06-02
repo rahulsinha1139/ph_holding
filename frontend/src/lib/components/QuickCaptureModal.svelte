@@ -2,8 +2,6 @@
     import { createEventDispatcher } from "svelte";
     import { fade, scale } from "svelte/transition";
     import { toast } from "$lib/stores/toasts";
-    import WabiSpinner from "$lib/components/ui/WabiSpinner.svelte";
-    import { formatNumber } from "$lib/utils/formatters";
     import { AnalyzeDocumentWithButler, CheckDuplicateOpportunity, CheckDuplicateRFQ, GetActiveBankAccounts, ListCustomers, ListSuppliers } from "../../../wailsjs/go/main/App";
 
     export let show = false;
@@ -19,6 +17,7 @@
 
     // Data initialization guard - prevents field reset on paste/edit
     let isDataInitialized = false;
+    let detectedTypeSourceKey = "";
 
     // Dirty state tracking - prevents accidental data loss on outside click
     let isDirty = false;
@@ -27,7 +26,7 @@
     // Customer/Supplier dropdown state - uses Wails-generated types (id is string from GORM)
     let customers: Array<{ id: string; customer_id: string; business_name: string; customer_type: string }> = [];
     let suppliers: Array<{ id: string; supplier_code: string; supplier_name: string }> = [];
-    let bankAccounts: Array<{ id: string; division?: string; bank_name: string; account_name?: string; account_number: string; iban?: string; currency: string }> = [];
+    let bankAccounts: Array<{ id: string; division?: string; bank_name: string; account_name?: string; account_number: string; iban?: string; currency: string; is_active?: boolean }> = [];
     let loadingEntities = false;
     let customerSearchTerm = "";
     let supplierSearchTerm = "";
@@ -45,6 +44,7 @@
     $: filteredSuppliers = supplierSearchTerm.length > 0
         ? suppliers.filter(s => s.supplier_name?.toLowerCase().includes(supplierSearchTerm.toLowerCase()))
         : suppliers.slice(0, 50);
+    $: filteredBankAccounts = bankAccounts.filter((account) => (account.division || "PH Trading") === editableData.division);
 
     // Editable document data (populated from OCR + Butler)
     let editableData = {
@@ -98,11 +98,15 @@
         loadingBankAccounts = true;
         try {
             const bankResult = await GetActiveBankAccounts();
-            bankAccounts = (bankResult || []).sort((a, b) => `${a.bank_name || ''}${a.account_number || ''}`.localeCompare(`${b.bank_name || ''}${b.account_number || ''}`));
+            bankAccounts = (bankResult || []).sort((a, b) => {
+                const left = `${a.bank_name || ""}${a.account_number || ""}`;
+                const right = `${b.bank_name || ""}${b.account_number || ""}`;
+                return left.localeCompare(right);
+            });
             syncDetectedBankAccountSelection();
         } catch (err) {
             bankAccounts = [];
-            console.warn('Bank accounts unavailable for this user or device:', err);
+            console.warn("Bank accounts unavailable for this user or device:", err);
         } finally {
             loadingBankAccounts = false;
         }
@@ -283,6 +287,12 @@
     let butlerAutoTriggered = false;
     let hasStructuredBankTransactions = false;
     $: hasStructuredBankTransactions = selectedType === 'bank_statement' && Array.isArray(ocrResult?.extracted_data?.line_items) && ocrResult.extracted_data.line_items.length > 0;
+    $: if (show && selectedType === 'bank_statement' && bankAccounts.length > 0 && !selectedBankAccountId) {
+        syncDetectedBankAccountSelection();
+    }
+    $: if (show && selectedType === 'bank_statement' && bankAccounts.length === 0 && !loadingBankAccounts) {
+        loadBankAccounts();
+    }
     $: if (show && ocrResult?.text && !butlerInsights && !butlerAnalyzing && !butlerAutoTriggered && !hasStructuredBankTransactions) {
         butlerAutoTriggered = true;
         console.log('[Butler Auto] Trigger fired, selectedType:', selectedType, 'docType:', ocrResult?.document_type);
@@ -312,11 +322,21 @@
         return typeMap[backendType] || backendType.toLowerCase();
     }
 
-    // Auto-detect document type
-    $: if (ocrResult?.document_type && ocrResult.document_type !== "auto") {
-        selectedType = mapDocType(ocrResult.document_type);
-    } else if (ocrResult?.text) {
-        selectedType = detectDocumentType(ocrResult.text);
+    function selectDocumentType(typeID: string) {
+        selectedType = typeID;
+    }
+
+    // Auto-detect document type once per OCR payload; manual operator changes must stick.
+    $: if (ocrResult) {
+        const sourceKey = `${fileName}:${ocrResult.document_type || ""}:${(ocrResult.text || "").slice(0, 80)}`;
+        if (sourceKey !== detectedTypeSourceKey) {
+            if (ocrResult.document_type && ocrResult.document_type !== "auto") {
+                selectedType = mapDocType(ocrResult.document_type);
+            } else if (ocrResult.text) {
+                selectedType = detectDocumentType(ocrResult.text);
+            }
+            detectedTypeSourceKey = sourceKey;
+        }
     }
 
     function initializeEditableData() {
@@ -438,14 +458,14 @@
         // Initialize line items from OCR if available
         if (data.line_items && Array.isArray(data.line_items)) {
             if (isBankStatement) {
-                lineItems = data.line_items.map((item: any) => ({
+                lineItems = repairBankTransactionPolarity(data.line_items.map((item: any) => ({
                     date: item.date || item.value_date || "",
                     description: item.description || "",
                     reference: item.reference || item.ref || "",
-                    debit: parseFloat(String(item.debit ?? 0).replace(/,/g, '')) || 0,
-                    credit: parseFloat(String(item.credit ?? 0).replace(/,/g, '')) || 0,
-                    balance: parseFloat(String(item.balance ?? 0).replace(/,/g, '')) || 0
-                }));
+                    debit: parseNum(item.debit),
+                    credit: parseNum(item.credit),
+                    balance: parseNum(item.balance),
+                })));
             } else {
                 lineItems = data.line_items.map(normalizeCommercialLineItem);
             }
@@ -593,7 +613,7 @@
             'sundry credit',
             'received from',
             'inward',
-            'receipt'
+            'receipt',
         ];
         for (const hint of creditHints) {
             if (lower.includes(hint)) {
@@ -610,7 +630,7 @@
             'charge',
             'fee',
             'withdrawal',
-            'fawri to'
+            'fawri to',
         ];
         for (const hint of debitHints) {
             if (lower.includes(hint)) {
@@ -799,6 +819,7 @@
 
     function formatFieldLabel(key: string): string {
         const labels: Record<string, string> = {
+            division: "Company",
             customer_name: "Customer",
             division: "Company",
             supplier_name: "Supplier",
@@ -831,7 +852,19 @@
     }
 
     // Handle backdrop click - show confirmation if dirty
-    function handleBackdropClick() {
+    function handleBackdropClick(event: MouseEvent, onClose: () => void) {
+        if (event.target !== event.currentTarget) return;
+        onClose();
+    }
+
+    function handleBackdropKeydown(event: KeyboardEvent, onClose: () => void) {
+        if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onClose();
+        }
+    }
+
+    function requestClose() {
         if (isDirty) {
             showCloseConfirmation = true;
         } else {
@@ -864,8 +897,10 @@
         selectedSupplierId = null;
         showCustomerDropdown = false;
         showSupplierDropdown = false;
+        selectedBankAccountId = "";
         // Reset initialization flag so next modal open re-initializes
         isDataInitialized = false;
+        detectedTypeSourceKey = "";
         // Reset close confirmation state
         showCloseConfirmation = false;
         // Reset Butler auto-trigger flag
@@ -998,14 +1033,14 @@
             };
 
             const butlerItems = selectedType === 'bank_statement'
-                ? butlerInsights.extracted_items.map((item: any) => ({
+                ? repairBankTransactionPolarity(butlerInsights.extracted_items.map((item: any) => ({
                     date: toISODate(item.date || ""),
                     description: item.description || "",
                     reference: item.reference || item.ref || "",
                     debit: parseNum(item.debit),
                     credit: parseNum(item.credit),
                     balance: parseNum(item.balance),
-                }))
+                })))
                 : butlerInsights.extracted_items.map(normalizeCommercialLineItem);
 
             console.log('[Butler Merge] Mapped', butlerItems.length, 'butler items, existing lineItems:', lineItems.length);
@@ -1226,10 +1261,11 @@
     <div
         class="modal-backdrop"
         transition:fade={{ duration: 200 }}
-        on:click|self={handleBackdropClick}
-        on:keydown={(event) => handleBackdropKeydown(event, handleBackdropClick)}
         role="button"
         tabindex="0"
+        aria-label="Close document capture modal"
+        on:click={(event) => handleBackdropClick(event, requestClose)}
+        on:keydown={(event) => handleBackdropKeydown(event, requestClose)}
     >
         <div
             class="modal"
@@ -1258,21 +1294,23 @@
                     </div>
                 {:else if ocrResult}
                     <!-- Document Type Selector -->
-                    <div class="type-selector">
-                        <div class="type-label">Document Type</div>
+                    <fieldset class="type-selector">
+                        <legend class="type-label">Document Type</legend>
                         <div class="type-options">
                             {#each documentTypes as docType}
                                 <button
+                                    type="button"
                                     class="type-option"
                                     class:selected={selectedType === docType.id}
-                                    on:click={() => selectedType = docType.id}
+                                    on:pointerup={() => selectDocumentType(docType.id)}
+                                    on:click={() => selectDocumentType(docType.id)}
                                 >
                                     <span class="type-icon">{docType.icon}</span>
                                     <span class="type-name">{docType.label}</span>
                                 </button>
                             {/each}
                         </div>
-                    </div>
+                    </fieldset>
 
                     {#if butlerAnalyzing}
                         <div class="butler-status-bar">
@@ -1357,6 +1395,7 @@
                                                     <div class="autocomplete-dropdown">
                                                         {#each filteredCustomers as customer}
                                                             <button
+                                                                type="button"
                                                                 class="dropdown-item"
                                                                 class:selected={selectedCustomerId === customer.id}
                                                                 on:mousedown|preventDefault={() => selectCustomer(customer)}
@@ -1399,6 +1438,7 @@
                                                     <div class="autocomplete-dropdown">
                                                         {#each filteredSuppliers as supplier}
                                                             <button
+                                                                type="button"
                                                                 class="dropdown-item"
                                                                 class:selected={selectedSupplierId === supplier.id}
                                                                 on:mousedown|preventDefault={() => selectSupplier(supplier)}
@@ -1631,13 +1671,20 @@
     <div
         class="modal-backdrop confirmation-backdrop"
         transition:fade={{ duration: 150 }}
-        on:click|self={cancelClose}
-        on:keydown={(event) => handleBackdropKeydown(event, cancelClose)}
         role="button"
         tabindex="0"
+        aria-label="Dismiss close confirmation"
+        on:click={(event) => handleBackdropClick(event, cancelClose)}
+        on:keydown={(event) => handleBackdropKeydown(event, cancelClose)}
     >
-        <div class="confirmation-modal" transition:scale={{ duration: 150, start: 0.95 }}>
-            <h3>Unsaved Changes</h3>
+        <div
+            class="confirmation-modal"
+            transition:scale={{ duration: 150, start: 0.95 }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="close-confirmation-title"
+        >
+            <h3 id="close-confirmation-title">Unsaved Changes</h3>
             <p>You have unsaved changes. Are you sure you want to close?</p>
             <div class="confirmation-actions">
                 <button class="btn-secondary" on:click={cancelClose}>Keep Editing</button>
@@ -1652,17 +1699,25 @@
     <div
         class="modal-backdrop"
         transition:fade={{ duration: 150 }}
-        on:click|self={() => showDuplicateWarning = false}
-        on:keydown={(event) => handleBackdropKeydown(event, () => (showDuplicateWarning = false))}
         role="button"
         tabindex="0"
+        aria-label="Dismiss duplicate warning"
+        on:click={(event) => handleBackdropClick(event, () => showDuplicateWarning = false)}
+        on:keydown={(event) => handleBackdropKeydown(event, () => showDuplicateWarning = false)}
     >
-        <div class="warning-modal" transition:scale={{ duration: 150, start: 0.95 }} role="alertdialog">
+        <div
+            class="warning-modal"
+            transition:scale={{ duration: 150, start: 0.95 }}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="duplicate-warning-title"
+            aria-describedby="duplicate-warning-body"
+        >
             <div class="warning-header">
                 <span class="warning-icon">!</span>
-                <h3>Similar Document Exists</h3>
+                <h3 id="duplicate-warning-title">Similar Document Exists</h3>
             </div>
-            <div class="warning-body">
+            <div class="warning-body" id="duplicate-warning-body">
                 <p>A similar RFQ/Opportunity was found:</p>
                 <div class="existing-rfq-card">
                     <div class="rfq-detail">
@@ -1813,6 +1868,8 @@
 
     /* Type Selector */
     .type-selector {
+        border: 0;
+        padding: 0;
         margin-bottom: 16px;
     }
 
@@ -1842,6 +1899,16 @@
         border-radius: 8px;
         cursor: pointer;
         transition: all 0.2s ease;
+    }
+
+    .type-option:focus-visible,
+    .dropdown-item:focus-visible,
+    .btn-secondary:focus-visible,
+    .btn-primary:focus-visible,
+    .btn-outline:focus-visible,
+    .btn-danger:focus-visible {
+        outline: 2px solid #15803d;
+        outline-offset: 2px;
     }
 
     .type-option:hover {
@@ -1978,6 +2045,12 @@
     .form-group textarea {
         resize: vertical;
         min-height: 60px;
+    }
+
+    .field-hint {
+        margin: 2px 0 0;
+        font-size: 11px;
+        color: var(--ink-light, #666);
     }
 
     /* Autocomplete Dropdown */
@@ -2150,6 +2223,10 @@
     .items-table select:focus {
         border-color: #15803d;
         outline: none;
+    }
+
+    .items-table .number-input {
+        min-width: 90px;
     }
 
     .col-desc { width: 35%; }

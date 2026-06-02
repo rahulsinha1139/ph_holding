@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -40,9 +41,63 @@ func (a *App) AddOfferFollowUp(offerID, followUpDate, notes string) (*OfferFollo
 		log.Printf("Failed to create offer follow-up: %v", err)
 		return nil, fmt.Errorf("failed to create follow-up: %w", err)
 	}
+	a.createTaskForOfferFollowUp(followUp, offer)
 
 	log.Printf("Created follow-up for offer %s on %s", offerID, followUpDate)
 	return followUp, nil
+}
+
+func (a *App) createTaskForOfferFollowUp(followUp *OfferFollowUp, offer Offer) {
+	if a == nil || a.db == nil || followUp == nil {
+		return
+	}
+	if err := a.requirePermission("tasks:create"); err != nil {
+		log.Printf("⚠️ Offer follow-up saved without task assignment; current role cannot create tasks: %v", err)
+		return
+	}
+	if !a.db.Migrator().HasTable("task_items") {
+		log.Printf("⚠️ Offer follow-up saved without task assignment; task table is unavailable")
+		return
+	}
+	current, err := a.GetCurrentEmployeeContext()
+	if err != nil {
+		log.Printf("⚠️ Offer follow-up saved without task assignment; employee context unavailable: %v", err)
+		return
+	}
+
+	assigneeID := current.EmployeeID
+	customerID := strings.TrimSpace(offer.CustomerID)
+	var customerIDPtr *string
+	if customerID != "" {
+		customerIDPtr = &customerID
+	}
+	followUpID := followUp.ID
+	description := strings.TrimSpace(followUp.Notes)
+	if description == "" {
+		description = fmt.Sprintf("Follow up offer %s for %s", fallbackDisplay(offer.OfferNumber, offer.ID), fallbackDisplay(offer.CustomerName, "customer"))
+	}
+
+	task, err := a.CreateCollaborativeTask(TaskItem{
+		Title:              fmt.Sprintf("Follow up offer %s", fallbackDisplay(offer.OfferNumber, offer.ID)),
+		Description:        description,
+		TaskType:           "offer_follow_up",
+		LegacyFollowUpID:   &followUpID,
+		Status:             "open",
+		Priority:           "medium",
+		DueDate:            &followUp.FollowUpDate,
+		CustomerID:         customerIDPtr,
+		CreatorEmployeeID:  current.EmployeeID,
+		AssigneeEmployeeID: &assigneeID,
+	})
+	if err != nil {
+		log.Printf("⚠️ Offer follow-up saved but task creation failed: %v", err)
+		return
+	}
+
+	followUp.TaskID = task.ID
+	if err := a.db.Model(followUp).Update("task_id", task.ID).Error; err != nil {
+		log.Printf("⚠️ Failed to link offer follow-up %s to task %s: %v", followUp.ID, task.ID, err)
+	}
 }
 
 // GetOfferFollowUps returns all follow-ups for a specific offer
@@ -128,11 +183,18 @@ func (a *App) CompleteOfferFollowUp(followUpID string) error {
 	now := time.Now()
 	followUp.Status = "completed"
 	followUp.CompletedAt = &now
-	// TODO: Set CompletedBy from current user context when auth is ready
+	if current, err := a.GetCurrentEmployeeContext(); err == nil {
+		followUp.CompletedBy = fallbackDisplay(current.EmployeeName, current.EmployeeID)
+	}
 
 	if err := a.db.Save(&followUp).Error; err != nil {
 		log.Printf("Failed to complete follow-up %s: %v", followUpID, err)
 		return fmt.Errorf("failed to complete follow-up: %w", err)
+	}
+	if strings.TrimSpace(followUp.TaskID) != "" {
+		if err := a.UpdateCollaborativeTaskStatus(followUp.TaskID, "completed", "Offer follow-up completed"); err != nil {
+			log.Printf("⚠️ Failed to complete linked task %s for follow-up %s: %v", followUp.TaskID, followUp.ID, err)
+		}
 	}
 
 	log.Printf("Completed follow-up %s", followUpID)
@@ -159,6 +221,11 @@ func (a *App) CancelOfferFollowUp(followUpID string) error {
 	if err := a.db.Save(&followUp).Error; err != nil {
 		log.Printf("Failed to cancel follow-up %s: %v", followUpID, err)
 		return fmt.Errorf("failed to cancel follow-up: %w", err)
+	}
+	if strings.TrimSpace(followUp.TaskID) != "" {
+		if err := a.UpdateCollaborativeTaskStatus(followUp.TaskID, "cancelled", "Offer follow-up cancelled"); err != nil {
+			log.Printf("⚠️ Failed to cancel linked task %s for follow-up %s: %v", followUp.TaskID, followUp.ID, err)
+		}
 	}
 
 	log.Printf("Cancelled follow-up %s", followUpID)

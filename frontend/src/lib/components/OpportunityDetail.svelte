@@ -24,8 +24,7 @@
         unit_price?: number;
         total_price?: number;
         part_number?: string;
-        unit?: string;
-        currency?: string;
+        source_currency?: string;
     }
 
     type HistoryEntry = {
@@ -65,8 +64,7 @@
         "Closed (Lost)",
     ];
 
-    const pipelineStageOptions = ["Quoted", "Won", "Lost"];
-    const deprecatedPipelineStageLabels = new Set(["New", "Qualified", "Proposal", "On Hold"]);
+    const pipelineStageOptions = ["New", "Qualified", "Proposal", "Quoted", "Won", "Lost", "On Hold"];
     const managementRoles = new Set(["admin", "administrator", "manager", "management", "developer"]);
     const adminRoles = new Set(["admin", "administrator", "developer"]);
 
@@ -103,12 +101,11 @@
         : parseProductDetails(opportunity?.product_details);
     $: isPipelineOpportunity = opportunity?._source === "pipeline" || typeof opportunity?.id === "string";
     $: currentStageOptions = isPipelineOpportunity ? pipelineStageOptions : rfqStageOptions;
-    $: currentStageValue = isPipelineOpportunity && deprecatedPipelineStageLabels.has(opportunity?.stage || opportunity?.status)
-        ? "Pipeline"
-        : (opportunity?.stage || opportunity?.status || currentStageOptions[0]);
+    $: currentStageValue = opportunity?.stage || opportunity?.status || currentStageOptions[0];
     $: canViewManagementComments = managementRoles.has((currentUserRole || "").toLowerCase());
     $: canDeleteManagementComments = adminRoles.has((currentUserRole || "").toLowerCase());
     $: activePermissions = Array.isArray($permissions) ? $permissions : [];
+
     function hasPermission(permission: string, roleValue = currentUserRole, permissionValues = activePermissions): boolean {
         const role = (roleValue || "").toLowerCase();
         if (adminRoles.has(role)) return true;
@@ -215,8 +212,7 @@
                     unit_price: item.unit_price_bhd || item.unit_price || item.total_price || 0,
                     total_price: item.total_price || ((item.quantity || 1) * (item.unit_price_bhd || item.unit_price || 0)),
                     part_number: item.model || item.product_code || "",
-                    unit: normalizeLineUnit(item.unit || item.unit_of_measure || ""),
-                    currency: item.currency || "",
+                    source_currency: item.currency || "",
                     specification: item.specification || item.detailed_description || "",
                 }));
         } catch (err) {
@@ -249,6 +245,7 @@
         const merged = [...loadedComments];
         const legacyEntries = [
             opportunity?.notes || opportunity?.comment,
+            opportunity?.owner_notes,
         ]
             .map((value) => String(value || "").trim())
             .filter(Boolean);
@@ -260,7 +257,7 @@
                     id: `legacy-${merged.length}`,
                     comment: legacyComment,
                     created_by: "Legacy note",
-                    created_at: opportunity?.updated_at || opportunity?.created_at || null,
+                    created_at: opportunity?.updated_at || opportunity?.created_at || "",
                 });
             }
         }
@@ -294,6 +291,12 @@
         return isPipelineOpportunity && canDeleteManagementComments && id && !id.startsWith("legacy-");
     }
 
+    function formatQuantity(value?: number) {
+        const numeric = Number(value || 1);
+        if (!Number.isFinite(numeric)) return "1";
+        return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(3).replace(/\.?0+$/, "");
+    }
+
     async function handleDeleteComment(comment: any) {
         const commentId = String(comment?.id || "");
         if (!canDeleteComment(comment)) return;
@@ -305,7 +308,7 @@
             toast.success("Comment deleted");
         } catch (err) {
             devLog.error("Failed to delete comment:", err);
-            toast.danger(`Failed to delete comment: ${err?.message || err}`);
+            toast.danger(`Failed to delete comment: ${(err as any)?.message || err}`);
         } finally {
             deletingCommentId = "";
         }
@@ -328,9 +331,10 @@
             toast.success(`Stage updated to ${newStage}`);
         } catch (err) {
             devLog.error("Failed to update stage:", err);
-            const message = String(err?.message || err || "Failed to update stage");
-            if (message.toLowerCase().includes("conflict")) {
-                toast.warning("This opportunity changed on another device. The update was flagged for admin review.");
+            const message = String((err as any)?.message || err || "Failed to update stage");
+            if (message.toLowerCase().includes("version")) {
+                toast.warning("This opportunity was updated elsewhere. Refreshing before you try again.");
+                dispatch("updated");
             } else {
                 toast.danger("Failed to update stage");
             }
@@ -346,11 +350,15 @@
             id: String(opportunity.id),
             customer_name: opportunity.client || opportunity.customer || "",
             folder_number: opportunity.folder_number || opportunity.rfq_number || "",
+            rfq_ref: opportunity.rfq_ref || opportunity.eh_ref || "",
             title: opportunity.project || opportunity.project_name || opportunity.title || "",
         };
         sessionStorage.setItem("asymmflow.pendingCostingOpportunity", JSON.stringify(pendingPayload));
 
-        dispatch("createCosting", { opportunity, pendingPayload });
+        dispatch("createCosting", {
+            opportunity,
+            pendingPayload,
+        });
         window.dispatchEvent(new CustomEvent("navigateToScreen", {
             detail: { screen: "opportunities", tab: "costing" }
         }));
@@ -453,69 +461,6 @@
                     <strong>{row.value}</strong>
                 </div>
             {/each}
-            {#if isPipelineOpportunity}
-                <div class="info-card">
-                    <span class="mono">Edit Version</span>
-                    <strong>v{opportunity.version || 1}</strong>
-                </div>
-            {/if}
-        </section>
-
-        <section class="comments-section">
-            <div class="comments-header">
-                <div>
-                    <p class="mono">Comments</p>
-                    {#if isPipelineOpportunity}
-                        <p class="comments-hint">Shared comment thread with timestamps.</p>
-                    {/if}
-                </div>
-            </div>
-
-            {#if isPipelineOpportunity && !canViewManagementComments}
-                <p class="muted">Comments are visible to authorized roles.</p>
-            {:else}
-                <div class="comment-list">
-                    {#if comments.length === 0}
-                        <p class="muted">No comments yet.</p>
-                    {:else}
-                        {#each comments as comment}
-                            <div class="comment-item">
-                                <div class="comment-header">
-                                    <span class="comment-author">{comment.created_by || "User"}</span>
-                                    <div class="comment-meta">
-                                        <span class="comment-time">{formatDateTime(comment.created_at)}</span>
-                                        {#if canDeleteComment(comment)}
-                                            <button
-                                                class="comment-delete"
-                                                on:click={() => handleDeleteComment(comment)}
-                                                disabled={deletingCommentId === String(comment.id)}
-                                                title="Delete comment"
-                                            >
-                                                {deletingCommentId === String(comment.id) ? "Deleting..." : "Delete"}
-                                            </button>
-                                        {/if}
-                                    </div>
-                                </div>
-                                <p class="comment-text">{comment.comment || comment.content}</p>
-                            </div>
-                        {/each}
-                    {/if}
-                </div>
-
-                {#if (!isPipelineOpportunity && canEditOffers) || (isPipelineOpportunity && canViewManagementComments)}
-                    <div class="comment-input">
-                        <textarea
-                            bind:value={newComment}
-                            placeholder="Add a comment..."
-                            class="comment-textarea"
-                            rows="3"
-                        />
-                        <button class="comment-btn" on:click={handleAddComment} disabled={!newComment.trim() || addingComment}>
-                            {addingComment ? "Posting..." : "Post"}
-                        </button>
-                    </div>
-                {/if}
-            {/if}
         </section>
 
         <div class="tabs-nav">
@@ -551,9 +496,9 @@
                                         <span class="part-number">{item.part_number}</span>
                                     {/if}
                                 </span>
-                                <span class="item-col-qty">{formatQuantity(item)}</span>
-                                <span class="item-col-price">{formatLineMoney(item, item.unit_price || 0)}</span>
-                                <span class="item-col-total">{formatLineMoney(item, item.total_price || 0)}</span>
+                                <span class="item-col-qty">{formatQuantity(item.quantity)}</span>
+                                <span class="item-col-price">{formatter.format(item.unit_price || 0)}</span>
+                                <span class="item-col-total">{formatter.format(item.total_price || 0)}</span>
                             </div>
                         {/each}
                     </div>
@@ -614,6 +559,62 @@
             </section>
         {/if}
 
+        <section class="comments-section">
+            <div class="comments-header">
+                <div>
+                    <p class="mono">Comments</p>
+                    {#if isPipelineOpportunity}
+                        <p class="comments-hint">Shared management thread with timestamps.</p>
+                    {/if}
+                </div>
+            </div>
+
+            {#if isPipelineOpportunity && !canViewManagementComments}
+                <p class="muted">Management comments are visible to manager and admin roles.</p>
+            {:else}
+                <div class="comment-list">
+                    {#if comments.length === 0}
+                        <p class="muted">No comments yet.</p>
+                    {:else}
+                        {#each comments as comment}
+                            <div class="comment-item">
+                                <div class="comment-header">
+                                    <span class="comment-author">{comment.created_by || "User"}</span>
+                                    <div class="comment-meta">
+                                        <span class="comment-time">{formatDateTime(comment.created_at)}</span>
+                                        {#if canDeleteComment(comment)}
+                                            <button
+                                                class="comment-delete"
+                                                on:click={() => handleDeleteComment(comment)}
+                                                disabled={deletingCommentId === String(comment.id)}
+                                                title="Delete comment"
+                                            >
+                                                {deletingCommentId === String(comment.id) ? "Deleting..." : "Delete"}
+                                            </button>
+                                        {/if}
+                                    </div>
+                                </div>
+                                <p class="comment-text">{comment.comment || comment.content}</p>
+                            </div>
+                        {/each}
+                    {/if}
+                </div>
+
+                {#if (!isPipelineOpportunity && canEditOffers) || (isPipelineOpportunity && canViewManagementComments)}
+                    <div class="comment-input">
+                        <textarea
+                            bind:value={newComment}
+                            placeholder="Add a comment..."
+                            class="comment-textarea"
+                            rows="3"
+                        />
+                        <button class="comment-btn" on:click={handleAddComment} disabled={!newComment.trim() || addingComment}>
+                            {addingComment ? "Posting..." : "Post"}
+                        </button>
+                    </div>
+                {/if}
+            {/if}
+        </section>
     {:else}
         <p class="muted">Select an opportunity to view details.</p>
     {/if}
@@ -667,10 +668,12 @@
     }
 
     .reference-pill {
-        background: rgba(15, 23, 42, 0.08);
+        background: rgba(16, 185, 129, 0.14);
+        color: #047857;
         font-size: 0.75rem;
         text-transform: uppercase;
         letter-spacing: 0.06em;
+        font-weight: 800;
     }
 
     .stage-select,
@@ -857,27 +860,23 @@
     }
 
     .comment-meta {
-        display: flex;
+        display: inline-flex;
         align-items: center;
-        gap: 0.65rem;
-        flex-wrap: wrap;
-        justify-content: flex-end;
+        gap: 0.5rem;
     }
 
     .comment-delete {
-        border: 1px solid rgba(220, 38, 38, 0.18);
-        border-radius: 999px;
-        background: rgba(220, 38, 38, 0.08);
+        border: none;
+        background: transparent;
         color: #b91c1c;
         cursor: pointer;
-        font-size: 0.72rem;
         font-weight: 700;
-        padding: 0.32rem 0.6rem;
+        padding: 0.1rem 0.2rem;
     }
 
     .comment-delete:disabled {
+        color: var(--text-muted);
         cursor: wait;
-        opacity: 0.65;
     }
 
     .comment-text {

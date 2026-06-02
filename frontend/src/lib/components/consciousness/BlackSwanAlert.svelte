@@ -58,9 +58,9 @@
             <span class="severity-label">{getSeverityLabel(severity)}</span>
             <span class="alert-message">{message}</span>
         </div>
-        <button class="expand-btn" aria-label={expanded ? 'Collapse' : 'Expand'} tabindex="-1">
+        <span class="expand-btn" aria-hidden="true">
             {expanded ? '▼' : '▶'}
-        </button>
+        </span>
     </div>
 
     {#if expanded}

@@ -114,7 +114,7 @@ func (a *App) generatePDFReport(category string, data ReportData, dateRange stru
 
 	// Title
 	pdf.SetFont("Arial", "B", 18)
-	pdf.Cell(0, 10, fmt.Sprintf("PH Holdings - %s Report", titleCase(category)))
+	pdf.Cell(0, 10, fmt.Sprintf("PH Trading WLL - %s Report", titleCase(category)))
 	pdf.Ln(12)
 
 	// Metadata
@@ -356,7 +356,7 @@ func (a *App) generateExcelReport(category string, data ReportData, dateRange st
 	f.SetActiveSheet(index)
 
 	// Title
-	f.SetCellValue(sheetName, "A1", fmt.Sprintf("PH Holdings - %s Report", titleCase(category)))
+	f.SetCellValue(sheetName, "A1", fmt.Sprintf("PH Trading WLL - %s Report", titleCase(category)))
 	titleStyle, _ := f.NewStyle(&excelize.Style{
 		Font: &excelize.Font{Bold: true, Size: 16},
 	})
@@ -610,7 +610,7 @@ func getPercentStyle(f *excelize.File) int {
 
 func getCurrencyStyle(f *excelize.File) int {
 	style, _ := f.NewStyle(&excelize.Style{
-		NumFmt: 164, // Custom format
+		NumFmt:       164, // Custom format
 		CustomNumFmt: stringPtr("#,##0.00"),
 	})
 	return style

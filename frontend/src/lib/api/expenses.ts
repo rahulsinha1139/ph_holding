@@ -9,6 +9,10 @@ import {
   DeleteExpenseVendor,
   DeleteRecurringExpense,
   CreateRecurringExpense,
+  DeleteExpenseCategory,
+  DeleteExpenseEntry,
+  DeleteExpenseVendor,
+  DeleteRecurringExpense,
   GenerateRecurringExpenses,
   ListBankExpenseCandidates,
   ListExpenseCategories,
@@ -27,6 +31,7 @@ import { buildWailsInput, normalizeWailsDateTime } from "$lib/utils/wailsInterop
 const isDesktop = () => Boolean((window as any)?.go?.main?.App);
 
 function toExpenseEntry(entry: main.ExpenseEntry): ExpenseEntry {
+  const raw = entry as any;
   return {
     id: entry.id,
     entry_number: entry.entry_number,
@@ -45,6 +50,9 @@ function toExpenseEntry(entry: main.ExpenseEntry): ExpenseEntry {
     customer_id: entry.customer_id,
     opportunity_id: entry.opportunity_id,
     order_id: entry.order_id,
+    inventory_linked: Boolean(raw.inventory_linked),
+    inventory_item_id: raw.inventory_item_id,
+    inventory_reference: raw.inventory_reference,
     cost_center: entry.cost_center,
     currency: entry.currency,
     amount: entry.amount,
@@ -143,6 +151,9 @@ export interface ExpenseEntry {
   customer_id?: string;
   opportunity_id?: string;
   order_id?: string;
+  inventory_linked?: boolean;
+  inventory_item_id?: string;
+  inventory_reference?: string;
   cost_center?: string;
   currency?: string;
   amount: number;

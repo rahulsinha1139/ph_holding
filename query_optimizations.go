@@ -322,6 +322,9 @@ func (a *App) GetOrderWithItems(orderID string) (*Order, error) {
 
 // GetInvoiceWithItems returns invoice with items preloaded
 func (a *App) GetInvoiceWithItems(invoiceID string) (*Invoice, error) {
+	if err := a.requirePermission("invoices:view"); err != nil {
+		return nil, err
+	}
 	optimizer := NewQueryOptimizer(a.db, a.cache)
 	return optimizer.GetInvoiceWithItems(invoiceID)
 }

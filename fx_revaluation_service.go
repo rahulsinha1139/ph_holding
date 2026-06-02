@@ -10,6 +10,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -474,19 +475,50 @@ func (a *App) GetFXExposureReport() ([]FXExposureReport, float64, error) {
 		return nil, 0, fmt.Errorf("database not initialized")
 	}
 
-	// Get all foreign currency accounts grouped by currency
 	type currencyGroup struct {
 		Currency     string
 		TotalBalance float64
 		AccountCount int
 	}
 
-	var groups []currencyGroup
-	a.db.Model(&CompanyBankAccount{}).
-		Select("currency, SUM(balance) as total_balance, COUNT(*) as account_count").
-		Where("currency != ?", "BHD").
-		Group("currency").
-		Scan(&groups)
+	var accounts []CompanyBankAccount
+	if err := a.db.Where("UPPER(currency) != ? AND is_active = ?", "BHD", true).
+		Order("currency ASC, display_order ASC, bank_name ASC").
+		Find(&accounts).Error; err != nil {
+		return nil, 0, fmt.Errorf("failed to load foreign currency accounts: %w", err)
+	}
+
+	statuses := []string{"Imported", "InProgress", "In Progress", "Reconciled", "Verified"}
+	groupMap := make(map[string]*currencyGroup)
+	for _, account := range accounts {
+		currency := strings.ToUpper(strings.TrimSpace(account.Currency))
+		if currency == "" || currency == "BHD" {
+			continue
+		}
+		group := groupMap[currency]
+		if group == nil {
+			group = &currencyGroup{Currency: currency}
+			groupMap[currency] = group
+		}
+		group.AccountCount++
+
+		var latest BankStatement
+		err := a.db.Where("bank_account_id = ? AND status IN ?", account.ID, statuses).
+			Order("period_end DESC").
+			First(&latest).Error
+		if err != nil {
+			if err != gorm.ErrRecordNotFound {
+				return nil, 0, fmt.Errorf("failed to load latest statement for %s: %w", account.AccountNumber, err)
+			}
+			continue
+		}
+		group.TotalBalance += latest.ClosingBalance
+	}
+
+	groups := make([]currencyGroup, 0, len(groupMap))
+	for _, group := range groupMap {
+		groups = append(groups, *group)
+	}
 
 	var reports []FXExposureReport
 	var totalBHDExposure float64

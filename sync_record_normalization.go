@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func normalizeRecordForRemoteSync(record map[string]interface{}) map[string]interface{} {
@@ -112,27 +113,38 @@ func syncUpsertRecordByIDOrNaturalKey(db *gorm.DB, table string, record map[stri
 	if db == nil {
 		return nil
 	}
-	id, hasID := record["id"]
-	updateRecord := syncRecordWithoutID(record)
-	if hasID {
-		result := db.Table(table).Where("id = ?", id).Updates(updateRecord)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected > 0 {
-			return nil
-		}
+	if len(record) == 0 {
+		return nil
 	}
-	if column, value, ok := syncNaturalKeyValue(table, record, columnTypes); ok {
-		result := db.Table(table).Where(column+" = ?", value).Updates(updateRecord)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected > 0 {
-			return nil
-		}
+	if id, hasID := record["id"]; hasID && syncValuePresent(id) {
+		return syncUpsertRecordByConflict(db, table, record, []clause.Column{{Name: "id"}})
+	}
+
+	if column, _, ok := syncNaturalKeyValue(table, record, columnTypes); ok {
+		return syncUpsertRecordByConflict(db, table, record, []clause.Column{{Name: column}})
 	}
 	return db.Table(table).Create(record).Error
+}
+
+func syncUpsertRecordByConflict(db *gorm.DB, table string, record map[string]interface{}, conflictColumns []clause.Column) error {
+	updateColumns := syncUpsertColumns([]map[string]interface{}{record})
+	onConflict := clause.OnConflict{Columns: conflictColumns}
+	if len(updateColumns) == 0 {
+		onConflict.DoNothing = true
+	} else {
+		onConflict.DoUpdates = clause.AssignmentColumns(updateColumns)
+	}
+	return db.Table(table).Clauses(onConflict).Create(record).Error
+}
+
+func syncValuePresent(value interface{}) bool {
+	if value == nil {
+		return false
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text) != ""
+	}
+	return true
 }
 
 func syncRecordWithoutID(record map[string]interface{}) map[string]interface{} {

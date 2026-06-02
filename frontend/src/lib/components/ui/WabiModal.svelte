@@ -9,19 +9,21 @@
   export let showClose: boolean = true;
 
   const dispatch = createEventDispatcher();
+  const modalTitleId = `wabi-modal-title-${Math.random().toString(36).slice(2, 8)}`;
 
   function close() {
     open = false;
     dispatch('close');
   }
 
-  function handleOverlayClick(e: MouseEvent) {
-    if (closeOnOverlay && e.target === e.currentTarget) {
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && open) {
       close();
     }
   }
 
-  function handleKeydown(e: KeyboardEvent) {
+  function handleModalKeydown(e: KeyboardEvent) {
+    e.stopPropagation();
     if (e.key === 'Escape' && open) {
       close();
     }
@@ -38,28 +40,35 @@
 <svelte:window on:keydown={handleKeydown} />
 
 {#if open}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
-  <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
   <div
     class="modal-overlay"
-    on:click={handleOverlayClick}
     in:fade={{ duration: 200 }}
     out:fade={{ duration: 150 }}
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="modal-title"
   >
-    <div 
+    <button
+      type="button"
+      class="modal-backdrop"
+      aria-label="Close modal"
+      tabindex="-1"
+      disabled={!closeOnOverlay}
+      on:click={close}
+    ></button>
+    <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+    <div
       class="modal-container"
       style="max-width: {sizes[size]}"
       in:fade={{ duration: 150 }}
       out:fade={{ duration: 100 }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={title ? modalTitleId : undefined}
+      aria-label={!title ? 'Modal dialog' : undefined}
+      on:keydown={handleModalKeydown}
     >
       {#if title || showClose}
         <header class="modal-header">
           {#if title}
-            <h2 id="modal-title" class="modal-title">{title}</h2>
+            <h2 id={modalTitleId} class="modal-title">{title}</h2>
           {/if}
           {#if showClose}
             <button class="modal-close" on:click={close} aria-label="Close modal">
@@ -86,21 +95,38 @@
   .modal-overlay {
     position: fixed;
     inset: 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: calc(var(--header-height, 56px) + 24px) clamp(14px, 2vw, 24px) 24px;
+    overflow-y: auto;
+    z-index: 10000;
+  }
+
+  .modal-backdrop {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    padding: 0;
+    margin: 0;
     background: rgba(28, 28, 28, 0.4);
     backdrop-filter: blur(4px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: clamp(14px, 2vw, 24px);
-    z-index: 1000;
+    cursor: pointer;
+  }
+
+  .modal-backdrop:disabled {
+    cursor: default;
   }
 
   .modal-container {
+    position: relative;
+    z-index: 1;
     background: var(--surface, #ffffff);
     border: 1px solid rgba(0, 0, 0, 0.08);
     border-radius: 18px;
     width: 100%;
-    max-height: calc(100vh - 48px);
+    max-height: calc(100vh - var(--header-height, 56px) - 48px);
+    margin: 0 auto;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -174,5 +200,16 @@
   :global(.modal-container .card:hover) {
     transform: none !important;
     box-shadow: var(--shadow-sm) !important;
+  }
+
+  @media (max-width: 720px) {
+    .modal-overlay {
+      align-items: center;
+      padding: 16px;
+    }
+
+    .modal-container {
+      max-height: calc(100vh - 32px);
+    }
   }
 </style>

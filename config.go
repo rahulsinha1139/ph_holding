@@ -40,6 +40,28 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+const (
+	deploymentDatabaseReseedSettingKey = "deployment_database_reseed_stamp"
+	appDataDirName                     = "AsymmFlow-PH-Trading"
+	appDatabaseFileName                = "ph_holdings.db"
+	appMacBundleName                   = "AsymmFlowPHTrading.app"
+)
+
+var deploymentCollaborativeStateTables = []string{
+	"employees",
+	"employee_access_links",
+	"projects",
+	"project_members",
+	"task_items",
+	"task_comments",
+	"task_activity",
+	"notifications",
+	"notification_receipts",
+	"delete_approval_requests",
+	"employee_archive_requests",
+	"collaborative_pending_operations",
+}
+
 // ============================================================================
 // CONFIG STRUCTURE
 // ============================================================================
@@ -230,15 +252,22 @@ func packagedDatabasePath() string {
 	return ""
 }
 
-func appDataDatabasePath() string {
+func appDataDirPath() string {
 	if runtime.GOOS == "windows" {
 		if appData := os.Getenv("APPDATA"); appData != "" {
-			return filepath.Join(appData, "AsymmFlow", "ph_holdings.db")
+			return filepath.Join(appData, appDataDirName)
 		}
 		return ""
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "share", "AsymmFlow", "ph_holdings.db")
+		return filepath.Join(home, ".local", "share", appDataDirName)
+	}
+	return ""
+}
+
+func appDataDatabasePath() string {
+	if appDataDir := appDataDirPath(); appDataDir != "" {
+		return filepath.Join(appDataDir, appDatabaseFileName)
 	}
 	return ""
 }
@@ -286,6 +315,196 @@ func readDeploymentDatabaseProfile(path string) deploymentDatabaseProfile {
 	profile.Opportunities = sqliteTableCount(db, "opportunities", "")
 	profile.NamedLicenseKeys = sqliteTableCount(db, "license_keys", "COALESCE(display_name, '') <> ''")
 	return profile
+}
+
+func readDeploymentDatabaseSetting(dbPath, key string) string {
+	if strings.TrimSpace(dbPath) == "" || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	db, err := sql.Open("sqlite3", sqliteReadonlyDSN(dbPath))
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+
+	if sqliteTableCount(db, "settings", "") == 0 {
+		return ""
+	}
+
+	var value sql.NullString
+	err = db.QueryRow("SELECT value FROM settings WHERE key = ? AND deleted_at IS NULL LIMIT 1", key).Scan(&value)
+	if err != nil || !value.Valid {
+		return ""
+	}
+	return strings.TrimSpace(value.String)
+}
+
+func deploymentDatabaseCount(dbPath, tableName, condition string) int {
+	if strings.TrimSpace(dbPath) == "" || strings.TrimSpace(tableName) == "" {
+		return 0
+	}
+	db, err := sql.Open("sqlite3", sqliteReadonlyDSN(dbPath))
+	if err != nil {
+		return 0
+	}
+	defer db.Close()
+	return int(sqliteTableCount(db, tableName, condition))
+}
+
+func deploymentDatabaseMaxTimestamp(dbPath string, tableNames ...string) time.Time {
+	if strings.TrimSpace(dbPath) == "" {
+		return time.Time{}
+	}
+	db, err := sql.Open("sqlite3", sqliteReadonlyDSN(dbPath))
+	if err != nil {
+		return time.Time{}
+	}
+	defer db.Close()
+
+	var maxTime time.Time
+	for _, tableName := range tableNames {
+		tableName = strings.TrimSpace(tableName)
+		if !deploymentSafeIdentifier(tableName) || !deploymentSQLiteTableExists(db, tableName) {
+			continue
+		}
+		for _, columnName := range []string{"updated_at", "deleted_at"} {
+			if !deploymentSQLiteTableHasColumn(db, tableName, columnName) {
+				continue
+			}
+			ts := deploymentDatabaseMaxTimestampForColumn(db, tableName, columnName)
+			if ts.After(maxTime) {
+				maxTime = ts
+			}
+		}
+	}
+	return maxTime
+}
+
+func deploymentSQLiteTableExists(db *sql.DB, tableName string) bool {
+	if db == nil || strings.TrimSpace(tableName) == "" {
+		return false
+	}
+	var name string
+	err := db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1", tableName).Scan(&name)
+	return err == nil && name == tableName
+}
+
+func deploymentSQLiteTableHasColumn(db *sql.DB, tableName, columnName string) bool {
+	if db == nil || !deploymentSafeIdentifier(tableName) || strings.TrimSpace(columnName) == "" {
+		return false
+	}
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			continue
+		}
+		if strings.EqualFold(name, columnName) {
+			return true
+		}
+	}
+	return false
+}
+
+func deploymentDatabaseMaxTimestampForColumn(db *sql.DB, tableName, columnName string) time.Time {
+	if db == nil || !deploymentSafeIdentifier(tableName) || !deploymentSafeIdentifier(columnName) {
+		return time.Time{}
+	}
+	var raw sql.NullString
+	query := fmt.Sprintf("SELECT MAX(%s) FROM %s", columnName, tableName)
+	if err := db.QueryRow(query).Scan(&raw); err != nil || !raw.Valid {
+		return time.Time{}
+	}
+	if parsed, ok := parseDeploymentTimestamp(raw.String); ok {
+		return parsed
+	}
+	return time.Time{}
+}
+
+func parseDeploymentTimestamp(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05.999999999-07:00", "2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05"} {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func deploymentSafeIdentifier(identifier string) bool {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return false
+	}
+	for _, r := range identifier {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func runtimeHasNewerCollaborativeState(runtimeDBPath, packagedDBPath string) bool {
+	pendingOps := deploymentDatabaseCount(runtimeDBPath, "collaborative_pending_operations", "status IN ('pending', 'failed')")
+	if pendingOps > 0 {
+		return true
+	}
+
+	runtimeMax := deploymentDatabaseMaxTimestamp(runtimeDBPath, deploymentCollaborativeStateTables...)
+	if runtimeMax.IsZero() {
+		return false
+	}
+	packagedMax := deploymentDatabaseMaxTimestamp(packagedDBPath, deploymentCollaborativeStateTables...)
+	return packagedMax.IsZero() || runtimeMax.After(packagedMax)
+}
+
+func shouldRefreshRuntimeDatabase(runtimeDBPath, packagedDBPath string) bool {
+	if strings.TrimSpace(runtimeDBPath) == "" || strings.TrimSpace(packagedDBPath) == "" {
+		return false
+	}
+	if runtimeHasNewerCollaborativeState(runtimeDBPath, packagedDBPath) {
+		log.Printf("Skipping packaged database refresh because runtime collaborative state is newer than the packaged snapshot")
+		return false
+	}
+
+	packagedStamp := readDeploymentDatabaseSetting(packagedDBPath, deploymentDatabaseReseedSettingKey)
+	runtimeStamp := readDeploymentDatabaseSetting(runtimeDBPath, deploymentDatabaseReseedSettingKey)
+	if deploymentStampIsNewer(packagedStamp, runtimeStamp) {
+		return true
+	}
+
+	packagedCustomers := deploymentDatabaseCount(packagedDBPath, "customers", "deleted_at IS NULL")
+	runtimeCustomers := deploymentDatabaseCount(runtimeDBPath, "customers", "deleted_at IS NULL")
+	return packagedCustomers > 100 && runtimeCustomers < packagedCustomers
+}
+
+func deploymentStampIsNewer(packagedStamp, runtimeStamp string) bool {
+	packagedStamp = strings.TrimSpace(packagedStamp)
+	runtimeStamp = strings.TrimSpace(runtimeStamp)
+	if packagedStamp == "" {
+		return false
+	}
+	if runtimeStamp == "" {
+		return true
+	}
+	if strings.HasPrefix(runtimeStamp, "TEST_") && !strings.HasPrefix(packagedStamp, "TEST_") {
+		return true
+	}
+	return packagedStamp > runtimeStamp
 }
 
 func sqliteTableCount(db *sql.DB, tableName, whereClause string) int64 {
@@ -800,10 +1019,10 @@ func LoadConfig() (*Config, error) {
 	// Current directory remains useful in development.
 	envLocations = append(envLocations, ".env")
 
-	// Platform data directory: ~/.local/share/AsymmFlow/ (production fallback)
+	// Platform data directory: ~/.local/share/AsymmFlow-PH-Trading/ (production fallback)
 	if homeDir, err := os.UserHomeDir(); err == nil {
 		envLocations = append(envLocations,
-			filepath.Join(homeDir, ".local", "share", "AsymmFlow", ".env"),
+			filepath.Join(homeDir, ".local", "share", appDataDirName, ".env"),
 		)
 	}
 
@@ -1142,7 +1361,7 @@ func (c *Config) EnsureOneDrivePaths() error {
 // loadDatabaseConfig loads Supabase config for cloud sync (SQLite is primary)
 func loadDatabaseConfig() SupabaseConfig {
 	// Check if cloud sync is enabled
-	enableSync := getEnvBool("ENABLE_CLOUD_SYNC", false)
+	enableSync := getEnvBool("ENABLE_CLOUD_SYNC", getEnvBool("ASYMMFLOW_REMOTE_SYNC_ENABLED", false))
 
 	// Priority 1: DATABASE_URL (if provided by hosting platform)
 	databaseURL := getEnv("DATABASE_URL", "")
@@ -1162,12 +1381,12 @@ func loadDatabaseConfig() SupabaseConfig {
 		URL:           getEnv("SUPABASE_URL", ""),
 		AnonKey:       getEnv("SUPABASE_ANON_KEY", ""),
 		ServiceKey:    getEnv("SUPABASE_SERVICE_KEY", ""),
-		DBHost:        getEnv("SUPABASE_DB_HOST", ""),
-		DBPort:        getEnv("SUPABASE_DB_PORT", "5432"),
-		DBName:        getEnv("SUPABASE_DB_NAME", "postgres"),
-		DBUser:        getEnv("SUPABASE_DB_USER", "postgres"),
-		DBPassword:    getEnv("SUPABASE_DB_PASSWORD", ""),
-		DBSSLMode:     getEnv("SUPABASE_DB_SSLMODE", "require"),
+		DBHost:        getEnv("SUPABASE_DB_HOST", getEnv("ASYMMFLOW_REMOTE_DB_HOST", "")),
+		DBPort:        getEnv("SUPABASE_DB_PORT", getEnv("ASYMMFLOW_REMOTE_DB_PORT", "5432")),
+		DBName:        getEnv("SUPABASE_DB_NAME", getEnv("ASYMMFLOW_REMOTE_DB_NAME", "postgres")),
+		DBUser:        getEnv("SUPABASE_DB_USER", getEnv("ASYMMFLOW_REMOTE_DB_USER", "postgres")),
+		DBPassword:    getEnv("SUPABASE_DB_PASSWORD", getEnv("ASYMMFLOW_REMOTE_DB_PASSWORD", "")),
+		DBSSLMode:     getEnv("SUPABASE_DB_SSLMODE", getEnv("ASYMMFLOW_REMOTE_DB_SSLMODE", "require")),
 		StorageBucket: getEnv("SUPABASE_STORAGE_BUCKET", "reports"),
 	}
 

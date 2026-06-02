@@ -1,14 +1,17 @@
 import {
   AddCollaborativeProjectMember,
   AddCollaborativeTaskComment,
+  ArchiveCollaborativeProject,
   CreateCollaborativeProject,
   CreateCollaborativeTask,
+  DeleteCollaborativeProject,
   DeleteCollaborativeTask,
   CreateEmployeeAccessLink,
   CreateEmployeeProfile,
   GetCollaborativeTask,
   GetCurrentEmployeeContext,
   GetUnreadNotificationsCount,
+  ListCollaborativeTasksForEmployee,
   ListEmployeeContributionSummaries,
   ListCollaborativeProjects,
   ListCollaborativeProjectMembers,
@@ -26,9 +29,14 @@ import {
   MarkNotificationAsRead,
   ReviewDeleteApprovalRequest,
   ReassignCollaborativeTask,
+  ReassignEmployeeLicenseAccess,
   ReassignEmployeeManager,
   RefreshCollaborativeWorkspace,
+  RequestEmployeeArchive,
+  ReviewEmployeeArchiveRequest,
   SetEmployeeEmploymentState,
+  ShelveCollaborativeProject,
+  UpdateCollaborativeProject,
   UpdateCollaborativeTaskDueDate,
   UpdateCollaborativeTask,
   UpdateCollaborativeTaskStatus,
@@ -54,6 +62,31 @@ export interface EmployeeProfile {
   emergency_contact?: string;
   notes?: string;
   is_active?: boolean;
+  archived_at?: string;
+  archived_by?: string;
+  archive_reason?: string;
+  archive_request_id?: string;
+}
+
+export interface EmployeeArchiveApproval {
+  id: string;
+  employee_id: string;
+  employee_name: string;
+  requested_by: string;
+  requested_by_name?: string;
+  reason?: string;
+  status?: string;
+  required_approvals?: number;
+  first_approved_by?: string;
+  first_approved_by_name?: string;
+  first_approved_at?: string;
+  second_approved_by?: string;
+  second_approved_by_name?: string;
+  second_approved_at?: string;
+  rejected_by?: string;
+  rejected_by_name?: string;
+  rejected_at?: string;
+  review_notes?: string;
 }
 
 export interface EmployeeAccessLink {
@@ -86,6 +119,12 @@ export interface CollaborativeProject {
   description?: string;
   status?: string;
   customer_id?: string;
+  customer_name?: string;
+  end_user_name?: string;
+  opportunity_key?: string;
+  customer_poc_name?: string;
+  customer_poc_email?: string;
+  customer_poc_phone?: string;
   opportunity_id?: string;
   order_id?: string;
   starts_on?: string;
@@ -187,6 +226,10 @@ export interface EmployeeContributionSummary {
   blocked_task_count: number;
   overdue_task_count: number;
   completion_rate: number;
+  opportunity_ytd: number;
+  opportunity_won_ytd: number;
+  opportunity_lost_ytd: number;
+  revenue_ytd: number;
   primary_license_key?: string;
   primary_device_name?: string;
 }
@@ -226,6 +269,33 @@ function toEmployeeProfile(employee: main.Employee): EmployeeProfile {
     emergency_contact: employee.emergency_contact,
     notes: employee.notes,
     is_active: employee.is_active,
+    archived_at: normalizeWailsDateTime(employee.archived_at),
+    archived_by: employee.archived_by,
+    archive_reason: employee.archive_reason,
+    archive_request_id: employee.archive_request_id,
+  };
+}
+
+function toEmployeeArchiveApproval(request: main.EmployeeArchiveRequest): EmployeeArchiveApproval {
+  return {
+    id: request.id,
+    employee_id: request.employee_id,
+    employee_name: request.employee_name,
+    requested_by: request.requested_by,
+    requested_by_name: request.requested_by_name,
+    reason: request.reason,
+    status: request.status,
+    required_approvals: request.required_approvals,
+    first_approved_by: request.first_approved_by,
+    first_approved_by_name: request.first_approved_by_name,
+    first_approved_at: normalizeWailsDateTime(request.first_approved_at),
+    second_approved_by: request.second_approved_by,
+    second_approved_by_name: request.second_approved_by_name,
+    second_approved_at: normalizeWailsDateTime(request.second_approved_at),
+    rejected_by: request.rejected_by,
+    rejected_by_name: request.rejected_by_name,
+    rejected_at: normalizeWailsDateTime(request.rejected_at),
+    review_notes: request.review_notes,
   };
 }
 
@@ -244,6 +314,7 @@ function toEmployeeAccessLink(link: main.EmployeeAccessLink): EmployeeAccessLink
 }
 
 function toProject(project: main.Project): CollaborativeProject {
+  const raw = project as any;
   return {
     id: project.id,
     name: project.name,
@@ -251,6 +322,12 @@ function toProject(project: main.Project): CollaborativeProject {
     description: project.description,
     status: project.status,
     customer_id: project.customer_id,
+    customer_name: raw.customer_name,
+    end_user_name: raw.end_user_name,
+    opportunity_key: raw.opportunity_key,
+    customer_poc_name: raw.customer_poc_name,
+    customer_poc_email: raw.customer_poc_email,
+    customer_poc_phone: raw.customer_poc_phone,
     opportunity_id: project.opportunity_id,
     order_id: project.order_id,
     starts_on: normalizeWailsDateTime(project.starts_on),
@@ -379,6 +456,18 @@ export async function setEmployeeEmploymentState(
   return toEmployeeProfile(await SetEmployeeEmploymentState(employeeID, isActive, employmentStatus));
 }
 
+export async function requestEmployeeArchive(employeeID: string, reason: string): Promise<EmployeeArchiveApproval> {
+  return toEmployeeArchiveApproval(await RequestEmployeeArchive(employeeID, reason));
+}
+
+export async function reviewEmployeeArchiveRequest(
+  requestID: string,
+  decision: "approve" | "reject",
+  notes = "",
+): Promise<EmployeeArchiveApproval> {
+  return toEmployeeArchiveApproval(await ReviewEmployeeArchiveRequest(requestID, decision, notes));
+}
+
 export async function reassignEmployeeManager(employeeID: string, managerEmployeeID: string): Promise<EmployeeProfile> {
   return toEmployeeProfile(await ReassignEmployeeManager(employeeID, managerEmployeeID));
 }
@@ -402,6 +491,10 @@ export async function createEmployeeAccessLink(link: Partial<EmployeeAccessLink>
   return toEmployeeAccessLink(await CreateEmployeeAccessLink(buildWailsInput(main.EmployeeAccessLink, link as Record<string, any>)));
 }
 
+export async function reassignEmployeeLicenseAccess(employeeID: string, licenseKey: string, syncDisplayName = true): Promise<EmployeeAccessLink> {
+  return toEmployeeAccessLink(await ReassignEmployeeLicenseAccess(employeeID, licenseKey, syncDisplayName));
+}
+
 export async function listLicenseKeys(): Promise<LicenseKeySummary[]> {
   if (!isDesktop()) return [];
   return (await ListLicenseKeys()).map(toLicenseKeySummary);
@@ -414,6 +507,22 @@ export async function listProjects(activeOnly = true): Promise<CollaborativeProj
 
 export async function createProject(project: Partial<CollaborativeProject>): Promise<CollaborativeProject> {
   return toProject(await CreateCollaborativeProject(buildWailsInput(main.Project, project as Record<string, any>)));
+}
+
+export async function updateProject(projectID: string, updates: Partial<CollaborativeProject>): Promise<CollaborativeProject> {
+  return toProject(await UpdateCollaborativeProject(projectID, updates as Record<string, any>));
+}
+
+export async function archiveProject(projectID: string, reason: string): Promise<CollaborativeProject> {
+  return toProject(await ArchiveCollaborativeProject(projectID, reason));
+}
+
+export async function shelveProject(projectID: string, reason: string): Promise<CollaborativeProject> {
+  return toProject(await ShelveCollaborativeProject(projectID, reason));
+}
+
+export async function deleteProject(projectID: string, reason: string): Promise<void> {
+  await DeleteCollaborativeProject(projectID, reason);
 }
 
 export async function addProjectMember(projectID: string, employeeID: string, role: string): Promise<ProjectMember> {
@@ -438,6 +547,11 @@ export async function listMyTasks(includeCompleted = false): Promise<Collaborati
 export async function listTeamTasks(includeCompleted = false): Promise<CollaborativeTask[]> {
   if (!isDesktop()) return [];
   return (await ListCollaborativeTeamTasks(includeCompleted)).map(toTask);
+}
+
+export async function listEmployeeTasks(employeeID: string, includeCompleted = false): Promise<CollaborativeTask[]> {
+  if (!isDesktop() || !employeeID) return [];
+  return (await ListCollaborativeTasksForEmployee(employeeID, includeCompleted)).map(toTask);
 }
 
 export async function listProjectTasks(projectID: string, includeCompleted = false): Promise<CollaborativeTask[]> {

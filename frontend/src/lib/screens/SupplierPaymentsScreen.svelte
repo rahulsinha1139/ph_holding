@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher, onMount } from 'svelte';
+  import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
   import {
     GetAllSupplierPayments,
@@ -18,8 +18,6 @@
   import { toast } from '$lib/stores/toasts';
   import { permissions } from '$lib/stores/authContext';
   import { buildWailsInput } from '$lib/utils/wailsInterop';
-  const dispatch = createEventDispatcher();
-
   export let embedded = false;
   export let company: 'PH Trading' | 'AHS Trading' = 'PH Trading';
 
@@ -35,10 +33,6 @@
   let selectedPaymentId = '';
   let selectedPayment: any = null;
   let deleteConfirmPaymentId = '';
-
-  function matchesCompany(division?: string) {
-    return (division || 'PH Trading') === company;
-  }
 
   $: permissionList = Array.isArray($permissions) ? $permissions : [];
   $: canCreate = permissionList.includes('*') || permissionList.includes('payments:record') || permissionList.includes('payments:*') || permissionList.includes('finance:*');
@@ -103,8 +97,8 @@
     return date.getFullYear() === new Date().getFullYear();
   }
 
-  function openBankReconciliation() {
-    dispatch('navigate', { tab: 'bank_recon', source: 'supplier_payments' });
+  function matchesCompany(division?: string) {
+    return (division || 'PH Trading') === company;
   }
 
   const columns = [
@@ -164,7 +158,8 @@
         GetSupplierInvoices(),
         listExpenseEntries('', true)
       ]);
-      const paidExpenses = (expenseEntries || []).filter((entry: ExpenseEntry) => entry.payment_status === 'paid');
+      const scopedExpenses = (expenseEntries || []).filter((entry: ExpenseEntry) => matchesCompany((entry as any).division));
+      const paidExpenses = scopedExpenses.filter((entry: ExpenseEntry) => entry.payment_status === 'paid');
       const expensePaymentRows = paidExpenses.map((entry: ExpenseEntry) => ({
         id: `expense-${entry.id}`,
         source: 'Expense',
@@ -179,7 +174,7 @@
       }));
       const supplierPaymentRows = (paymentsRes || []).filter((row: any) => matchesCompany(row.division)).map((row: any) => ({
         ...row,
-        source: row.source || 'Supplier Invoice',
+        source: row.source || 'Supplier Payable',
       }));
       const scopedExpensePaymentRows = company === 'PH Trading' ? expensePaymentRows : [];
       payments = [...supplierPaymentRows, ...scopedExpensePaymentRows].sort((left: any, right: any) => {
@@ -196,11 +191,17 @@
       }
 
       const paidExpenseTotal = paidExpenses.reduce((sum: number, entry: ExpenseEntry) => sum + (Number(entry.total_amount) || 0), 0);
-      const unpaidExpenseEntries = (expenseEntries || []).filter((entry: ExpenseEntry) => entry.payment_status !== 'paid' && ['approved', 'posted'].includes(entry.status));
+      const unpaidExpenseEntries = scopedExpenses.filter((entry: ExpenseEntry) => entry.payment_status !== 'paid' && ['approved', 'posted'].includes(entry.status));
       const overdueExpenseCount = unpaidExpenseEntries.filter((entry: ExpenseEntry) => {
         if (!entry.due_date) return false;
         return new Date(entry.due_date).getTime() < Date.now();
       }).length;
+      const filteredInvoices = (supplierInvoicesRes || []).filter((invoice: any) => matchesCompany(invoice.division));
+      const outstandingInvoices = filteredInvoices.filter((invoice: any) => String(invoice?.payment_status || '').toLowerCase() !== 'paid');
+      const overdueInvoices = outstandingInvoices.filter((invoice: any) => {
+        if (!invoice?.due_date) return false;
+        return new Date(invoice.due_date).getTime() < Date.now();
+      });
 
       const filteredInvoices = (supplierInvoicesRes || []).filter((invoice: any) => matchesCompany(invoice.division));
       const outstandingInvoices = filteredInvoices.filter((invoice: any) => String(invoice?.payment_status || '').toLowerCase() !== 'paid');
@@ -210,9 +211,10 @@
       });
 
       summary = {
-        total_paid_bhd: supplierPaymentRows.reduce((sum: number, row: any) => sum + (Number(row.amount_bhd) || 0), 0) + (company === 'PH Trading' ? paidExpenseTotal : 0),
-        outstanding_count: outstandingInvoices.length + (company === 'PH Trading' ? unpaidExpenseEntries.length : 0),
-        overdue_count: overdueInvoices.length + (company === 'PH Trading' ? overdueExpenseCount : 0),
+        total_paid_bhd: supplierPaymentRows.reduce((sum: number, row: any) => sum + (Number(row.amount_bhd) || 0), 0) + paidExpenseTotal,
+        outstanding_bhd: outstandingInvoices.reduce((sum: number, invoice: any) => sum + (Number(invoice.outstanding_bhd || invoice.total_bhd || 0) || 0), 0) + unpaidExpenseEntries.reduce((sum: number, entry: ExpenseEntry) => sum + (Number(entry.total_amount) || 0), 0),
+        outstanding_count: outstandingInvoices.length + unpaidExpenseEntries.length,
+        overdue_count: overdueInvoices.length + overdueExpenseCount,
       };
     } catch (e) {
       console.error('Failed to load supplier payments:', e);
@@ -232,7 +234,8 @@
     showPaymentModal = true;
     if (!invoicesLoaded) {
       try {
-        invoices = (await GetSupplierInvoices() || []).filter((invoice: any) => matchesCompany(invoice.division));
+        invoices = await GetSupplierInvoices() || [];
+        invoices = invoices.filter((invoice: any) => matchesCompany(invoice?.division) && Number(invoice?.outstanding_bhd || 0) > 0);
         invoicesLoaded = true;
       } catch (e) {
         console.error('Failed to load invoices:', e);
@@ -249,6 +252,81 @@
       date: new Date().toISOString().split('T')[0],
       reference: ''
     };
+  }
+
+  function closePaymentModal() {
+    showPaymentModal = false;
+    paymentModalMode = 'create';
+    editingPaymentId = '';
+  }
+
+  function handlePaymentBackdropClick(event: MouseEvent) {
+    if (event.target !== event.currentTarget) return;
+    closePaymentModal();
+  }
+
+  function handlePaymentBackdropKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      closePaymentModal();
+    }
+  }
+
+  async function recordPayment() {
+    if (!paymentForm.invoice_id || paymentForm.amount <= 0) {
+      toast.danger('Please select an invoice and enter a valid amount');
+      return;
+    }
+
+    if ((paymentForm.method === 'Bank Transfer' || paymentForm.method === 'Wire Transfer') && !paymentForm.reference.trim()) {
+      toast.danger('Reference is required for bank transfers');
+      return;
+    }
+
+    try {
+      paymentSaving = true;
+      if (paymentModalMode === 'create') {
+        await RecordSupplierPayment(
+          paymentForm.invoice_id,
+          paymentForm.amount,
+          paymentForm.currency,
+          normalizeSupplierPaymentMethod(paymentForm.method),
+          paymentForm.date,
+          paymentForm.reference.trim()
+        );
+        toast.success('Payment recorded successfully');
+      } else {
+        const existing = await GetSupplierPayment(editingPaymentId);
+        const amountForeign = paymentForm.amount;
+        const exchangeRate = paymentForm.currency === 'BHD' ? 1 : Number(paymentForm.exchange_rate || 0);
+        if (paymentForm.currency !== 'BHD' && exchangeRate <= 0) {
+          toast.danger('Exchange rate must be greater than zero for foreign-currency payments');
+          return;
+        }
+        const amountBHD = Number((paymentForm.currency === 'BHD' ? amountForeign : amountForeign * exchangeRate).toFixed(3));
+
+        await UpdateSupplierPayment(editingPaymentId, buildWailsInput(main.SupplierPayment, {
+          ...existing,
+          amount_foreign: amountForeign,
+          currency: paymentForm.currency,
+          exchange_rate: exchangeRate,
+          amount_bhd: amountBHD,
+          payment_method: normalizeSupplierPaymentMethod(paymentForm.method),
+          payment_date: new Date(`${paymentForm.date}T00:00:00`).toISOString(),
+          reference: paymentForm.reference.trim(),
+        }));
+        toast.success('Payment updated successfully');
+      }
+
+      showPaymentModal = false;
+      paymentModalMode = 'create';
+      editingPaymentId = '';
+      await loadData();
+    } catch (e) {
+      toast.danger(`Failed to ${paymentModalMode === 'create' ? 'record' : 'update'} payment: ${String(e)}`);
+    } finally {
+      paymentSaving = false;
+    }
   }
 
   function handlePaymentRowClick(row: any) {
@@ -317,63 +395,6 @@
     }
   }
 
-  async function recordPayment() {
-    if (!paymentForm.invoice_id || paymentForm.amount <= 0) {
-      toast.danger('Please select an invoice and enter a valid amount');
-      return;
-    }
-
-    if ((paymentForm.method === 'Bank Transfer' || paymentForm.method === 'Wire Transfer') && !paymentForm.reference.trim()) {
-      toast.danger('Reference is required for bank transfers');
-      return;
-    }
-
-    try {
-      paymentSaving = true;
-      if (paymentModalMode === 'create') {
-        await RecordSupplierPayment(
-          paymentForm.invoice_id,
-          paymentForm.amount,
-          paymentForm.currency,
-          normalizeSupplierPaymentMethod(paymentForm.method),
-          paymentForm.date,
-          paymentForm.reference.trim()
-        );
-        toast.success('Payment recorded successfully');
-      } else {
-        const existing = await GetSupplierPayment(editingPaymentId);
-        const amountForeign = paymentForm.amount;
-        const exchangeRate = paymentForm.currency === 'BHD' ? 1 : Number(paymentForm.exchange_rate || 0);
-        if (paymentForm.currency !== 'BHD' && exchangeRate <= 0) {
-          toast.danger('Exchange rate must be greater than zero for foreign-currency payments');
-          return;
-        }
-        const amountBHD = Number((paymentForm.currency === 'BHD' ? amountForeign : amountForeign * exchangeRate).toFixed(3));
-
-        await UpdateSupplierPayment(editingPaymentId, buildWailsInput(main.SupplierPayment, {
-          ...existing,
-          amount_foreign: amountForeign,
-          currency: paymentForm.currency,
-          exchange_rate: exchangeRate,
-          amount_bhd: amountBHD,
-          payment_method: normalizeSupplierPaymentMethod(paymentForm.method),
-          payment_date: new Date(`${paymentForm.date}T00:00:00`).toISOString(),
-          reference: paymentForm.reference.trim(),
-        }));
-        toast.success('Payment updated successfully');
-      }
-
-      showPaymentModal = false;
-      paymentModalMode = 'create';
-      editingPaymentId = '';
-      await loadData();
-    } catch (e) {
-      toast.danger(`Failed to ${paymentModalMode === 'create' ? 'record' : 'update'} payment: ${String(e)}`);
-    } finally {
-      paymentSaving = false;
-    }
-  }
-
   onMount(loadData);
   $: if (company) {
     invoicesLoaded = false;
@@ -387,15 +408,13 @@
 
 <div class="screen" in:fade={{ duration: 200 }}>
   {#if !embedded}
-    <PageLayout title="Payments Made" subtitle="Track outgoing payments across supplier invoices and expense settlements">
+    <PageLayout title="Supplier Settlements" subtitle="Track outgoing cash events alongside open supplier payables">
       <svelte:fragment slot="actions">
-        <Button variant="secondary" on:click={openBankReconciliation}>Open Bank Recon</Button>
         <Button variant="primary" on:click={openPaymentModal} disabled={!canCreate}>Record Payment</Button>
       </svelte:fragment>
     </PageLayout>
   {:else}
     <div class="embedded-header">
-      <Button variant="secondary" size="sm" on:click={openBankReconciliation}>Open Bank Recon</Button>
       <Button variant="primary" size="sm" on:click={openPaymentModal} disabled={!canCreate}>Record Payment</Button>
     </div>
   {/if}
@@ -407,11 +426,15 @@
       <span class="kpi-value">{formatBHD(totalPaidYTD)} BHD</span>
     </div>
     <div class="kpi">
-      <span class="kpi-label">Outstanding Invoices</span>
+      <span class="kpi-label">Open Payables Value</span>
+      <span class="kpi-value">{formatBHD(summary.outstanding_bhd || 0)} BHD</span>
+    </div>
+    <div class="kpi">
+      <span class="kpi-label">Open Payables</span>
       <span class="kpi-value">{summary.outstanding_count || 0}</span>
     </div>
     <div class="kpi">
-      <span class="kpi-label">Overdue</span>
+      <span class="kpi-label">Overdue Payables</span>
       <span class="kpi-value kpi-alert">{summary.overdue_count || 0}</span>
     </div>
   </div>
@@ -455,9 +478,16 @@
 
 <!-- Record Payment Modal -->
 {#if showPaymentModal}
-  <div class="modal-overlay" role="button" tabindex="0" on:click|self={() => showPaymentModal = false} on:keydown={(event) => (event.key === "Enter" || event.key === " ") && (showPaymentModal = false)}>
-    <div class="modal" in:fade={{ duration: 150 }}>
-      <h2>{paymentModalMode === 'edit' ? 'Edit Supplier Payment' : 'Record Supplier Payment'}</h2>
+  <div
+    class="modal-overlay"
+    role="button"
+    tabindex="0"
+    aria-label="Close supplier payment modal"
+    on:click={handlePaymentBackdropClick}
+    on:keydown={handlePaymentBackdropKeydown}
+  >
+    <div class="modal" in:fade={{ duration: 150 }} role="dialog" aria-modal="true" aria-labelledby="supplier-payment-modal-title">
+      <h2 id="supplier-payment-modal-title">{paymentModalMode === 'edit' ? 'Edit Supplier Payment' : 'Record Supplier Payment'}</h2>
       {#if paymentModalMode === 'edit'}
         <p class="modal-intro">Editing the existing supplier payment. Invoice linkage stays locked for audit safety.</p>
       {/if}
@@ -469,7 +499,7 @@
             <option value="">Select invoice...</option>
             {#each invoices as inv}
               <option value={inv.id}>
-                {inv.invoice_number || inv.id?.slice(0,8)} - {formatBHD(inv.total_bhd)} BHD
+                {inv.invoice_number || inv.id?.slice(0,8)} - {formatBHD(inv.outstanding_bhd || inv.total_bhd)} BHD open
               </option>
             {/each}
           </select>
@@ -532,11 +562,7 @@
       </div>
 
       <div class="modal-actions">
-        <Button variant="secondary" on:click={() => {
-          showPaymentModal = false;
-          paymentModalMode = 'create';
-          editingPaymentId = '';
-        }} disabled={paymentSaving}>Cancel</Button>
+        <Button variant="secondary" on:click={closePaymentModal} disabled={paymentSaving}>Cancel</Button>
         <Button variant="primary" on:click={recordPayment} disabled={paymentSaving}>
           {paymentSaving ? (paymentModalMode === 'create' ? 'Recording...' : 'Saving...') : (paymentModalMode === 'create' ? 'Record Payment' : 'Save Changes')}
         </Button>

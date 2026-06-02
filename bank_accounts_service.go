@@ -21,22 +21,22 @@ import (
 
 // CompanyBankAccount stores division-aware bank account details for invoices and reconciliation.
 type CompanyBankAccount struct {
-	ID            string    `gorm:"primaryKey;size:36" json:"id"`
-	Division      string    `gorm:"size:100;default:'PH Trading'" json:"division"`
-	BankName      string    `gorm:"not null;size:100" json:"bank_name"`
-	AccountName   string    `gorm:"not null;size:100" json:"account_name"`
-	AccountNumber string    `gorm:"not null;size:50" json:"account_number"`
-	IBAN          string    `gorm:"size:50" json:"iban"`
-	SwiftBIC      string    `gorm:"size:20" json:"swift_bic"`
-	Currency      string    `gorm:"size:3;default:'BHD'" json:"currency"`
-	IsActive      bool      `gorm:"default:true" json:"is_active"`
-	DisplayOrder  int       `json:"display_order"`
+	ID            string `gorm:"primaryKey;size:36" json:"id"`
+	Division      string `gorm:"size:100;default:'PH Trading'" json:"division"`
+	BankName      string `gorm:"not null;size:100" json:"bank_name"`
+	AccountName   string `gorm:"not null;size:100" json:"account_name"`
+	AccountNumber string `gorm:"not null;size:50" json:"account_number"`
+	IBAN          string `gorm:"size:50" json:"iban"`
+	SwiftBIC      string `gorm:"size:20" json:"swift_bic"`
+	Currency      string `gorm:"size:3;default:'BHD'" json:"currency"`
+	IsActive      bool   `gorm:"default:true" json:"is_active"`
+	DisplayOrder  int    `json:"display_order"`
 	// BookingRate is the exchange rate at which this foreign-currency account was opened.
 	// Used for first-ever FX revaluation gain/loss calculation.
 	// 0 = not set; first revaluation will use current rate as baseline (zero gain/loss).
-	BookingRate   float64   `gorm:"default:0" json:"booking_rate"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	BookingRate float64   `gorm:"default:0" json:"booking_rate"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 func (CompanyBankAccount) TableName() string { return "company_bank_accounts" }
@@ -164,11 +164,25 @@ func (a *App) GetActiveBankAccounts() ([]CompanyBankAccount, error) {
 		return nil, err
 	}
 
+	return a.getActiveBankAccountsForDocuments()
+}
+
+func (a *App) getActiveBankAccountsForDocuments() ([]CompanyBankAccount, error) {
 	if a.db == nil {
 		return nil, nil
 	}
 
 	var banks []CompanyBankAccount
+	if err := a.db.Where("is_active = ?", true).Order("display_order").Find(&banks).Error; err != nil {
+		return nil, err
+	}
+	if len(banks) > 0 {
+		return banks, nil
+	}
+
+	if err := a.SeedCompanyBankAccounts(); err != nil {
+		return nil, err
+	}
 	err := a.db.Where("is_active = ?", true).Order("display_order").Find(&banks).Error
 	return banks, err
 }

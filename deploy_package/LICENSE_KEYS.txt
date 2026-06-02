@@ -1,6 +1,6 @@
 ===============================================================================
                     ASYMMFLOW ERP - LICENSE KEYS
-                    Generated: 2026-05-02
+                    Generated: 2026-06-02
 ===============================================================================
 
 This tracked top-level file is intentionally a placeholder.

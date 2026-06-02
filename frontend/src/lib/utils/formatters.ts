@@ -22,6 +22,15 @@ function toNumber(value: number | string | null | undefined): number {
 }
 
 /**
+ * Parse a user/display number that may contain thousands separators.
+ * @param value - number or string
+ * @returns parsed finite number or NaN
+ */
+export function parseNumber(value: number | string | null | undefined): number {
+  return toNumber(value);
+}
+
+/**
  * Format a number with thousands separators.
  * @param value - number or string
  * @param decimals - fixed decimal places

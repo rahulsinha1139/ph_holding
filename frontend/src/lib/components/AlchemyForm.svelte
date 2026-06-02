@@ -1,14 +1,25 @@
 <script lang="ts">
   
 import { devLog } from "$lib/utils/devLog";
+import { createEventDispatcher } from "svelte";
 import { onMount } from "svelte";
   // GetFormLayout not yet implemented in backend
 const GetFormLayout = async (_entity: string) => null;
 
   export let entity = "customer";
 
+  const dispatch = createEventDispatcher();
   let layout = null;
   let loading = true;
+
+  function cancelForm() {
+    dispatch("cancel", { entity });
+    layout = null;
+  }
+
+  function saveForm() {
+    dispatch("save", { entity, layout });
+  }
 
   onMount(async () => {
     try {
@@ -77,10 +88,18 @@ const GetFormLayout = async (_entity: string) => null;
     </div>
     
     <div class="mt-8 flex justify-end gap-4 pt-6 border-t border-stone-100">
-        <button class="px-6 py-3 text-sm font-bold uppercase tracking-wider text-stone-500 hover:text-black transition-colors">
+        <button
+          type="button"
+          class="px-6 py-3 text-sm font-bold uppercase tracking-wider text-stone-500 hover:text-black transition-colors"
+          on:click={cancelForm}
+        >
             Cancel
         </button>
-        <button class="px-8 py-3 bg-black text-white rounded-lg font-bold shadow-lg shadow-gray-200 hover:bg-gray-900 hover:shadow-xl hover:-translate-y-0.5 transition-all active:scale-95">
+        <button
+          type="button"
+          class="px-8 py-3 bg-black text-white rounded-lg font-bold shadow-lg shadow-gray-200 hover:bg-gray-900 hover:shadow-xl hover:-translate-y-0.5 transition-all active:scale-95"
+          on:click={saveForm}
+        >
             Save {layout.entity_name}
         </button>
     </div>

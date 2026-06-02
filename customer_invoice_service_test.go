@@ -70,10 +70,56 @@ func TestCreateInvoiceWithOptions_DeliveryNoteUsesDeliveredQuantity(t *testing.T
 	require.InDelta(t, 2, invoice.VATBHD, 0.001)
 	require.InDelta(t, 22, invoice.GrandTotalBHD, 0.001)
 	require.Equal(t, "DN-INV-DN-001", invoice.DeliveryNoteNumber)
+	require.Equal(t, "DN-INV-DN-001", invoice.DeliveryNoteRef)
 	require.Equal(t, "DN-INV-DN-001", invoice.DespatchDocumentNo)
+	require.Equal(t, "30 Days", invoice.ModeOfPayment)
+	require.Equal(t, "PO-123", invoice.BuyersOrderNumber)
+	require.Equal(t, "Direct Delivery", invoice.TermsOfDelivery)
+	require.Equal(t, "PH Trading", invoice.Division)
 	require.NotNil(t, invoice.DeliveryNoteDate)
 
 	var updatedItem OrderItem
 	require.NoError(t, app.db.First(&updatedItem, "id = ?", orderItemID).Error)
 	require.InDelta(t, 4, updatedItem.QuantityInvoiced, 0.001)
+}
+
+func TestCreateInvoiceFromOrderRejectsCreditBlockedCustomerByPrimaryID(t *testing.T) {
+	app := setupTestApp(t)
+
+	now := time.Now()
+	customerID := seedTestCustomer(t, app.db, "Blocked Customer WLL")
+	require.NoError(t, app.db.Model(&CustomerMaster{}).
+		Where("id = ?", customerID).
+		Updates(map[string]interface{}{
+			"is_credit_blocked": true,
+			"credit_limit_bhd":  1000,
+		}).Error)
+
+	orderID := uuid.New().String()
+	require.NoError(t, app.db.Create(&Order{
+		Base:          Base{ID: orderID, CreatedAt: now, UpdatedAt: now},
+		OrderNumber:   "ORD-BLOCKED-001",
+		CustomerID:    customerID,
+		CustomerName:  "Blocked Customer WLL",
+		OrderDate:     now,
+		RequiredDate:  now.AddDate(0, 0, 30),
+		TotalValueBHD: 100,
+		GrandTotalBHD: 110,
+		Status:        "Confirmed",
+		PaymentTerms:  "Net 30",
+		Division:      "PH Trading",
+		Items: []OrderItem{{
+			Base:        Base{ID: uuid.New().String(), CreatedAt: now, UpdatedAt: now},
+			OrderID:     orderID,
+			LineNumber:  1,
+			Description: "Blocked invoice line",
+			Quantity:    1,
+			UnitPrice:   100,
+			TotalPrice:  100,
+		}},
+	}).Error)
+
+	_, err := app.CreateInvoiceFromOrder(orderID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "credit blocked")
 }

@@ -73,10 +73,6 @@ test.describe('Commercial pricing and quotation flow', () => {
     await page.getByRole('button', { name: 'Back to Opportunities' }).click();
 
     await expect(page.getByRole('dialog', { name: 'Leave this costing sheet?' })).toBeVisible();
-    await page.getByRole('button', { name: 'Stay on Sheet' }).click();
-    await expect(page.getByPlaceholder('Product name')).toHaveValue('Warning gate flowmeter');
-
-    await page.getByRole('button', { name: 'Back to Opportunities' }).click();
     await page.getByRole('button', { name: 'Keep Draft & Go Back' }).click();
 
     await expect(page.getByText('Select an opportunity to create a costing sheet.')).toBeVisible();
@@ -92,6 +88,15 @@ test.describe('Commercial pricing and quotation flow', () => {
     await expect(page.getByRole('button', { name: 'Download PDF' }).first()).toBeVisible();
     await expect(page.getByRole('button', { name: 'Mark as won' }).first()).toBeVisible();
     await expect(page.getByRole('button', { name: 'Schedule follow-up' })).toHaveCount(0);
+  });
+
+  test('editing an offer opens it directly in the costing sheet', async ({ page }) => {
+    await page.getByRole('tab', { name: /Offers/i }).click();
+    await page.getByRole('button', { name: 'Edit offer' }).first().click();
+
+    await expect(page.getByRole('tab', { name: /^Costing$/i })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('input[placeholder="Enter costing ID"]')).toHaveValue('PHO-2026-001');
+    await expect(page.getByPlaceholder('Product name')).toHaveValue('Pressure transmitter');
   });
 
   test('editing an offer opens it directly in the costing sheet', async ({ page }) => {

@@ -30,15 +30,15 @@ func (a *App) RecordSupplierPayment(invoiceID string, amount float64, currency, 
 		return nil, fmt.Errorf("invoice not found: %w", err)
 	}
 
-	// P0-4 Fix: Prevent paying disputed/unmatched invoices
-	if invoice.Status == "Disputed" {
+	// Only approved, matched invoices should move into the payment ledger.
+	if invoice.Status == "Dispute" {
 		return nil, fmt.Errorf("cannot pay disputed invoice %s - resolve dispute first", invoice.InvoiceNumber)
 	}
-	if invoice.MatchStatus == "Discrepancy" {
-		return nil, fmt.Errorf("cannot pay invoice %s with 3-way match discrepancies - resolve discrepancies first", invoice.InvoiceNumber)
+	if invoice.MatchStatus != "Matched" {
+		return nil, fmt.Errorf("cannot pay invoice %s until 3-way match is Matched", invoice.InvoiceNumber)
 	}
-	if invoice.Status != "Approved" && invoice.Status != "Verified" && invoice.Status != "Pending" {
-		return nil, fmt.Errorf("invoice must be Approved, Verified, or Pending before payment, current status: %s", invoice.Status)
+	if invoice.Status != "Approved" {
+		return nil, fmt.Errorf("invoice must be Approved before payment, current status: %s", invoice.Status)
 	}
 
 	// Validate amount
@@ -80,18 +80,15 @@ func (a *App) RecordSupplierPayment(invoiceID string, amount float64, currency, 
 		return nil, fmt.Errorf("failed to start transaction: %w", tx.Error)
 	}
 
-	// Check for existing payments to calculate outstanding balance (INSIDE transaction)
-	var totalPaidBefore float64
-	if err := tx.Model(&SupplierPayment{}).
-		Where("supplier_invoice_id = ?", invoiceID).
-		Select("COALESCE(SUM(amount_bhd), 0)").
-		Scan(&totalPaidBefore).Error; err != nil {
+	// Check for existing payments to calculate outstanding balance (inside the transaction).
+	totalsBefore, err := a.getSupplierInvoicePaymentTotals(tx, invoiceID)
+	if err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("failed to calculate existing payments: %w", err)
 	}
 
 	// Validate payment doesn't exceed outstanding balance (within locked transaction)
-	outstanding := invoice.TotalBHD - totalPaidBefore
+	outstanding := supplierInvoiceOutstandingBHD(invoice, totalsBefore.AmountBHD)
 	if amountBHD > outstanding+FloatingPointTolerance { // Small tolerance for floating point
 		tx.Rollback()
 		return nil, fmt.Errorf("payment amount %.3f BHD exceeds outstanding balance %.3f BHD", amountBHD, outstanding)
@@ -141,40 +138,14 @@ func (a *App) RecordSupplierPayment(invoiceID string, amount float64, currency, 
 
 	log.Printf("💰 Supplier payment recorded: %.3f %s for invoice %s", amount, currency, invoiceID)
 
-	// Calculate new total paid
-	var totalPaid float64
-	if err := tx.Model(&SupplierPayment{}).
-		Where("supplier_invoice_id = ?", invoiceID).
-		Select("COALESCE(SUM(amount_bhd), 0)").
-		Scan(&totalPaid).Error; err != nil {
+	state, err := a.applySupplierInvoicePaymentState(tx, invoiceID)
+	if err != nil {
 		tx.Rollback()
-		return nil, fmt.Errorf("failed to calculate total payments: %w", err)
+		return nil, fmt.Errorf("failed to update invoice payment state: %w", err)
 	}
 
-	// Update invoice payment status
-	if totalPaid >= invoice.TotalBHD-FloatingPointTolerance { // Small tolerance for floating point
-		updates := map[string]interface{}{
-			"payment_status": "Paid",
-			"payment_date":   paymentDate,
-		}
-		if err := tx.Model(&SupplierInvoice{}).Where("id = ?", invoiceID).Updates(updates).Error; err != nil {
-			tx.Rollback()
-			return nil, fmt.Errorf("failed to update invoice payment status: %w", err)
-		}
-		log.Printf("✅ Invoice %s marked as Paid (total paid: %.3f BHD >= invoice total: %.3f BHD)",
-			invoiceID, totalPaid, invoice.TotalBHD)
-	} else if totalPaid > 0 {
-		// Partial payment
-		updates := map[string]interface{}{
-			"payment_status": "Partial",
-		}
-		if err := tx.Model(&SupplierInvoice{}).Where("id = ?", invoiceID).Updates(updates).Error; err != nil {
-			tx.Rollback()
-			return nil, fmt.Errorf("failed to update invoice to partial payment status: %w", err)
-		}
-		log.Printf("📊 Invoice %s marked as Partial (paid: %.3f BHD / %.3f BHD)",
-			invoiceID, totalPaid, invoice.TotalBHD)
-	}
+	log.Printf("📊 Supplier invoice %s payment state: %s / %s (paid %.3f BHD, outstanding %.3f BHD)",
+		invoiceID, state.InvoiceStatus, state.PaymentStatus, state.TotalPaidBHD, state.OutstandingBHD)
 
 	// Commit transaction
 	if err := tx.Commit().Error; err != nil {
@@ -231,6 +202,9 @@ func (a *App) GetAllSupplierPayments() ([]SupplierPayment, error) {
 	if err := a.requirePermission("payments:view"); err != nil {
 		return nil, err
 	}
+	if a.db == nil {
+		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
 
 	var payments []SupplierPayment
 
@@ -260,27 +234,37 @@ func (a *App) GetSupplierPaymentsSummary() (map[string]interface{}, error) {
 	}
 	summary["total_paid_bhd"] = totalPaidBHD
 
-	// Count of invoices not fully paid
+	// Count of invoices with live outstanding balances.
+	var invoices []SupplierInvoice
+	if err := a.db.Where("status IS NULL OR status NOT IN ?", []string{"Rejected", "Dispute"}).
+		Find(&invoices).Error; err != nil {
+		return nil, fmt.Errorf("failed to retrieve supplier invoices for payment summary: %w", err)
+	}
+	if err := a.hydrateSupplierInvoicesPaymentState(a.db, invoices); err != nil {
+		return nil, fmt.Errorf("failed to normalize supplier invoices for payment summary: %w", err)
+	}
+
 	var outstandingCount int64
-	if err := a.db.Model(&SupplierInvoice{}).
-		Where("payment_status != ?", "Paid").
-		Count(&outstandingCount).Error; err != nil {
-		return nil, fmt.Errorf("failed to count outstanding invoices: %w", err)
-	}
-	summary["outstanding_count"] = outstandingCount
-
-	// Count of overdue invoices (past due date and not paid)
 	var overdueCount int64
+	var outstandingBHD float64
 	now := time.Now()
-	if err := a.db.Model(&SupplierInvoice{}).
-		Where("payment_status != ? AND due_date < ?", "Paid", now).
-		Count(&overdueCount).Error; err != nil {
-		return nil, fmt.Errorf("failed to count overdue invoices: %w", err)
+	for _, invoice := range invoices {
+		if invoice.OutstandingBHD <= FloatingPointTolerance {
+			continue
+		}
+		outstandingCount++
+		outstandingBHD += invoice.OutstandingBHD
+		if invoice.DueDate.Before(now) {
+			overdueCount++
+		}
 	}
-	summary["overdue_count"] = overdueCount
 
-	log.Printf("📊 Supplier payments summary: %.3f BHD paid, %d outstanding, %d overdue",
-		totalPaidBHD, outstandingCount, overdueCount)
+	summary["outstanding_count"] = outstandingCount
+	summary["overdue_count"] = overdueCount
+	summary["outstanding_bhd"] = outstandingBHD
+
+	log.Printf("📊 Supplier payments summary: %.3f BHD paid, %.3f BHD outstanding, %d outstanding, %d overdue",
+		totalPaidBHD, outstandingBHD, outstandingCount, overdueCount)
 
 	return summary, nil
 }
@@ -323,9 +307,15 @@ func (a *App) UpdateSupplierPayment(id string, payment SupplierPayment) (*Suppli
 		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
+	tx := a.db.Begin()
+	if tx.Error != nil {
+		return nil, newError("DB_TRANSACTION_FAILED", "Failed to start transaction", tx.Error.Error())
+	}
+
 	// Check if payment exists
 	var existing SupplierPayment
-	if err := a.db.First(&existing, "id = ?", id).Error; err != nil {
+	if err := tx.First(&existing, "id = ?", id).Error; err != nil {
+		tx.Rollback()
 		if err == gorm.ErrRecordNotFound {
 			return nil, newError("NOT_FOUND", "Supplier payment not found", fmt.Sprintf("ID: %s", id))
 		}
@@ -344,16 +334,18 @@ func (a *App) UpdateSupplierPayment(id string, payment SupplierPayment) (*Suppli
 
 	// SECURITY FIX: Validate amount against supplier invoice outstanding balance
 	var invoice SupplierInvoice
-	if err := a.db.First(&invoice, "id = ?", existing.SupplierInvoiceID).Error; err != nil {
+	if err := tx.First(&invoice, "id = ?", existing.SupplierInvoiceID).Error; err != nil {
+		tx.Rollback()
 		return nil, newError("INVOICE_NOT_FOUND", "Linked supplier invoice not found", err.Error())
 	}
 
 	// Calculate total already paid for this invoice (excluding current payment being updated)
 	var totalPaidExcludingCurrent float64
-	if err := a.db.Model(&SupplierPayment{}).
+	if err := tx.Model(&SupplierPayment{}).
 		Where("supplier_invoice_id = ? AND id != ?", existing.SupplierInvoiceID, id).
 		Select("COALESCE(SUM(amount_bhd), 0)").
 		Scan(&totalPaidExcludingCurrent).Error; err != nil {
+		tx.Rollback()
 		return nil, newError("DB_QUERY_FAILED", "Failed to calculate existing payments", err.Error())
 	}
 
@@ -375,36 +367,31 @@ func (a *App) UpdateSupplierPayment(id string, payment SupplierPayment) (*Suppli
 	payment.CreatedAt = existing.CreatedAt
 	payment.SupplierInvoiceID = existing.SupplierInvoiceID
 	payment.SupplierID = existing.SupplierID
+	if payment.SupplierName == "" {
+		payment.SupplierName = existing.SupplierName
+	}
+	if payment.InvoiceNumber == "" {
+		payment.InvoiceNumber = existing.InvoiceNumber
+	}
 
 	// Update payment
-	if err := a.db.Model(&existing).Updates(payment).Error; err != nil {
+	if err := tx.Model(&existing).Updates(payment).Error; err != nil {
+		tx.Rollback()
 		return nil, newError("DB_UPDATE_FAILED", "Failed to update supplier payment", err.Error())
 	}
 
-	// Recalculate invoice payment status if amount changed
-	if payment.AmountBHD != existing.AmountBHD {
-		var newTotalPaid float64
-		if err := a.db.Model(&SupplierPayment{}).
-			Where("supplier_invoice_id = ?", existing.SupplierInvoiceID).
-			Select("COALESCE(SUM(amount_bhd), 0)").
-			Scan(&newTotalPaid).Error; err != nil {
-			log.Printf("WARNING: Failed to recalculate total paid for invoice %s: %v", existing.SupplierInvoiceID, err)
-		} else {
-			var newPaymentStatus string
-			if newTotalPaid >= invoice.TotalBHD-FloatingPointTolerance {
-				newPaymentStatus = "Paid"
-			} else if newTotalPaid > 0 {
-				newPaymentStatus = "Partial"
-			} else {
-				newPaymentStatus = "Unpaid"
-			}
-			if err := a.db.Model(&SupplierInvoice{}).Where("id = ?", existing.SupplierInvoiceID).
-				Update("payment_status", newPaymentStatus).Error; err != nil {
-				log.Printf("WARNING: Failed to update invoice payment status: %v", err)
-			}
-			log.Printf("AUDIT: Supplier invoice %s payment status recalculated: %s (total paid: %.3f / %.3f)",
-				invoice.InvoiceNumber, newPaymentStatus, newTotalPaid, invoice.TotalBHD)
-		}
+	state, err := a.applySupplierInvoicePaymentState(tx, existing.SupplierInvoiceID)
+	if err != nil {
+		tx.Rollback()
+		return nil, newError("DB_UPDATE_FAILED", "Failed to update linked supplier invoice payment state", err.Error())
+	}
+
+	log.Printf("AUDIT: Supplier invoice %s payment state recalculated: %s / %s (paid %.3f / %.3f)",
+		invoice.InvoiceNumber, state.InvoiceStatus, state.PaymentStatus, state.TotalPaidBHD, invoice.TotalBHD)
+
+	if err := tx.Commit().Error; err != nil {
+		tx.Rollback()
+		return nil, newError("DB_COMMIT_FAILED", "Failed to commit supplier payment update", err.Error())
 	}
 
 	// Reload
@@ -449,18 +436,15 @@ func (a *App) DeleteSupplierPayment(id string) error {
 		return newError("DB_QUERY_FAILED", "Failed to retrieve supplier payment", err.Error())
 	}
 
-	// Roll back invoice payment (add amount back to outstanding)
-	if err := tx.Model(&SupplierInvoice{}).
-		Where("id = ?", payment.SupplierInvoiceID).
-		UpdateColumn("amount_paid_bhd", gorm.Expr("amount_paid_bhd - ?", payment.AmountBHD)).Error; err != nil {
-		tx.Rollback()
-		return newError("DB_UPDATE_FAILED", "Failed to roll back invoice payment", err.Error())
-	}
-
 	// Delete payment
 	if err := tx.Delete(&payment).Error; err != nil {
 		tx.Rollback()
 		return newError("DB_DELETE_FAILED", "Failed to delete supplier payment", err.Error())
+	}
+
+	if _, err := a.applySupplierInvoicePaymentState(tx, payment.SupplierInvoiceID); err != nil {
+		tx.Rollback()
+		return newError("DB_UPDATE_FAILED", "Failed to recalculate linked supplier invoice after deleting payment", err.Error())
 	}
 
 	// Commit transaction

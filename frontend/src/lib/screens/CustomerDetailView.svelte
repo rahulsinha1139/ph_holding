@@ -5,8 +5,7 @@
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import ContextTaskModal from '$lib/components/ContextTaskModal.svelte';
   import { toast } from '$lib/stores/toasts';
-  import { formatBHDValue } from '$lib/utils/formatters';
-  import { GetCustomerFullProfile, AddCustomerNote, UpdateCustomer, AddCustomerContact, DeleteCustomer } from '../../../wailsjs/go/main/App';
+  import { GetCustomerFullProfile, AddCustomerNote, UpdateCustomer, AddCustomerContact, UpdateCustomerContact, DeleteCustomerContact, DeleteCustomer } from '../../../wailsjs/go/main/App';
   import type { main } from '../../../wailsjs/go/models';
 
   export let customerId: string;
@@ -24,7 +23,22 @@
   let editForm: any = {};
   let saveLoading = false;
   let showContactModal = false;
-  let contactForm = { contact_name: '', job_title: '', email: '', phone: '', address: '', is_primary_contact: false };
+  let contactManagerMode = false;
+  let editingContactId = '';
+  let contactsScrollEl: HTMLDivElement;
+  const emptyContactForm = () => ({
+    contact_name: '',
+    job_title: '',
+    email: '',
+    phone: '',
+    address: '',
+    is_primary_contact: false,
+    is_decision_maker: false,
+    decision_role: '',
+    reports_to_contact_id: '',
+    reports_to_name: '',
+  });
+  let contactForm = emptyContactForm();
   let showDeleteConfirm = false;
   let deleteLoading = false;
   let customerDeleted = false;
@@ -122,18 +136,93 @@
   async function saveContact() {
     if (!contactForm.contact_name.trim()) { toast.warning('Name is required'); return; }
     try {
-      await AddCustomerContact({ ...contactForm, customer_id: customerId } as any);
-      toast.success('Contact added');
+      const payload = { ...contactForm, customer_id: customerId, id: editingContactId } as any;
+      if (editingContactId) {
+        await UpdateCustomerContact(payload);
+        toast.success('Contact updated');
+      } else {
+        await AddCustomerContact(payload);
+        toast.success('Contact added');
+      }
       showContactModal = false;
-      contactForm = { contact_name: '', job_title: '', email: '', phone: '', address: '', is_primary_contact: false };
+      editingContactId = '';
+      contactForm = emptyContactForm();
       await loadProfile();
     } catch (err) {
-      toast.danger('Failed to add contact: ' + err);
+      toast.danger('Failed to save contact: ' + err);
     }
+  }
+
+  function openAddContact() {
+    editingContactId = '';
+    contactForm = emptyContactForm();
+    showContactModal = true;
+  }
+
+  function editContact(contact: any) {
+    editingContactId = contact?.id || '';
+    contactForm = {
+      contact_name: contact?.contact_name || '',
+      job_title: contact?.job_title || '',
+      email: contact?.email || '',
+      phone: contact?.phone || '',
+      address: contact?.address || '',
+      is_primary_contact: Boolean(contact?.is_primary_contact),
+      is_decision_maker: Boolean(contact?.is_decision_maker),
+      decision_role: contact?.decision_role || '',
+      reports_to_contact_id: contact?.reports_to_contact_id || '',
+      reports_to_name: contact?.reports_to_name || '',
+    };
+    showContactModal = true;
+  }
+
+  async function deleteContact(contact: any) {
+    if (!contact?.id || !confirm(`Delete contact ${contact.contact_name || ''}?`)) return;
+    try {
+      await DeleteCustomerContact(contact.id);
+      toast.success('Contact removed');
+      await loadProfile();
+    } catch (err) {
+      toast.danger('Failed to remove contact: ' + err);
+    }
+  }
+
+  function scrollContacts(direction: number) {
+    contactsScrollEl?.scrollBy({ left: direction * 360, behavior: 'smooth' });
+  }
+
+  function customerContacts(): any[] {
+    return (profile?.contacts || []) as any[];
   }
 
   function goBack() {
     dispatch('back');
+  }
+
+  function closeDeleteConfirm() {
+    showDeleteConfirm = false;
+  }
+
+  function closeNoteModal() {
+    showNoteModal = false;
+  }
+
+  function closeContactModal() {
+    showContactModal = false;
+    editingContactId = '';
+    contactForm = emptyContactForm();
+  }
+
+  function handleBackdropClick(event: MouseEvent, closeAction: () => void) {
+    if (event.target !== event.currentTarget) return;
+    closeAction();
+  }
+
+  function handleBackdropKeydown(event: KeyboardEvent, closeAction: () => void) {
+    if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      closeAction();
+    }
   }
 
   function formatDate(date: any): string {
@@ -151,7 +240,23 @@
   }
 
   function formatCurrency(value: number): string {
-    return formatBHDValue(value || 0);
+    return Number(value || 0).toLocaleString('en-US', {
+      minimumFractionDigits: 3,
+      maximumFractionDigits: 3
+    });
+  }
+
+  function getInvoiceDisplayStatus(status: string): string {
+    switch (String(status || '')) {
+      case 'Sent':
+        return 'Open';
+      case 'PartiallyPaid':
+        return 'Partial';
+      case 'Paid':
+        return 'Settled';
+      default:
+        return String(status || '');
+    }
   }
 
   onMount(loadProfile);
@@ -192,11 +297,16 @@
     <div class="contacts-strip">
       <div class="contacts-strip-header">
         <h3 class="strip-title">CONTACTS</h3>
-        <button class="add-contact-btn-inline" on:click={() => showContactModal = true}>+ Add</button>
+        <div class="contacts-actions">
+          <button class="scroll-contact-btn" on:click={() => scrollContacts(-1)} aria-label="Scroll contacts left">&lt;</button>
+          <button class="scroll-contact-btn" on:click={() => scrollContacts(1)} aria-label="Scroll contacts right">&gt;</button>
+          <button class="add-contact-btn-inline" on:click={() => contactManagerMode = !contactManagerMode}>{contactManagerMode ? 'Done' : 'Manage'}</button>
+          <button class="add-contact-btn-inline" on:click={openAddContact}>+ Add</button>
+        </div>
       </div>
-      <div class="contacts-scroll-container">
-        {#if profile.contacts?.length > 0}
-          {#each profile.contacts as contact}
+      <div class="contacts-scroll-container" bind:this={contactsScrollEl}>
+        {#if customerContacts().length > 0}
+          {#each customerContacts() as contact}
             <div class="contact-card">
               <div class="contact-card-avatar">
                 {contact.contact_name?.charAt(0)?.toUpperCase() || '?'}
@@ -204,11 +314,20 @@
               <div class="contact-card-info">
                 <span class="contact-card-name">
                   {contact.contact_name}
-                  {#if contact.is_primary_contact}<span class="primary-tag">Primary</span>{/if}
+                {#if contact.is_primary_contact}<span class="primary-tag">Primary</span>{/if}
+                  {#if contact.is_decision_maker}<span class="primary-tag decision">Decision</span>{/if}
                 </span>
                 {#if contact.job_title}<span class="contact-card-role">{contact.job_title}</span>{/if}
+                {#if contact.decision_role}<span class="contact-card-detail">{contact.decision_role}</span>{/if}
+                {#if contact.reports_to_name}<span class="contact-card-detail">Reports to {contact.reports_to_name}</span>{/if}
                 {#if contact.email}<span class="contact-card-detail">{contact.email}</span>{/if}
                 {#if contact.phone}<span class="contact-card-detail">{contact.phone}</span>{/if}
+                {#if contactManagerMode}
+                  <div class="contact-card-actions">
+                    <button on:click={() => editContact(contact)}>Edit</button>
+                    <button class="danger-link" on:click={() => deleteContact(contact)}>Delete</button>
+                  </div>
+                {/if}
               </div>
             </div>
           {/each}
@@ -257,11 +376,11 @@
               <span class="value">{profile.payment_terms_days} days</span>
             </div>
             <div class="info-item">
-              <span class="label">Open Exposure</span>
+              <span class="label">Open Receivables</span>
               <span class="value">{formatCurrency(profile.outstanding_bhd)} BHD</span>
             </div>
             <div class="info-item">
-              <span class="label">Overdue</span>
+              <span class="label">Overdue Receivables</span>
               <span class="value" class:danger={profile.overdue_bhd > 0}>{formatCurrency(profile.overdue_bhd)} BHD</span>
             </div>
             <div class="info-item">
@@ -293,37 +412,37 @@
                 <h3 class="section-title">EDIT CUSTOMER</h3>
                 <div class="edit-form">
                   <div class="form-row">
-                    <div class="form-group"><label for="customer-detail-business-name">Business Name</label><input id="customer-detail-business-name" type="text" bind:value={editForm.business_name} /></div>
-                    <div class="form-group"><label for="customer-detail-customer-code">Customer Code</label><input id="customer-detail-customer-code" type="text" bind:value={editForm.customer_code} /></div>
+                    <div class="form-group"><label for="customer-business-name">Business Name</label><input id="customer-business-name" type="text" bind:value={editForm.business_name} /></div>
+                    <div class="form-group"><label for="customer-code">Customer Code</label><input id="customer-code" type="text" bind:value={editForm.customer_code} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label for="customer-detail-customer-type">Customer Type</label><input id="customer-detail-customer-type" type="text" bind:value={editForm.customer_type} /></div>
-                    <div class="form-group"><label for="customer-detail-industry">Industry</label><input id="customer-detail-industry" type="text" bind:value={editForm.industry} /></div>
+                    <div class="form-group"><label for="customer-type">Customer Type</label><input id="customer-type" type="text" bind:value={editForm.customer_type} /></div>
+                    <div class="form-group"><label for="customer-industry">Industry</label><input id="customer-industry" type="text" bind:value={editForm.industry} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label for="customer-detail-address">Address</label><input id="customer-detail-address" type="text" bind:value={editForm.address_line1} /></div>
-                    <div class="form-group"><label for="customer-detail-city">City</label><input id="customer-detail-city" type="text" bind:value={editForm.city} /></div>
+                    <div class="form-group"><label for="customer-address">Address</label><input id="customer-address" type="text" bind:value={editForm.address_line1} /></div>
+                    <div class="form-group"><label for="customer-city">City</label><input id="customer-city" type="text" bind:value={editForm.city} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label for="customer-detail-country">Country</label><input id="customer-detail-country" type="text" bind:value={editForm.country} /></div>
-                    <div class="form-group"><label for="customer-detail-trn">TRN</label><input id="customer-detail-trn" type="text" bind:value={editForm.trn} /></div>
+                    <div class="form-group"><label for="customer-country">Country</label><input id="customer-country" type="text" bind:value={editForm.country} /></div>
+                    <div class="form-group"><label for="customer-trn">TRN</label><input id="customer-trn" type="text" bind:value={editForm.trn} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label for="customer-detail-phone">Phone</label><input id="customer-detail-phone" type="text" bind:value={editForm.phone} placeholder="+973 17 XXXXXX" /></div>
-                    <div class="form-group"><label for="customer-detail-mobile-number">Mobile Number</label><input id="customer-detail-mobile-number" type="text" bind:value={editForm.mobile_number} placeholder="+973 3XXX XXXX" /></div>
+                    <div class="form-group"><label for="customer-phone">Phone</label><input id="customer-phone" type="text" bind:value={editForm.phone} placeholder="+973 17 XXXXXX" /></div>
+                    <div class="form-group"><label for="customer-mobile">Mobile Number</label><input id="customer-mobile" type="text" bind:value={editForm.mobile_number} placeholder="+973 3XXX XXXX" /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label for="customer-detail-email">Email</label><input id="customer-detail-email" type="email" bind:value={editForm.email} placeholder="email@company.com" /></div>
-                    <div class="form-group"><label for="customer-detail-vat-number">VAT Number</label><input id="customer-detail-vat-number" type="text" bind:value={editForm.vat_number} /></div>
+                    <div class="form-group"><label for="customer-email">Email</label><input id="customer-email" type="email" bind:value={editForm.email} placeholder="email@company.com" /></div>
+                    <div class="form-group"><label for="customer-vat">VAT Number</label><input id="customer-vat" type="text" bind:value={editForm.vat_number} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label for="customer-detail-payment-grade">Payment Grade</label>
-                      <select id="customer-detail-payment-grade" bind:value={editForm.payment_grade}>
+                    <div class="form-group"><label for="customer-payment-grade">Payment Grade</label>
+                      <select id="customer-payment-grade" bind:value={editForm.payment_grade}>
                         <option value="A">A</option><option value="B">B</option>
                         <option value="C">C</option><option value="D">D</option>
                       </select>
                     </div>
-                    <div class="form-group"><label for="customer-detail-payment-terms-days">Payment Terms (Days)</label><input id="customer-detail-payment-terms-days" type="number" bind:value={editForm.payment_terms_days} /></div>
+                    <div class="form-group"><label for="customer-payment-terms">Payment Terms (Days)</label><input id="customer-payment-terms" type="number" bind:value={editForm.payment_terms_days} /></div>
                   </div>
                   <div class="form-actions">
                     <Button variant="secondary" on:click={cancelEdit} disabled={saveLoading}>Cancel</Button>
@@ -337,9 +456,9 @@
             <div class="metrics-grid">
               <Card padding="md">
                 <div class="metric">
-                  <span class="metric-label">Total Business</span>
+                  <span class="metric-label">Commercial Value</span>
                   <span class="metric-value">{formatCurrency(profile.total_revenue)}</span>
-                  <span class="metric-currency">BHD</span>
+                  <span class="metric-currency">BHD all time</span>
                 </div>
               </Card>
               <Card padding="md">
@@ -364,7 +483,7 @@
             </div>
 
             <Card padding="md">
-              <h3 class="section-title">EXPOSURE AGING</h3>
+              <h3 class="section-title">AR AGING · OPEN INVOICES ONLY</h3>
               <div class="aging-grid">
                 <div class="aging-item">
                   <span class="aging-label">Current</span>
@@ -414,7 +533,7 @@
 
           {:else if activeTab === 'invoices'}
             <Card padding="md">
-              <h3 class="section-title">RECENT INVOICES</h3>
+              <h3 class="section-title">RECENT BILLINGS</h3>
               {#if profile.recent_invoices?.length > 0}
                 <div class="list">
                   {#each profile.recent_invoices as invoice}
@@ -424,14 +543,20 @@
                         <span class="item-date">{formatDate(invoice.invoice_date)}</span>
                       </div>
                       <div class="item-meta">
-                        <span class="item-status status-{invoice.status?.toLowerCase()}">{invoice.status}</span>
-                        <span class="item-amount">{formatCurrency(invoice.grand_total_bhd)} BHD</span>
+                        <span class="item-status status-{invoice.status?.toLowerCase()}">{getInvoiceDisplayStatus(invoice.status)}</span>
+                        <span class="item-amount" class:open-balance={(invoice.outstanding_bhd || 0) > 0}>
+                          {#if (invoice.outstanding_bhd || 0) > 0}
+                            {formatCurrency(invoice.outstanding_bhd)} BHD open
+                          {:else}
+                            {formatCurrency(invoice.grand_total_bhd)} BHD settled
+                          {/if}
+                        </span>
                       </div>
                     </div>
                   {/each}
                 </div>
               {:else}
-                <p class="empty-text">No invoices found</p>
+                <p class="empty-text">No billings found</p>
               {/if}
             </Card>
 
@@ -492,16 +617,21 @@
   {/if}
 
   {#if showDeleteConfirm}
-    <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <!-- svelte-ignore a11y-no-static-element-interactions -->
-    <div class="delete-overlay" on:click={() => showDeleteConfirm = false}>
-      <div class="delete-modal" on:click|stopPropagation>
-        <h3 style="margin: 0 0 12px 0; color: #e74c3c;">Delete Customer</h3>
+    <div
+      class="delete-overlay"
+      role="button"
+      tabindex="0"
+      aria-label="Close delete customer confirmation"
+      on:click={(event) => handleBackdropClick(event, closeDeleteConfirm)}
+      on:keydown={(event) => handleBackdropKeydown(event, closeDeleteConfirm)}
+    >
+      <div class="delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-customer-title">
+        <h3 id="delete-customer-title" style="margin: 0 0 12px 0; color: #e74c3c;">Delete Customer</h3>
         <p style="margin: 0 0 20px 0; color: var(--text-secondary);">
           Are you sure you want to delete <strong>{profile.business_name}</strong>? This action will soft-delete the customer record.
         </p>
         <div style="display: flex; gap: 8px; justify-content: flex-end;">
-          <Button variant="secondary" size="sm" on:click={() => showDeleteConfirm = false} disabled={deleteLoading}>Cancel</Button>
+          <Button variant="secondary" size="sm" on:click={closeDeleteConfirm} disabled={deleteLoading}>Cancel</Button>
           <Button variant="primary" size="sm" on:click={handleDeleteCustomer} disabled={deleteLoading} style="background: #e74c3c; border-color: #e74c3c;">
             {deleteLoading ? 'Deleting...' : 'Delete'}
           </Button>
@@ -512,14 +642,19 @@
 </div>
 
 {#if showNoteModal}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
-  <div class="modal-backdrop" on:click={() => showNoteModal = false}>
-    <div class="modal" on:click|stopPropagation>
-      <h3>Add Note</h3>
+  <div
+    class="modal-backdrop"
+    role="button"
+    tabindex="0"
+    aria-label="Close add note modal"
+    on:click={(event) => handleBackdropClick(event, closeNoteModal)}
+    on:keydown={(event) => handleBackdropKeydown(event, closeNoteModal)}
+  >
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-note-title">
+      <h3 id="add-note-title">Add Note</h3>
       <div class="form-group">
-        <label for="customer-note-type">Type</label>
-        <select id="customer-note-type" bind:value={newNoteType}>
+        <label for="note-type">Type</label>
+        <select id="note-type" bind:value={newNoteType}>
           <option value="general">General</option>
           <option value="delivery">Delivery</option>
           <option value="payment">Payment</option>
@@ -527,11 +662,11 @@
         </select>
       </div>
       <div class="form-group">
-        <label for="customer-note-content">Content</label>
-        <textarea id="customer-note-content" bind:value={newNoteContent} rows="4" placeholder="Enter note..."></textarea>
+        <label for="note-content">Content</label>
+        <textarea id="note-content" bind:value={newNoteContent} rows="4" placeholder="Enter note..."></textarea>
       </div>
       <div class="modal-actions">
-        <Button variant="ghost" on:click={() => showNoteModal = false}>Cancel</Button>
+        <Button variant="ghost" on:click={closeNoteModal}>Cancel</Button>
         <Button variant="primary" on:click={saveNote}>Save Note</Button>
       </div>
     </div>
@@ -539,37 +674,65 @@
 {/if}
 
 {#if showContactModal}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
-  <div class="modal-backdrop" on:click={() => showContactModal = false}>
-    <div class="modal" on:click|stopPropagation>
-      <h3>Add Contact</h3>
+  <div
+    class="modal-backdrop"
+    role="button"
+    tabindex="0"
+    aria-label="Close contact modal"
+    on:click={(event) => handleBackdropClick(event, closeContactModal)}
+    on:keydown={(event) => handleBackdropKeydown(event, closeContactModal)}
+  >
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-contact-title">
+      <h3 id="add-contact-title">{editingContactId ? 'Edit Contact' : 'Add Contact'}</h3>
       <div class="form-group">
-        <label for="customer-contact-name">Name *</label>
-        <input id="customer-contact-name" type="text" bind:value={contactForm.contact_name} placeholder="Contact person name" />
+        <label for="contact-name">Name *</label>
+        <input id="contact-name" type="text" bind:value={contactForm.contact_name} placeholder="Contact person name" />
       </div>
       <div class="form-group">
-        <label for="customer-contact-job-title">Job Title</label>
-        <input id="customer-contact-job-title" type="text" bind:value={contactForm.job_title} placeholder="e.g. Procurement Manager" />
+        <label for="contact-job-title">Job Title</label>
+        <input id="contact-job-title" type="text" bind:value={contactForm.job_title} placeholder="e.g. Procurement Manager" />
       </div>
       <div class="form-group">
-        <label for="customer-contact-email">Email</label>
-        <input id="customer-contact-email" type="email" bind:value={contactForm.email} placeholder="email@company.com" />
+        <label for="contact-email">Email</label>
+        <input id="contact-email" type="email" bind:value={contactForm.email} placeholder="email@company.com" />
       </div>
       <div class="form-group">
-        <label for="customer-contact-phone">Phone</label>
-        <input id="customer-contact-phone" type="text" bind:value={contactForm.phone} placeholder="+973 1234 5678" />
+        <label for="contact-phone">Phone</label>
+        <input id="contact-phone" type="text" bind:value={contactForm.phone} placeholder="+973 1234 5678" />
       </div>
       <div class="form-group">
-        <label for="customer-contact-address">Address</label>
-        <textarea id="customer-contact-address" bind:value={contactForm.address} rows="2" placeholder="Address"></textarea>
+        <label for="contact-address">Address</label>
+        <textarea id="contact-address" bind:value={contactForm.address} rows="2" placeholder="Address"></textarea>
       </div>
       <div class="form-group">
-        <label for="customer-contact-primary"><input id="customer-contact-primary" type="checkbox" bind:checked={contactForm.is_primary_contact} /> Primary Contact</label>
+        <label for="contact-decision-role">Decision Role</label>
+        <select id="contact-decision-role" bind:value={contactForm.decision_role}>
+          <option value="">Not set</option>
+          <option value="Decision Maker">Decision Maker</option>
+          <option value="Influencer">Influencer</option>
+          <option value="Technical Evaluator">Technical Evaluator</option>
+          <option value="Finance Approver">Finance Approver</option>
+          <option value="End User">End User</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="contact-reports-to">Reports To</label>
+        <input id="contact-reports-to" type="text" bind:value={contactForm.reports_to_name} placeholder="Manager or decision chain" />
+      </div>
+      <div class="form-group">
+        <label for="contact-primary">
+          <input id="contact-primary" type="checkbox" bind:checked={contactForm.is_primary_contact} /> Primary Contact
+        </label>
+      </div>
+      <div class="form-group">
+        <label for="contact-decision-maker">
+          <input id="contact-decision-maker" type="checkbox" bind:checked={contactForm.is_decision_maker} /> Decision Maker
+        </label>
       </div>
       <div class="modal-actions">
-        <Button variant="ghost" on:click={() => showContactModal = false}>Cancel</Button>
-        <Button variant="primary" on:click={saveContact}>Save Contact</Button>
+        <Button variant="ghost" on:click={closeContactModal}>Cancel</Button>
+        <Button variant="primary" on:click={saveContact}>{editingContactId ? 'Update Contact' : 'Save Contact'}</Button>
       </div>
     </div>
   </div>
@@ -639,6 +802,7 @@
     align-items: center;
     margin-bottom: 12px;
   }
+  .contacts-actions { display: flex; align-items: center; gap: 6px; }
 
   .strip-title {
     font-size: 11px;
@@ -662,6 +826,17 @@
   .add-contact-btn-inline:hover {
     border-color: var(--brand-indigo, #1D1D1F);
     color: var(--text-primary);
+  }
+
+  .scroll-contact-btn {
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-weight: 700;
   }
 
   .contacts-scroll-container {
@@ -743,6 +918,11 @@
     text-transform: uppercase;
   }
 
+  .primary-tag.decision {
+    background: #eaf7ee;
+    color: #2f7d42;
+  }
+
   .contact-card-role {
     font-size: 12px;
     color: var(--text-secondary);
@@ -755,6 +935,28 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .contact-card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .contact-card-actions button {
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--surface);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 4px 8px;
+  }
+
+  .contact-card-actions .danger-link {
+    color: #b42318;
+    border-color: #f2c7c3;
+    background: #fff7f6;
   }
 
   .empty-contact {
@@ -800,9 +1002,12 @@
   .item-date { font-size: 12px; color: var(--text-muted); }
   .item-meta { display: flex; align-items: center; gap: 16px; }
   .item-status { font-size: 12px; padding: 2px 8px; background: var(--surface); border-radius: 4px; }
+  .item-status.status-sent { color: #3B82F6; }
   .item-status.status-paid { color: #10B981; }
+  .item-status.status-partiallypaid { color: #F59E0B; }
   .item-status.status-overdue { color: #EF4444; }
   .item-amount { font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+  .item-amount.open-balance { color: #F59E0B; }
 
   .rfq-stats { display: flex; gap: 24px; margin-bottom: 16px; font-size: 14px; color: var(--text-secondary); }
 
@@ -815,7 +1020,7 @@
   .note-content { margin: 0; font-size: 14px; line-height: 1.5; }
 
   .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-  .modal { background: var(--surface); padding: 24px; border-radius: 12px; width: 400px; }
+  .modal { background: var(--surface); padding: 24px; border-radius: 12px; width: 440px; max-height: 88vh; overflow-y: auto; }
   .modal h3 { margin: 0 0 16px 0; }
   .form-group { margin-bottom: 16px; }
   .form-group label { display: block; font-size: 12px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; }

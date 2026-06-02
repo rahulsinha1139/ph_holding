@@ -4,8 +4,7 @@
   import Button from '$lib/components/ui/Button.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
   import { toast } from '$lib/stores/toasts';
-  import { formatBHDValue } from '$lib/utils/formatters';
-  import { GetSupplierFullProfile, AddSupplierNote, AddSupplierIssue, ResolveSupplierIssue, UpdateSupplier, AddSupplierContact, ListSupplierContacts } from '../../../wailsjs/go/main/App';
+  import { GetSupplierFullProfile, AddSupplierNote, AddSupplierIssue, ResolveSupplierIssue, UpdateSupplier, AddSupplierContact, UpdateSupplierContact, DeleteSupplierContact, ListSupplierContacts } from '../../../wailsjs/go/main/App';
   import type { main } from '../../../wailsjs/go/models';
 
   export let supplierId: string;
@@ -28,7 +27,55 @@
   let saveLoading = false;
   let supplierContacts: any[] = [];
   let showContactModal = false;
-  let contactForm = { contact_name: '', job_title: '', email: '', phone: '', address: '', is_primary_contact: false };
+  let contactManagerMode = false;
+  let editingContactId = '';
+  let contactsScrollEl: HTMLDivElement;
+  const emptyContactForm = () => ({
+    contact_name: '',
+    job_title: '',
+    email: '',
+    phone: '',
+    address: '',
+    is_primary_contact: false,
+    is_decision_maker: false,
+    decision_role: '',
+    reports_to_contact_id: '',
+    reports_to_name: '',
+  });
+  let contactForm = emptyContactForm();
+
+  const noteTypeId = 'supplier-note-type';
+  const noteContentId = 'supplier-note-content';
+  const issueOrderRefId = 'supplier-issue-order-ref';
+  const issueDescriptionId = 'supplier-issue-description';
+  const issueCostId = 'supplier-issue-cost';
+  const contactNameId = 'supplier-contact-name';
+  const contactJobTitleId = 'supplier-contact-job-title';
+  const contactEmailId = 'supplier-contact-email';
+  const contactPhoneId = 'supplier-contact-phone';
+  const contactAddressId = 'supplier-contact-address';
+  const contactPrimaryId = 'supplier-contact-primary';
+
+  function getInvoiceOpenBalance(invoice: any): number {
+    return Number(invoice?.outstanding_bhd || 0) || 0;
+  }
+
+  function getInvoiceSettlementLabel(invoice: any): string {
+    const status = String(invoice?.status || '');
+    const paymentStatus = String(invoice?.payment_status || '');
+    const outstanding = getInvoiceOpenBalance(invoice);
+
+    if (status === 'Dispute') return 'Disputed';
+    if (outstanding <= 0) return 'Settled';
+    if (paymentStatus === 'Partial') return 'Partial';
+    return 'Open';
+  }
+
+  function getInvoiceDisplayAmount(invoice: any): number {
+    const outstanding = getInvoiceOpenBalance(invoice);
+    if (outstanding > 0) return outstanding;
+    return Number(invoice?.total_bhd || 0) || 0;
+  }
 
   function buildSupplierUpdatePayload(source: any): any {
     return {
@@ -115,14 +162,65 @@
   async function saveContact() {
     if (!contactForm.contact_name.trim()) { toast.warning('Name is required'); return; }
     try {
-      await AddSupplierContact({ ...contactForm, supplier_id: supplierId } as any);
-      toast.success('Contact added');
+      const payload = { ...contactForm, supplier_id: supplierId, id: editingContactId } as any;
+      if (editingContactId) {
+        await UpdateSupplierContact(payload);
+        toast.success('Contact updated');
+      } else {
+        await AddSupplierContact(payload);
+        toast.success('Contact added');
+      }
       showContactModal = false;
-      contactForm = { contact_name: '', job_title: '', email: '', phone: '', address: '', is_primary_contact: false };
+      editingContactId = '';
+      contactForm = emptyContactForm();
       await loadContacts();
     } catch (err) {
-      toast.danger('Failed to add contact: ' + err);
+      toast.danger('Failed to save contact: ' + err);
     }
+  }
+
+  function openAddContact() {
+    editingContactId = '';
+    contactForm = emptyContactForm();
+    showContactModal = true;
+  }
+
+  function editContact(contact: any) {
+    editingContactId = contact?.id || '';
+    contactForm = {
+      contact_name: contact?.contact_name || '',
+      job_title: contact?.job_title || '',
+      email: contact?.email || '',
+      phone: contact?.phone || '',
+      address: contact?.address || '',
+      is_primary_contact: Boolean(contact?.is_primary_contact),
+      is_decision_maker: Boolean(contact?.is_decision_maker),
+      decision_role: contact?.decision_role || '',
+      reports_to_contact_id: contact?.reports_to_contact_id || '',
+      reports_to_name: contact?.reports_to_name || '',
+    };
+    showContactModal = true;
+  }
+
+  async function deleteContact(contact: any) {
+    if (!contact?.id || !confirm(`Delete contact ${contact.contact_name || ''}?`)) return;
+    try {
+      await DeleteSupplierContact(contact.id);
+      toast.success('Contact removed');
+      await loadContacts();
+    } catch (err) {
+      toast.danger('Failed to remove contact: ' + err);
+    }
+  }
+
+  function closeContactModal() {
+    showContactModal = false;
+    editingContactId = '';
+    contactForm = emptyContactForm();
+  }
+
+  function scrollContacts(direction: number) {
+    contactsScrollEl?.scrollBy({ left: direction * 360, behavior: 'smooth' });
   }
 
   async function saveNote() {
@@ -194,7 +292,10 @@
   }
 
   function formatCurrency(value: number): string {
-    return formatBHDValue(value || 0);
+    return Number(value || 0).toLocaleString('en-US', {
+      minimumFractionDigits: 3,
+      maximumFractionDigits: 3
+    });
   }
 
   onMount(loadProfile);
@@ -233,9 +334,14 @@
     <div class="contacts-strip">
       <div class="contacts-strip-header">
         <h3 class="strip-title">CONTACTS</h3>
-        <button class="add-contact-btn-inline" on:click={() => showContactModal = true}>+ Add</button>
+        <div class="contacts-actions">
+          <button class="scroll-contact-btn" on:click={() => scrollContacts(-1)} aria-label="Scroll contacts left">&lt;</button>
+          <button class="scroll-contact-btn" on:click={() => scrollContacts(1)} aria-label="Scroll contacts right">&gt;</button>
+          <button class="add-contact-btn-inline" on:click={() => contactManagerMode = !contactManagerMode}>{contactManagerMode ? 'Done' : 'Manage'}</button>
+          <button class="add-contact-btn-inline" on:click={openAddContact}>+ Add</button>
+        </div>
       </div>
-      <div class="contacts-scroll-container">
+      <div class="contacts-scroll-container" bind:this={contactsScrollEl}>
         {#if supplierContacts.length > 0}
           {#each supplierContacts as contact}
             <div class="contact-card">
@@ -246,10 +352,19 @@
                 <span class="contact-card-name">
                   {contact.contact_name}
                   {#if contact.is_primary_contact}<span class="primary-tag">Primary</span>{/if}
+                  {#if contact.is_decision_maker}<span class="primary-tag decision">Decision</span>{/if}
                 </span>
                 {#if contact.job_title}<span class="contact-card-role">{contact.job_title}</span>{/if}
+                {#if contact.decision_role}<span class="contact-card-detail">{contact.decision_role}</span>{/if}
+                {#if contact.reports_to_name}<span class="contact-card-detail">Reports to {contact.reports_to_name}</span>{/if}
                 {#if contact.email}<span class="contact-card-detail">{contact.email}</span>{/if}
                 {#if contact.phone}<span class="contact-card-detail">{contact.phone}</span>{/if}
+                {#if contactManagerMode}
+                  <div class="contact-card-actions">
+                    <button on:click={() => editContact(contact)}>Edit</button>
+                    <button class="danger-link" on:click={() => deleteContact(contact)}>Delete</button>
+                  </div>
+                {/if}
               </div>
             </div>
           {/each}
@@ -374,30 +489,30 @@
                 <h3 class="section-title">EDIT SUPPLIER</h3>
                 <div class="edit-form">
                   <div class="form-row">
-                    <div class="form-group"><label for="supplier-detail-name">Supplier Name</label><input id="supplier-detail-name" type="text" bind:value={editForm.supplier_name} /></div>
-                    <div class="form-group"><label for="supplier-detail-code">Supplier Code</label><input id="supplier-detail-code" type="text" bind:value={editForm.supplier_code} /></div>
+                    <div class="form-group"><label for="supplier-name">Supplier Name</label><input id="supplier-name" type="text" bind:value={editForm.supplier_name} /></div>
+                    <div class="form-group"><label for="supplier-code">Supplier Code</label><input id="supplier-code" type="text" bind:value={editForm.supplier_code} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label for="supplier-detail-primary-contact">Primary Contact</label><input id="supplier-detail-primary-contact" type="text" bind:value={editForm.primary_contact} /></div>
-                    <div class="form-group"><label for="supplier-detail-email">Email</label><input id="supplier-detail-email" type="email" bind:value={editForm.email} /></div>
+                    <div class="form-group"><label for="supplier-primary-contact">Primary Contact</label><input id="supplier-primary-contact" type="text" bind:value={editForm.primary_contact} /></div>
+                    <div class="form-group"><label for="supplier-email">Email</label><input id="supplier-email" type="email" bind:value={editForm.email} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label for="supplier-detail-phone">Phone</label><input id="supplier-detail-phone" type="text" bind:value={editForm.phone} /></div>
-                    <div class="form-group"><label for="supplier-detail-country">Country</label><input id="supplier-detail-country" type="text" bind:value={editForm.country} /></div>
+                    <div class="form-group"><label for="supplier-phone">Phone</label><input id="supplier-phone" type="text" bind:value={editForm.phone} /></div>
+                    <div class="form-group"><label for="supplier-country">Country</label><input id="supplier-country" type="text" bind:value={editForm.country} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label for="supplier-detail-payment-terms">Payment Terms</label>
-                      <select id="supplier-detail-payment-terms" bind:value={editForm.payment_terms}>
+                    <div class="form-group"><label for="supplier-payment-terms">Payment Terms</label>
+                      <select id="supplier-payment-terms" bind:value={editForm.payment_terms}>
                         <option value="Net 30">Net 30</option><option value="Net 60">Net 60</option>
                         <option value="Net 90">Net 90</option><option value="CIA">CIA</option>
                         <option value="COD">COD</option><option value="LC">LC</option>
                       </select>
                     </div>
-                    <div class="form-group"><label for="supplier-detail-lead-time-days">Lead Time (Days)</label><input id="supplier-detail-lead-time-days" type="number" bind:value={editForm.lead_time_days} /></div>
+                    <div class="form-group"><label for="supplier-lead-time">Lead Time (Days)</label><input id="supplier-lead-time" type="number" bind:value={editForm.lead_time_days} /></div>
                   </div>
                   <div class="form-row">
-                    <div class="form-group"><label for="supplier-detail-address">Address</label><input id="supplier-detail-address" type="text" bind:value={editForm.address} /></div>
-                    <div class="form-group"><label for="supplier-detail-tax-id">Tax ID</label><input id="supplier-detail-tax-id" type="text" bind:value={editForm.tax_id} /></div>
+                    <div class="form-group"><label for="supplier-address">Address</label><input id="supplier-address" type="text" bind:value={editForm.address} /></div>
+                    <div class="form-group"><label for="supplier-tax-id">Tax ID</label><input id="supplier-tax-id" type="text" bind:value={editForm.tax_id} /></div>
                   </div>
                   <div class="form-actions">
                     <Button variant="secondary" on:click={cancelEdit} disabled={saveLoading}>Cancel</Button>
@@ -440,11 +555,11 @@
               <h3 class="section-title">PAYABLES</h3>
               <div class="aging-grid">
                 <div class="aging-item">
-                  <span class="aging-label">Outstanding</span>
+                  <span class="aging-label">Open Payables</span>
                   <span class="aging-value">{formatCurrency(profile.outstanding_bhd)} BHD</span>
                 </div>
                 <div class="aging-item">
-                  <span class="aging-label">Overdue</span>
+                  <span class="aging-label">Overdue Payables</span>
                   <span class="aging-value" class:danger={profile.overdue_bhd > 0}>{formatCurrency(profile.overdue_bhd)} BHD</span>
                 </div>
               </div>
@@ -486,8 +601,8 @@
                         <span class="item-date">{formatDate(invoice.invoice_date)}</span>
                       </div>
                       <div class="item-meta">
-                        <span class="item-status status-{invoice.status?.toLowerCase()}">{invoice.status}</span>
-                        <span class="item-amount">{formatCurrency(invoice.total_bhd)} BHD</span>
+                        <span class="item-status status-{getInvoiceSettlementLabel(invoice).toLowerCase()}">{getInvoiceSettlementLabel(invoice)}</span>
+                        <span class="item-amount">{formatCurrency(getInvoiceDisplayAmount(invoice))} BHD</span>
                       </div>
                     </div>
                   {/each}
@@ -568,14 +683,13 @@
 </div>
 
 {#if showNoteModal}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
-  <div class="modal-backdrop" on:click={() => showNoteModal = false}>
-    <div class="modal" on:click|stopPropagation>
+  <div class="modal-backdrop">
+    <button class="modal-backdrop-layer" type="button" aria-label="Close add note modal" on:click={() => showNoteModal = false}></button>
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Add Note">
       <h3>Add Note</h3>
       <div class="form-group">
-        <label for="supplier-note-type">Type</label>
-        <select id="supplier-note-type" bind:value={newNoteType}>
+        <label for={noteTypeId}>Type</label>
+        <select id={noteTypeId} bind:value={newNoteType}>
           <option value="general">General</option>
           <option value="delivery">Delivery</option>
           <option value="quality">Quality</option>
@@ -583,8 +697,8 @@
         </select>
       </div>
       <div class="form-group">
-        <label for="supplier-note-content">Content</label>
-        <textarea id="supplier-note-content" bind:value={newNoteContent} rows="4" placeholder="Enter note..."></textarea>
+        <label for={noteContentId}>Content</label>
+        <textarea id={noteContentId} bind:value={newNoteContent} rows="4" placeholder="Enter note..."></textarea>
       </div>
       <div class="modal-actions">
         <Button variant="ghost" on:click={() => showNoteModal = false}>Cancel</Button>
@@ -595,22 +709,21 @@
 {/if}
 
 {#if showIssueModal}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
-  <div class="modal-backdrop" on:click={() => showIssueModal = false}>
-    <div class="modal" on:click|stopPropagation>
+  <div class="modal-backdrop">
+    <button class="modal-backdrop-layer" type="button" aria-label="Close report issue modal" on:click={() => showIssueModal = false}></button>
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Report Issue">
       <h3>Report Issue</h3>
       <div class="form-group">
-        <label for="supplier-issue-order-reference">Order Reference</label>
-        <input id="supplier-issue-order-reference" type="text" bind:value={newIssueOrderRef} placeholder="PO or order number" />
+        <label for={issueOrderRefId}>Order Reference</label>
+        <input id={issueOrderRefId} type="text" bind:value={newIssueOrderRef} placeholder="PO or order number" />
       </div>
       <div class="form-group">
-        <label for="supplier-issue-description">Description</label>
-        <textarea id="supplier-issue-description" bind:value={newIssueDescription} rows="4" placeholder="Describe the issue..."></textarea>
+        <label for={issueDescriptionId}>Description</label>
+        <textarea id={issueDescriptionId} bind:value={newIssueDescription} rows="4" placeholder="Describe the issue..."></textarea>
       </div>
       <div class="form-group">
-        <label for="supplier-issue-cost-impact">Cost Impact (BHD)</label>
-        <input id="supplier-issue-cost-impact" type="number" step="0.001" bind:value={newIssueCost} placeholder="0.000" />
+        <label for={issueCostId}>Cost Impact (BHD)</label>
+        <input id={issueCostId} type="number" step="0.001" bind:value={newIssueCost} placeholder="0.000" />
       </div>
       <div class="modal-actions">
         <Button variant="ghost" on:click={() => showIssueModal = false}>Cancel</Button>
@@ -621,37 +734,57 @@
 {/if}
 
 {#if showContactModal}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
-  <div class="modal-backdrop" on:click={() => showContactModal = false}>
-    <div class="modal" on:click|stopPropagation>
-      <h3>Add Contact</h3>
+  <div class="modal-backdrop">
+    <button class="modal-backdrop-layer" type="button" aria-label="Close contact modal" on:click={closeContactModal}></button>
+    <div class="modal" role="dialog" aria-modal="true" aria-label={editingContactId ? 'Edit Contact' : 'Add Contact'}>
+      <h3>{editingContactId ? 'Edit Contact' : 'Add Contact'}</h3>
       <div class="form-group">
-        <label for="supplier-contact-name">Name *</label>
-        <input id="supplier-contact-name" type="text" bind:value={contactForm.contact_name} placeholder="Contact person name" />
+        <label for={contactNameId}>Name *</label>
+        <input id={contactNameId} type="text" bind:value={contactForm.contact_name} placeholder="Contact person name" />
       </div>
       <div class="form-group">
-        <label for="supplier-contact-job-title">Job Title</label>
-        <input id="supplier-contact-job-title" type="text" bind:value={contactForm.job_title} placeholder="e.g. Sales Manager" />
+        <label for={contactJobTitleId}>Job Title</label>
+        <input id={contactJobTitleId} type="text" bind:value={contactForm.job_title} placeholder="e.g. Sales Manager" />
       </div>
       <div class="form-group">
-        <label for="supplier-contact-email">Email</label>
-        <input id="supplier-contact-email" type="email" bind:value={contactForm.email} placeholder="email@company.com" />
+        <label for={contactEmailId}>Email</label>
+        <input id={contactEmailId} type="email" bind:value={contactForm.email} placeholder="email@company.com" />
       </div>
       <div class="form-group">
-        <label for="supplier-contact-phone">Phone</label>
-        <input id="supplier-contact-phone" type="text" bind:value={contactForm.phone} placeholder="+49 123 456 7890" />
+        <label for={contactPhoneId}>Phone</label>
+        <input id={contactPhoneId} type="text" bind:value={contactForm.phone} placeholder="+49 123 456 7890" />
       </div>
       <div class="form-group">
-        <label for="supplier-contact-address">Address</label>
-        <textarea id="supplier-contact-address" bind:value={contactForm.address} rows="2" placeholder="Address"></textarea>
+        <label for={contactAddressId}>Address</label>
+        <textarea id={contactAddressId} bind:value={contactForm.address} rows="2" placeholder="Address"></textarea>
       </div>
       <div class="form-group">
-        <label for="supplier-contact-primary"><input id="supplier-contact-primary" type="checkbox" bind:checked={contactForm.is_primary_contact} /> Primary Contact</label>
+        <label for="supplier-contact-decision-role">Decision Role</label>
+        <select id="supplier-contact-decision-role" bind:value={contactForm.decision_role}>
+          <option value="">Not set</option>
+          <option value="Decision Maker">Decision Maker</option>
+          <option value="Influencer">Influencer</option>
+          <option value="Technical Evaluator">Technical Evaluator</option>
+          <option value="Finance Approver">Finance Approver</option>
+          <option value="End User">End User</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="supplier-contact-reports-to">Reports To</label>
+        <input id="supplier-contact-reports-to" type="text" bind:value={contactForm.reports_to_name} placeholder="Manager or decision chain" />
+      </div>
+      <div class="form-group">
+        <label for={contactPrimaryId}>Primary Contact</label>
+        <input id={contactPrimaryId} type="checkbox" bind:checked={contactForm.is_primary_contact} />
+      </div>
+      <div class="form-group">
+        <label for="supplier-contact-decision-maker">Decision Maker</label>
+        <input id="supplier-contact-decision-maker" type="checkbox" bind:checked={contactForm.is_decision_maker} />
       </div>
       <div class="modal-actions">
-        <Button variant="ghost" on:click={() => showContactModal = false}>Cancel</Button>
-        <Button variant="primary" on:click={saveContact}>Save Contact</Button>
+        <Button variant="ghost" on:click={closeContactModal}>Cancel</Button>
+        <Button variant="primary" on:click={saveContact}>{editingContactId ? 'Update Contact' : 'Save Contact'}</Button>
       </div>
     </div>
   </div>
@@ -710,6 +843,7 @@
     align-items: center;
     margin-bottom: 12px;
   }
+  .contacts-actions { display: flex; align-items: center; gap: 6px; }
 
   .strip-title {
     font-size: 11px;
@@ -733,6 +867,17 @@
   .add-contact-btn-inline:hover {
     border-color: var(--brand-indigo, #1D1D1F);
     color: var(--text-primary);
+  }
+
+  .scroll-contact-btn {
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-weight: 700;
   }
 
   .contacts-scroll-container {
@@ -814,6 +959,11 @@
     text-transform: uppercase;
   }
 
+  .primary-tag.decision {
+    background: #eaf7ee;
+    color: #2f7d42;
+  }
+
   .contact-card-role {
     font-size: 12px;
     color: var(--text-secondary);
@@ -826,6 +976,28 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .contact-card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .contact-card-actions button {
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--surface);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 4px 8px;
+  }
+
+  .contact-card-actions .danger-link {
+    color: #b42318;
+    border-color: #f2c7c3;
+    background: #fff7f6;
   }
 
   .empty-contact {
@@ -898,8 +1070,9 @@
   .note-date { font-size: 12px; color: var(--text-muted); }
   .note-content { margin: 0; font-size: 14px; line-height: 1.5; }
 
-  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-  .modal { background: var(--surface); padding: 24px; border-radius: 12px; width: 500px; max-height: 80vh; overflow-y: auto; }
+  .modal-backdrop { position: fixed; inset: 0; background: transparent; display: flex; align-items: center; justify-content: center; z-index: 1000; }
+  .modal-backdrop-layer { position: absolute; inset: 0; border: 0; padding: 0; background: rgba(0,0,0,0.5); cursor: pointer; }
+  .modal { position: relative; z-index: 1; background: var(--surface); padding: 24px; border-radius: 12px; width: 500px; max-height: 80vh; overflow-y: auto; }
   .modal h3 { margin: 0 0 16px 0; }
   .form-group { margin-bottom: 16px; }
   .form-group label { display: block; font-size: 12px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; }

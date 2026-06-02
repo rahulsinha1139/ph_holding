@@ -52,6 +52,7 @@ type LicenseKey struct {
 	Activated   bool       `gorm:"default:false" json:"activated"`
 	ActivatedAt *time.Time `json:"activated_at"`
 	IssuedAt    time.Time  `gorm:"autoCreateTime" json:"issued_at"`
+	UpdatedAt   time.Time  `gorm:"autoUpdateTime" json:"updated_at"`
 	ExpiresAt   *time.Time `json:"expires_at"`                 // Optional expiry
 	Notes       string     `gorm:"size:255" json:"notes"`      // Admin notes
 	CreatedBy   string     `gorm:"size:100" json:"created_by"` // Who generated this key
@@ -101,6 +102,112 @@ var prefixToRole = map[string]string{
 // This key is checked before any DB lookup, so it works even on a fresh database.
 const masterKey = "PH-DEV-MASTER"
 
+func isRahulAdminLicenseKey(key string) bool {
+	return strings.EqualFold(strings.TrimSpace(key), rahulMonitoringLicenseKey)
+}
+
+func shortLicenseDeviceHash(hash string) string {
+	hash = strings.TrimSpace(hash)
+	if len(hash) <= 16 {
+		return hash
+	}
+	return hash[:16]
+}
+
+func redactedLicenseKeyForLog(key string) string {
+	key = strings.TrimSpace(strings.ToUpper(key))
+	if len(key) >= 7 {
+		return key[:7] + "******"
+	}
+	if key == "" {
+		return "unknown"
+	}
+	return "******"
+}
+
+func (a *App) getRebindableRahulAdminLicense(deviceHash string) (LicenseKey, bool, error) {
+	var license LicenseKey
+	if a == nil || a.db == nil {
+		return license, false, fmt.Errorf("database not initialized")
+	}
+	if err := a.db.Where("key = ? AND activated = 1", rahulMonitoringLicenseKey).First(&license).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return license, false, nil
+		}
+		return license, false, err
+	}
+	if license.DeviceHash != deviceHash {
+		oldHash := license.DeviceHash
+		if err := a.db.Model(&license).Updates(map[string]interface{}{
+			"device_hash": deviceHash,
+		}).Error; err != nil {
+			return license, false, err
+		}
+		license.DeviceHash = deviceHash
+		log.Printf("🔑 Rahul admin key rebound from device %s... to %s...", shortLicenseDeviceHash(oldHash), shortLicenseDeviceHash(deviceHash))
+	}
+	return license, true, nil
+}
+
+func (a *App) getActiveLicenseForDevice(deviceHash string) (LicenseKey, bool, error) {
+	var license LicenseKey
+	if a == nil || a.db == nil {
+		return license, false, fmt.Errorf("database not initialized")
+	}
+	if err := a.db.Where("device_hash = ? AND activated = 1", deviceHash).First(&license).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return license, false, nil
+		}
+		return license, false, err
+	}
+	return license, true, nil
+}
+
+func (a *App) migrateSingleActiveLicenseToDevice(deviceHash string) (LicenseKey, bool, error) {
+	var license LicenseKey
+	if a == nil || a.db == nil {
+		return license, false, fmt.Errorf("database not initialized")
+	}
+
+	var licenses []LicenseKey
+	if err := a.db.Where("activated = 1 AND COALESCE(device_hash, '') <> ''").Find(&licenses).Error; err != nil {
+		return license, false, err
+	}
+	if len(licenses) != 1 {
+		return license, false, nil
+	}
+
+	license = licenses[0]
+	if strings.TrimSpace(license.DeviceHash) == deviceHash {
+		return license, true, nil
+	}
+
+	oldHash := license.DeviceHash
+	if err := a.db.Model(&license).Updates(map[string]interface{}{
+		"device_hash": deviceHash,
+	}).Error; err != nil {
+		return license, false, err
+	}
+	license.DeviceHash = deviceHash
+	log.Printf(
+		"🔑 Migrated existing local activation %s from previous device hash %s... to %s...",
+		redactedLicenseKeyForLog(license.Key),
+		shortLicenseDeviceHash(oldHash),
+		shortLicenseDeviceHash(deviceHash),
+	)
+	return license, true, nil
+}
+
+func (a *App) resolveDeviceBoundLicense(deviceHash string) (LicenseKey, bool, error) {
+	if license, ok, err := a.getActiveLicenseForDevice(deviceHash); err != nil || ok {
+		return license, ok, err
+	}
+	if rebound, ok, err := a.getRebindableRahulAdminLicense(deviceHash); err != nil || ok {
+		return rebound, ok, err
+	}
+	return a.migrateSingleActiveLicenseToDevice(deviceHash)
+}
+
 // Role permissions mapping
 var rolePermissions = map[string][]string{
 	"admin":     {"*"}, // Full access
@@ -109,49 +216,48 @@ var rolePermissions = map[string][]string{
 		"dashboard:view",
 		"offers:view", "offers:create", "offers:edit",
 		"orders:view", "orders:create", "orders:edit", "orders:update",
-		"finance:view", "finance:create",
-		"expenses:view", "expenses:create", "expenses:update",
-		"payroll:view", "payroll:create", "payroll:update", "payroll:approve",
-		"invoices:view", "invoices:create", "invoices:update", "invoices:approve", // Invoice management
-		"payments:view", "payments:create", "payments:update", "payments:record", // Payment management (NO payments:delete - admin only)
-		"customers:view", "customers:edit",
+		"reports:view",
+		"invoices:view", "invoices:create", "invoices:update", // Invoice management
+		"settings:view", "settings:api_keys",
+		"customers:view", "customers:edit", "customers:delete",
 		"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
 		"po:view", "po:create", "po:update", "po:approve", // Full PO management
 		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
+		"inventory:view", "inventory:create", "inventory:update",
 		"projects:view", "projects:create", "projects:update",
 		"tasks:view", "tasks:create", "tasks:update",
 		"notifications:view", "notifications:update",
 		"hr:view", "hr:create", "hr:update",
 		"grn:view", "grn:create",
-		"reports:view", "reports:generate",
-		"settings:view",
-		"data:import",
 		"documents:create", "documents:view", "documents:classify", // OCR features
 		"intelligence:chat", "intelligence:reports",
 		"users:view",
 	},
 	"sales": {
 		"dashboard:view",
-		"offers:view", "offers:create", "offers:edit",
+		"offers:view", "offers:create", "offers:edit", "offers:update",
+		"rfq:create",
 		"orders:view", "orders:create", "orders:update",
-		"invoices:view", "invoices:create", "invoices:update", // Can create and update draft customer invoices from won orders
+		"invoices:view", "invoices:create", "invoices:update",
 		"payments:view", // Can VIEW payments but NOT create (manager/admin only)
+		"reports:view", "reports:export",
 		"projects:view", "projects:create", "projects:update",
 		"tasks:view", "tasks:create", "tasks:update",
 		"notifications:view", "notifications:update",
 		"customers:view", "customers:edit",
 		"suppliers:view", "suppliers:create",
 		"po:view", "po:create", // Sales can raise supplier POs tied to their commercial flow
-		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", // Sales can prepare DNs from won orders
-		"rfq:view", "rfq:create",
-		"reports:view",
+		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update",
+		"inventory:view",
 		"documents:create", "documents:view", "documents:classify", // OCR features for scanning customer docs
 		"intelligence:chat",
+		"settings:api_keys",
 	},
 	"operations": {
 		"dashboard:view",
 		"orders:view", "orders:update",
-		"invoices:view", "invoices:create", "invoices:update", // Can create/update draft customer invoices after delivery/order processing
+		"invoices:view", "invoices:create", "invoices:update",
+		"reports:view", "reports:export",
 		"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
 		"projects:view", "projects:create", "projects:update",
 		"tasks:view", "tasks:create", "tasks:update",
@@ -159,10 +265,10 @@ var rolePermissions = map[string][]string{
 		"grn:view", "grn:create",
 		"po:view", "po:create", "po:update", "po:send", // Full PO lifecycle
 		"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
-		"reports:view",
-		"settings:view",
+		"inventory:view", "inventory:create", "inventory:update",
 		"documents:create", "documents:view", "documents:classify", // OCR features for scanning supplier docs
 		"intelligence:chat",
+		"settings:view", "settings:api_keys",
 	},
 	"staff": {
 		"dashboard:view",
@@ -171,14 +277,15 @@ var rolePermissions = map[string][]string{
 		"invoices:view",
 		"orders:view",
 		"payments:view",
+		"inventory:view",
+		"documents:create", "documents:view", "documents:classify",
+		"intelligence:chat",
+		"reports:view",
 		"offers:view",
 		"projects:view",
 		"tasks:view", "tasks:create", "tasks:update",
 		"notifications:view", "notifications:update",
-		"reports:view",
-		"settings:view",
-		"documents:create", "documents:view", "documents:classify",
-		"intelligence:chat",
+		"settings:view", "settings:api_keys",
 	},
 }
 
@@ -298,38 +405,44 @@ func (a *App) ActivateLicense(key string) (LicenseActivationResult, error) {
 			}, nil
 		}
 
-		// Master key — reusable, never device-bound, works across rebuilds
-		// Return success immediately; persist to DB in background (startup AutoMigrate may hold the connection)
-		go func() {
-			err := a.db.Transaction(func(tx *gorm.DB) error {
-				var existing LicenseKey
-				if err := tx.Where("key = ?", masterKey).First(&existing).Error; err != nil {
-					now := time.Now()
-					return tx.Create(&LicenseKey{
-						Key:         masterKey,
-						Role:        "admin",
-						DisplayName: "Developer",
-						DeviceHash:  deviceHash,
-						Activated:   true,
-						ActivatedAt: &now,
-						Notes:       "Reusable master key",
-						CreatedBy:   "system",
-					}).Error
+		// Master key — reusable, never device-bound, works across rebuilds.
+		// Persist before returning so immediate Wails calls use the same backend
+		// authorization state the frontend just received.
+		err := a.db.Transaction(func(tx *gorm.DB) error {
+			var existing LicenseKey
+			if err := tx.Where("key = ?", masterKey).First(&existing).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
 				}
-				if existing.DeviceHash != "" && existing.DeviceHash != deviceHash {
-					log.Printf("CRITICAL: Master key device transfer from %s... to %s...", existing.DeviceHash[:16], deviceHash[:16])
-				}
-				return tx.Model(&existing).Updates(map[string]interface{}{
-					"device_hash": deviceHash,
-					"activated":   true,
+				now := time.Now()
+				return tx.Create(&LicenseKey{
+					Key:         masterKey,
+					Role:        "admin",
+					DisplayName: "Developer",
+					DeviceHash:  deviceHash,
+					Activated:   true,
+					ActivatedAt: &now,
+					Notes:       "Reusable master key",
+					CreatedBy:   "system",
 				}).Error
-			})
-			if err != nil {
-				log.Printf("Warning: Master key DB persist failed: %v (will retry on next startup)", err)
-			} else {
-				log.Printf("Master key persisted to DB for device: %s...", deviceHash[:16])
 			}
-		}()
+			if existing.DeviceHash != "" && existing.DeviceHash != deviceHash {
+				log.Printf("CRITICAL: Master key device transfer from %s... to %s...", existing.DeviceHash[:16], deviceHash[:16])
+			}
+			now := time.Now()
+			return tx.Model(&existing).Updates(map[string]interface{}{
+				"device_hash":  deviceHash,
+				"activated":    true,
+				"activated_at": &now,
+			}).Error
+		})
+		if err != nil {
+			log.Printf("Warning: Master key DB persist failed: %v", err)
+			return LicenseActivationResult{
+				Success: false,
+				Message: "Could not activate master key. Please try again.",
+			}, nil
+		}
 
 		log.Printf("Master key activated on device: %s...", deviceHash[:16])
 		return LicenseActivationResult{
@@ -386,11 +499,22 @@ func (a *App) ActivateLicense(key string) (LicenseActivationResult, error) {
 
 	// Check if already activated on another device
 	if license.Activated && license.DeviceHash != deviceHash {
-		tx.Rollback()
-		return LicenseActivationResult{
-			Success: false,
-			Message: "This license key is already activated on another device.",
-		}, nil
+		if !isRahulAdminLicenseKey(license.Key) {
+			var currentDeviceLicense LicenseKey
+			if err := tx.Where("device_hash = ? AND activated = 1", deviceHash).First(&currentDeviceLicense).Error; err == nil && currentDeviceLicense.Key != license.Key {
+				tx.Rollback()
+				return LicenseActivationResult{
+					Success: false,
+					Message: "This device is already licensed with another key.",
+				}, nil
+			} else if err != nil && err != gorm.ErrRecordNotFound {
+				tx.Rollback()
+				return LicenseActivationResult{Success: false, Message: "Database error"}, err
+			}
+			log.Printf("🔑 License %s rebinding from previous device hash %s... to %s...", redactedLicenseKeyForLog(license.Key), shortLicenseDeviceHash(license.DeviceHash), shortLicenseDeviceHash(deviceHash))
+		} else {
+			log.Printf("🔑 Rahul admin key activation rebinding from device %s... to %s...", shortLicenseDeviceHash(license.DeviceHash), shortLicenseDeviceHash(deviceHash))
+		}
 	}
 
 	// Check expiry
@@ -459,23 +583,23 @@ func (a *App) ValidateLicense() (LicenseValidationResult, error) {
 				a.db.Model(&license).Update("device_hash", deviceHash)
 			}
 			log.Printf("🔑 ValidateLicense: Master key valid (role: %s)", license.Role)
-		} else if err := a.db.Where("device_hash = ? AND activated = 1", deviceHash).First(&license).Error; err != nil {
-			// No master key, no device-bound license
-			if err == gorm.ErrRecordNotFound {
-				log.Printf("🔑 ValidateLicense: No active license found for device hash: %s", deviceHash[:16])
-				return LicenseValidationResult{Valid: false}, nil
-			}
+		} else if err != gorm.ErrRecordNotFound {
 			log.Printf("🔑 ValidateLicense: Database error: %v", err)
 			return LicenseValidationResult{Valid: false}, err
 		}
-	} else if err := a.db.Where("device_hash = ? AND activated = 1", deviceHash).First(&license).Error; err != nil {
-		// No master key, no device-bound license
-		if err == gorm.ErrRecordNotFound {
+	}
+
+	if strings.TrimSpace(license.Key) == "" {
+		resolved, ok, err := a.resolveDeviceBoundLicense(deviceHash)
+		if err != nil {
+			log.Printf("🔑 ValidateLicense: Device-bound license lookup failed: %v", err)
+			return LicenseValidationResult{Valid: false}, err
+		}
+		if !ok {
 			log.Printf("🔑 ValidateLicense: No active license found for device hash: %s", deviceHash[:16])
 			return LicenseValidationResult{Valid: false}, nil
 		}
-		log.Printf("🔑 ValidateLicense: Database error: %v", err)
-		return LicenseValidationResult{Valid: false}, err
+		license = resolved
 	}
 	log.Printf("🔑 ValidateLicense: Found license: %s (role: %s)", license.Key, license.Role)
 
@@ -617,6 +741,13 @@ func (a *App) EnsureLicenseTableExists() error {
 // SeedLicenseKeys generates 10 keys per role if fewer than 10 unactivated keys exist per role.
 // Called on startup to ensure the org always has enough keys available.
 func (a *App) SeedLicenseKeys() error {
+	if err := a.requirePermission("licenses:manage"); err != nil {
+		return err
+	}
+	return a.seedLicenseKeysInternal()
+}
+
+func (a *App) seedLicenseKeysInternal() error {
 	log.Println("🔑 SeedLicenseKeys: Starting...")
 
 	roles := []string{"admin", "manager", "sales", "operations", "staff", "developer"}
@@ -757,6 +888,13 @@ func deploymentLicenseActivationFlushStamp() string {
 // explicit deployment stamp. Database reseeding preserves activations by default;
 // normal update installers must not make users enter their keys again.
 func (a *App) ApplyDeploymentLicenseActivationFlush() error {
+	if err := a.requirePermission("licenses:manage"); err != nil {
+		return err
+	}
+	return a.applyDeploymentLicenseActivationFlushInternal()
+}
+
+func (a *App) applyDeploymentLicenseActivationFlushInternal() error {
 	if a == nil || a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
@@ -820,6 +958,13 @@ func (a *App) ApplyDeploymentLicenseActivationFlush() error {
 // These are the primary keys given to PH Trading staff.
 // Called on startup after SeedLicenseKeys.
 func (a *App) SeedEmployeeKeys() error {
+	if err := a.requirePermission("licenses:manage"); err != nil {
+		return err
+	}
+	return a.seedEmployeeKeysInternal()
+}
+
+func (a *App) seedEmployeeKeysInternal() error {
 	log.Println("🔑 SeedEmployeeKeys: Assigning keys to employees...")
 
 	var assigned int

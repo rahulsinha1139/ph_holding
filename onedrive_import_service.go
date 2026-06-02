@@ -144,6 +144,7 @@ var oneDriveStopTokens = map[string]bool{
 	// Instrument tags
 	"LIT": true, "PIT": true, "TIT": true, "FIT": true, "GIT": true, "AIT": true,
 	"AT": true, "FT": true, "PT": true, "LT": true, "TT": true, "UT": true,
+	"PH": true,
 	// Product categories
 	"VALVES": true, "VALVE": true, "SPARES": true, "SPARE": true, "PARTS": true,
 	"SERVICE": true, "SERVICES": true, "MAINTENANCE": true,
@@ -158,7 +159,8 @@ var oneDriveStopTokens = map[string]bool{
 	// Misc
 	"GENERAL": true, "MISC": true, "MISCELLANEOUS": true, "INSTALLATION": true,
 	"AND": true, "FOR": true, "THE": true, "OF": true, "IN": true,
-	"NO": true, "REF": true,
+	"NO": true, "REF": true, "AL": true,
+	"TRADING": true, "WLL": true, "CUSTOMER": true, "COMPANY": true, "CO": true,
 	// Document types
 	"RFQ": true, "OFFER": true, "QUOTE": true, "QT": true,
 	// Years & quarters
@@ -181,12 +183,19 @@ var acronymSkipWords = map[string]bool{
 
 var oneDriveCustomerAliases = map[string][]string{
 	"ALUMINIUM BAHRAIN B.S.C":          {"ALBA"},
+	"AIRMECH":                          {"AIRMENCH"},
 	"ALMOAYYED INDUSTRIAL CONTRACTING": {"ALMOAYYED", "MOAYYED"},
 	"ALDUR":                            {"ALDUR"},
+	"AWAL DAIRY":                       {"ADC"},
+	"EMAAR":                            {"EMMAR"},
+	"KRAUM AND SPRUK":                  {"KST"},
+	"MINISTRY OF WORKS":                {"MOW"},
 	"VEOLIA WATER TECHNOLOGIES & SOLUTIONS BAHRAIN W.L.L": {"VWT"},
 	"MUHARRAQ WASTEWATER SERVICES":                        {"MWW"},
 	"JETHRO TRADING":                                      {"JETHROW"},
 	"KOOHEJI TECHNICAL SERVICES":                          {"KJ"},
+	"YOKOGAWA":                                            {"YOGOKAWA"},
+	"AQUA TECHNOLOGY TRANSFER":                            {"AQUA TECH"},
 }
 
 // ============================================================================
@@ -247,6 +256,47 @@ func classifyDiscoveredFile(fileName string) string {
 	default:
 		return "unknown"
 	}
+}
+
+func classifyDiscoveredFileAtPath(filePath string) string {
+	fileType := classifyDiscoveredFile(filepath.Base(filePath))
+	if fileType == "document" && isPotentialOneDriveCostingWorkbook(filePath) {
+		return "costing_sheet"
+	}
+	return fileType
+}
+
+func isPotentialOneDriveCostingWorkbook(filePath string) bool {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	if ext != ".xlsx" && ext != ".xls" {
+		return false
+	}
+
+	lowerPath := strings.ToLower(filepath.ToSlash(filePath))
+	lowerName := strings.ToLower(filepath.Base(filePath))
+	for _, blocked := range []string{
+		"rfq", "boq", "bom", "deviation", "registration", "account opening",
+		"supplier", "vendor", "invoice", "site report", "name plate",
+		"price list", "pr ", "requirement", "compliance", "complaince",
+		"comment", "calculation", "qty", "quantity", "summary", "drawing",
+		"datasheet", "data sheet", "spare part list",
+	} {
+		if strings.Contains(lowerName, blocked) {
+			return false
+		}
+	}
+
+	inCommercialSection := strings.Contains(lowerPath, "/offer/") ||
+		strings.Contains(lowerPath, "/working/") ||
+		strings.Contains(lowerPath, "/submission/") ||
+		strings.Contains(lowerPath, "/final execution/") ||
+		strings.Contains(lowerPath, "/project execution/")
+	if !inCommercialSection {
+		return false
+	}
+
+	base := strings.TrimSuffix(lowerName, ext)
+	return regexp.MustCompile(`^\d{1,3}(?:[-_\s]+\d{2})?(?:\b|[-_\s])`).MatchString(base)
 }
 
 // tokenizeName uppercases and splits a name into individual tokens after
@@ -416,7 +466,7 @@ func matchCustomerToFolder(folderName string, customers []CustomerMaster) []Cust
 					continue
 				}
 				for _, alias := range aliases {
-					if sliceContains(folderTokens, alias) {
+					if oneDriveFolderHasAlias(folderTokens, alias) {
 						score = maxFloat64(score, 0.92)
 						reason = "known_alias"
 					}
@@ -487,6 +537,19 @@ func matchCustomerToFolder(folderName string, customers []CustomerMaster) []Cust
 	return results
 }
 
+func oneDriveFolderHasAlias(folderTokens []string, alias string) bool {
+	aliasTokens := tokenizeName(alias)
+	if len(aliasTokens) == 0 {
+		return false
+	}
+	for _, aliasToken := range aliasTokens {
+		if !sliceContains(folderTokens, aliasToken) {
+			return false
+		}
+	}
+	return true
+}
+
 // generateOneDriveOfferRef produces a unique offer reference for an imported deal.
 func generateOneDriveOfferRef(folderName string) string {
 	// Sanitise: keep only alphanumeric + space, then replace spaces with dashes
@@ -512,11 +575,30 @@ func generateOneDriveOfferRef(folderName string) string {
 }
 
 func isOneDriveSectionDir(name string) bool {
-	switch strings.ToUpper(strings.TrimSpace(name)) {
-	case "RFQ", "OFFER", "WORKING", "EXECUTION", "FINAL":
-		return true
+	return canonicalOneDriveSectionName(name) != ""
+}
+
+func canonicalOneDriveSectionName(name string) string {
+	cleaned := strings.NewReplacer("_", " ", "-", " ").Replace(strings.TrimSpace(name))
+	upper := strings.ToUpper(strings.Join(strings.Fields(cleaned), " "))
+	upper = regexp.MustCompile(`^\d+\s+`).ReplaceAllString(upper, "")
+	tokens := strings.Fields(upper)
+	switch upper {
+	case "RFQ", "OFFER", "WORKING", "FINAL", "SUBMISSION":
+		return upper
+	case "EXECUTION", "FINAL EXECUTION", "PROJECT EXECUTION":
+		return "EXECUTION"
 	default:
-		return false
+		for _, token := range tokens {
+			switch token {
+			case "RFQ", "OFFER", "WORKING", "SUBMISSION":
+				return token
+			}
+		}
+		if strings.Contains(upper, "EXECUTION") {
+			return "EXECUTION"
+		}
+		return ""
 	}
 }
 
@@ -532,10 +614,15 @@ func extractDealSectionPaths(folderPath string) (map[string]string, error) {
 			continue
 		}
 		name := strings.ToUpper(strings.TrimSpace(entry.Name()))
-		if !isOneDriveSectionDir(name) {
+		canonicalName := canonicalOneDriveSectionName(name)
+		if canonicalName == "" {
 			continue
 		}
-		sections[name] = filepath.Join(folderPath, entry.Name())
+		sectionPath := filepath.Join(folderPath, entry.Name())
+		if sections[canonicalName] == "" {
+			sections[canonicalName] = sectionPath
+		}
+		sections[name] = sectionPath
 	}
 	return sections, nil
 }
@@ -552,6 +639,14 @@ func inferYearFromPath(paths ...string) int {
 
 func hasStructuredOneDriveDealIdentity(folderName string) bool {
 	meta := parseOneDriveFolderMeta(folderName)
+	folderNumber := strings.ToUpper(strings.TrimSpace(meta.FolderNumber))
+	if strings.HasPrefix(folderNumber, "NO-") || strings.HasPrefix(folderNumber, "OFFERS-") {
+		return false
+	}
+	currentYear := time.Now().Year()
+	if meta.Year != 0 && (meta.Year < 2020 || meta.Year > currentYear+5) {
+		return false
+	}
 	return meta.OppNumber > 0
 }
 
@@ -572,7 +667,7 @@ func collectDealFiles(sectionPath string) []DiscoveredFile {
 		files = append(files, DiscoveredFile{
 			FileName:  name,
 			FilePath:  path,
-			FileType:  classifyDiscoveredFile(name),
+			FileType:  classifyDiscoveredFileAtPath(path),
 			Extension: strings.ToLower(filepath.Ext(name)),
 			SizeBytes: info.Size(),
 			ModTime:   info.ModTime(),
@@ -602,7 +697,8 @@ func parseOneDriveFolderMeta(folderName string) oneDriveFolderMeta {
 		{
 			re: regexp.MustCompile(`(?i)\b([A-Z]{1,8})(?:[-\s]+)(\d{1,3}[A-Z]?)[-\s/]+(\d{2})(?:\b|[^A-Z0-9])`),
 			build: func(m []string) string {
-				return strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%s-%d-%s", m[1], mustAtoi(m[2]), m[3])))
+				seqToken := normalizeOneDriveSequenceToken(m[2])
+				return strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%s-%s-%s", m[1], seqToken, m[3])))
 			},
 			yearAt: 3,
 			oppAt:  2,
@@ -622,7 +718,7 @@ func parseOneDriveFolderMeta(folderName string) oneDriveFolderMeta {
 			matches := pattern.re.FindStringSubmatch(trimmed)
 			meta.FolderNumber = pattern.build(matches)
 			meta.Year = parseMetaYear(matches[pattern.yearAt])
-			meta.OppNumber = mustAtoi(matches[pattern.oppAt])
+			meta.OppNumber = mustAtoi(regexp.MustCompile(`\d+`).FindString(matches[pattern.oppAt]))
 
 			title := strings.TrimSpace(trimmed[loc[1]:])
 			title = strings.TrimLeft(title, "-_/ ")
@@ -631,6 +727,19 @@ func parseOneDriveFolderMeta(folderName string) oneDriveFolderMeta {
 			}
 			return meta
 		}
+	}
+
+	if m := regexp.MustCompile(`(?i)^(\d{1,3}[A-Z]?)[-\s/]+(\d{2})(?:\b|[^A-Z0-9])(.*)$`).FindStringSubmatch(trimmed); len(m) == 4 {
+		seqToken := normalizeOneDriveSequenceToken(m[1])
+		yy := strings.TrimSpace(m[2])
+		title := strings.TrimSpace(strings.TrimLeft(m[3], "-_/ "))
+		meta.FolderNumber = fmt.Sprintf("%s-%s", seqToken, yy)
+		meta.Year = parseMetaYear(yy)
+		meta.OppNumber = mustAtoi(regexp.MustCompile(`\d+`).FindString(seqToken))
+		if title != "" {
+			meta.Title = title
+		}
+		return meta
 	}
 
 	fields := strings.Fields(trimmed)
@@ -661,9 +770,19 @@ func parseOneDriveFolderMeta(folderName string) oneDriveFolderMeta {
 		}
 	}
 
-	meta.FolderNumber = strings.TrimSpace(fields[0])
+	meta.FolderNumber, meta.Title = splitLooseOneDriveFolderNumberToken(fields[0])
+	var titleParts []string
+	if meta.Title != "" {
+		titleParts = append(titleParts, meta.Title)
+	}
 	if len(fields) > 1 {
-		meta.Title = strings.TrimSpace(strings.Join(fields[1:], " "))
+		titleParts = append(titleParts, fields[1:]...)
+	}
+	if len(titleParts) > 0 {
+		meta.Title = strings.TrimSpace(strings.Join(titleParts, " "))
+	}
+	if m := regexp.MustCompile(`^\d{1,3}`).FindString(meta.FolderNumber); m != "" {
+		meta.OppNumber = mustAtoi(m)
 	}
 
 	if m := regexp.MustCompile(`\b(20\d{2})[-_/](\d{1,3})\b`).FindStringSubmatch(meta.FolderNumber); len(m) == 3 {
@@ -681,6 +800,54 @@ func parseOneDriveFolderMeta(folderName string) oneDriveFolderMeta {
 	return meta
 }
 
+func cleanLooseOneDriveFolderNumberToken(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	return strings.Trim(token, "-_/ ")
+}
+
+func splitLooseOneDriveFolderNumberToken(token string) (string, string) {
+	token = cleanLooseOneDriveFolderNumberToken(token)
+	if token == "" {
+		return "", ""
+	}
+	if m := regexp.MustCompile(`^(\d{1,3})(?:[-_/]+(.+))?$`).FindStringSubmatch(token); len(m) == 3 {
+		return m[1], strings.TrimSpace(strings.Trim(m[2], "-_/ "))
+	}
+	return token, ""
+}
+
+func normalizeOneDriveSequenceToken(raw string) string {
+	raw = strings.ToUpper(strings.TrimSpace(raw))
+	numberPart := regexp.MustCompile(`\d+`).FindString(raw)
+	if numberPart == "" {
+		return raw
+	}
+	suffix := strings.TrimPrefix(raw, numberPart)
+	return fmt.Sprintf("%d%s", mustAtoi(numberPart), suffix)
+}
+
+func inheritOneDriveParentFolderNumber(parentFolderName, folderName string) string {
+	folderName = strings.TrimSpace(folderName)
+	if folderName == "" {
+		return ""
+	}
+
+	childMeta := parseOneDriveFolderMeta(folderName)
+	if childMeta.OppNumber != 0 || hasStructuredOneDriveDealIdentity(folderName) {
+		return folderName
+	}
+
+	parentMeta := parseOneDriveFolderMeta(parentFolderName)
+	parentNumber := strings.TrimSpace(parentMeta.FolderNumber)
+	if parentNumber == "" || parentMeta.OppNumber == 0 {
+		return folderName
+	}
+	return strings.TrimSpace(parentNumber + " " + folderName)
+}
+
 func deriveOneDriveImportIdentity(folderName string) oneDriveImportIdentity {
 	trimmed := strings.Join(strings.Fields(strings.TrimSpace(folderName)), " ")
 	identity := oneDriveImportIdentity{Title: trimmed}
@@ -688,7 +855,7 @@ func deriveOneDriveImportIdentity(folderName string) oneDriveImportIdentity {
 	re := regexp.MustCompile(`(?i)^([A-Z]{1,8})(?:\s*-\s*|\s+)(\d{1,3}[A-Z]?)\s*-\s*(\d{2})(.*)$`)
 	if m := re.FindStringSubmatch(trimmed); len(m) == 5 {
 		prefix := strings.ToUpper(strings.TrimSpace(m[1]))
-		seqToken := strings.ToUpper(strings.TrimSpace(m[2]))
+		seqToken := normalizeOneDriveSequenceToken(m[2])
 		yy := strings.TrimSpace(m[3])
 		title := strings.TrimSpace(strings.TrimLeft(m[4], "-_/ "))
 		if title == "" {
@@ -701,6 +868,23 @@ func deriveOneDriveImportIdentity(folderName string) oneDriveImportIdentity {
 		identity.Year = year
 		identity.Title = title
 		identity.CanonicalFolderNumber = deriveCanonicalOneDriveFolderNumber(prefix, seqToken, year)
+		return identity
+	}
+
+	plainRe := regexp.MustCompile(`(?i)^(\d{1,3}[A-Z]?)[-\s/]+(\d{2})(.*)$`)
+	if m := plainRe.FindStringSubmatch(trimmed); len(m) == 4 {
+		seqToken := normalizeOneDriveSequenceToken(m[1])
+		yy := strings.TrimSpace(m[2])
+		title := strings.TrimSpace(strings.TrimLeft(m[3], "-_/ "))
+		if title == "" {
+			title = trimmed
+		}
+		year := parseMetaYear(yy)
+		identity.RawFolderNumber = fmt.Sprintf("%s-%s", seqToken, yy)
+		identity.SequenceToken = seqToken
+		identity.Year = year
+		identity.Title = title
+		identity.CanonicalFolderNumber = deriveCanonicalOneDriveFolderNumber("", seqToken, year)
 		return identity
 	}
 
@@ -785,7 +969,11 @@ func scoreOneDriveCostingCandidate(candidate parsedOneDriveCosting) int {
 	default:
 		score += 10
 	}
-	score += len(candidate.Parsed.LineItems)
+	lineItemCount := len(candidate.Parsed.LineItems)
+	if lineItemCount == 0 {
+		score -= 10000
+	}
+	score += lineItemCount
 	if candidate.Parsed.Totals.GrandTotal > 0 {
 		score += 5
 	}
@@ -811,12 +999,12 @@ func selectPrimaryOneDriveCosting(costings []parsedOneDriveCosting) *parsedOneDr
 func rankExistingOpportunityForImport(opp Opportunity, canonicalKey string, rawKey string, dealFolderName string) int {
 	score := 0
 	switch {
+	case strings.EqualFold(strings.TrimSpace(opp.FolderName), strings.TrimSpace(dealFolderName)):
+		score += 1500
 	case canonicalKey != "" && strings.EqualFold(strings.TrimSpace(opp.FolderNumber), canonicalKey):
 		score += 1000
 	case rawKey != "" && strings.EqualFold(strings.TrimSpace(opp.FolderNumber), rawKey):
 		score += 700
-	case strings.EqualFold(strings.TrimSpace(opp.FolderName), strings.TrimSpace(dealFolderName)):
-		score += 500
 	}
 	score += opportunitySourcePriority(opp.Source) * 100
 	score += opportunityRichnessScore(opp) * 10
@@ -867,6 +1055,44 @@ func (a *App) findOneDriveOpportunityCandidates(identity oneDriveImportIdentity,
 			rankExistingOpportunityForImport(candidates[j], identity.CanonicalFolderNumber, identity.RawFolderNumber, dealFolderName)
 	})
 	return candidates, nil
+}
+
+func selectOneDriveOpportunityCandidatesForDeal(candidates []Opportunity, customer CustomerMaster, dealFolderName string) []Opportunity {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	var exactFolder []Opportunity
+	for _, candidate := range candidates {
+		if strings.EqualFold(strings.TrimSpace(candidate.FolderName), strings.TrimSpace(dealFolderName)) {
+			exactFolder = append(exactFolder, candidate)
+		}
+	}
+	if len(exactFolder) > 0 {
+		return exactFolder
+	}
+
+	var sameCustomer []Opportunity
+	for _, candidate := range candidates {
+		candidateCustomerID := strings.TrimSpace(candidate.CustomerID)
+		candidateCustomerName := strings.TrimSpace(candidate.CustomerName)
+		if candidateCustomerID == "" && candidateCustomerName == "" {
+			sameCustomer = append(sameCustomer, candidate)
+			continue
+		}
+		if customer.ID != "" && candidateCustomerID == customer.ID {
+			sameCustomer = append(sameCustomer, candidate)
+			continue
+		}
+		if customer.BusinessName != "" && strings.EqualFold(candidateCustomerName, customer.BusinessName) {
+			sameCustomer = append(sameCustomer, candidate)
+		}
+	}
+	if len(sameCustomer) > 0 {
+		return sameCustomer
+	}
+
+	return nil
 }
 
 func softDeleteDuplicateOpportunity(tx *gorm.DB, id string) error {
@@ -995,6 +1221,40 @@ func deriveImportedOfferNumber(identity oneDriveImportIdentity, deal DiscoveredD
 		return normalized
 	}
 	return generateOneDriveOfferRef(deal.FolderName)
+}
+
+func disambiguateImportedOfferNumber(baseOfferNumber string, deal DiscoveredDeal) string {
+	baseOfferNumber = normalizeImportedOfferNumber(baseOfferNumber)
+	if baseOfferNumber == "" {
+		return generateOneDriveOfferRef(deal.FolderName)
+	}
+	folderOfferNumber := normalizeImportedOfferNumber(deal.FolderName)
+	if folderOfferNumber == "" || folderOfferNumber == baseOfferNumber {
+		return baseOfferNumber
+	}
+	if strings.HasPrefix(folderOfferNumber, baseOfferNumber+"-") {
+		return folderOfferNumber
+	}
+	return baseOfferNumber + "-" + folderOfferNumber
+}
+
+func disambiguateOneDriveOpportunityFolderNumber(baseFolderNumber string, deal DiscoveredDeal) string {
+	baseFolderNumber = normalizeImportedOfferNumber(baseFolderNumber)
+	if baseFolderNumber == "" {
+		return ""
+	}
+	folderKey := normalizeImportedOfferNumber(deal.FolderName)
+	if folderKey == "" || folderKey == baseFolderNumber {
+		return baseFolderNumber
+	}
+	if strings.HasPrefix(folderKey, baseFolderNumber+"-") {
+		return folderKey
+	}
+	rawFolderNumber := normalizeImportedOfferNumber(parseOneDriveFolderMeta(deal.FolderName).FolderNumber)
+	if rawFolderNumber != "" && strings.HasPrefix(folderKey, rawFolderNumber+"-") {
+		return baseFolderNumber + "-" + strings.TrimPrefix(folderKey, rawFolderNumber+"-")
+	}
+	return baseFolderNumber + "-" + folderKey
 }
 
 func importedOfferMatchesDeal(offer Offer, desiredOfferNumber string, customerID string) bool {
@@ -1248,7 +1508,7 @@ func (a *App) ValidateOneDrivePath(path string) (map[string]interface{}, error) 
 			return filepath.SkipDir
 		}
 		sections, err := extractDealSectionPaths(p)
-		if err == nil && (sections["RFQ"] != "" || sections["OFFER"] != "" || sections["WORKING"] != "" || sections["EXECUTION"] != "") {
+		if err == nil && len(sections) > 0 {
 			estimatedDeals++
 			return filepath.SkipDir
 		}
@@ -1307,6 +1567,7 @@ func (a *App) ScanOneDrivePaths(paths []string) (OneDriveScanResult, error) {
 				folderName string
 				files      []DiscoveredFile
 				isDeal     bool
+				skipDir    bool
 			)
 
 			switch {
@@ -1321,27 +1582,55 @@ func (a *App) ScanOneDrivePaths(paths []string) (OneDriveScanResult, error) {
 				if err != nil {
 					return nil
 				}
-				if sections["RFQ"] == "" && sections["OFFER"] == "" && sections["WORKING"] == "" && sections["EXECUTION"] == "" {
-					return nil
-				}
 				parentFolderName := filepath.Base(filepath.Dir(path))
-				if hasStructuredOneDriveDealIdentity(parentFolderName) && !hasStructuredOneDriveDealIdentity(filepath.Base(path)) {
-					return filepath.SkipDir
-				}
+				parentStructuredChild := len(sections) == 0 &&
+					filepath.Clean(path) != filepath.Clean(rootPath) &&
+					hasStructuredOneDriveDealIdentity(parentFolderName) &&
+					!hasStructuredOneDriveDealIdentity(filepath.Base(path))
 				folderPath = path
 				folderName = filepath.Base(folderPath)
-				finalPath = sections["OFFER"]
-				if finalPath == "" {
-					finalPath = sections["WORKING"]
-				}
-				for _, sectionName := range []string{"RFQ", "OFFER", "WORKING", "EXECUTION"} {
-					sectionPath := sections[sectionName]
-					if sectionPath == "" {
-						continue
+				if len(sections) > 0 {
+					if filepath.Clean(filepath.Dir(path)) != filepath.Clean(rootPath) {
+						folderName = inheritOneDriveParentFolderNumber(parentFolderName, folderName)
 					}
-					files = append(files, collectDealFiles(sectionPath)...)
+					finalPath = sections["OFFER"]
+					if finalPath == "" {
+						finalPath = sections["WORKING"]
+					}
+					sectionPaths := uniqueSortedSectionPaths(sections)
+					for _, sectionPath := range sectionPaths {
+						files = append(files, collectDealFiles(sectionPath)...)
+					}
+					if isDirectFileOneDriveDealPath(path, rootPath) && hasNumberedOneDriveFolderName(folderName) {
+						files = mergeDiscoveredFiles(files, collectDealFiles(path))
+					}
+					isDeal = true
+					skipDir = true
+				} else if parentStructuredChild {
+					files = collectDealFiles(path)
+					if !hasOneDriveDealRelevantFiles(files) {
+						return filepath.SkipDir
+					}
+					folderName = inheritOneDriveParentFolderNumber(parentFolderName, folderName)
+					finalPath = path
+					isDeal = true
+					skipDir = true
+				} else if isDirectFileOneDriveDealPath(path, rootPath) && hasNumberedOneDriveFolderName(folderName) {
+					hasChildDeals := hasExtractableOneDriveChildDeal(path)
+					if hasChildDeals {
+						files = collectImmediateDealFiles(path)
+					} else {
+						files = collectDealFiles(path)
+					}
+					if len(files) == 0 && hasChildDeals {
+						return nil
+					}
+					finalPath = path
+					isDeal = true
+					skipDir = !hasChildDeals
+				} else {
+					return nil
 				}
-				isDeal = true
 			}
 
 			if !isDeal {
@@ -1375,7 +1664,7 @@ func (a *App) ScanOneDrivePaths(paths []string) (OneDriveScanResult, error) {
 				return filepath.SkipAll
 			}
 
-			if !strings.EqualFold(filepath.Base(path), "final") {
+			if !strings.EqualFold(filepath.Base(path), "final") && skipDir {
 				return filepath.SkipDir
 			}
 			return nil
@@ -1395,6 +1684,119 @@ func (a *App) ScanOneDrivePaths(paths []string) (OneDriveScanResult, error) {
 	log.Printf("✅ OneDrive scan complete: %d deals, %d files across %d root paths",
 		len(result.Deals), result.TotalFiles, len(paths))
 	return result, nil
+}
+
+func uniqueSortedSectionPaths(sections map[string]string) []string {
+	seen := map[string]bool{}
+	var paths []string
+	for _, sectionPath := range sections {
+		if strings.TrimSpace(sectionPath) == "" || seen[sectionPath] {
+			continue
+		}
+		seen[sectionPath] = true
+		paths = append(paths, sectionPath)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func mergeDiscoveredFiles(groups ...[]DiscoveredFile) []DiscoveredFile {
+	seen := map[string]bool{}
+	var merged []DiscoveredFile
+	for _, files := range groups {
+		for _, file := range files {
+			key := filepath.Clean(file.FilePath)
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			merged = append(merged, file)
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].FilePath < merged[j].FilePath
+	})
+	return merged
+}
+
+func hasNumberedOneDriveFolderName(folderName string) bool {
+	return regexp.MustCompile(`^\s*\d{1,3}(?:\b|[\s_-])`).MatchString(folderName)
+}
+
+func isOneDriveBatchContainerName(folderName string) bool {
+	upper := strings.ToUpper(strings.Join(strings.Fields(strings.TrimSpace(folderName)), " "))
+	return regexp.MustCompile(`\bOFFERS?\s+NO\b`).MatchString(upper) &&
+		regexp.MustCompile(`\b20\d{2}\b`).MatchString(upper)
+}
+
+func isDirectFileOneDriveDealPath(path, rootPath string) bool {
+	parentPath := filepath.Clean(filepath.Dir(path))
+	if parentPath == filepath.Clean(rootPath) {
+		return true
+	}
+	return isOneDriveBatchContainerName(filepath.Base(parentPath))
+}
+
+func hasExtractableOneDriveChildDeal(folderPath string) bool {
+	entries, err := os.ReadDir(folderPath)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		childPath := filepath.Join(folderPath, entry.Name())
+		sections, err := extractDealSectionPaths(childPath)
+		if err == nil && len(sections) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOneDriveDealRelevantFiles(files []DiscoveredFile) bool {
+	for _, file := range files {
+		switch file.FileType {
+		case "costing_sheet", "quotation", "order", "invoice", "rfq", "email":
+			return true
+		}
+	}
+	return false
+}
+
+func collectImmediateDealFiles(folderPath string) []DiscoveredFile {
+	entries, err := os.ReadDir(folderPath)
+	if err != nil {
+		return nil
+	}
+	var files []DiscoveredFile
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "~$") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		path := filepath.Join(folderPath, name)
+		files = append(files, DiscoveredFile{
+			FileName:  name,
+			FilePath:  path,
+			FileType:  classifyDiscoveredFileAtPath(path),
+			Extension: strings.ToLower(filepath.Ext(name)),
+			SizeBytes: info.Size(),
+			ModTime:   info.ModTime(),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].FilePath < files[j].FilePath
+	})
+	return files
 }
 
 // ConfirmOneDriveDeal validates that the supplied customerID exists in the DB
@@ -1544,6 +1946,7 @@ func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 	contactPerson := ""
 	countryOfOrigin := ""
 	deliveryWeeks := ""
+	preparedBy := ""
 
 	primaryCosting := selectPrimaryOneDriveCosting(costingData)
 	if primaryCosting != nil {
@@ -1558,6 +1961,7 @@ func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 		contactPerson = strings.TrimSpace(primary.Metadata.ContactPerson)
 		countryOfOrigin = strings.TrimSpace(primary.Metadata.CountryOfOrigin)
 		deliveryWeeks = strings.TrimSpace(primary.Metadata.EstDelivery)
+		preparedBy = strings.TrimSpace(primary.Metadata.PreparedBy)
 
 		// Compute margin using the same logic as calculateMargin in excel_costing_parser.go
 		if primary.Totals.Subtotal > 0 {
@@ -1635,6 +2039,20 @@ func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 		res.Message = fmt.Sprintf("failed to load opportunity: %v", err)
 		return res
 	}
+	candidates = selectOneDriveOpportunityCandidatesForDeal(candidates, customer, deal.FolderName)
+	if len(candidates) == 0 && opportunityFolderNumber != "" {
+		var existingFolderNumberCount int64
+		if err := a.db.Model(&Opportunity{}).
+			Where("folder_number = ?", opportunityFolderNumber).
+			Count(&existingFolderNumberCount).Error; err != nil {
+			res.Success = false
+			res.Message = fmt.Sprintf("failed to check opportunity folder-number conflict: %v", err)
+			return res
+		}
+		if existingFolderNumberCount > 0 {
+			opportunityFolderNumber = disambiguateOneDriveOpportunityFolderNumber(opportunityFolderNumber, deal)
+		}
+	}
 
 	var opportunity Opportunity
 	var duplicateOpportunities []Opportunity
@@ -1648,6 +2066,24 @@ func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 		opportunity = candidates[0]
 		if len(candidates) > 1 {
 			duplicateOpportunities = candidates[1:]
+		}
+	}
+	if opportunityFolderNumber != "" {
+		var conflicting Opportunity
+		err := a.db.Unscoped().
+			Where("folder_number = ? AND id <> ?", opportunityFolderNumber, opportunity.ID).
+			First(&conflicting).Error
+		if err == nil {
+			existingFolderNumber := strings.TrimSpace(opportunity.FolderNumber)
+			if !isNewOpportunity && existingFolderNumber != "" && !strings.EqualFold(existingFolderNumber, opportunityFolderNumber) {
+				opportunityFolderNumber = existingFolderNumber
+			} else {
+				opportunityFolderNumber = disambiguateOneDriveOpportunityFolderNumber(opportunityFolderNumber, deal)
+			}
+		} else if err != gorm.ErrRecordNotFound {
+			res.Success = false
+			res.Message = fmt.Sprintf("failed to check opportunity folder-number conflict: %v", err)
+			return res
 		}
 	}
 
@@ -1726,6 +2162,18 @@ func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 
 	var offer *Offer
 	offerNumber := deriveImportedOfferNumber(identity, deal)
+	if offerNumber != "" {
+		var conflictingOffer Offer
+		if err := a.db.Unscoped().
+			Where("offer_number = ? AND customer_id <> ?", offerNumber, customer.ID).
+			First(&conflictingOffer).Error; err == nil {
+			offerNumber = disambiguateImportedOfferNumber(offerNumber, deal)
+		} else if err != nil && err != gorm.ErrRecordNotFound {
+			res.Success = false
+			res.Message = fmt.Sprintf("failed to check offer number conflict: %v", err)
+			return res
+		}
+	}
 	if primaryCosting != nil {
 		var existingOffer Offer
 		staleOfferID := ""
@@ -1775,6 +2223,9 @@ func (a *App) importSingleDeal(deal DiscoveredDeal) OneDriveImportResult {
 		existingOffer.CountryOfOrigin = countryOfOrigin
 		existingOffer.CustomerReference = customerReference
 		existingOffer.AttentionPerson = contactPerson
+		if preparedBy != "" {
+			existingOffer.IssuedBy = preparedBy
+		}
 		if vatPercent > 0 {
 			existingOffer.VatRate = vatPercent
 		}

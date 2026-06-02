@@ -8,7 +8,7 @@
     let hoveredBar: number | null = null;
 
     // Reactive calculations
-    $: topCustomers = data.sort((a, b) => b.revenue - a.revenue).slice(0, 10);
+    $: topCustomers = [...data].sort((a, b) => b.revenue - a.revenue).slice(0, 10);
 
     $: maxRevenue = Math.max(...topCustomers.map((d) => d.revenue), 1);
     $: maxInvoices = Math.max(...topCustomers.map((d) => d.invoice_count), 1);
@@ -108,12 +108,12 @@
                     <rect x="-60" y="-55" width="120" height="50" rx="6" fill="rgba(255,255,255,0.95)" stroke="#e5e5e5" filter="drop-shadow(0 4px 6px rgba(0,0,0,0.1))" />
                     
                     <!-- Revenue Text -->
-                    <text x="0" y="-35" text-anchor="middle" font-size="12" font-weight="600" fill="#2A7FFF">
+                    <text x="0" y="-35" text-anchor="middle" font-size="12" font-weight="600" fill="#3E8F47">
                         {formatCurrency(customer.revenue)}
                     </text>
                     
                     <!-- Invoice Count Text -->
-                    <text x="0" y="-15" text-anchor="middle" font-size="11" fill="#F59E0B">
+                    <text x="0" y="-15" text-anchor="middle" font-size="11" fill="#8A6F25">
                         {customer.invoice_count} Invoices
                     </text>
                     
@@ -153,7 +153,7 @@
                         })
                         .join(" ")}
                     fill="none"
-                    stroke="#F59E0B"
+                    stroke="#8A6F25"
                     stroke-width="3"
                     class="line"
                     style="pointer-events: none;" 
@@ -197,7 +197,7 @@
             </g>
 
             <!-- Axis titles -->
-            <text x={padding.left} y={padding.top - 5} class="axis-title" fill="#2A7FFF">
+            <text x={padding.left} y={padding.top - 5} class="axis-title" fill="#3E8F47">
                 Revenue (BHD)
             </text>
 
@@ -206,7 +206,7 @@
                 y={padding.top - 5}
                 text-anchor="end"
                 class="axis-title"
-                fill="#F59E0B"
+                fill="#8A6F25"
             >
                 Invoice Count
             </text>
@@ -249,7 +249,7 @@
         width: 32px;
         height: 32px;
         border: 3px solid rgba(0, 0, 0, 0.1);
-        border-top-color: var(--primary, #2A7FFF);
+        border-top-color: var(--primary, #3E8F47);
         border-radius: 50%;
         animation: spin 1s linear infinite;
         margin-bottom: 12px;
@@ -267,7 +267,7 @@
     }
 
     .bar {
-        fill: var(--primary, #2A7FFF);
+        fill: var(--primary, #3E8F47);
         opacity: 0.8;
         transition: all 0.2s ease;
         cursor: pointer;
@@ -276,7 +276,7 @@
     .bar:hover,
     .bar.hovered {
         opacity: 1;
-        filter: drop-shadow(0 4px 6px rgba(42, 127, 255, 0.3));
+        filter: drop-shadow(0 4px 6px rgba(62, 143, 71, 0.24));
     }
 
     .line {
@@ -284,7 +284,7 @@
     }
 
     .line-point {
-        fill: var(--warning, #F59E0B);
+        fill: var(--warning, #8A6F25);
         stroke: white;
         stroke-width: 2;
         transition: all 0.2s ease;
@@ -344,10 +344,10 @@
     }
 
     .bar-color {
-        background: var(--primary, #2A7FFF);
+        background: var(--primary, #3E8F47);
     }
 
     .line-color {
-        background: var(--warning, #F59E0B);
+        background: var(--warning, #8A6F25);
     }
 </style>

@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/xuri/excelize/v2"
 )
 
 func TestOCRPermissionsAssignedToDocumentCapableRoles(t *testing.T) {
@@ -17,6 +19,39 @@ func TestOCRPermissionsAssignedToDocumentCapableRoles(t *testing.T) {
 				require.Contains(t, rolePermissions[roleName], permission)
 				require.True(t, app.CheckPermissionByRole(roleName, permission), "%s should have %s", roleName, permission)
 			}
+		})
+	}
+}
+
+func TestDocumentCapableRolesCanQuickCaptureExcelRFQ(t *testing.T) {
+	previousProvider := settingsBasedMistralKey
+	settingsBasedMistralKey = func() string { return "" }
+	t.Cleanup(func() { settingsBasedMistralKey = previousProvider })
+	t.Setenv("MISTRAL_API_KEY", "")
+
+	workbookPath := filepath.Join(t.TempDir(), "role_rfq.xlsx")
+	workbook := excelize.NewFile()
+	sheet := workbook.GetSheetName(0)
+	require.NoError(t, workbook.SetCellValue(sheet, "A1", "Request for Quotation"))
+	require.NoError(t, workbook.SetCellValue(sheet, "A2", "RFQ Number"))
+	require.NoError(t, workbook.SetCellValue(sheet, "B2", "RFQ-ROLE-001"))
+	require.NoError(t, workbook.SetCellValue(sheet, "A3", "Please quote pressure transmitter spares."))
+	require.NoError(t, workbook.SaveAs(workbookPath))
+	require.NoError(t, workbook.Close())
+
+	for _, roleName := range []string{"manager", "sales", "operations", "staff"} {
+		t.Run(roleName, func(t *testing.T) {
+			app := shippingGateAppForRole(t, roleName)
+			require.NoError(t, app.db.AutoMigrate(&OCRDocument{}))
+			ocrService, err := NewSimpleOCRService()
+			require.NoError(t, err)
+			app.ocrService = ocrService
+
+			result, err := app.QuickCaptureDocument(workbookPath)
+			require.NoError(t, err)
+			require.Contains(t, []string{"RFQ", "rfq"}, result["documentType"])
+			require.Greater(t, result["textLength"], 0)
+			require.Equal(t, "excelize", result["engine"])
 		})
 	}
 }
@@ -222,4 +257,63 @@ func TestInternalOCRClassifierFallbackWorksWithoutClassifyPermission(t *testing.
 	result := app.classifyDocumentForOCR("Request for Quotation\nPlease quote analyzer spares.", "rfq.pdf")
 	require.NotNil(t, result)
 	require.Equal(t, "RFQ", result.DocumentType)
+}
+
+func TestButlerDocumentAnalysisUsesDocumentPermissionNotIntelligenceChat(t *testing.T) {
+	previousProvider := settingsBasedMistralKey
+	settingsBasedMistralKey = func() string { return "" }
+	t.Cleanup(func() { settingsBasedMistralKey = previousProvider })
+	t.Setenv("MISTRAL_API_KEY", "")
+
+	app := setupTestApp(t)
+	app.currentUserID = "ocr-staff"
+	app.currentUser = &User{
+		Base:     Base{ID: "ocr-staff"},
+		Username: "ocr-staff",
+		RoleName: "staff",
+		Role: Role{
+			Name:        "staff",
+			DisplayName: "Staff",
+			Permissions: `["documents:view","documents:create","documents:classify"]`,
+		},
+	}
+
+	insight, err := app.AnalyzeDocumentWithButler(
+		"Request for Quotation\nRFQ: OCR-777\nPlease quote pressure transmitter spares.",
+		"rfq",
+		map[string]interface{}{"source": "unit-test"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "rfq", insight.DocumentType)
+	require.NotEmpty(t, insight.Summary)
+}
+
+func TestProcessInboxDocumentLocalFallbackClassifiesRawText(t *testing.T) {
+	previousProvider := settingsBasedMistralKey
+	settingsBasedMistralKey = func() string { return "" }
+	t.Cleanup(func() { settingsBasedMistralKey = previousProvider })
+	t.Setenv("MISTRAL_API_KEY", "")
+
+	app := setupTestApp(t)
+	app.currentUserID = "ocr-staff"
+	app.currentUser = &User{
+		Base:     Base{ID: "ocr-staff"},
+		Username: "ocr-staff",
+		RoleName: "staff",
+		Role: Role{
+			Name:        "staff",
+			DisplayName: "Staff",
+			Permissions: `["documents:view","documents:create","documents:classify"]`,
+		},
+	}
+
+	result, err := app.processInboxDocumentLocally(
+		"/tmp/missing-rfq.pdf",
+		"Request for Quotation\nRFQ: LOCAL-FALLBACK-1\nPlease quote analyzer spares.",
+	)
+	require.NoError(t, err)
+	require.Equal(t, "rfq", result.DetectedType)
+	require.NotEmpty(t, result.ExtractedText)
+	require.Equal(t, "local_ocr_fallback", result.Entities["source"])
+	require.Contains(t, result.SuggestedActions, "Create Opportunity")
 }

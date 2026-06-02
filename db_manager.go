@@ -28,9 +28,11 @@ type DBManager struct {
 	syncInProgress            bool       // Prevents concurrent first-run syncs
 	syncMu                    sync.Mutex // Lock for sync operations
 	canPullActivityMonitoring func() bool
+	afterSuccessfulSync       func(pushed int, pulled int)
 	stopChan                  chan struct{}
 	stopOnce                  sync.Once
 	wg                        sync.WaitGroup
+	periodicStarted           bool
 }
 
 // NewDBManager creates a new dual-database manager
@@ -61,6 +63,12 @@ func (m *DBManager) Remote() *gorm.DB {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.remote
+}
+
+func (m *DBManager) SetAfterSuccessfulSync(callback func(pushed int, pulled int)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.afterSuccessfulSync = callback
 }
 
 // IsOnline returns whether Supabase sync is connected
@@ -161,63 +169,94 @@ func (m *DBManager) CheckConnectivity() bool {
 	return true
 }
 
-// MigrateRemote runs AutoMigrate on Supabase (creates tables if needed)
-func (m *DBManager) MigrateRemote() error {
-	if m.remote == nil {
-		return fmt.Errorf("supabase not connected")
-	}
-
-	log.Println("Running schema migration on Supabase...")
-
-	models := []interface{}{
-		// Master Data
+func syncRemoteMigrationModels() []interface{} {
+	return []interface{}{
+		// Access and master data
+		&Role{},
+		&User{},
+		&Device{},
+		&DeviceUser{},
+		&LicenseKey{},
+		&DataUpdateManifest{},
+		&DataUpdateOperation{},
+		&DataUpdateReceipt{},
 		&CustomerMaster{},
-		&CustomerContact{},
 		&SupplierMaster{},
-		&SupplierContact{},
 		&ProductMaster{},
-		&EntityNote{},
+		&CustomerContact{},
+		&SupplierContact{},
+		&CustomerNameMapping{},
 		&SupplierIssue{},
-		// Sales
+		&EntityNote{},
+
+		// Commercial pipeline
+		&Opportunity{},
+		&OpportunityComment{},
+		&OpportunityEditConflict{},
 		&RFQData{},
+		&RFQComment{},
 		&CostingSheetData{},
+		&CostingSheetAttachment{},
 		&CostingLineItemData{},
 		&CostingHistory{},
-		&OfferData{},
 		&Offer{},
 		&OfferItem{},
-		&Opportunity{},
-		&OpportunityEditConflict{},
+		&OfferData{},
+		&OfferNote{},
+		&OfferFollowUp{},
 		&Order{},
 		&OrderItem{},
-		// Finance
+		&Shipment{},
+		&PostSaleNote{},
+
+		// Customer finance
 		&Invoice{},
 		&DBInvoiceItem{},
+		&InvoiceSequence{},
 		&CreditNote{},
 		&CreditNoteItem{},
 		&Payment{},
-		&SupplierPayment{},
-		// Operations
+		&CustomerReceipt{},
+		&CustomerReceiptAllocation{},
+
+		// Supplier, procurement, and delivery
 		&PurchaseOrder{},
 		&PurchaseOrderItem{},
+		&SupplierInvoice{},
+		&SupplierInvoiceItem{},
+		&SupplierPayment{},
 		&GoodsReceivedNote{},
 		&GRNItem{},
 		&SerialNumber{},
-		&SupplierInvoice{},
-		&SupplierInvoiceItem{},
 		&DeliveryNote{},
 		&DeliveryNoteItem{},
-		// Intelligence
-		&Conversation{},
-		&ChatMessage{},
-		&OfferFollowUp{},
-		// Sequence Numbers
-		&InvoiceSequence{},
-		// Finance — Banking & Costing
+
+		// Operational accounting
+		&ChartOfAccount{},
+		&AccountMapping{},
+		&FiscalPeriod{},
+		&JournalEntry{},
+		&JournalLine{},
+		&VATReturn{},
+		&CurrencyExchangeRate{},
+		&CompanyBankAccount{},
 		&BankAccount{},
 		&BankStatement{},
 		&BankStatementLine{},
+		&BankLinePaymentAllocation{},
+		&BankCashBalance{},
 		&BankExpenseEntry{},
+		&StatementHash{},
+		&BookBankReconciliation{},
+		&OutstandingCheque{},
+		&DepositInTransit{},
+		&ChequeRegister{},
+		&FXRate{},
+		&FXRevaluation{},
+		&BankStatementFile{},
+		&BankReconciliationAuditLog{},
+
+		// Expenses and payroll
 		&ExpenseCategory{},
 		&ExpenseVendor{},
 		&ExpenseEntry{},
@@ -231,31 +270,63 @@ func (m *DBManager) MigrateRemote() error {
 		&PayrollRunItem{},
 		&PayrollComponent{},
 		&PayrollPayout{},
-		// System
-		&SyncRecord{},
-		&Role{},
-		&User{},
-		&AuditLog{},
-		&Setting{},
-		&Device{},
-		&DeviceUser{},
-		&LicenseKey{},
-		&UserActivitySession{},
-		&UserActivityEvent{},
-		&UserActivityWeeklySummary{},
-		// Collaboration
+
+		// Inventory visibility
+		&Warehouse{},
+		&InventoryItem{},
+		&StockMovement{},
+		&StockAdjustment{},
+
+		// People, work, and collaboration
 		&Employee{},
 		&EmployeeAccessLink{},
 		&Project{},
 		&ProjectMember{},
-		&Notification{},
-		&NotificationReceipt{},
 		&TaskItem{},
 		&TaskComment{},
 		&TaskActivity{},
+		&Notification{},
+		&NotificationReceipt{},
+		&DeleteApprovalRequest{},
+		&EmployeeArchiveRequest{},
+		&UserActivitySession{},
+		&UserActivityEvent{},
+		&UserActivityWeeklySummary{},
+
+		// Intelligence, reporting, and imports
+		&Conversation{},
+		&ChatMessage{},
+		&PredictionRecord{},
+		&WinProbabilityPrediction{},
+		&DiscountRecommendationRecord{},
+		&CustomerSnapshot{},
+		&ActualOutcome{},
+		&GradeChange{},
+		&PaymentPredictionAccuracy{},
+		&TallyInvoiceImport{},
+		&TallyPurchaseImport{},
+		&IntelligenceOpportunityEnrichment{},
+		&IntelligenceLineItemEnrichment{},
+		&IntelligenceOrderEnrichment{},
+		&DataQualityReview{},
+		&Alert{},
+		&FollowUpTask{},
+		&Asset{},
+		&ContractTemplate{},
+		&ContractClause{},
+		&Contract{},
+	}
+}
+
+// MigrateRemote runs AutoMigrate on Supabase (creates tables if needed)
+func (m *DBManager) MigrateRemote() error {
+	if m.remote == nil {
+		return fmt.Errorf("supabase not connected")
 	}
 
-	for _, model := range models {
+	log.Println("Running schema migration on Supabase...")
+
+	for _, model := range syncRemoteMigrationModels() {
 		if err := m.remote.AutoMigrate(model); err != nil {
 			if isBenignRemoteMigrationDrift(err) {
 				log.Printf("Supabase migration drift warning: %v", err)
@@ -265,8 +336,37 @@ func (m *DBManager) MigrateRemote() error {
 			return err
 		}
 	}
+	if err := m.ensureRemoteWideTextColumns(); err != nil {
+		return err
+	}
 
 	log.Println("Supabase schema migration complete")
+	return nil
+}
+
+func (m *DBManager) ensureRemoteWideTextColumns() error {
+	if m == nil || m.remote == nil {
+		return nil
+	}
+	wideColumns := map[string][]string{
+		"intelligence_opportunity_enrichment": {"id"},
+		"intelligence_line_item_enrichment":   {"id"},
+		"intelligence_order_enrichment":       {"id"},
+	}
+	for table, columns := range wideColumns {
+		if !isValidSQLIdentifier(table) || !m.remote.Migrator().HasTable(table) {
+			continue
+		}
+		for _, column := range columns {
+			if !isValidSQLIdentifier(column) {
+				continue
+			}
+			statement := fmt.Sprintf(`ALTER TABLE "%s" ALTER COLUMN "%s" TYPE TEXT`, table, column)
+			if err := m.remote.Exec(statement).Error; err != nil {
+				return fmt.Errorf("widen remote %s.%s: %w", table, column, err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -346,6 +446,51 @@ func (m *DBManager) StartPeriodicSync(interval time.Duration) {
 		log.Println("Periodic sync disabled (no Supabase config)")
 		return
 	}
+	m.mu.Lock()
+	if m.periodicStarted {
+		m.mu.Unlock()
+		log.Println("DBManager periodic sync already started")
+		return
+	}
+	m.periodicStarted = true
+	m.mu.Unlock()
+
+	runCycle := func() {
+		// Try to connect if not online
+		if !m.IsOnline() {
+			if err := m.ConnectRemote(); err != nil {
+				return
+			}
+		}
+
+		// Check connectivity
+		if !m.CheckConnectivity() {
+			return
+		}
+
+		// Perform sync
+		lastSync := m.getLastSyncTime()
+		pushed, pushErr := m.SyncToRemote(lastSync)
+		if pushErr != nil {
+			log.Printf("Sync push completed with errors after %d records: %v", pushed, pushErr)
+		} else if pushed > 0 {
+			log.Printf("Sync: pushed %d records to Supabase", pushed)
+		}
+		pulled, pullErr := m.SyncFromRemote(lastSync)
+		if pullErr != nil {
+			log.Printf("Sync pull completed with errors after %d records: %v", pulled, pullErr)
+		} else if pulled > 0 {
+			log.Printf("Sync: pulled %d records from Supabase", pulled)
+		}
+		if pushErr == nil && pullErr == nil {
+			m.mu.RLock()
+			callback := m.afterSuccessfulSync
+			m.mu.RUnlock()
+			if callback != nil {
+				callback(pushed, pulled)
+			}
+		}
+	}
 
 	runCycle := func() {
 		// Try to connect if not online
@@ -376,6 +521,11 @@ func (m *DBManager) StartPeriodicSync(interval time.Duration) {
 
 	m.wg.Add(1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("🔥 DBManager periodic sync panic: %v", r)
+			}
+		}()
 		defer m.wg.Done()
 
 		// Initial delay to let app start
@@ -426,6 +576,12 @@ func (m *DBManager) TriggerSync() (int, int, error) {
 	pulled, pullErr := m.SyncFromRemote(lastSync)
 	if pushErr != nil || pullErr != nil {
 		return pushed, pulled, fmt.Errorf("sync completed with errors: push=%v pull=%v", pushErr, pullErr)
+	}
+	m.mu.RLock()
+	callback := m.afterSuccessfulSync
+	m.mu.RUnlock()
+	if callback != nil {
+		callback(pushed, pulled)
 	}
 
 	return pushed, pulled, nil
@@ -490,7 +646,11 @@ func (m *DBManager) syncTable(table string, since time.Time, direction string) (
 	if source == nil || dest == nil {
 		return 0, nil
 	}
-	if !m.remoteSyncTableAvailable(table, direction) {
+	remoteAvailable, err := m.remoteSyncTableAvailableForSync(table, direction)
+	if err != nil {
+		return 0, err
+	}
+	if !remoteAvailable {
 		return 0, nil
 	}
 	sourceColumnTypes, err := syncDBColumnTypes(source, table)
@@ -549,14 +709,21 @@ func (m *DBManager) syncTable(table string, since time.Time, direction string) (
 
 		if err != nil {
 			log.Printf("Batch sync error for %s: %v, falling back to individual", table, err)
+			fallbackErrors := []string{}
 			// Fallback to individual inserts for this batch
 			for _, record := range batch {
 				id := record["id"]
 				if err := syncUpsertRecordByIDOrNaturalKey(dest, table, record, targetColumnTypes); err != nil {
 					log.Printf("Individual sync error for %s/%v: %v", table, id, err)
+					if len(fallbackErrors) < 5 {
+						fallbackErrors = append(fallbackErrors, fmt.Sprintf("%v: %v", id, err))
+					}
 					continue
 				}
 				synced++
+			}
+			if len(fallbackErrors) > 0 {
+				return synced, fmt.Errorf("sync %s had fallback row errors after batch error %q: %s", table, err.Error(), strings.Join(fallbackErrors, "; "))
 			}
 		} else {
 			synced += len(batch)
@@ -578,13 +745,29 @@ func (m *DBManager) syncTable(table string, since time.Time, direction string) (
 }
 
 func (m *DBManager) remoteSyncTableAvailable(table, direction string) bool {
-	if m.remote == nil {
+	available, err := m.remoteSyncTableAvailableForSync(table, direction)
+	if err != nil {
+		log.Printf("Remote schema error for %s sync on %s: %v", direction, table, err)
 		return false
 	}
-	if m.remote.Migrator().HasTable(table) {
-		return true
+	return available
+}
+
+func (m *DBManager) remoteSyncTableAvailableForSync(table, direction string) (bool, error) {
+	if m.remote == nil {
+		return false, nil
 	}
-	log.Printf("Skipping %s sync for %s: remote table is missing; apply the Supabase schema migration to enable this table", direction, table)
+	if m.remote.Migrator().HasTable(table) {
+		return true, nil
+	}
+	if isOptionalRemoteSyncTable(table) {
+		log.Printf("Skipping %s sync for %s: optional remote table is missing; apply the Supabase schema migration to enable this table", direction, table)
+		return false, nil
+	}
+	return false, fmt.Errorf("remote table %q is missing; apply the Supabase schema migration before %s sync", table, direction)
+}
+
+func isOptionalRemoteSyncTable(table string) bool {
 	return false
 }
 
@@ -625,10 +808,25 @@ func (a *App) InitDBManager() {
 	cfg := LoadSupabaseConfig()
 	a.dbManager = NewDBManager(a.db, cfg)
 	a.dbManager.canPullActivityMonitoring = a.currentSessionCanAccessActivityMonitoring
+	a.dbManager.SetAfterSuccessfulSync(func(pushed int, pulled int) {
+		updateSummary, err := a.applyPendingDataUpdatesInternal(false, "db_manager_sync")
+		if err != nil {
+			log.Printf("Published data update auto-apply failed after DBManager sync: %v", err)
+			return
+		}
+		if updateSummary.AppliedCount > 0 {
+			log.Printf("Published data updates auto-applied after DBManager sync: %d", updateSummary.AppliedCount)
+		}
+	})
 
 	// Try to connect to Supabase (non-blocking)
 	if cfg.Enabled {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					a.recordBackgroundPanic("Supabase startup sync", r)
+				}
+			}()
 			// Delay to not block app startup
 			time.Sleep(2 * time.Second)
 

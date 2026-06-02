@@ -29,7 +29,7 @@
   .btn {
     padding: 8px 16px;
     border-radius: var(--border-radius-sm);
-    font-size: 14px;
+    font-size: var(--control-text-size-scaled, 14px);
     font-weight: 500;
     cursor: pointer;
     transition: all var(--transition-fast);
@@ -134,19 +134,19 @@
   /* Sizes */
   .btn-sm {
     padding: 6px 12px;
-    font-size: 13px;
+    font-size: var(--meta-text-size-scaled, 13px);
     gap: 6px;
   }
 
   .btn-md {
     padding: 8px 16px;
-    font-size: 14px;
+    font-size: var(--control-text-size-scaled, 14px);
     gap: 8px;
   }
 
   .btn-lg {
     padding: 10px 20px;
-    font-size: 15px;
+    font-size: var(--body-text-size-scaled, 15px);
     gap: 10px;
   }
 

@@ -5,11 +5,11 @@
    * Features:
    * - List all customer invoices from database
    * - Create invoices from unfulfilled orders
-   * - Send invoices (mark as Sent)
+   * - Issue draft invoices into open receivables
    * - Delete invoices with confirmation
-   * - Filter by status: Draft, Sent, Paid, Overdue, PartiallyPaid
+   * - Filter by finance state: Draft, Open, Partial, Settled, Overdue
    * - Search by invoice number or customer name
-   * - KPI dashboard: Total Revenue, Outstanding, Overdue count
+   * - KPI dashboard: Invoiced Revenue, Open Receivables, Overdue balance
    * - BHD currency with 3 decimal places
    *
    * Design System: Wabi-Sabi minimalism × Bloomberg data density
@@ -59,7 +59,7 @@
   export let company: 'PH Trading' | 'AHS Trading' = 'PH Trading';
 
   // Types
-  type StatusFilter = 'All' | 'Draft' | 'Sent' | 'Paid' | 'Overdue' | 'PartiallyPaid';
+  type StatusFilter = 'All' | 'Draft' | 'Open' | 'Partial' | 'Settled' | 'Overdue' | 'Proforma';
 
   interface InvoiceItem {
     id: string;
@@ -292,13 +292,76 @@
   }
 
   // Status color mapping
-  const statusColors: Record<string, string> = {
+  const rawStatusColors: Record<string, string> = {
     Draft: '#6B7280',
     Sent: '#3B82F6',
     Paid: '#10B981',
     Overdue: '#EF4444',
     PartiallyPaid: '#F59E0B',
+    Proforma: '#7C3AED',
+    Cancelled: '#6B7280',
+    Void: '#6B7280',
   };
+
+  const workflowEditableStatuses = [
+    { value: 'Draft', label: 'Draft' },
+    { value: 'Sent', label: 'Open' },
+    { value: 'Cancelled', label: 'Cancelled' },
+    { value: 'Void', label: 'Void' },
+    { value: 'Proforma', label: 'Proforma' },
+  ];
+
+  function getInvoiceDisplayStatus(invoice: Invoice | null | undefined): string {
+    const status = String(invoice?.status || '');
+    switch (status) {
+      case 'Sent':
+        return 'Open';
+      case 'PartiallyPaid':
+        return 'Partial';
+      case 'Paid':
+        return 'Settled';
+      default:
+        return status || 'Draft';
+    }
+  }
+
+  function getStatusColor(statusOrInvoice: string | Invoice | null | undefined): string {
+    const displayStatus = typeof statusOrInvoice === 'string'
+      ? statusOrInvoice
+      : getInvoiceDisplayStatus(statusOrInvoice);
+
+    switch (displayStatus) {
+      case 'Open':
+        return rawStatusColors.Sent;
+      case 'Partial':
+        return rawStatusColors.PartiallyPaid;
+      case 'Settled':
+        return rawStatusColors.Paid;
+      default:
+        return rawStatusColors[displayStatus] || '#6B7280';
+    }
+  }
+
+  function isPostedInvoice(invoice: Invoice): boolean {
+    return ['Sent', 'Paid', 'PartiallyPaid', 'Overdue'].includes(String(invoice?.status || ''));
+  }
+
+  function isOpenReceivable(invoice: Invoice): boolean {
+    return Number(invoice?.outstanding_bhd || 0) > 0 && ['Sent', 'PartiallyPaid', 'Overdue'].includes(String(invoice?.status || ''));
+  }
+
+  function matchesStatusFilter(invoice: Invoice, filter: StatusFilter): boolean {
+    if (filter === 'All') return true;
+    const displayStatus = getInvoiceDisplayStatus(invoice);
+    if (filter === 'Open') return displayStatus === 'Open';
+    if (filter === 'Partial') return displayStatus === 'Partial';
+    if (filter === 'Settled') return displayStatus === 'Settled';
+    return displayStatus === filter;
+  }
+
+  function isSettlementLockedStatus(status: string): boolean {
+    return ['Paid', 'PartiallyPaid', 'Overdue'].includes(String(status || ''));
+  }
 
   function openEditModal(invoice: Invoice) {
     editInvoice = { ...invoice };
@@ -311,14 +374,6 @@
     // Validate amounts > 0
     if (editInvoice.grand_total_bhd <= 0) {
       toast.warning('Invoice amount must be greater than 0');
-      return;
-    }
-    if (editInvoice.outstanding_bhd < 0) {
-      toast.warning('Outstanding amount cannot be negative');
-      return;
-    }
-    if (editInvoice.outstanding_bhd > editInvoice.grand_total_bhd) {
-      toast.warning('Outstanding amount cannot exceed invoice total');
       return;
     }
 
@@ -406,7 +461,7 @@
     },
     {
       key: 'outstanding_bhd',
-      label: 'Outstanding (BHD)',
+      label: 'Open Balance (BHD)',
       sortable: true,
       width: '160px',
       align: 'right' as const,
@@ -433,8 +488,9 @@
       sortable: true,
       width: '110px',
       render: (row: Invoice) => {
-        const color = statusColors[row.status] || '#6B7280';
-        return `<span style="display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; background: ${color}15; color: ${color};">${row.status}</span>`;
+        const color = getStatusColor(row);
+        const label = escapeHtml(getInvoiceDisplayStatus(row));
+        return `<span style="display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; background: ${color}15; color: ${color};">${label}</span>`;
       },
     },
     {
@@ -452,20 +508,22 @@
   const filterTabs: { value: StatusFilter; label: string; count: number }[] = [
     { value: 'All', label: 'All', count: 0 },
     { value: 'Draft', label: 'Draft', count: 0 },
-    { value: 'Sent', label: 'Sent', count: 0 },
-    { value: 'Paid', label: 'Paid', count: 0 },
+    { value: 'Open', label: 'Open', count: 0 },
+    { value: 'Partial', label: 'Partial', count: 0 },
+    { value: 'Settled', label: 'Settled', count: 0 },
     { value: 'Overdue', label: 'Overdue', count: 0 },
-    { value: 'PartiallyPaid', label: 'Partial', count: 0 },
+    { value: 'Proforma', label: 'Proforma', count: 0 },
   ];
 
   // Computed: Update tab counts
   $: {
     filterTabs[0].count = invoices.length;
-    filterTabs[1].count = invoices.filter((i) => i.status === 'Draft').length;
-    filterTabs[2].count = invoices.filter((i) => i.status === 'Sent').length;
-    filterTabs[3].count = invoices.filter((i) => i.status === 'Paid').length;
-    filterTabs[4].count = invoices.filter((i) => i.status === 'Overdue').length;
-    filterTabs[5].count = invoices.filter((i) => i.status === 'PartiallyPaid').length;
+    filterTabs[1].count = invoices.filter((i) => matchesStatusFilter(i, 'Draft')).length;
+    filterTabs[2].count = invoices.filter((i) => matchesStatusFilter(i, 'Open')).length;
+    filterTabs[3].count = invoices.filter((i) => matchesStatusFilter(i, 'Partial')).length;
+    filterTabs[4].count = invoices.filter((i) => matchesStatusFilter(i, 'Settled')).length;
+    filterTabs[5].count = invoices.filter((i) => matchesStatusFilter(i, 'Overdue')).length;
+    filterTabs[6].count = invoices.filter((i) => matchesStatusFilter(i, 'Proforma')).length;
   }
 
   // Computed: Filter and search (uses debouncedQuery for performance)
@@ -473,9 +531,7 @@
     let result = [...invoices];
 
     // Status filter
-    if (selectedFilter !== 'All') {
-      result = result.filter((i) => i.status === selectedFilter);
-    }
+    result = result.filter((i) => matchesStatusFilter(i, selectedFilter));
 
     // Search filter (debounced to prevent excessive re-renders)
     if (debouncedQuery) {
@@ -498,11 +554,15 @@
   $: stats = {
     totalRevenueYTD: invoices
       .filter((invoice) => parseGoDate(invoice.invoice_date).getFullYear() === new Date().getFullYear())
+      .filter((invoice) => isPostedInvoice(invoice))
       .reduce((sum, i) => sum + i.grand_total_bhd, 0),
-    outstanding: invoices.reduce((sum, i) => sum + i.outstanding_bhd, 0),
-    overdueCount: invoices.filter(
-      (i) => i.status === 'Overdue' && i.outstanding_bhd > 0
-    ).length,
+    outstanding: invoices
+      .filter((invoice) => isOpenReceivable(invoice))
+      .reduce((sum, i) => sum + i.outstanding_bhd, 0),
+    overdueCount: invoices.filter((i) => matchesStatusFilter(i, 'Overdue') && Number(i.outstanding_bhd || 0) > 0).length,
+    overdueBalance: invoices
+      .filter((i) => matchesStatusFilter(i, 'Overdue'))
+      .reduce((sum, i) => sum + Number(i.outstanding_bhd || 0), 0),
   };
 
   // Currency formatter - BHD with 3 decimal places
@@ -515,6 +575,10 @@
 
   function openBankReconciliation() {
     dispatch('navigate', { tab: 'bank_recon', source: 'customer_invoices' });
+  }
+
+  function matchesCompany(division?: string) {
+    return (division || 'PH Trading') === company;
   }
 
   // Parse Go time.Time to JS Date
@@ -713,10 +777,10 @@
     }
   }
 
-  // Send invoice (mark as Sent)
+  // Issue a draft invoice into the open receivables flow
   async function handleSendInvoice(invoice: Invoice) {
     if (invoice.status === 'Sent') {
-      toast.info('Invoice already sent');
+      toast.info('Invoice already open');
       return;
     }
 
@@ -726,7 +790,7 @@
 
     try {
       await SendCustomerInvoice(invoice.id);
-      toast.success(`Invoice ${invoice.invoice_number} marked as sent`);
+      toast.success(`Invoice ${invoice.invoice_number} issued and marked open`);
       await loadInvoices();
     } catch (err) {
       const errorMsg = err?.message || String(err);
@@ -761,16 +825,21 @@
     }
   }
 
+  let lastLoadedCompany = '';
+
   onMount(() => {
+    lastLoadedCompany = company;
     loadInvoices();
   });
 
-  $: if (company) {
+  $: if (lastLoadedCompany && company !== lastLoadedCompany) {
+    lastLoadedCompany = company;
     loadInvoices();
+    loadCreditNotes();
   }
 </script>
 
-<PageLayout title="Invoices" subtitle="Customer billing and receivables management" {embedded}>
+<PageLayout title="Invoices" subtitle="Customer billing and receivables settlement" {embedded}>
   <svelte:fragment slot="header-actions">
     <Button variant="secondary" on:click={loadInvoices}>Refresh</Button>
     <Button variant="secondary" on:click={openBankReconciliation}>Open Bank Recon</Button>
@@ -785,32 +854,32 @@
     <div class="kpi-grid">
       <Card padding="md" variant="elevated">
         <div class="kpi-card">
-          <div class="kpi-label">Total Revenue (YTD)</div>
+          <div class="kpi-label">Invoiced Revenue (YTD)</div>
           <div class="kpi-value kpi-primary">
             {formatBHD(stats.totalRevenueYTD)} <span class="kpi-currency">BHD</span>
           </div>
-          <div class="kpi-sublabel">{new Date().getFullYear()} billings</div>
+          <div class="kpi-sublabel">{new Date().getFullYear()} posted billings</div>
         </div>
       </Card>
 
       <Card padding="md" variant="elevated">
         <div class="kpi-card">
-          <div class="kpi-label">Outstanding</div>
+          <div class="kpi-label">Open Receivables</div>
           <div class="kpi-value" class:kpi-warning={stats.outstanding > 0}>
             {formatBHD(stats.outstanding)} <span class="kpi-currency">BHD</span>
           </div>
-          <div class="kpi-sublabel">Unpaid receivables</div>
+          <div class="kpi-sublabel">Collectible open balance</div>
         </div>
       </Card>
 
       <Card padding="md" variant="elevated">
         <div class="kpi-card">
-          <div class="kpi-label">Overdue</div>
-          <div class="kpi-value" class:kpi-danger={stats.overdueCount > 0}>
-            {stats.overdueCount}
+          <div class="kpi-label">Overdue Balance</div>
+          <div class="kpi-value" class:kpi-danger={stats.overdueBalance > 0}>
+            {formatBHD(stats.overdueBalance)} <span class="kpi-currency">BHD</span>
           </div>
           <div class="kpi-sublabel">
-            {stats.overdueCount === 1 ? 'Invoice' : 'Invoices'} past due
+            {stats.overdueCount} {stats.overdueCount === 1 ? 'invoice' : 'invoices'} past due
           </div>
         </div>
       </Card>
@@ -837,7 +906,7 @@
 
       <Input
         type="text"
-        placeholder="Search invoices..."
+        placeholder="Search invoices or customers..."
         bind:value={searchQuery}
         style="width: 300px;"
         aria-label="Search invoices by number or customer"
@@ -856,7 +925,7 @@
           {columns}
           data={filteredInvoices}
           {loading}
-          emptyMessage="No invoices found. Click 'Create Invoice' to add one from an order."
+          emptyMessage="No invoices found in this settlement view. Click 'Create Invoice' to add one from an order."
           onRowClick={(row) => openDetailModal(row)}
           stickyHeader={!embedded}
           maxHeight={embedded ? '400px' : 'calc(100vh - 520px)'}
@@ -884,13 +953,13 @@
                   <button
                     class="action-btn action-send"
                     on:click|stopPropagation={() => handleSendInvoice(row)}
-                    title="Send Invoice"
+                    title="Issue Invoice"
                     disabled={sendingInvoiceId === row.id}
                   >
-                    {sendingInvoiceId === row.id ? '...' : 'Send'}
+                    {sendingInvoiceId === row.id ? '...' : 'Issue'}
                   </button>
                 {/if}
-                {#if row.status !== 'Paid'}
+                {#if !['Paid', 'Cancelled', 'Void'].includes(row.status)}
                   <button
                     class="action-btn action-delete"
                     on:click|stopPropagation={() => openDeleteModal(row)}
@@ -1166,25 +1235,34 @@
     <div class="edit-form">
       <div class="form-row">
         <div class="form-field">
-          <label for="edit-invoice-number">Invoice Number</label>
-          <input id="edit-invoice-number" type="text" value={editInvoice.invoice_number} class="input-field" disabled title="Invoice numbers are system-generated" />
+          <label for={`edit-invoice-number-${editInvoice.id}`}>Invoice Number</label>
+          <input id={`edit-invoice-number-${editInvoice.id}`} type="text" value={editInvoice.invoice_number} class="input-field" disabled title="Invoice numbers are system-generated" />
         </div>
         <div class="form-field">
-          <label for="edit-invoice-status">Status</label>
-          <select id="edit-invoice-status" bind:value={editInvoice.status} class="input-field">
-            <option value="Draft">Draft</option>
-            <option value="Sent">Sent</option>
-            <option value="Paid">Paid</option>
-            <option value="PartiallyPaid">Partially Paid</option>
-            <option value="Overdue">Overdue</option>
-          </select>
+          <label for={`edit-invoice-status-${editInvoice.id}`}>Status</label>
+          {#if isSettlementLockedStatus(editInvoice.status)}
+            <input
+              id={`edit-invoice-status-${editInvoice.id}`}
+              type="text"
+              value={editInvoice.status}
+              class="input-field"
+              disabled
+              title="Settlement status is derived from payments, credit notes, and due date"
+            />
+          {:else}
+            <select id={`edit-invoice-status-${editInvoice.id}`} bind:value={editInvoice.status} class="input-field">
+              {#each workflowEditableStatuses as status}
+                <option value={status.value}>{status.label}</option>
+              {/each}
+            </select>
+          {/if}
         </div>
       </div>
       <div class="form-row">
         <div class="form-field">
-          <label for="edit-invoice-amount">Amount (BHD) <span class="required">*</span></label>
+          <label for={`edit-invoice-amount-${editInvoice.id}`}>Amount (BHD) <span class="required">*</span></label>
           <input
-            id="edit-invoice-amount"
+            id={`edit-invoice-amount-${editInvoice.id}`}
             type="number"
             step="0.001"
             min="0.001"
@@ -1194,21 +1272,23 @@
           />
         </div>
         <div class="form-field">
-          <label for="edit-invoice-outstanding">Outstanding (BHD) <span class="required">*</span></label>
+          <label for={`edit-invoice-balance-${editInvoice.id}`}>Open Balance (BHD)</label>
           <input
-            id="edit-invoice-outstanding"
-            type="number"
-            step="0.001"
-            min="0"
-            bind:value={editInvoice.outstanding_bhd}
+            id={`edit-invoice-balance-${editInvoice.id}`}
+            type="text"
+            value={formatBHD(editInvoice.outstanding_bhd)}
             class="input-field"
-            required
+            disabled
+            title="Outstanding balance is payment-driven and read-only here"
           />
         </div>
       </div>
+      {#if isSettlementLockedStatus(editInvoice.status)}
+        <p class="workflow-hint">Settlement status and outstanding balance are ledger-driven here. Use Payments or Credit Notes to change them.</p>
+      {/if}
       <div class="form-field">
-        <label for="edit-invoice-customer-po">Customer PO Number</label>
-        <input id="edit-invoice-customer-po" type="text" bind:value={editInvoice.customer_po_number} class="input-field" />
+        <label for={`edit-invoice-po-${editInvoice.id}`}>Customer PO Number</label>
+        <input id={`edit-invoice-po-${editInvoice.id}`} type="text" bind:value={editInvoice.customer_po_number} class="input-field" />
       </div>
     </div>
 
@@ -1339,8 +1419,8 @@
       <div class="detail-header">
         <div class="detail-main">
           <h2 class="invoice-number">{selectedInvoice.invoice_number}</h2>
-          <span class="status-badge" style="background: {statusColors[selectedInvoice.status] || '#6B7280'}15; color: {statusColors[selectedInvoice.status] || '#6B7280'};">
-            {selectedInvoice.status}
+          <span class="status-badge" style="background: {getStatusColor(selectedInvoice)}15; color: {getStatusColor(selectedInvoice)};">
+            {getInvoiceDisplayStatus(selectedInvoice)}
           </span>
         </div>
         <div class="detail-customer">{selectedInvoice.customer_name}</div>
@@ -1363,7 +1443,7 @@
           <span class="detail-value mono">{formatBHD(selectedInvoice.grand_total_bhd)}</span>
         </div>
         <div class="detail-item">
-          <span class="detail-label">Outstanding (BHD)</span>
+          <span class="detail-label">Open Balance (BHD)</span>
           <span class="detail-value mono" class:warning={selectedInvoice.outstanding_bhd > 0}>
             {formatBHD(selectedInvoice.outstanding_bhd)}
           </span>
@@ -1702,6 +1782,12 @@
   .input-field:focus {
     border-color: var(--ink, #1d1d1f);
     outline: none;
+  }
+  .workflow-hint {
+    margin: -4px 0 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-secondary);
   }
 
   /* Modal Forms */

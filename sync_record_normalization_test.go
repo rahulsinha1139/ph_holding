@@ -84,7 +84,7 @@ func TestSyncNaturalKeyValueUsesSupplierCode(t *testing.T) {
 	require.NotContains(t, syncRecordWithoutID(map[string]interface{}{"id": "local-id", "supplier_code": "PESPAN"}), "id")
 }
 
-func TestSyncTableSkipsMissingRemoteTable(t *testing.T) {
+func TestSyncTableErrorsForMissingRemoteBusinessTable(t *testing.T) {
 	local, err := gorm.Open(sqlite.Open("file:sync_local?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
 	remote, err := gorm.Open(sqlite.Open("file:sync_remote?mode=memory&cache=shared"), &gorm.Config{})
@@ -95,8 +95,9 @@ func TestSyncTableSkipsMissingRemoteTable(t *testing.T) {
 
 	manager := &DBManager{local: local, remote: remote}
 	synced, err := manager.syncTable("sync_widgets", time.Time{}, "push")
-	require.NoError(t, err)
 	require.Equal(t, 0, synced)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `remote table "sync_widgets" is missing`)
 }
 
 func TestSyncTableSkipsSourceWithoutUpdatedAt(t *testing.T) {

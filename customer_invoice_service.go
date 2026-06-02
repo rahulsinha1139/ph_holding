@@ -155,6 +155,13 @@ func defaultInvoiceFieldVisibilityJSON() string {
 }
 
 func (a *App) BackfillInvoiceItemsFromOrders() (map[string]interface{}, error) {
+	if err := a.requirePermission("settings:update"); err != nil {
+		return nil, err
+	}
+	return a.backfillInvoiceItemsFromOrdersInternal()
+}
+
+func (a *App) backfillInvoiceItemsFromOrdersInternal() (map[string]interface{}, error) {
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
@@ -632,8 +639,8 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		DeliveryNoteID:     deliveryNoteID,
 		DeliveryNoteNumber: dnNumber,
 		DeliveryNoteRef:    dnNumber,
-		DeliveryNoteDate:   deliveryNoteDate,
 		DespatchDocumentNo: dnNumber,
+		DeliveryNoteDate:   deliveryNoteDate,
 		ModeOfPayment:      firstNonEmptyString(order.PaymentTerms, "Direct Bank Transfer"),
 		BuyersOrderNumber:  order.CustomerPONumber,
 		TermsOfDelivery:    firstNonEmptyString(order.DeliveryTerms, "Direct Bank Transfer"),
@@ -733,11 +740,16 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		if unitPrice <= 0 && orderItem.Quantity > 0 && fullLineTotal > 0 {
 			unitPrice = roundInvoiceMoney(fullLineTotal / orderItem.Quantity)
 		}
-		lineTotal := roundInvoiceMoney(invoiceQty * unitPrice)
-		if lineTotal <= 0 && !hasDNs {
+
+		lineTotal := 0.0
+		if invoiceQty > 0 && unitPrice > 0 {
+			lineTotal = roundInvoiceMoney(invoiceQty * unitPrice)
+		} else if invoiceQty > 0 && orderItem.Quantity > 0 && fullLineTotal > 0 {
+			lineTotal = roundInvoiceMoney(fullLineTotal * (invoiceQty / orderItem.Quantity))
+		} else {
 			lineTotal = fullLineTotal
 		}
-		if lineTotal <= 0 && invoiceQty > 0 && fullLineTotal > 0 && orderItem.Quantity <= 0 {
+		if !hasDNs && fullLineTotal > 0 && math.Abs(invoiceQty-orderItem.Quantity) <= 0.001 {
 			lineTotal = fullLineTotal
 		}
 		if unitPrice <= 0 && invoiceQty > 0 && lineTotal > 0 {
@@ -845,11 +857,21 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 		// Step 1: Credit limit check with row lock (SELECT FOR UPDATE)
 		var customer CustomerMaster
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("customer_id = ?", order.CustomerID).First(&customer).Error; err == nil {
+			Where("id = ? OR customer_id = ?", order.CustomerID, order.CustomerID).First(&customer).Error; err == nil {
 			// Customer found and locked — check credit limit atomically
+			if customer.IsCreditBlocked {
+				log.Printf("BLOCKED: Customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
+				return fmt.Errorf("customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
+			}
+
+			customerRefs := []string{customer.ID}
+			if strings.TrimSpace(customer.CustomerID) != "" && customer.CustomerID != customer.ID {
+				customerRefs = append(customerRefs, customer.CustomerID)
+			}
+
 			var totalOutstanding float64
 			if err := tx.Model(&Invoice{}).
-				Where("customer_id = ? AND status NOT IN ?", order.CustomerID, []string{"Paid", "Cancelled", "Void", "Proforma"}).
+				Where("customer_id IN ? AND status NOT IN ?", customerRefs, []string{"Paid", "Cancelled", "Void", "Proforma"}).
 				Select("COALESCE(SUM(outstanding_bhd), 0)").
 				Scan(&totalOutstanding).Error; err != nil {
 				log.Printf("⚠️ Failed to calculate customer outstanding AR: %v", err)
@@ -868,10 +890,6 @@ func (a *App) CreateInvoiceWithOptions(orderID string, deliveryNoteID string, fi
 						creditLimit)
 				}
 
-				if customer.IsCreditBlocked {
-					log.Printf("BLOCKED: Customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
-					return fmt.Errorf("customer %s is credit blocked - no new invoices allowed", customer.BusinessName)
-				}
 				if newTotalOutstanding > creditLimit {
 					log.Printf("BLOCKED: Customer %s exceeds credit limit (%.3f BHD > %.3f BHD)",
 						customer.BusinessName, newTotalOutstanding, creditLimit)
@@ -986,6 +1004,8 @@ func (a *App) ListCustomerInvoices(limit, offset int) ([]Invoice, error) {
 		return nil, fmt.Errorf("failed to retrieve invoices: %w", err)
 	}
 
+	hydrateCustomerInvoicesPaymentState(invoices)
+
 	// Debug: Log items loaded per invoice
 	for i, inv := range invoices {
 		log.Printf("🔍 Invoice[%d] %s: %d items loaded", i, inv.InvoiceNumber, len(inv.Items))
@@ -1010,6 +1030,8 @@ func (a *App) GetCustomerInvoiceByID(id string) (Invoice, error) {
 		return Invoice{}, fmt.Errorf("invoice not found: %w", err)
 	}
 
+	hydrateCustomerInvoicePaymentState(&invoice)
+
 	return invoice, nil
 }
 
@@ -1030,6 +1052,7 @@ func (a *App) UpdateCustomerInvoice(inv Invoice) (Invoice, error) {
 	if err := a.db.Where("id = ?", inv.ID).First(&existing).Error; err != nil {
 		return Invoice{}, fmt.Errorf("invoice not found: %w", err)
 	}
+	hydrateCustomerInvoicePaymentState(&existing)
 
 	// SECURITY: Terminal states (Paid, Cancelled, Void) are immutable for audit compliance
 	terminalStatuses := map[string]bool{"Paid": true, "Cancelled": true, "Void": true}
@@ -1059,12 +1082,16 @@ func (a *App) UpdateCustomerInvoice(inv Invoice) (Invoice, error) {
 	if !validStatuses[inv.Status] {
 		return Invoice{}, fmt.Errorf("invalid invoice status: '%s'", inv.Status)
 	}
-	existing.Status = inv.Status
 
-	// Fix 3: Prevent setting status to "Paid" when there's still outstanding balance
-	if existing.Status == "Paid" && existing.OutstandingBHD > 0.001 {
-		return Invoice{}, fmt.Errorf("cannot set status to Paid: outstanding balance is %.3f BHD (must be 0)", existing.OutstandingBHD)
+	if math.Abs(inv.OutstandingBHD-existing.OutstandingBHD) > FloatingPointTolerance {
+		return Invoice{}, fmt.Errorf("outstanding balance is payment-driven and cannot be edited directly")
 	}
+
+	if inv.Status != existing.Status && (isCustomerInvoiceSettlementStatus(inv.Status) || isCustomerInvoiceSettlementStatus(existing.Status)) {
+		return Invoice{}, fmt.Errorf("invoice settlement status is payment-driven; record a payment or let the due-date workflow derive overdue state")
+	}
+
+	existing.Status = inv.Status
 
 	// Fix 2: GrandTotalBHD is a computed field (SubtotalBHD + VATBHD) — NOT directly editable
 	// OutstandingBHD intentionally NOT editable — must change via payments/credit notes only
@@ -1243,6 +1270,8 @@ func (a *App) GetInvoicesByCustomer(customerID string) ([]Invoice, error) {
 		return nil, fmt.Errorf("failed to retrieve customer invoices: %w", err)
 	}
 
+	hydrateCustomerInvoicesPaymentState(invoices)
+
 	log.Printf("📊 Retrieved %d invoices for customer %s", len(invoices), customerID)
 	return invoices, nil
 }
@@ -1252,6 +1281,9 @@ func (a *App) GetInvoicesByCustomer(customerID string) ([]Invoice, error) {
 // P0 FIX: Uses InvoiceSequence table with row-level locking to prevent race conditions
 // The SELECT FOR UPDATE ensures atomic read-modify-write even under concurrent calls
 func (a *App) GenerateInvoiceNumber() (string, error) {
+	if err := a.requirePermission("invoices:create"); err != nil {
+		return "", err
+	}
 	if a.db == nil {
 		return "", fmt.Errorf("database not initialized")
 	}
@@ -1330,52 +1362,22 @@ func (a *App) MarkCustomerInvoicePaid(id string, paymentDate time.Time, paymentR
 		return fmt.Errorf("database not initialized")
 	}
 
-	// P1 FIX: Use database transaction to prevent concurrent payment race conditions
-	tx := a.db.Begin()
-	if tx.Error != nil {
-		return fmt.Errorf("failed to start transaction: %w", tx.Error)
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-			log.Printf("❌ Transaction rolled back due to panic: %v", r)
-		}
-	}()
-
-	// Verify invoice exists (with transaction lock)
 	var invoice Invoice
-	if err := tx.Where("id = ?", id).First(&invoice).Error; err != nil {
-		tx.Rollback()
+	if err := a.db.Where("id = ?", id).First(&invoice).Error; err != nil {
 		return fmt.Errorf("invoice not found: %w", err)
 	}
 
-	// Fix 5: Block marking terminal-state invoices as paid
-	nonMarkableStatuses := map[string]bool{"Cancelled": true, "Void": true, "Proforma": true, "Paid": true}
-	if nonMarkableStatuses[invoice.Status] {
-		tx.Rollback()
-		return fmt.Errorf("cannot mark invoice as paid: current status is '%s'", invoice.Status)
+	state := customerInvoicePaymentStateFromInvoice(invoice, time.Now())
+	if !state.IsOpen {
+		return fmt.Errorf("cannot mark invoice as paid: current status is '%s'", state.Status)
 	}
 
-	// Update status and outstanding balance atomically
-	now := time.Now()
-	if err := tx.Model(&Invoice{}).
-		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"status":          "Paid",
-			"outstanding_bhd": 0.0,
-			"updated_at":      now,
-		}).Error; err != nil {
-		tx.Rollback()
+	if err := a.RecordPartialPayment(id, state.OutstandingBHD, paymentDate, paymentRef); err != nil {
 		return fmt.Errorf("failed to mark invoice as paid: %w", err)
 	}
 
-	// Commit transaction
-	if err := tx.Commit().Error; err != nil {
-		return fmt.Errorf("failed to commit payment transaction: %w", err)
-	}
-
 	log.Printf("💰 Marked Invoice as Paid: %s (Customer: %s, Amount: %.3f BHD, Ref: %s)",
-		invoice.InvoiceNumber, invoice.CustomerName, invoice.GrandTotalBHD, paymentRef)
+		invoice.InvoiceNumber, invoice.CustomerName, state.OutstandingBHD, paymentRef)
 
 	return nil
 }
@@ -1395,29 +1397,31 @@ func (a *App) MarkCustomerInvoiceOverdue(id string) error {
 	if err := a.db.Where("id = ?", id).First(&invoice).Error; err != nil {
 		return fmt.Errorf("invoice not found: %w", err)
 	}
-
-	if invoice.Status == "Paid" {
-		return fmt.Errorf("cannot mark paid invoice as overdue: %s", invoice.InvoiceNumber)
+	state := customerInvoicePaymentStateFromInvoice(invoice, time.Now())
+	if !state.IsCollectible {
+		return fmt.Errorf("cannot mark %s invoice as overdue: %s", state.Status, invoice.InvoiceNumber)
+	}
+	if state.Status != "Overdue" {
+		return fmt.Errorf("invoice settlement status remains %s: %s", state.Status, invoice.InvoiceNumber)
 	}
 
-	// Don't regress PartiallyPaid — partial payment information is more important than overdue status
-	if invoice.Status == "PartiallyPaid" {
-		return fmt.Errorf("cannot mark partially paid invoice as overdue: %s (status: PartiallyPaid)", invoice.InvoiceNumber)
+	tx := a.db.Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("failed to start transaction: %w", tx.Error)
 	}
-	// Block terminal states
-	if invoice.Status == "Cancelled" || invoice.Status == "Void" {
-		return fmt.Errorf("cannot mark %s invoice as overdue: %s", invoice.Status, invoice.InvoiceNumber)
-	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
 
-	// Update status to Overdue
-	now := time.Now()
-	if err := a.db.Model(&Invoice{}).
-		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"status":     "Overdue",
-			"updated_at": now,
-		}).Error; err != nil {
+	invoice.OutstandingBHD = state.OutstandingBHD
+	if _, err := a.applyCustomerInvoicePaymentState(tx, &invoice); err != nil {
+		tx.Rollback()
 		return fmt.Errorf("failed to mark invoice as overdue: %w", err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("failed to commit overdue update: %w", err)
 	}
 
 	log.Printf("⚠️ Marked Invoice as Overdue: %s (Customer: %s, Due: %s, Outstanding: %.3f BHD)",
@@ -1440,15 +1444,24 @@ func (a *App) GetOverdueInvoices() ([]Invoice, error) {
 	now := time.Now()
 	var invoices []Invoice
 	if err := a.db.Preload("Items").
-		Where("due_date < ? AND status != ?", now, "Paid").
+		Where("due_date < ? AND outstanding_bhd > 0", now).
 		Order("due_date ASC").
 		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve overdue invoices: %w", err)
 	}
 
-	log.Printf("⚠️ Retrieved %d overdue invoices", len(invoices))
-	return invoices, nil
+	hydrateCustomerInvoicesPaymentState(invoices)
+	filtered := make([]Invoice, 0, len(invoices))
+	for _, invoice := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(invoice, now)
+		if state.IsOverdue {
+			filtered = append(filtered, invoice)
+		}
+	}
+
+	log.Printf("⚠️ Retrieved %d overdue invoices", len(filtered))
+	return filtered, nil
 }
 
 // GetUnpaidInvoices retrieves all unpaid invoices
@@ -1463,15 +1476,24 @@ func (a *App) GetUnpaidInvoices() ([]Invoice, error) {
 
 	var invoices []Invoice
 	if err := a.db.Preload("Items").
-		Where("status IN ?", []string{"Draft", "Sent", "Overdue"}).
+		Where("outstanding_bhd > 0").
 		Order("invoice_date DESC").
 		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve unpaid invoices: %w", err)
 	}
 
-	log.Printf("📊 Retrieved %d unpaid invoices", len(invoices))
-	return invoices, nil
+	hydrateCustomerInvoicesPaymentState(invoices)
+	filtered := make([]Invoice, 0, len(invoices))
+	for _, invoice := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(invoice, time.Now())
+		if state.IsOpen {
+			filtered = append(filtered, invoice)
+		}
+	}
+
+	log.Printf("📊 Retrieved %d unpaid invoices", len(filtered))
+	return filtered, nil
 }
 
 // GetInvoicesByStatus retrieves invoices filtered by status
@@ -1484,16 +1506,22 @@ func (a *App) GetInvoicesByStatus(status string) ([]Invoice, error) {
 	}
 
 	var invoices []Invoice
-	if err := a.db.Preload("Items").
-		Where("status = ?", status).
-		Order("invoice_date DESC").
+	if err := a.db.Order("invoice_date DESC").
 		Limit(500).
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve invoices by status: %w", err)
 	}
 
-	log.Printf("📊 Retrieved %d invoices with status: %s", len(invoices), status)
-	return invoices, nil
+	hydrateCustomerInvoicesPaymentState(invoices)
+	filtered := make([]Invoice, 0, len(invoices))
+	for _, invoice := range invoices {
+		if invoice.Status == status {
+			filtered = append(filtered, invoice)
+		}
+	}
+
+	log.Printf("📊 Retrieved %d invoices with status: %s", len(filtered), status)
+	return filtered, nil
 }
 
 // RecordPartialPayment records a partial payment against an invoice
@@ -1550,8 +1578,7 @@ func (a *App) RecordPartialPayment(id string, paymentAmount float64, paymentDate
 	}
 
 	// Fix 5: Reject payments on non-payable invoices
-	nonPayableStatuses := map[string]bool{"Cancelled": true, "Void": true, "Proforma": true, "Paid": true}
-	if nonPayableStatuses[invoice.Status] {
+	if !canRecordCustomerInvoicePayment(invoice, time.Now()) {
 		tx.Rollback()
 		return fmt.Errorf("cannot record payment on invoice with status '%s'", invoice.Status)
 	}
@@ -1573,24 +1600,10 @@ func (a *App) RecordPartialPayment(id string, paymentAmount float64, paymentDate
 	// Calculate new outstanding balance
 	newOutstanding := invoice.OutstandingBHD - paymentAmount
 
-	// Update status based on new outstanding balance
-	newStatus := invoice.Status
-	if newOutstanding <= 0.001 { // Tolerance for floating point comparison
-		newStatus = "Paid"
-		newOutstanding = 0.0
-	} else if newOutstanding < invoice.GrandTotalBHD {
-		newStatus = "PartiallyPaid"
-	}
-
-	// Update invoice atomically within transaction
-	now := time.Now()
-	if err := tx.Model(&Invoice{}).
-		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"outstanding_bhd": newOutstanding,
-			"status":          newStatus,
-			"updated_at":      now,
-		}).Error; err != nil {
+	previousOutstanding := invoice.OutstandingBHD
+	invoice.OutstandingBHD = newOutstanding
+	state, err := a.applyCustomerInvoicePaymentState(tx, &invoice)
+	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to record partial payment: %w", err)
 	}
@@ -1619,7 +1632,7 @@ func (a *App) RecordPartialPayment(id string, paymentAmount float64, paymentDate
 	}
 
 	log.Printf("💰 Recorded Partial Payment: %.3f BHD for Invoice %s (Ref: %s, Outstanding: %.3f → %.3f BHD)",
-		paymentAmount, invoice.InvoiceNumber, paymentRef, invoice.OutstandingBHD, newOutstanding)
+		paymentAmount, invoice.InvoiceNumber, paymentRef, previousOutstanding, state.OutstandingBHD)
 
 	return nil
 }
@@ -1639,34 +1652,26 @@ func (a *App) GetInvoiceRevenueSummary() (float64, float64, float64, int64, erro
 	}
 
 	var totalRevenue, paidRevenue, outstandingRevenue float64
-	var invoiceCount int64
-
-	// Total revenue (all invoices)
-	if err := a.db.Model(&Invoice{}).
-		Select("COALESCE(SUM(grand_total_bhd), 0)").
-		Scan(&totalRevenue).Error; err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("failed to calculate total revenue: %w", err)
+	var invoices []Invoice
+	if err := a.db.Find(&invoices).Error; err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("failed to retrieve invoices for revenue summary: %w", err)
 	}
 
-	// Paid revenue
-	if err := a.db.Model(&Invoice{}).
-		Where("status = ?", "Paid").
-		Select("COALESCE(SUM(grand_total_bhd), 0)").
-		Scan(&paidRevenue).Error; err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("failed to calculate paid revenue: %w", err)
+	now := time.Now()
+	for _, invoice := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(invoice, now)
+		if isCustomerInvoicePostedStatus(state.Status) {
+			totalRevenue += invoice.GrandTotalBHD
+		}
+		if state.Status == "Paid" {
+			paidRevenue += invoice.GrandTotalBHD
+		}
+		if state.IsOpen {
+			outstandingRevenue += state.OutstandingBHD
+		}
 	}
 
-	// Outstanding revenue
-	if err := a.db.Model(&Invoice{}).
-		Select("COALESCE(SUM(outstanding_bhd), 0)").
-		Scan(&outstandingRevenue).Error; err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("failed to calculate outstanding revenue: %w", err)
-	}
-
-	// Invoice count
-	if err := a.db.Model(&Invoice{}).Count(&invoiceCount).Error; err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("failed to count invoices: %w", err)
-	}
+	invoiceCount := int64(len(invoices))
 
 	log.Printf("📊 Revenue Summary: Total=%.3f BHD, Paid=%.3f BHD, Outstanding=%.3f BHD, Count=%d",
 		totalRevenue, paidRevenue, outstandingRevenue, invoiceCount)

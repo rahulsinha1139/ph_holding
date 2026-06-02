@@ -61,10 +61,19 @@
     dispatch('select', { id: supplierId });
   }
 
-  function activateSupplier(supplierId: string, event: KeyboardEvent) {
-    if (event.key === 'Enter' || event.key === ' ') {
+  function closeCreateModal() {
+    showCreateModal = false;
+  }
+
+  function handleModalBackdropClick(event: MouseEvent) {
+    if (event.target !== event.currentTarget) return;
+    closeCreateModal();
+  }
+
+  function handleModalBackdropKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      selectSupplier(supplierId);
+      closeCreateModal();
     }
   }
 
@@ -94,7 +103,9 @@
   }
 
   function formatCurrency(value: number): string {
-    return formatNumber(value || 0, 0);
+    return Number(value || 0).toLocaleString('en-US', {
+      maximumFractionDigits: 0
+    });
   }
 
   function renderRating(rating: number): string {
@@ -120,8 +131,8 @@
     <!-- Year Selector -->
     <div class="year-selector-row">
       <div class="year-selector">
-        <label class="year-label" for="supplier-dashboard-year">FINANCIAL YEAR</label>
-        <select id="supplier-dashboard-year" bind:value={selectedYear} on:change={handleYearChange} class="year-select">
+        <label class="year-label" for="crm-supplier-year">FINANCIAL YEAR</label>
+        <select id="crm-supplier-year" bind:value={selectedYear} on:change={handleYearChange} class="year-select">
           {#each availableYears as yr}
             <option value={yr}>{yr === 0 ? 'All Years' : yr}</option>
           {/each}
@@ -170,7 +181,12 @@
         <h3 class="section-title">TOP SUPPLIERS BY PURCHASES</h3>
         <div class="top-list">
           {#each dashboard.top_suppliers || [] as supplier, i}
-            <div class="top-item" role="button" tabindex="0" on:click={() => selectSupplier(supplier.id)} on:keydown={(event) => activateSupplier(supplier.id, event)}>
+            <button
+              type="button"
+              class="top-item"
+              on:click={() => selectSupplier(supplier.id)}
+              aria-label={`Open supplier ${supplier.supplier_name}`}
+            >
               <span class="rank">{i + 1}</span>
               <div class="supplier-info">
                 <span class="name">{supplier.supplier_name}</span>
@@ -179,7 +195,7 @@
                 {/if}
               </div>
               <span class="amount">{formatCurrency(supplier.total_purchases)} BHD</span>
-            </div>
+            </button>
           {/each}
         </div>
       </Card>
@@ -215,7 +231,12 @@
 
       <div class="supplier-grid">
         {#each filteredSuppliers as supplier}
-          <div class="supplier-card" role="button" tabindex="0" on:click={() => selectSupplier(supplier.id)} on:keydown={(event) => activateSupplier(supplier.id, event)}>
+          <button
+            type="button"
+            class="supplier-card"
+            on:click={() => selectSupplier(supplier.id)}
+            aria-label={`Open supplier ${supplier.supplier_name}`}
+          >
             <div class="card-header">
               <span class="supplier-name">{supplier.supplier_name}</span>
               {#if renderRating(supplier.rating)}
@@ -243,7 +264,7 @@
             {#if supplier.country}
               <div class="card-country">{supplier.country}</div>
             {/if}
-          </div>
+          </button>
         {/each}
       </div>
     </Card>
@@ -251,41 +272,44 @@
 </div>
 
 {#if showCreateModal}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
-  <div class="modal-backdrop" on:click={() => showCreateModal = false}>
-    <div class="modal" on:click|stopPropagation>
-      <h3>Create New Supplier</h3>
+  <div
+    class="modal-backdrop"
+    role="button"
+    tabindex="0"
+    aria-label="Close supplier creation modal"
+    on:click={handleModalBackdropClick}
+    on:keydown={handleModalBackdropKeydown}
+  >
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-supplier-title">
+      <h3 id="create-supplier-title">Create New Supplier</h3>
       <div class="form-grid">
         <div class="form-group">
-          <label for="crm-supplier-name">Supplier Name <span class="required">*</span></label>
-          <input id="crm-supplier-name" type="text" bind:value={newSupplier.supplier_name} placeholder="Company name" />
+          <label for="supplier-name">Supplier Name <span class="required">*</span></label>
+          <input id="supplier-name" type="text" bind:value={newSupplier.supplier_name} placeholder="Company name" />
         </div>
         <div class="form-group">
-          <label for="crm-supplier-code">Supplier Code</label>
-          <input id="crm-supplier-code" type="text" bind:value={newSupplier.supplier_code} placeholder="Auto-generated if empty" />
+          <label for="supplier-code">Supplier Code</label>
+          <input id="supplier-code" type="text" bind:value={newSupplier.supplier_code} placeholder="Auto-generated if empty" />
         </div>
         <div class="form-group">
-          <label for="crm-supplier-type">Supplier Type</label>
-          <select id="crm-supplier-type" bind:value={newSupplier.supplier_type}>
-            <option value="" disabled>Select type</option>
+          <label for="supplier-type">Supplier Type</label>
+          <select id="supplier-type" bind:value={newSupplier.supplier_type}>
             <option value="Manufacturer">Manufacturer</option>
             <option value="Distributor">Distributor</option>
             <option value="Agent">Agent</option>
           </select>
         </div>
         <div class="form-group">
-          <label for="crm-supplier-country">Country</label>
-          <input id="crm-supplier-country" type="text" bind:value={newSupplier.country} placeholder="Country" />
+          <label for="supplier-country">Country</label>
+          <input id="supplier-country" type="text" bind:value={newSupplier.country} placeholder="Country" />
         </div>
         <div class="form-group">
-          <label for="crm-supplier-lead-time">Lead Time (Days)</label>
-          <input id="crm-supplier-lead-time" type="number" bind:value={newSupplier.lead_time_days} placeholder="30" />
+          <label for="supplier-lead-time">Lead Time (Days)</label>
+          <input id="supplier-lead-time" type="number" bind:value={newSupplier.lead_time_days} placeholder="30" />
         </div>
         <div class="form-group">
-          <label for="crm-supplier-payment-terms">Payment Terms <span class="required">*</span></label>
-          <select id="crm-supplier-payment-terms" bind:value={newSupplier.payment_terms}>
-            <option value="" disabled>Select terms</option>
+          <label for="supplier-payment-terms">Payment Terms <span class="required">*</span></label>
+          <select id="supplier-payment-terms" bind:value={newSupplier.payment_terms}>
             <option value="Net 30">Net 30</option>
             <option value="Net 60">Net 60</option>
             <option value="Net 90">Net 90</option>
@@ -297,9 +321,8 @@
           </select>
         </div>
         <div class="form-group">
-          <label for="crm-supplier-rating">Rating</label>
-          <select id="crm-supplier-rating" bind:value={newSupplier.rating}>
-            <option value="" disabled>Select rating</option>
+          <label for="supplier-rating">Rating</label>
+          <select id="supplier-rating" bind:value={newSupplier.rating}>
             <option value={1}>1 Star</option>
             <option value={2}>2 Stars</option>
             <option value={3}>3 Stars</option>
@@ -308,20 +331,20 @@
           </select>
         </div>
         <div class="form-group">
-          <label for="crm-supplier-primary-contact">Primary Contact</label>
-          <input id="crm-supplier-primary-contact" type="text" bind:value={newSupplier.primary_contact} placeholder="Contact person name" />
+          <label for="supplier-primary-contact">Primary Contact</label>
+          <input id="supplier-primary-contact" type="text" bind:value={newSupplier.primary_contact} placeholder="Contact person name" />
         </div>
         <div class="form-group">
-          <label for="crm-supplier-email">Email</label>
-          <input id="crm-supplier-email" type="email" bind:value={newSupplier.email} placeholder="email@example.com" />
+          <label for="supplier-email">Email</label>
+          <input id="supplier-email" type="email" bind:value={newSupplier.email} placeholder="email@example.com" />
         </div>
         <div class="form-group">
-          <label for="crm-supplier-phone">Phone</label>
-          <input id="crm-supplier-phone" type="text" bind:value={newSupplier.phone} placeholder="+973-XXXX-XXXX" />
+          <label for="supplier-phone">Phone</label>
+          <input id="supplier-phone" type="text" bind:value={newSupplier.phone} placeholder="+973-XXXX-XXXX" />
         </div>
         <div class="form-group full-width">
-          <label for="crm-supplier-address">Address</label>
-          <textarea id="crm-supplier-address" bind:value={newSupplier.address} rows="2" placeholder="Full address"></textarea>
+          <label for="supplier-address">Address</label>
+          <textarea id="supplier-address" bind:value={newSupplier.address} rows="2" placeholder="Full address"></textarea>
         </div>
       </div>
       <div class="modal-actions">
@@ -444,6 +467,8 @@
   }
 
   .top-item {
+    border: none;
+    background: none;
     display: grid;
     grid-template-columns: 24px 1fr auto;
     align-items: center;
@@ -451,6 +476,9 @@
     padding: 8px 4px;
     cursor: pointer;
     border-radius: 4px;
+    width: 100%;
+    text-align: left;
+    font: inherit;
   }
 
   .top-item:hover {
@@ -548,6 +576,10 @@
   }
 
   .supplier-card {
+    display: block;
+    width: 100%;
+    text-align: left;
+    font: inherit;
     background: var(--surface-elevated);
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -560,6 +592,12 @@
     border-color: var(--brand-indigo);
     box-shadow: 0 4px 12px rgba(99, 102, 241, 0.1);
     transform: translateY(-2px);
+  }
+
+  .top-item:focus-visible,
+  .supplier-card:focus-visible {
+    outline: 2px solid var(--brand-indigo);
+    outline-offset: 2px;
   }
 
   .card-header {

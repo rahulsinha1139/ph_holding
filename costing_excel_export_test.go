@@ -1,9 +1,12 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -115,4 +118,56 @@ func TestStandaloneCostingWorkbookIncludesDetailedCostBreakdown(t *testing.T) {
 			t.Fatalf("Detailed Costing!%s = %q, want %q", cell, actual, expected)
 		}
 	}
+}
+
+func TestEmbeddedPHCostingTemplateIsAvailable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	workbook, source, err := openCostingTemplateWorkbook(t.TempDir())
+	require.NoError(t, err)
+	defer workbook.Close()
+
+	require.True(t, strings.HasPrefix(source, "embedded:"), source)
+	costingIndex, err := workbook.GetSheetIndex("Customer Costing")
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, costingIndex, 0)
+	customerIndex, err := workbook.GetSheetIndex("Customer Database")
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, customerIndex, 0)
+}
+
+func TestExportCostingToExcelUsesPHLayoutAsActiveSheet(t *testing.T) {
+	homeDir, err := os.MkdirTemp("/tmp", "afhome")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(homeDir) })
+	t.Setenv("HOME", homeDir)
+
+	app := shippingGateAppForRole(t, "sales")
+	data := shippingGateOfferData("sales")
+	data.Division = "PH Trading"
+	data.PreparedBy = "OCR Test"
+	data.RfqReference = "RFQ-PH-LAYOUT"
+	data.PaymentTerms = "30 days"
+
+	outputPath, err := app.ExportCostingToExcel(data)
+	require.NoError(t, err)
+
+	workbook, err := excelize.OpenFile(outputPath)
+	require.NoError(t, err)
+	defer workbook.Close()
+
+	activeSheet := workbook.GetSheetName(workbook.GetActiveSheetIndex())
+	require.Equal(t, "Customer Costing", activeSheet)
+	require.Equal(t, "PH Trading WLL", cellValue(t, workbook, "Customer Costing", "B1"))
+	require.Equal(t, "RFQ-PH-LAYOUT", cellValue(t, workbook, "Customer Costing", "D1"))
+	require.Equal(t, "30 days", cellValue(t, workbook, "Customer Costing", "D5"))
+	require.Equal(t, "Shipping gate item", cellValue(t, workbook, "Customer Costing", "C8"))
+	require.Equal(t, "Model no.: SG-1", cellValue(t, workbook, "Customer Costing", "C9"))
+}
+
+func cellValue(t *testing.T, workbook *excelize.File, sheet string, cell string) string {
+	t.Helper()
+	value, err := workbook.GetCellValue(sheet, cell)
+	require.NoError(t, err)
+	return value
 }

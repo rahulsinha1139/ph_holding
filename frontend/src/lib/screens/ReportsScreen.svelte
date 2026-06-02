@@ -6,6 +6,7 @@
     GetDashboardStats,
     GetReportData,
     ExportReport,
+    OpenExportedFile,
   } from "../../../wailsjs/go/main/App";
   import type { main } from "../../../wailsjs/go/models";
   import type { ReportCategory } from "$lib/types";
@@ -17,7 +18,7 @@
   let reportData: Record<string, any> | null = null;
   let dashboardMetrics: main.DashboardStats | null = null;
   let showExportModal = false;
-  let exportFormat = "pdf";
+  let exportFormat = "excel";
   let exportDateRange = {
     start: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
       .toISOString()
@@ -33,6 +34,44 @@
     { id: "financial", label: "Financial", icon: "" },
   ];
 
+  const reportCatalog = [
+    { title: "P&L", detail: "Revenue, COGS, expenses, and operating profit", group: "Financial" },
+    { title: "Balance Sheet", detail: "Cash, receivables, payables, and equity view", group: "Financial" },
+    { title: "General Ledger", detail: "Filterable journal and operational source ledger", group: "Accounting" },
+    { title: "Customer Ledger", detail: "Customer-specific invoices, receipts, credits, and balances", group: "Customers" },
+    { title: "Supplier Ledger", detail: "Supplier invoices, settlements, and open payables", group: "Suppliers" },
+    { title: "Expense Ledger", detail: "Approved, posted, paid, and locked expense records", group: "Expenses" },
+    { title: "RFQ / Tender Tracker", detail: "Received RFQs, tenders, status, owner, and value", group: "Sales" },
+    { title: "Offer Pipeline", detail: "Offers by status, value, customer, and prepared-by", group: "Sales" },
+    { title: "Order Backlog", detail: "Open orders, partial fulfillment, delivery status", group: "Operations" },
+    { title: "Inventory Movement", detail: "Inbound, outbound, adjustment, GRN, and DN movement", group: "Inventory" },
+    { title: "VAT / Tax Pack", detail: "VAT filing support with export-ready evidence", group: "Audit" },
+    { title: "Audit Pack", detail: "Document trail and filtered export for annual review", group: "Audit" },
+  ];
+
+  function dataValue(...keys: string[]) {
+    if (!reportData) return undefined;
+    for (const key of keys) {
+      const value = reportData[key];
+      if (value !== undefined && value !== null) return value;
+    }
+    return undefined;
+  }
+
+  function numberValue(...keys: string[]) {
+    const value = dataValue(...keys);
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function formatBHD(value: number) {
+    return `${value.toLocaleString(undefined, { maximumFractionDigits: 3 })} BHD`;
+  }
+
+  function formatPercent(value: number) {
+    return `${(value * 100).toFixed(1)}%`;
+  }
+
   async function loadReportData() {
     loading = true;
     reportData = null;
@@ -46,11 +85,11 @@
 
       // Enrich financial data with dashboard metrics if available
       if (activeCategory === "financial" && dashboardMetrics) {
-        if (!reportData.cashBalance && dashboardMetrics.total_revenue) {
-          reportData.cashBalance = dashboardMetrics.total_revenue;
+        if (!dataValue("cashBalance", "cash_balance") && dashboardMetrics.total_revenue) {
+          reportData.cash_balance = dashboardMetrics.total_revenue;
         }
-        if (!reportData.runwayMonths && dashboardMetrics.runway_months) {
-          reportData.runwayMonths = dashboardMetrics.runway_months;
+        if (!dataValue("runwayMonths", "runway_months") && dashboardMetrics.runway_months) {
+          reportData.runway_months = dashboardMetrics.runway_months;
         }
       }
     } catch (error) {
@@ -70,6 +109,7 @@
         exportFormat,
         JSON.stringify(reportData),
       );
+      await OpenExportedFile(path).catch(() => {});
       toast.success(`Exported to ${path || "Documents"}`);
       showExportModal = false;
     } catch (e) {
@@ -85,8 +125,8 @@
 <div class="page">
   <header class="header">
     <div class="header-content">
-      <h1>Business Intelligence.</h1>
-      <p class="subtitle">Reports & Analytics</p>
+      <h1>Reports & Exports</h1>
+      <p class="subtitle">Operational reporting with export-ready finance packs</p>
     </div>
     <div class="actions">
       <div class="date-picker">
@@ -132,17 +172,17 @@
         {#if activeCategory === "sales"}
           <div class="stats-row">
             <div class="stat-card">
-              <div class="val">{(reportData.winRate * 100).toFixed(1)}%</div>
+              <div class="val">{formatPercent(numberValue("winRate", "win_rate"))}</div>
               <div class="lbl">Win Rate</div>
             </div>
             <div class="stat-card">
               <div class="val">
-                {(reportData.conversionRate * 100).toFixed(1)}%
+                {formatPercent(numberValue("conversionRate", "conversion_rate"))}
               </div>
               <div class="lbl">Conversion</div>
             </div>
             <div class="stat-card">
-              <div class="val">{reportData.avgDealSize} BHD</div>
+              <div class="val">{formatBHD(numberValue("avgDealSize", "avg_deal_size"))}</div>
               <div class="lbl">Avg Deal Size</div>
             </div>
           </div>
@@ -150,7 +190,7 @@
             <h3>Pipeline Value</h3>
             <!-- Simple Bar Chart Visualization -->
             <div class="bars">
-              {#each reportData.pipeline || [] as item}
+              {#each dataValue("pipeline") || [] as item}
                 <div class="bar-row">
                   <span class="bar-lbl">{item.stage}</span>
                   <div class="bar-track">
@@ -162,39 +202,61 @@
                   <span class="bar-val">{item.value.toLocaleString()}</span>
                 </div>
               {/each}
+              {#if !(dataValue("pipeline") || []).length}
+                <div class="empty-inline">No sales rows in this period.</div>
+              {/if}
             </div>
           </div>
         {:else if activeCategory === "financial"}
           <div class="stats-row">
-            <div class="stat-card" class:danger={reportData.runwayMonths < 3}>
-              <div class="val">{reportData.runwayMonths.toFixed(1)} Months</div>
+            <div class="stat-card" class:danger={numberValue("runwayMonths", "runway_months") > 0 && numberValue("runwayMonths", "runway_months") < 3}>
+              <div class="val">{numberValue("runwayMonths", "runway_months").toFixed(1)} Months</div>
               <div class="lbl">Runway</div>
             </div>
             <div class="stat-card">
               <div class="val">
-                {reportData.cashBalance.toLocaleString()} BHD
+                {formatBHD(numberValue("cashBalance", "cash_balance"))}
               </div>
               <div class="lbl">Cash Balance</div>
             </div>
             <div class="stat-card">
               <div class="val">
-                {reportData.monthlyBurn.toLocaleString()} BHD
+                {formatBHD(numberValue("monthlyBurn", "monthly_burn"))}
               </div>
               <div class="lbl">Monthly Burn</div>
             </div>
+            <div class="stat-card">
+              <div class="val">{formatBHD(numberValue("collected"))}</div>
+              <div class="lbl">Collected</div>
+            </div>
+            <div class="stat-card">
+              <div class="val">{formatBHD(numberValue("collectionTarget", "collection_target"))}</div>
+              <div class="lbl">Collection Target</div>
+            </div>
           </div>
           <div class="chart-panel">
-            <h3>MRR vs Target</h3>
+            <h3>Collection and reporting workspace</h3>
             <div class="progress-lg">
               <div
                 class="prog-fill"
-                style="width: {(reportData.mrr / reportData.mrrTarget) * 100}%"
+                style="width: {Math.min(100, (numberValue('mrr') / Math.max(1, numberValue('mrrTarget', 'mrr_target'))) * 100)}%"
               ></div>
               <span class="prog-text"
-                >{reportData.mrr.toLocaleString()} / {reportData.mrrTarget.toLocaleString()}
-                BHD</span
+                >{formatBHD(numberValue("mrr"))} / {formatBHD(numberValue("mrrTarget", "mrr_target"))}</span
               >
             </div>
+          </div>
+          <div class="report-grid">
+            {#each reportCatalog as report}
+              <div class="report-card">
+                <div>
+                  <span class="report-group">{report.group}</span>
+                  <h4>{report.title}</h4>
+                  <p>{report.detail}</p>
+                </div>
+                <button class="btn-ghost small" on:click={() => (showExportModal = true)}>Export</button>
+              </div>
+            {/each}
           </div>
         {:else}
           <!-- Generic display for other categories to save space/time, following pattern -->
@@ -209,9 +271,14 @@
                 <div class="lbl">{k.replace(/([A-Z])/g, " $1")}</div>
               </div>
             {/each}
+            {#if !Object.entries(reportData).filter(([k, v]) => typeof v === "number").length}
+              <div class="empty-panel">No report metrics are available for the selected period.</div>
+            {/if}
           </div>
         {/if}
       </div>
+    {:else}
+      <div class="empty-panel">No report data loaded. Refresh to try again.</div>
     {/if}
   </main>
 </div>
@@ -220,16 +287,19 @@
   <div class="modal-backdrop" transition:fade>
     <div class="modal">
       <h3>Export Report</h3>
+      <p class="modal-helper">
+        Operational report exports are Excel-compatible CSV files so finance users can filter, pivot, and share them immediately.
+      </p>
       <div class="form-group">
-        <div id="report-format-label">Format</div>
-        <div class="toggle-group" role="group" aria-labelledby="report-format-label">
-          <button
-            class:active={exportFormat === "pdf"}
-            on:click={() => (exportFormat = "pdf")}>PDF</button
-          >
+        <span class="field-label">Format</span>
+        <div class="toggle-group">
           <button
             class:active={exportFormat === "excel"}
-            on:click={() => (exportFormat = "excel")}>Excel</button
+            on:click={() => (exportFormat = "excel")}>Excel CSV</button
+          >
+          <button
+            class:active={exportFormat === "csv"}
+            on:click={() => (exportFormat = "csv")}>CSV</button
           >
         </div>
       </div>
@@ -251,8 +321,8 @@
 
 <style>
   .page {
-    padding: var(--page-padding);
-    height: 100vh;
+    padding: 18px 20px;
+    min-height: 0;
     background: var(--paper);
     color: var(--ink);
     display: flex;
@@ -263,19 +333,20 @@
   .header {
     display: flex;
     justify-content: space-between;
-    align-items: flex-end;
-    margin-bottom: var(--space-4);
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 14px;
     flex-shrink: 0;
   }
   h1 {
-    font-size: var(--text-3xl);
-    font-weight: var(--font-weight-light);
+    font-size: 22px;
+    font-weight: 650;
     margin: 0;
-    letter-spacing: -0.02em;
+    letter-spacing: 0;
   }
   .subtitle {
     color: var(--ink-faint);
-    margin-top: var(--space-1);
+    margin: 2px 0 0;
     font-size: var(--text-sm);
   }
 
@@ -324,9 +395,10 @@
   .tabs-bar {
     display: flex;
     gap: 8px;
-    margin-bottom: var(--space-4);
+    margin-bottom: 14px;
     border-bottom: 1px solid var(--border-subtle);
     padding-bottom: 8px;
+    flex-wrap: wrap;
   }
   .tab {
     background: transparent;
@@ -364,18 +436,18 @@
   .report-container {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: 14px;
   }
 
   .stats-row {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: var(--space-4);
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 12px;
   }
   .stat-card {
     background: var(--paper-subtle);
-    padding: var(--space-4);
-    border-radius: var(--radius-lg);
+    padding: 14px;
+    border-radius: 8px;
     border: 1px solid var(--border-subtle);
   }
   .stat-card .val {
@@ -400,8 +472,8 @@
 
   .chart-panel {
     background: var(--paper-subtle);
-    padding: var(--space-4);
-    border-radius: var(--radius-lg);
+    padding: 14px;
+    border-radius: 8px;
     border: 1px solid var(--border-subtle);
   }
   .chart-panel h3 {
@@ -445,6 +517,61 @@
     position: relative;
     overflow: hidden;
   }
+
+  .report-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 10px;
+  }
+
+  .report-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 86px;
+    padding: 13px 14px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .report-card h4 {
+    margin: 2px 0 4px;
+    font-size: 15px;
+    font-weight: 650;
+  }
+
+  .report-card p {
+    margin: 0;
+    color: var(--ink-light);
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  .report-group {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-faint);
+    font-weight: 700;
+  }
+
+  .empty-panel,
+  .empty-inline {
+    padding: 18px;
+    border: 1px dashed var(--border-medium);
+    border-radius: 8px;
+    color: var(--ink-light);
+    background: var(--paper-subtle);
+    text-align: center;
+  }
+
+  .empty-inline {
+    padding: 10px;
+    text-align: left;
+    font-size: 13px;
+  }
   .prog-fill {
     height: 100%;
     background: #059669;
@@ -475,7 +602,13 @@
     background: var(--paper);
     padding: 32px;
     border-radius: 16px;
-    width: 320px;
+    width: min(420px, calc(100vw - 32px));
+  }
+  .modal-helper {
+    margin: 0 0 16px;
+    color: var(--ink-light);
+    font-size: 13px;
+    line-height: 1.45;
   }
   .toggle-group {
     display: flex;
@@ -504,5 +637,25 @@
     background: transparent;
     border: none;
     cursor: pointer;
+  }
+
+  .btn-ghost.small {
+    border: 1px solid var(--border-medium);
+    border-radius: 7px;
+    padding: 7px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 900px) {
+    .header {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .actions,
+    .date-picker {
+      width: 100%;
+      flex-wrap: wrap;
+    }
   }
 </style>

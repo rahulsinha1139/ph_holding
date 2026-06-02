@@ -25,7 +25,7 @@ test.describe('UI health sonars', () => {
     const start = Date.now();
 
     await page.goto(BASE_URL);
-    await expect(page.getByRole('heading', { name: /Good .*Developer/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Good (morning|afternoon|evening), Developer/ })).toBeVisible();
 
     const duration = Date.now() - start;
 
@@ -59,7 +59,7 @@ test.describe('UI health sonars', () => {
     await page.getByRole('button', { name: /ACTIUM PG/i }).first().click();
 
     await expect(page.locator('#opportunity-modal-title')).toBeVisible();
-    await page.getByRole('button', { name: /Close/ }).click();
+    await page.getByText('Close', { exact: true }).click();
     await expect(page.getByRole('button', { name: /ACTIUM PG/i }).first()).toBeVisible();
     expect(errors).toEqual([]);
   });

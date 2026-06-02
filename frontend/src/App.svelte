@@ -40,10 +40,11 @@
     // Enterprise Design Components
     import EnterpriseHeader from "./lib/components/ui/EnterpriseHeader.svelte";
     import EnterpriseSidebar from "./lib/components/ui/EnterpriseSidebar.svelte";
+    import MathematicalLoader from "./lib/components/ui/MathematicalLoader.svelte";
 
     // Wails bindings
     import { EventsOn, EventsOff, OnFileDrop, OnFileDropOff } from "../wailsjs/runtime/runtime";
-    import { NeedsSetup, ProcessDocumentWithOCR, SaveDocumentToEntity, RegisterDevice, ValidateLicense, NeedsLicenseActivation } from "../wailsjs/go/main/App";
+    import { NeedsSetup, PickFile, ProcessDocumentWithOCR, SaveDocumentToEntity, RegisterDevice, ValidateLicense, NeedsLicenseActivation, GetBackendHealth } from "../wailsjs/go/main/App";
 
     // Device Registration Screens (legacy)
     import SetupAdminScreen from "./lib/screens/SetupAdminScreen.svelte";
@@ -93,10 +94,12 @@
     let checkingSetup = false;
 
     // Device registration state
-    // Status: "checking", "first_setup", "pending", "approved", "blocked", "login", "error", "license_needed"
+    // Status: "checking", "first_setup", "pending", "approved", "blocked", "login", "error", "license_needed", "backend_error"
     let deviceStatus = "checking";
     let deviceInfo = null;
     let deviceError = ""; // P1-2 FIX: Store error message for retry
+    let backendError = "";
+    let backendLogPath = "";
     let licenseRole = ""; // Role from license (admin, manager, sales, operations)
     let licensePermissions: string[] = []; // Permissions from license
 
@@ -120,6 +123,141 @@
         "usermanagement",
         "rfqs",
     ]);
+
+    function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+        return Promise.race([
+            promise,
+            new Promise<T>((_, reject) => setTimeout(() => reject(new Error(message)), timeoutMs)),
+        ]);
+    }
+
+    function setBackendError(message: string, logPath = "") {
+        backendError = message || "Backend startup did not complete.";
+        backendLogPath = logPath || "";
+        deviceStatus = "backend_error";
+    }
+
+    const BACKEND_HEALTH_ATTEMPT_MS = 5000;
+    const BACKEND_HEALTH_TOTAL_MS = 60000;
+
+    function sleep(ms: number) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function hasWailsBridge() {
+        const w = window as any;
+        return !!w?.go?.main?.App;
+    }
+
+    function hasWailsRuntime() {
+        const w = window as any;
+        return !!w?.runtime;
+    }
+
+    async function waitForBackendHealth() {
+        const deadline = Date.now() + BACKEND_HEALTH_TOTAL_MS;
+        let lastError: any = null;
+        let lastHealth: any = null;
+
+        while (Date.now() < deadline) {
+            if (!hasWailsBridge()) {
+                throw new Error("The local Wails backend bridge is unavailable.");
+            }
+            try {
+                const health = await withTimeout(
+                    GetBackendHealth() as Promise<any>,
+                    BACKEND_HEALTH_ATTEMPT_MS,
+                    "Backend health check timed out"
+                );
+                lastHealth = health;
+                if (health?.ready === false) {
+                    await sleep(2000);
+                    continue;
+                }
+                return health;
+            } catch (err) {
+                lastError = err;
+                await sleep(2000);
+            }
+        }
+
+        if (lastHealth?.ready === false) {
+            throw new Error(lastHealth?.startup_error || "Backend is still starting.");
+        }
+        throw lastError || new Error("Backend did not become ready in time.");
+    }
+
+    function applyLicenseContext(role: string, permsFromLicense: string[] = [], display_name = "") {
+        deviceStatus = "approved";
+        licenseRole = role;
+        licensePermissions = permsFromLicense || [];
+
+        const roleDisplayNames: Record<string, string> = {
+            'admin': 'Administrator',
+            'manager': 'Manager',
+            'sales': 'Sales Rep',
+            'operations': 'Ops User',
+            'dev': 'Developer',
+        };
+        const displayName = display_name || roleDisplayNames[role] || 'PH User';
+        currentUser.set({
+            id: `license-${role}`,
+            full_name: displayName,
+            role_name: role,
+        });
+        permissions.set(licensePermissions);
+        devLog.info(`Permissions set from license: ${JSON.stringify(licensePermissions)}`);
+        registerFileDropHandler();
+        startMonitoringIfReady();
+        return displayName;
+    }
+
+    async function bootstrapLicenseFlow() {
+        devLog.info("Checking backend health...");
+        const backendHealth = await waitForBackendHealth();
+        if (!backendHealth?.healthy || !backendHealth?.database_ready) {
+            const message = backendHealth?.startup_error || "Backend startup failed before the database became ready.";
+            devLog.error("Backend health check failed:", backendHealth);
+            setBackendError(message, backendHealth?.log_path || "");
+            return;
+        }
+
+        devLog.info("Checking license status...");
+        const LICENSE_TIMEOUT_MS = 10000;
+        const licenseResult = await withTimeout(
+            ValidateLicense() as Promise<any>,
+            LICENSE_TIMEOUT_MS,
+            "License check timed out because the backend did not respond"
+        ) as { valid: boolean; role?: string; permissions?: string[]; display_name?: string };
+
+        if (licenseResult && licenseResult.valid) {
+            devLog.info(`Valid license found: role=${licenseResult.role}, name=${licenseResult.display_name}`);
+            const displayName = applyLicenseContext(
+                licenseResult.role || "",
+                licenseResult.permissions || [],
+                licenseResult.display_name || ""
+            );
+            toast.success(`Welcome, ${displayName}!`);
+        } else {
+            devLog.info("No valid license found - showing activation screen");
+            deviceStatus = "license_needed";
+        }
+    }
+
+    async function retryBackendCheck() {
+        checkingSetup = true;
+        deviceStatus = "checking";
+        backendError = "";
+        backendLogPath = "";
+        try {
+            await bootstrapLicenseFlow();
+        } catch (err: any) {
+            devLog.error("Backend retry failed:", err);
+            setBackendError(err?.message || "Backend did not respond during retry.", "");
+        } finally {
+            checkingSetup = false;
+        }
+    }
     let mountedPersistentScreens: string[] = ["dashboard"];
 
     function isPersistentScreen(screen: string) {
@@ -281,6 +419,18 @@
         }
     }
 
+    async function handleManualDocumentCapture() {
+        if (globalOCRProcessing) return;
+        try {
+            const filePath = await PickFile("Select document");
+            if (!filePath) return;
+            await handleGlobalFileDrop(filePath);
+        } catch (err) {
+            console.error("Manual document capture failed:", err);
+            toast.danger(`Unable to open document: ${err?.message || err}`);
+        }
+    }
+
     async function handleGlobalOCRSave(event) {
         const {
             type, screen, result, fileName,
@@ -377,6 +527,8 @@
                     navigate({ screen: "finance", tab: "invoices", company: mergedData.division || "PH Trading" });
                 } else if (targetScreen === "finance" && type === "bank_statement") {
                     navigate({ screen: "finance", tab: "bank_recon", company: mergedData.division || "PH Trading" });
+                } else if (targetScreen === "costing" || targetScreen === "offers" || targetScreen === "orders") {
+                    navigate({ screen: "opportunities", tab: targetScreen });
                 } else {
                     navigate(targetScreen);
                 }
@@ -462,6 +614,7 @@
         { id: "relationships", label: "Relationships" },
         { id: "intelligence", label: "Intelligence" },
     ];
+    $: currentScreenTitle = screens.find((screen) => screen.id === currentScreen)?.label || "Workspace";
 
     let showNav = false;
     let isMobile = false;
@@ -491,68 +644,15 @@
             // ============================================
             // LICENSE-BASED ACTIVATION (Production Mode)
             // ============================================
-            devLog.info("Checking license status...");
-
             try {
-                // Check if device has a valid license
-                // Use timeout wrapper to prevent infinite hang after Windows updates
-                const LICENSE_TIMEOUT_MS = 10000; // 10 second timeout
-                const timeoutPromise = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('License check timed out')), LICENSE_TIMEOUT_MS)
-                );
-
-                devLog.info(`Starting license validation (${LICENSE_TIMEOUT_MS}ms timeout)...`);
-                const licenseResult = await Promise.race([
-                    ValidateLicense(),
-                    timeoutPromise
-                ]) as { valid: boolean; role?: string; permissions?: string[]; display_name?: string };
-
-                if (licenseResult && licenseResult.valid) {
-                    // License is valid - set up user context from license
-                    devLog.info(`Valid license found: role=${licenseResult.role}, name=${licenseResult.display_name}`);
-                    deviceStatus = "approved";
-                    licenseRole = licenseResult.role;
-                    licensePermissions = licenseResult.permissions || [];
-
-                    // Set user context - use employee name from license if available
-                    const roleDisplayNames: Record<string, string> = {
-                        'admin': 'Administrator',
-                        'manager': 'Manager',
-                        'sales': 'Sales Rep',
-                        'operations': 'Ops User',
-                        'dev': 'Developer',
-                    };
-                    const displayName = licenseResult.display_name || roleDisplayNames[licenseResult.role] || 'PH User';
-                    currentUser.set({
-                        id: `license-${licenseResult.role}`,
-                        full_name: displayName,
-                        role_name: licenseResult.role,
-                    });
-
-                    // Set permissions from license (do NOT call initAuthContext - it would overwrite these)
-                    permissions.set(licensePermissions);
-
-                    devLog.info(`Permissions set from license: ${JSON.stringify(licensePermissions)}`);
-
-                    toast.success(`Welcome, ${displayName}!`);
-
-                    // Register file drop handler now that license is valid
-                    registerFileDropHandler();
-                    startMonitoringIfReady();
-                } else {
-                    // No valid license - show activation screen
-                    devLog.info("No valid license found - showing activation screen");
-                    deviceStatus = "license_needed";
-                }
+                await bootstrapLicenseFlow();
             } catch (err: any) {
-                devLog.error("License check failed:", err);
-                // Check if it was a timeout
-                if (err.message === 'License check timed out') {
-                    devLog.warn("License check timed out - showing activation screen");
-                    toast.danger("License verification timed out. Please try again.");
-                }
-                // Fallback: show license activation screen
-                deviceStatus = "license_needed";
+                devLog.error("Backend/license bootstrap failed:", err);
+                setBackendError(
+                    err?.message || "Backend did not respond during startup checks. Quit and reopen the app.",
+                    ""
+                );
+                toast.danger("Backend did not respond. Quit and reopen the app.");
             }
 
             checkingSetup = false;
@@ -584,11 +684,16 @@
             void handleGlobalFileDrop(detail.filePath);
         };
         window.addEventListener("requestGlobalOCR", requestGlobalOCRListener);
+        window.addEventListener("document-capture:open", handleManualDocumentCapture);
 
         // Subscribe to Butler file watcher events for real-time notifications
         // Only in non-design mode (requires Wails runtime)
-        if (!DESIGN_MODE) {
-            EventsOn("butler:event", handleButlerEvent);
+        if (!DESIGN_MODE && deviceStatus !== "backend_error" && hasWailsRuntime()) {
+            try {
+                EventsOn("butler:event", handleButlerEvent);
+            } catch (err) {
+                devLog.error("Failed to register Wails event handler:", err);
+            }
 
             // NOTE: File drop handler is registered in registerFileDropHandler()
             // AFTER license validation to avoid interfering with license input
@@ -606,11 +711,16 @@
             if (requestGlobalOCRListener) {
                 window.removeEventListener("requestGlobalOCR", requestGlobalOCRListener);
             }
+            window.removeEventListener("document-capture:open", handleManualDocumentCapture);
 
             // Clean up Wails event handlers
-            if (!DESIGN_MODE) {
-                EventsOff("butler:event");
-                OnFileDropOff(); // CRITICAL: Removes drag/drop listeners
+            if (!DESIGN_MODE && hasWailsRuntime()) {
+                try {
+                    EventsOff("butler:event");
+                    OnFileDropOff(); // CRITICAL: Removes drag/drop listeners
+                } catch (err) {
+                    devLog.error("Failed to clean up Wails handlers:", err);
+                }
                 void stopActivityMonitor();
             }
         };
@@ -623,7 +733,7 @@
     });
 
     // Screen permission mapping - mirrors EnterpriseSidebar.svelte navItems
-    const screenPermissions: Record<string, string | null> = {
+    const screenPermissions: Record<string, string | string[] | null> = {
         dashboard: null, // Always accessible
         opportunities: "offers:view",
         operations: "po:view",
@@ -634,7 +744,7 @@
         deployment: "settings:update",
         relationships: "customers:view",
         intelligence: "intelligence:chat",
-        settings: "settings:view",
+        settings: ["settings:view", "settings:api_keys"],
         showcase: null, // Dev only
         customer360: "customers:view",
         users: "users:manage",
@@ -651,12 +761,15 @@
         // Wildcard (admin)
         if (perms.includes('*')) return true;
 
-        // Direct match
-        if (perms.includes(requiredPerm)) return true;
+        const requiredPerms = Array.isArray(requiredPerm) ? requiredPerm : [requiredPerm];
+        for (const perm of requiredPerms) {
+            // Direct match
+            if (perms.includes(perm)) return true;
 
-        // Resource wildcard (e.g., "finance:*" matches "finance:view")
-        const [resource] = requiredPerm.split(':');
-        if (perms.includes(`${resource}:*`)) return true;
+            // Resource wildcard (e.g., "finance:*" matches "finance:view")
+            const [resource] = perm.split(':');
+            if (perms.includes(`${resource}:*`)) return true;
+        }
 
         return false;
     }
@@ -676,12 +789,12 @@
     }
 
     function navigate(target) {
-        const { screen, params } = normalizeNavigationTarget(target);
-        if (!screen) return;
+        const { screen: screenID, params } = normalizeNavigationTarget(target);
+        if (!screenID) return;
 
         console.log(
             "Navigation clicked:",
-            screen,
+            screenID,
             "params:",
             params,
             "changing from",
@@ -695,10 +808,10 @@
             return;
         }
 
-        if (screen === "costing" || screen === "offers" || screen === "orders") {
-            setCurrentScreen("opportunities", { tab: screen, ...params });
+        if (screenID === "costing" || screenID === "offers" || screenID === "orders") {
+            setCurrentScreen("opportunities", { tab: screenID, ...params });
         } else {
-            setCurrentScreen(screen, params);
+            setCurrentScreen(screenID, params);
         }
         console.log("Screen now:", currentScreen, "params:", currentParams);
         if (isMobile) showNav = false;
@@ -790,23 +903,30 @@
     let fileDropRegistered = false;
     function registerFileDropHandler() {
         if (fileDropRegistered || DESIGN_MODE) return;
-        fileDropRegistered = true;
+        if (!hasWailsRuntime()) {
+            devLog.warn("Skipping file drop handler; Wails runtime is unavailable");
+            return;
+        }
 
         // Register GLOBAL file drop handler - processes OCR directly!
         // useDropTarget=false means ANY drop anywhere triggers this
-        OnFileDrop((x, y, paths) => {
-            console.log("App: Global file drop detected", { x, y, paths, screen: currentScreen });
+        try {
+            OnFileDrop((x, y, paths) => {
+                console.log("App: Global file drop detected", { x, y, paths, screen: currentScreen });
 
-            if (paths && paths.length > 0) {
-                // Process the first dropped file with OCR
-                handleGlobalFileDrop(paths[0]);
+                if (paths && paths.length > 0) {
+                    // Process the first dropped file with OCR
+                    handleGlobalFileDrop(paths[0]);
 
-                // Also publish to store for any screen-specific handling
-                fileDrop.drop(x, y, paths);
-            }
-        }, false);
-
-        devLog.info("File drop handler registered");
+                    // Also publish to store for any screen-specific handling
+                    fileDrop.drop(x, y, paths);
+                }
+            }, false);
+            fileDropRegistered = true;
+            devLog.info("File drop handler registered");
+        } catch (err) {
+            devLog.error("Failed to register file drop handler:", err);
+        }
     }
 
     // P1-2 FIX: Retry device registration
@@ -884,9 +1004,29 @@
 
     <!-- DEVICE REGISTRATION FLOW -->
     {#if deviceStatus === "checking"}
-        <div class="loading-screen">
-            <div class="loading-spinner"></div>
-            <p>Verifying license...</p>
+        <div class="loading-screen" role="status" aria-live="polite">
+            <MathematicalLoader size={128} />
+            <p>Starting local database...</p>
+        </div>
+    {:else if deviceStatus === "backend_error"}
+        <div class="error-screen">
+            <div class="error-card">
+                <div class="error-icon backend-icon">!</div>
+                <h1>Backend Startup Failed</h1>
+                <p>The app window is open, but the local backend is not healthy.</p>
+                <div class="error-details">
+                    <p><strong>Error:</strong> {backendError}</p>
+                    {#if backendLogPath}
+                        <p><strong>Log:</strong> {backendLogPath}</p>
+                    {/if}
+                </div>
+                <button class="btn-primary" on:click={retryBackendCheck}>
+                    Retry Backend Check
+                </button>
+                <p class="help-text">
+                    Quit and reopen the app if this message stays visible.
+                </p>
+            </div>
         </div>
     {:else if deviceStatus === "license_needed"}
         <!-- License Activation Required -->
@@ -940,21 +1080,21 @@
             <!-- Sidebar Navigation -->
             <EnterpriseSidebar
                 {currentScreen}
-                on:navigate={(e) => navigate(e.detail)}
+                onNavigate={navigate}
             />
 
             <!-- Main Content Area -->
             <div class="main-content-wrapper">
                 <!-- Header with Title & Actions -->
-                <EnterpriseHeader />
+                <EnterpriseHeader title={currentScreenTitle} />
                 
                 <!-- Screen Content -->
                 <main class="screen-content">
                     {#if isPersistentScreen(currentScreen)}
                         {#if !loadedScreenComponents[currentScreen]}
                             {#if activeScreenLoading}
-                                <div class="loading-screen inline-screen-loader">
-                                    <div class="loading-spinner"></div>
+                                <div class="loading-screen inline-screen-loader" role="status" aria-live="polite">
+                                    <MathematicalLoader size={88} compact />
                                     <p>Loading {screens.find((s) => s.id === currentScreen)?.label || currentScreen}...</p>
                                 </div>
                             {:else}
@@ -1002,8 +1142,8 @@
                             />
                         </div>
                     {:else if activeScreenLoading}
-                        <div class="loading-screen inline-screen-loader">
-                            <div class="loading-spinner"></div>
+                        <div class="loading-screen inline-screen-loader" role="status" aria-live="polite">
+                            <MathematicalLoader size={88} compact />
                             <p>Loading {screens.find((s) => s.id === currentScreen)?.label || currentScreen}...</p>
                         </div>
                     {:else}
@@ -1066,7 +1206,6 @@
         overflow-y: auto;
         min-height: 0; /* Allow flex shrinking for overflow to work */
         position: relative;
-        z-index: 1;
         /* Padding is handled by individual screens now */
     }
 
@@ -1133,22 +1272,13 @@
 
         .main-content-wrapper {
             margin-left: 0;
-            padding-top: 72px;
+            height: auto;
+            min-height: 0;
+            flex: 1 1 auto;
         }
-    }
 
-    .loading-spinner {
-        width: 32px;
-        height: 32px;
-        border: 2px solid var(--border);
-        border-top-color: var(--onyx);
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-    }
-
-    @keyframes spin {
-        to {
-            transform: rotate(360deg);
+        .screen-content {
+            min-height: 0;
         }
     }
 
@@ -1221,6 +1351,20 @@
     .error-icon {
         font-size: 64px;
         margin-bottom: 24px;
+    }
+
+    .backend-icon {
+        width: 64px;
+        height: 64px;
+        margin: 0 auto 24px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: #fef2f2;
+        color: #dc2626;
+        border: 1px solid #fecaca;
+        font-size: 36px;
+        font-weight: 800;
     }
 
     .error-card h1 {

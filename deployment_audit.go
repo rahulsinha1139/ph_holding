@@ -49,6 +49,11 @@ type DeploymentDataAudit struct {
 }
 
 var criticalDeploymentTableNames = []string{
+	"chart_of_accounts",
+	"journal_entries",
+	"journal_lines",
+	"account_mappings",
+	"fiscal_periods",
 	"employees",
 	"employee_access_links",
 	"projects",
@@ -66,6 +71,8 @@ var criticalDeploymentTableNames = []string{
 	"recurring_expenses",
 	"expense_attachments",
 	"expense_approvals",
+	"bank_statements",
+	"bank_statement_lines",
 	"employee_compensation_profiles",
 	"payroll_periods",
 	"payroll_runs",
@@ -76,6 +83,19 @@ var criticalDeploymentTableNames = []string{
 	"user_activity_events",
 	"user_activity_weekly_summaries",
 	"opportunity_edit_conflicts",
+	"rfq_comments",
+	"opportunity_comments",
+	"costing_line_items",
+	"post_sale_notes",
+	"data_update_manifests",
+	"data_update_operations",
+	"data_update_receipts",
+	"inventory_items",
+	"stock_movements",
+	"stock_adjustments",
+	"intelligence_opportunity_enrichment",
+	"intelligence_line_item_enrichment",
+	"intelligence_order_enrichment",
 }
 
 func criticalDeploymentModels() []interface{} {
@@ -83,6 +103,11 @@ func criticalDeploymentModels() []interface{} {
 		&LicenseKey{},
 		&CompanyBankAccount{},
 		&Setting{},
+		&ChartOfAccount{},
+		&JournalEntry{},
+		&JournalLine{},
+		&AccountMapping{},
+		&FiscalPeriod{},
 		&Employee{},
 		&EmployeeAccessLink{},
 		&Project{},
@@ -100,8 +125,8 @@ func criticalDeploymentModels() []interface{} {
 		&RecurringExpense{},
 		&ExpenseAttachment{},
 		&ExpenseApproval{},
-		&JournalEntry{},
-		&JournalLine{},
+		&BankStatement{},
+		&BankStatementLine{},
 		&EmployeeCompensationProfile{},
 		&PayrollPeriod{},
 		&PayrollRun{},
@@ -112,6 +137,19 @@ func criticalDeploymentModels() []interface{} {
 		&UserActivityEvent{},
 		&UserActivityWeeklySummary{},
 		&OpportunityEditConflict{},
+		&RFQComment{},
+		&OpportunityComment{},
+		&CostingLineItemData{},
+		&PostSaleNote{},
+		&DataUpdateManifest{},
+		&DataUpdateOperation{},
+		&DataUpdateReceipt{},
+		&InventoryItem{},
+		&StockMovement{},
+		&StockAdjustment{},
+		&IntelligenceOpportunityEnrichment{},
+		&IntelligenceLineItemEnrichment{},
+		&IntelligenceOrderEnrichment{},
 	}
 }
 
@@ -144,6 +182,12 @@ func (a *App) ensureCriticalDeploymentFoundations() error {
 	if err := a.EnsureOpportunityConflictFoundation(); err != nil {
 		failures = append(failures, fmt.Sprintf("opportunity conflict foundation: %v", err))
 	}
+	if err := a.ensureDataQualityReviewFoundation(); err != nil {
+		failures = append(failures, fmt.Sprintf("data quality foundation: %v", err))
+	}
+	if err := a.EnsureAdminDataUpdateFoundation(); err != nil {
+		failures = append(failures, fmt.Sprintf("admin data update foundation: %v", err))
+	}
 	a.ensureCrossModuleSchemaExtensions()
 	a.migrateInvoiceCheckConstraint()
 	if err := a.EnsurePhase7Rollout(); err != nil {
@@ -171,6 +215,10 @@ func (a *App) shouldBlockStartupOnDeploymentAudit() bool {
 		}
 	}
 	return false
+}
+
+func (a *App) shouldExitOnCriticalDeploymentFailure() bool {
+	return strings.TrimSpace(os.Getenv("ASYMMFLOW_EXIT_ON_DEPLOYMENT_FAILURE")) == "1"
 }
 
 func (a *App) logDeploymentAuditResult(message string, audit DeploymentDataAudit) {
@@ -533,6 +581,11 @@ func (a *App) enforceCriticalDeploymentState(stage string, foundationErr error) 
 	}
 	hardFailure := foundationErr != nil || auditErr != nil || len(audit.MissingTables) > 0
 	if !hardFailure && !a.shouldBlockStartupOnDeploymentAudit() {
+		return
+	}
+	a.setStartupStatus(true, false, message, "", "")
+	if !a.shouldExitOnCriticalDeploymentFailure() {
+		log.Printf("🚨 Continuing in degraded mode; set ASYMMFLOW_EXIT_ON_DEPLOYMENT_FAILURE=1 to fail fast")
 		return
 	}
 	if a.logFile != nil {

@@ -379,7 +379,7 @@
 
       <Card padding="md">
         <div class="stat">
-          <div class="stat-label">Pending Invoices</div>
+          <div class="stat-label">Open Payables</div>
           <div class="stat-value stat-warning">{totalPendingInvoices}</div>
         </div>
       </Card>

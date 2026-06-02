@@ -68,6 +68,9 @@ func commercialEventAlias(raw string) string {
 	if value == "" {
 		return ""
 	}
+	if strings.HasSuffix(value, ":") {
+		return ""
+	}
 	return value
 }
 
@@ -490,8 +493,10 @@ func (a *App) linkedOpportunitiesForCustomer(idx *customerLinkIndex, customer Cu
 
 func linkedInvoiceAmountByOrder(invoices []Invoice) map[string]float64 {
 	amounts := make(map[string]float64)
+	now := time.Now()
 	for _, inv := range invoices {
-		if !invoicePostedStatus(inv.Status) || strings.TrimSpace(inv.OrderID) == "" {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if !isCustomerInvoicePostedStatus(state.Status) || strings.TrimSpace(inv.OrderID) == "" {
 			continue
 		}
 		amounts[inv.OrderID] += inv.GrandTotalBHD
@@ -518,14 +523,18 @@ func linkedReceivablesAging(invoices []Invoice, orderExposure float64) Receivabl
 	now := time.Now()
 	aging := ReceivablesAgingSummary{}
 	for _, inv := range invoices {
-		if !invoiceOpenStatus(inv.Status) {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if !state.IsOpen {
 			continue
 		}
-		outstanding := invoiceOutstandingValue(inv)
+		outstanding := state.OutstandingBHD
 		if outstanding <= 0 {
 			continue
 		}
-		daysOverdue := daysOverdueFrom(now, inv.DueDate)
+		daysOverdue := 0
+		if state.IsOverdue {
+			daysOverdue = daysOverdueFrom(now, inv.DueDate)
+		}
 		switch {
 		case daysOverdue <= 30:
 			aging.Current += outstanding

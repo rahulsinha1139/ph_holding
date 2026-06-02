@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,25 +22,25 @@ import (
 
 // ArtifactA_FileNode represents a tree node in the workspace index
 type ArtifactA_FileNode struct {
-	Path       string                 `json:"path"`
-	Type       string                 `json:"type"`                  // "file" or "folder"
-	Extension  string                 `json:"extension,omitempty"`   // e.g., ".pdf", ".xlsx"
-	SizeBytes  int64                  `json:"size_bytes"`
-	ModifiedAt time.Time              `json:"modified_at"`
-	Hash       string                 `json:"hash,omitempty"`        // SHA256 for files only
-	Parent     string                 `json:"parent"`
-	Children   []*ArtifactA_FileNode  `json:"children,omitempty"`
+	Path       string                `json:"path"`
+	Type       string                `json:"type"`                // "file" or "folder"
+	Extension  string                `json:"extension,omitempty"` // e.g., ".pdf", ".xlsx"
+	SizeBytes  int64                 `json:"size_bytes"`
+	ModifiedAt time.Time             `json:"modified_at"`
+	Hash       string                `json:"hash,omitempty"` // SHA256 for files only
+	Parent     string                `json:"parent"`
+	Children   []*ArtifactA_FileNode `json:"children,omitempty"`
 }
 
 // ArtifactA_WorkspaceIndex represents the complete workspace structure
 type ArtifactA_WorkspaceIndex struct {
-	RootPath     string                 `json:"root_path"`
-	ScanTime     time.Time              `json:"scan_time"`
-	TotalFiles   int                    `json:"total_files"`
-	TotalFolders int                    `json:"total_folders"`
-	TotalBytes   int64                  `json:"total_bytes"`
-	Root         *ArtifactA_FileNode    `json:"root"`
-	Extensions   map[string]int         `json:"extensions"` // Count by extension
+	RootPath     string              `json:"root_path"`
+	ScanTime     time.Time           `json:"scan_time"`
+	TotalFiles   int                 `json:"total_files"`
+	TotalFolders int                 `json:"total_folders"`
+	TotalBytes   int64               `json:"total_bytes"`
+	Root         *ArtifactA_FileNode `json:"root"`
+	Extensions   map[string]int      `json:"extensions"` // Count by extension
 }
 
 // GenerateArtifactA_WorkspaceIndex creates a workspace index from a folder or ZIP file
@@ -155,6 +156,11 @@ func artifactA_generateIndexFromZIP(zipPath string, index *ArtifactA_WorkspaceIn
 
 	// Process each file in ZIP
 	for _, file := range reader.File {
+		sizeBytes, err := artifactA_zipEntrySizeBytes(file)
+		if err != nil {
+			return nil, err
+		}
+
 		// Create folder nodes for all parent directories
 		dir := filepath.Dir(file.Name)
 		if dir != "." && dir != "" {
@@ -165,7 +171,7 @@ func artifactA_generateIndexFromZIP(zipPath string, index *ArtifactA_WorkspaceIn
 		node := &ArtifactA_FileNode{
 			Path:       file.Name,
 			ModifiedAt: file.Modified,
-			SizeBytes:  int64(file.UncompressedSize64),
+			SizeBytes:  sizeBytes,
 			Parent:     dir,
 		}
 
@@ -189,7 +195,7 @@ func artifactA_generateIndexFromZIP(zipPath string, index *ArtifactA_WorkspaceIn
 			}
 
 			index.TotalFiles++
-			index.TotalBytes += int64(file.UncompressedSize64)
+			index.TotalBytes += sizeBytes
 		}
 
 		// Attach to parent
@@ -204,6 +210,13 @@ func artifactA_generateIndexFromZIP(zipPath string, index *ArtifactA_WorkspaceIn
 	}
 
 	return index, nil
+}
+
+func artifactA_zipEntrySizeBytes(file *zip.File) (int64, error) {
+	if file.UncompressedSize64 > math.MaxInt64 {
+		return 0, fmt.Errorf("zip entry %q exceeds supported size limit", file.Name)
+	}
+	return int64(file.UncompressedSize64), nil
 }
 
 // artifactA_ensureFolderPath creates all intermediate folder nodes for a path
@@ -303,26 +316,26 @@ func artifactA_calculateZIPEntryHash(file *zip.File) (string, error) {
 
 // NumericField represents an extracted numeric value from a document
 type ArtifactB_NumericField struct {
-	Label      string  `json:"label"`       // e.g., "Total Amount", "Invoice Number"
-	Value      string  `json:"value"`       // Raw extracted value
-	Confidence float64 `json:"confidence"`  // 0.0 - 1.0
-	Type       string  `json:"type"`        // "amount", "date", "number", "id"
+	Label      string  `json:"label"`      // e.g., "Total Amount", "Invoice Number"
+	Value      string  `json:"value"`      // Raw extracted value
+	Confidence float64 `json:"confidence"` // 0.0 - 1.0
+	Type       string  `json:"type"`       // "amount", "date", "number", "id"
 }
 
 // ArtifactB_QualityMetrics represents the five-dimension quality assessment
 type ArtifactB_QualityMetrics struct {
-	Clarity            float64 `json:"clarity"`              // Text clarity (0.0 - 1.0)
-	Layout             float64 `json:"layout"`               // Layout preservation (0.0 - 1.0)
-	LanguageConfidence float64 `json:"language_confidence"`  // Language detection confidence
-	ScanNoise          float64 `json:"scan_noise"`           // Scan artifacts/noise level
-	TableIntegrity     float64 `json:"table_integrity"`      // Table structure preservation
+	Clarity            float64 `json:"clarity"`             // Text clarity (0.0 - 1.0)
+	Layout             float64 `json:"layout"`              // Layout preservation (0.0 - 1.0)
+	LanguageConfidence float64 `json:"language_confidence"` // Language detection confidence
+	ScanNoise          float64 `json:"scan_noise"`          // Scan artifacts/noise level
+	TableIntegrity     float64 `json:"table_integrity"`     // Table structure preservation
 }
 
 // ArtifactB_ProvenanceInfo tracks how the document was processed
 type ArtifactB_ProvenanceInfo struct {
-	Engine   string `json:"engine"`   // "ACE", "Tesseract", etc.
-	Backend  string `json:"backend"`  // "GPU", "CPU", "AIMLAPI"
-	TimeMS   int64  `json:"time_ms"`  // Processing time in milliseconds
+	Engine  string `json:"engine"`  // "ACE", "Tesseract", etc.
+	Backend string `json:"backend"` // "GPU", "CPU", "AIMLAPI"
+	TimeMS  int64  `json:"time_ms"` // Processing time in milliseconds
 }
 
 // EvidenceExtract represents OCR output for a single document
@@ -332,14 +345,14 @@ type ArtifactB_ProvenanceInfo struct {
 // - Never collapse versions
 // - Low quality is a FEATURE, not a bug
 type ArtifactB_EvidenceExtract struct {
-	SourcePath         string           `json:"source_path"`
-	Pages              int              `json:"pages"`
-	Languages          []string         `json:"languages"`
-	LayoutTokens       bool             `json:"layout_tokens"`
-	ExtractedText      string           `json:"extracted_text"`
-	NumericFields      []ArtifactB_NumericField   `json:"numeric_fields"`
-	Quality            ArtifactB_QualityMetrics   `json:"quality"`
-	Provenance         ArtifactB_ProvenanceInfo   `json:"provenance"`
+	SourcePath    string                   `json:"source_path"`
+	Pages         int                      `json:"pages"`
+	Languages     []string                 `json:"languages"`
+	LayoutTokens  bool                     `json:"layout_tokens"`
+	ExtractedText string                   `json:"extracted_text"`
+	NumericFields []ArtifactB_NumericField `json:"numeric_fields"`
+	Quality       ArtifactB_QualityMetrics `json:"quality"`
+	Provenance    ArtifactB_ProvenanceInfo `json:"provenance"`
 }
 
 // GenerateArtifactB_EvidenceExtract transforms ACE OCR response into Evidence format
@@ -506,20 +519,20 @@ type ArtifactC_QualitySummary struct {
 
 // ArtifactC_LanguageFormatSection describes language and format distribution
 type ArtifactC_LanguageFormatSection struct {
-	English       int `json:"english"`
-	Arabic        int `json:"arabic"`
-	Mixed         int `json:"mixed"`
-	ScannedPDFs   int `json:"scanned_pdfs"`
-	NativePDFs    int `json:"native_pdfs"`
-	ExcelFiles    int `json:"excel_files"`
-	WordFiles     int `json:"word_files"`
-	OtherFormats  int `json:"other_formats"`
+	English      int `json:"english"`
+	Arabic       int `json:"arabic"`
+	Mixed        int `json:"mixed"`
+	ScannedPDFs  int `json:"scanned_pdfs"`
+	NativePDFs   int `json:"native_pdfs"`
+	ExcelFiles   int `json:"excel_files"`
+	WordFiles    int `json:"word_files"`
+	OtherFormats int `json:"other_formats"`
 }
 
 // ArtifactC_UncertaintyItem describes an explicit uncertainty or conflict
 type ArtifactC_UncertaintyItem struct {
-	Type        string `json:"type"` // "conflicting_totals", "duplicates", "clarification_needed"
-	Description string `json:"description"`
+	Type         string   `json:"type"` // "conflicting_totals", "duplicates", "clarification_needed"
+	Description  string   `json:"description"`
 	AffectedDocs []string `json:"affected_docs"`
 }
 
@@ -532,13 +545,13 @@ type ArchaeologyReport = ArtifactC_ArchaeologyReport
 // ArtifactC_ArchaeologyReport is the final human-readable report
 // Tone rule: Describe. Do not judge. Do not fix.
 type ArtifactC_ArchaeologyReport struct {
-	GeneratedAt       time.Time              `json:"generated_at"`
-	WorkspaceOverview ArtifactC_OverviewSection        `json:"workspace_overview"`
-	DetectedClusters  []ClusterInfo          `json:"detected_clusters"`
-	QualitySummary    ArtifactC_QualitySummary         `json:"quality_summary"`
-	LanguagesFormats  ArtifactC_LanguageFormatSection  `json:"languages_formats"`
-	Uncertainties     []UncertaintyItem      `json:"uncertainties"`
-	MarkdownContent   string                 `json:"markdown_content"`
+	GeneratedAt       time.Time                       `json:"generated_at"`
+	WorkspaceOverview ArtifactC_OverviewSection       `json:"workspace_overview"`
+	DetectedClusters  []ClusterInfo                   `json:"detected_clusters"`
+	QualitySummary    ArtifactC_QualitySummary        `json:"quality_summary"`
+	LanguagesFormats  ArtifactC_LanguageFormatSection `json:"languages_formats"`
+	Uncertainties     []UncertaintyItem               `json:"uncertainties"`
+	MarkdownContent   string                          `json:"markdown_content"`
 }
 
 // GenerateArchaeologyReport creates a human-readable report from index and extracts

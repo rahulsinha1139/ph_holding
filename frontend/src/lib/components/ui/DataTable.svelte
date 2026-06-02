@@ -209,6 +209,7 @@
       class:sticky-header={stickyHeader}
       aria-label="Data table"
       id={tableId}
+      data-striped={striped}
     >
       <thead>
         <tr>
@@ -284,7 +285,6 @@
             >
               {#each columns as column}
                 <td
-                  role="cell"
                   class={getAlignClass(column)}
                   class:cell-status={column.type === 'status'}
                   class:cell-actions={column.type === 'actions'}

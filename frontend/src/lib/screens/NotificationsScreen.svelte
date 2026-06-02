@@ -7,11 +7,12 @@
     listNotifications,
     markNotificationAsRead,
     refreshCollaborativeWorkspace,
-    reviewDeleteApprovalRequest,
     type NotificationItem
   } from "$lib/api/collaboration";
+  import { ReviewDeleteApprovalRequest, ReviewEmployeeArchiveRequest } from "../../../wailsjs/go/main/App";
 
   const pendingTaskStorageKey = "asymmflow.pendingCollaborativeTaskId";
+  const pendingTaskPayloadStorageKey = "asymmflow.pendingCollaborativeTaskPayload";
   const NOTIFICATIONS_CACHE_TTL_MS = 20_000;
 
   type NotificationSnapshot = {
@@ -22,11 +23,13 @@
   const notificationSnapshots: Record<string, NotificationSnapshot | undefined> = {};
 
   let loading = true;
+  let remoteRefreshing = false;
+  let loadRequestSeq = 0;
   let unreadOnly = false;
   let notifications: NotificationItem[] = [];
-  let loadRequestSeq = 0;
   let currentRole = "";
   let reviewingDeleteRequestID = "";
+  let reviewingArchiveRequestID = "";
 
   function snapshotKey() {
     return unreadOnly ? "unread" : "all";
@@ -74,21 +77,28 @@
     }
     try {
       if (refreshRemote) {
+        remoteRefreshing = true;
         await refreshCollaborativeWorkspace().catch(() => undefined);
       }
-      const nextNotifications = await listNotifications(100, unreadOnly);
+      const rows = await listNotifications(100, unreadOnly);
       if (requestSeq !== loadRequestSeq) {
         return;
       }
-      notifications = nextNotifications;
+      notifications = rows;
       saveSnapshot();
     } catch (err) {
+      if (requestSeq !== loadRequestSeq) {
+        return;
+      }
       if (!silent || !hasNotificationData()) {
         toast.danger(`Failed to load notifications: ${String(err)}`);
       }
     } finally {
       if (requestSeq === loadRequestSeq && shouldShowLoading) {
         loading = false;
+      }
+      if (requestSeq === loadRequestSeq && refreshRemote) {
+        remoteRefreshing = false;
       }
     }
   }
@@ -170,6 +180,10 @@
     return notification.source_type === "delete_approval" || notification.notification_type === "delete_approval";
   }
 
+  function isEmployeeArchiveNotification(notification: NotificationItem): boolean {
+    return notification.source_type === "employee_archive_approval" || notification.notification_type === "employee_archive_approval";
+  }
+
   function isPendingDeleteApproval(notification: NotificationItem): boolean {
     const payload = parsePayload(notification);
     return isDeleteApprovalNotification(notification)
@@ -177,10 +191,18 @@
       && notification.status !== "read";
   }
 
+  function isPendingEmployeeArchiveApproval(notification: NotificationItem): boolean {
+    const payload = parsePayload(notification);
+    return isEmployeeArchiveNotification(notification)
+      && payload.action === "employee_archive_requested"
+      && notification.status !== "read";
+  }
+
   $: isAdmin = ["admin", "administrator", "developer"].includes(currentRole.toLowerCase());
 
   function notificationTone(notification: NotificationItem): string {
     if (notification.status === "read") return "read";
+    if (isEmployeeArchiveNotification(notification)) return "employee-archive";
     if (isDeleteApprovalNotification(notification)) return "delete-approval";
     if (isTaskNotification(notification)) return "task";
     return "system";
@@ -195,13 +217,25 @@
     }
 
     if (taskID) {
+      const taskPayload = {
+        id: taskID,
+        title: String(payload.task_title || notification.title || "Task").trim(),
+        description: String(notification.message || ""),
+        task_type: "internal",
+        status: "open",
+        priority: String(payload.priority || "medium"),
+        project_id: String(payload.project_id || ""),
+        creator_name: String(payload.actor_name || "System"),
+        assignee_name: String(payload.assignee_name || ""),
+      };
       sessionStorage.setItem(pendingTaskStorageKey, taskID);
+      sessionStorage.setItem(pendingTaskPayloadStorageKey, JSON.stringify(taskPayload));
       window.dispatchEvent(new CustomEvent("navigateToScreen", {
         detail: { screen: "work" },
       }));
       window.setTimeout(() => {
         window.dispatchEvent(new CustomEvent("openCollaborativeTask", {
-          detail: { taskID },
+          detail: { taskID, task: taskPayload },
         }));
       }, 80);
     }
@@ -217,13 +251,33 @@
     const notes = decision === "reject" ? (prompt("Reason for rejection") || "") : "";
     reviewingDeleteRequestID = requestID;
     try {
-      await reviewDeleteApprovalRequest(requestID, decision, notes);
+      await ReviewDeleteApprovalRequest(requestID, decision, notes);
       toast.success(decision === "approve" ? "Delete approved and completed" : "Delete request rejected");
       await load({ refreshRemote: true, silent: true });
     } catch (err) {
       toast.danger(`Delete review failed: ${String(err)}`);
     } finally {
       reviewingDeleteRequestID = "";
+    }
+  }
+
+  async function reviewEmployeeArchive(notification: NotificationItem, decision: "approve" | "reject") {
+    const payload = parsePayload(notification);
+    const requestID = String(payload.request_id || notification.source_id || "").trim();
+    if (!requestID) {
+      toast.danger("Employee archive request is missing its approval id");
+      return;
+    }
+    const notes = decision === "reject" ? (prompt("Reason for rejection") || "") : "";
+    reviewingArchiveRequestID = requestID;
+    try {
+      await ReviewEmployeeArchiveRequest(requestID, decision, notes);
+      toast.success(decision === "approve" ? "Employee archived" : "Employee archive request rejected");
+      await load({ refreshRemote: true, silent: true });
+    } catch (err) {
+      toast.danger(`Employee archive review failed: ${String(err)}`);
+    } finally {
+      reviewingArchiveRequestID = "";
     }
   }
 
@@ -258,6 +312,9 @@
     <div>
       <h1>Notifications.</h1>
       <p class="subtitle">Persistent cross-device collaboration events and task updates.</p>
+      {#if remoteRefreshing}
+        <p class="subtitle">Syncing latest changes</p>
+      {/if}
     </div>
     <label class="toggle">
       <input type="checkbox" bind:checked={unreadOnly} on:change={handleUnreadToggle} />
@@ -307,6 +364,16 @@
                     </div>
                   {/if}
 
+                  {#if isEmployeeArchiveNotification(notification)}
+                    <div class="archive-preview">
+                      <strong>{parsePayload(notification).employee_name || "Employee archive request"}</strong>
+                      <span>
+                        {parsePayload(notification).reason || "Second admin approval required"}
+                        {parsePayload(notification).first_approved_by_name ? ` · first approval by ${parsePayload(notification).first_approved_by_name}` : ""}
+                      </span>
+                    </div>
+                  {/if}
+
                   <div class="card-meta">
                     <span>{notification.created_at ? new Date(notification.created_at).toLocaleString() : "Just now"}</span>
                     {#if notification.read_at}
@@ -333,8 +400,23 @@
                         Reject
                       </button>
                     {/if}
+                    {#if isAdmin && isPendingEmployeeArchiveApproval(notification)}
+                      <button
+                        class="primary-action danger"
+                        on:click={() => reviewEmployeeArchive(notification, "approve")}
+                        disabled={reviewingArchiveRequestID === (parsePayload(notification).request_id || notification.source_id)}
+                      >
+                        Approve Archive
+                      </button>
+                      <button
+                        on:click={() => reviewEmployeeArchive(notification, "reject")}
+                        disabled={reviewingArchiveRequestID === (parsePayload(notification).request_id || notification.source_id)}
+                      >
+                        Reject
+                      </button>
+                    {/if}
                     {#if notification.status !== "read"}
-                      <button on:click={() => markRead(notification.id)}>Mark read</button>
+                      <button on:click={() => markRead(notification.id, { reload: true })}>Mark read</button>
                     {/if}
                   </div>
                 </article>
@@ -423,6 +505,11 @@
     box-shadow: 0 14px 32px rgba(127, 29, 29, 0.06);
   }
 
+  .notification-card.employee-archive {
+    border-color: rgba(180, 83, 9, 0.32);
+    box-shadow: 0 14px 32px rgba(120, 53, 15, 0.06);
+  }
+
   .notification-card.system {
     border-color: rgba(148, 163, 184, 0.3);
   }
@@ -464,7 +551,8 @@
   }
 
   .task-preview,
-  .delete-preview {
+  .delete-preview,
+  .archive-preview {
     display: grid;
     gap: 4px;
     padding: 12px 14px;
@@ -476,8 +564,13 @@
     background: rgba(254, 226, 226, 0.7);
   }
 
+  .archive-preview {
+    background: rgba(254, 243, 199, 0.74);
+  }
+
   .task-preview span,
-  .delete-preview span {
+  .delete-preview span,
+  .archive-preview span {
     color: var(--text-secondary);
     font-size: 13px;
   }

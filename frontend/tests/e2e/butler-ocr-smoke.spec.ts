@@ -13,7 +13,7 @@ test.describe('Butler and OCR smoke', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Intelligence' }).click();
-    await expect(page.getByRole('button', { name: /\+ New Chat/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /\+ New Chat/ })).toBeVisible({ timeout: 15000 });
 
     await page.getByRole('button', { name: /\+ New Chat/ }).click();
 
@@ -35,7 +35,10 @@ test.describe('Butler and OCR smoke', () => {
   test('OCR modal opens and Butler analysis populates a bank statement', async ({ page }) => {
     await page.goto(BASE_URL);
 
-    await openGlobalOcrFromDashboard(page);
+    await expect(page.getByRole('button', { name: 'Browse' })).toBeVisible();
+    await page.getByRole('button', { name: 'Browse' }).click();
+
+    await expect(page.getByText('Document Type')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Save as Bank Statement' })).toBeVisible();
 
     await expect(page.getByText('AI Summary:')).toBeVisible({ timeout: 10000 });

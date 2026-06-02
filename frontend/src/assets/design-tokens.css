@@ -9,40 +9,40 @@
 
   /* ===== ONYX & ETHER PALETTE ===== */
   /* Primary monochrome scale - strict black/white/gray */
-  --carbon: #000000;              /* Primary action buttons, high contrast */
-  --onyx: #1D1D1F;               /* Primary text, headers, active states */
-  --steel: #86868B;              /* Secondary text, labels, inactive icons */
-  --ether: #EDF3F7;             /* Main app background */
+  --carbon: #25312B;              /* Primary action buttons, high contrast */
+  --onyx: #25312B;               /* Primary text, headers, active states */
+  --steel: #667569;              /* Secondary text, labels, inactive icons */
+  --ether: #EEF5EE;             /* Main app background */
   --canvas: #FFFFFF;             /* Card backgrounds, inputs */
 
   /* Derived tints */
-  --onyx-tint: rgba(29, 29, 31, 0.04);    /* Subtle hover backgrounds */
-  --onyx-tint-medium: rgba(29, 29, 31, 0.08);
-  --onyx-tint-strong: rgba(29, 29, 31, 0.12);
-  --carbon-tint: rgba(0, 0, 0, 0.06);     /* Card hover lift */
+  --onyx-tint: rgba(37, 49, 43, 0.05);    /* Subtle hover backgrounds */
+  --onyx-tint-medium: rgba(37, 49, 43, 0.09);
+  --onyx-tint-strong: rgba(37, 49, 43, 0.14);
+  --carbon-tint: rgba(37, 49, 43, 0.06);     /* Card hover lift */
 
   /* Glass effect */
-  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-bg: rgba(247, 250, 247, 0.78);
   --glass-blur: blur(20px);
-  --glass-border: rgba(0, 0, 0, 0.06);
+  --glass-border: rgba(93, 116, 94, 0.14);
 
   /* ===== SEMANTIC MAPPING (backwards compatible) ===== */
   --bg-base: var(--ether);
   --surface: var(--canvas);
-  --surface-elevated: #F7FAFD;
-  --border: #E5E5E5;
+  --surface-elevated: #F7FAF7;
+  --border: #DDE8DD;
 
   --text-primary: var(--onyx);
   --text-secondary: var(--steel);
-  --text-muted: #AEAEB2;
+  --text-muted: #8A978B;
 
-  /* Legacy brand mapping → monochrome */
-  --brand-indigo: var(--carbon);
-  --brand-indigo-hover: #1D1D1F;
-  --brand-indigo-pressed: #333333;
-  --brand-indigo-tint: var(--onyx-tint);
-  --brand-indigo-tint-medium: var(--onyx-tint-medium);
-  --brand-indigo-tint-strong: var(--onyx-tint-strong);
+  /* Legacy brand mapping retained for compatibility */
+  --brand-indigo: #3E8F47;
+  --brand-indigo-hover: #2F7638;
+  --brand-indigo-pressed: #275F2E;
+  --brand-indigo-tint: rgba(62, 143, 71, 0.08);
+  --brand-indigo-tint-medium: rgba(62, 143, 71, 0.13);
+  --brand-indigo-tint-strong: rgba(62, 143, 71, 0.18);
   --indigo-contrast-surface: var(--ether);
 
   /* ===== SPACING ===== */
@@ -90,6 +90,8 @@
   --modal-label-size: calc(12px * var(--ui-font-scale));
   --modal-label-weight: 500;
   --modal-line-height: 1.6;
+  --kpi-value-size: 32px;
+  --north-star-kpi-value-size: 48px;
 
   /* Tabular numerals for financial data alignment */
   --font-numeric: 'Space Grotesk', 'Rubik', sans-serif;
@@ -105,10 +107,10 @@
   /* ===== SHADOWS (Minimal - "The Lift") ===== */
   /* No heavy drop shadows. Cards use 1px border. Hover adds ambient glow. */
   --shadow-none: none;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.03);
-  --shadow-lift: 0 4px 24px rgba(0, 0, 0, 0.04);  /* The hover "lift" */
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.08);
+  --shadow-sm: 0 1px 2px rgba(37, 49, 43, 0.03);
+  --shadow-lift: 0 4px 24px rgba(37, 49, 43, 0.05);  /* The hover "lift" */
+  --shadow-md: 0 4px 12px rgba(37, 49, 43, 0.06);
+  --shadow-lg: 0 8px 32px rgba(37, 49, 43, 0.08);
   --shadow-indigo: none; /* No colored shadows in monochrome */
 
   /* ===== TRANSITIONS ===== */
@@ -263,7 +265,7 @@ body {
 
 .card-north-star .kpi-value {
   color: var(--canvas);
-  font-size: 48px;
+  font-size: var(--north-star-kpi-value-size, 48px);
 }
 
 .card-north-star .kpi-meta {
@@ -288,7 +290,7 @@ body {
 }
 
 .kpi-value {
-  font-size: 32px;
+  font-size: var(--kpi-value-size, 32px);
   font-weight: 700;
   color: var(--text-primary);
   line-height: 1.1;
@@ -374,7 +376,7 @@ body {
 .data-table td.numeric {
   font-variant-numeric: tabular-nums lining-nums;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-12, 12px);
 }
 
 /* ===== TAB COMPONENTS ===== */
@@ -390,7 +392,7 @@ body {
   background: none;
   border: none;
   padding: 0 20px;
-  font-size: 13px;
+  font-size: var(--tab-text-size-scaled, 13px);
   font-weight: 500;
   color: var(--text-muted);
   cursor: pointer;
@@ -425,7 +427,7 @@ body {
 .btn {
   padding: 10px 20px;
   border-radius: var(--border-radius-sm);
-  font-size: 13px;
+  font-size: var(--control-text-size-scaled, 13px);
   font-weight: 500;
   cursor: pointer;
   transition: all var(--transition-fast);
@@ -583,7 +585,7 @@ body {
 .input {
   width: 100%;
   padding: 10px 14px;
-  font-size: 14px;
+  font-size: var(--modal-body-size, 14px);
   font-family: var(--font-family);
   color: var(--text-primary);
   background: var(--surface);

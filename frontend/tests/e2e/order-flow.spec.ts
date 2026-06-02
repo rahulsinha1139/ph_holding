@@ -20,14 +20,15 @@ test.describe('Commercial workflow smoke', () => {
     await page.getByPlaceholder('Project name').fill('Launch readiness smoke');
     await page.getByPlaceholder('0.00').fill('12500');
     await page.getByPlaceholder('Add context, scope, customer request details, exclusions, or next steps...').fill('Need fast commercial turnaround.');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await page.getByRole('button', { name: 'Create', exact: true }).click();
 
     await expect(page.getByRole('heading', { name: opportunityTitle })).toBeVisible();
     await page.getByRole('button', { name: new RegExp(opportunityTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) }).first().click();
 
     await expect(page.locator('#opportunity-modal-title')).toHaveText(opportunityTitle);
     await expect(page.getByText('Need fast commercial turnaround.')).toBeVisible();
-    await page.getByRole('button', { name: /Close/ }).click();
+    await expect(page.getByPlaceholder('Add a comment...')).toBeVisible();
+    await page.getByText('Close', { exact: true }).click();
   });
 
   test('creates a blank costing sheet and saves it as an offer', async ({ page }) => {

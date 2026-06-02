@@ -319,25 +319,25 @@
   {:else}
     <!-- KPIs -->
     <div class="kpi-grid">
-      <Card variant="elevated">
+      <Card variant="elevated" padding="sm">
         <div class="kpi">
           <span class="kpi-label">Total Actions</span>
           <span class="kpi-value">{totalActions}</span>
         </div>
       </Card>
-      <Card variant="elevated">
+      <Card variant="elevated" padding="sm">
         <div class="kpi">
           <span class="kpi-label">Automatic</span>
           <span class="kpi-value auto">{autoActions}</span>
         </div>
       </Card>
-      <Card variant="elevated">
+      <Card variant="elevated" padding="sm">
         <div class="kpi">
           <span class="kpi-label">Manual</span>
           <span class="kpi-value manual">{manualActions}</span>
         </div>
       </Card>
-      <Card variant="elevated">
+      <Card variant="elevated" padding="sm">
         <div class="kpi">
           <span class="kpi-label">Reversed</span>
           <span class="kpi-value reversed">{reversedActions}</span>
@@ -427,32 +427,34 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: var(--space-8);
-    gap: var(--space-4);
+    padding: 56px;
+    gap: 12px;
   }
 
   .kpi-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: var(--space-4);
-    margin-bottom: var(--space-6);
+    gap: 12px;
+    margin-bottom: 12px;
   }
 
   .kpi {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: 4px;
+    min-height: 70px;
+    justify-content: center;
   }
 
   .kpi-label {
-    font-size: 12px;
+    font-size: var(--meta-text-size-scaled, 12px);
     color: var(--text-secondary);
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0;
   }
 
   .kpi-value {
-    font-size: 24px;
+    font-size: var(--kpi-value-size-scaled, 24px);
     font-weight: 600;
     font-family: var(--font-mono);
     color: var(--text-primary);
@@ -466,41 +468,43 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: var(--space-4);
-    padding: var(--space-3);
+    margin-bottom: 12px;
+    padding: 10px 12px;
     background: var(--surface-elevated);
-    border-radius: var(--radius-md);
+    border-radius: 10px;
     flex-wrap: wrap;
-    gap: var(--space-3);
+    gap: 10px;
   }
 
   .toolbar .left,
   .toolbar .right {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: 10px;
   }
 
   .select {
-    padding: var(--space-2) var(--space-3);
+    padding: 8px 10px;
     border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
+    border-radius: 8px;
     background: var(--surface-default);
-    font-size: 14px;
-    min-width: 180px;
+    font-size: var(--control-text-size-scaled, 13px);
+    min-width: 220px;
+    max-width: 420px;
   }
 
   .select.filter {
-    min-width: 140px;
+    min-width: 150px;
   }
 
   .checkbox-label {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
-    font-size: 13px;
+    gap: 8px;
+    font-size: var(--control-text-size-scaled, 13px);
     color: var(--text-secondary);
     cursor: pointer;
+    white-space: nowrap;
   }
 
   .checkbox-label input {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
+  import { ListCustomerContacts, ListCustomers } from "../../../wailsjs/go/main/App";
   import { toast } from "../stores/toasts";
   import Modal from "$lib/components/layout/Modal.svelte";
   import Button from "$lib/components/ui/Button.svelte";
@@ -8,8 +9,10 @@
   import {
     addProjectMember,
     addTaskComment,
+    archiveProject,
     createProject,
     createTask,
+    deleteProject,
     deleteTask,
     getCurrentEmployeeContext,
     getTask,
@@ -24,6 +27,8 @@
     listTeamTasks,
     refreshCollaborativeWorkspace,
     reassignTask,
+    shelveProject,
+    updateProject,
     updateTask,
     updateTaskDueDate,
     updateTaskStatus,
@@ -38,6 +43,7 @@
 
   type WorkTab = "my_work" | "team_board" | "projects";
   const pendingTaskStorageKey = "asymmflow.pendingCollaborativeTaskId";
+  const pendingTaskPayloadStorageKey = "asymmflow.pendingCollaborativeTaskPayload";
   const WORK_HUB_CACHE_TTL_MS = 30_000;
 
   type WorkHubSnapshot = {
@@ -62,11 +68,13 @@
   let savingProject = false;
   let savingComment = false;
   let savingMember = false;
+  let savingProjectAdmin = false;
   let savingAssignment = false;
   let savingDueDate = false;
   let savingTaskDetails = false;
   let deletingTask = false;
   let confirmDeleteTask = false;
+  let remoteRefreshing = false;
 
   let activeTab: WorkTab = "team_board";
   let currentEmployee: CurrentEmployeeContext | null = null;
@@ -81,6 +89,7 @@
   let taskComments: TaskCommentItem[] = [];
   let taskActivity: TaskActivityItem[] = [];
   let taskModalOpen = false;
+  let projectModalOpen = false;
 
   let selectedTaskId = "";
   let selectedProjectId = "";
@@ -95,6 +104,22 @@
   let projectName = "";
   let projectType = "internal";
   let projectDescription = "";
+  let projectCustomerID = "";
+  let projectCustomerName = "";
+  let projectEndUserName = "";
+  let projectOpportunityKey = "";
+  let projectPocID = "";
+  let projectPocName = "";
+  let projectPocEmail = "";
+  let projectPocPhone = "";
+  let projectCustomers: any[] = [];
+  let projectContacts: any[] = [];
+  let loadingProjectCustomers = false;
+  let projectCustomerSearch = "";
+  let showProjectCustomerSuggestions = false;
+  let editingProject = false;
+  let projectEditDraft: Partial<CollaborativeProject> = {};
+  let projectAdminReason = "";
 
   let memberSelections: string[] = [];
   let memberRole = "Member";
@@ -187,6 +212,17 @@
     return !workHubSnapshot || Date.now() - workHubSnapshot.savedAt > WORK_HUB_CACHE_TTL_MS;
   }
 
+  function wait(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function waitForWorkspaceLoad(timeoutMs = 1500) {
+    const startedAt = Date.now();
+    while (loading && Date.now() - startedAt < timeoutMs) {
+      await wait(40);
+    }
+  }
+
   async function load(options: { refreshRemote?: boolean; forceRemote?: boolean; silent?: boolean } = {}) {
     const { refreshRemote = false, forceRemote = false, silent = false } = options;
     const requestSeq = ++loadRequestSeq;
@@ -196,6 +232,7 @@
     }
     try {
       if (refreshRemote) {
+        remoteRefreshing = true;
         await refreshCollaborativeWorkspace({ force: forceRemote }).catch(() => undefined);
       }
       const [employee, myTaskRows, teamTaskRows, projectRows, employeeRows] = await Promise.all([
@@ -248,6 +285,9 @@
     } finally {
       if (requestSeq === loadRequestSeq && shouldShowLoading) {
         loading = false;
+      }
+      if (requestSeq === loadRequestSeq && refreshRemote) {
+        remoteRefreshing = false;
       }
     }
   }
@@ -373,11 +413,26 @@
 
     try {
       let opened = false;
+      const fallbackTask = selectedTask?.id === taskID ? selectedTask : null;
       for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
-        if (attempt > 0 && !loading) {
+        if (loading) {
+          await waitForWorkspaceLoad();
+        }
+        if (attempt > 0) {
           await load({ refreshRemote: true, forceRemote: true });
         }
         opened = await loadTaskDetail(taskID, { suppressErrorToast: true });
+        if (!opened) {
+          const cachedTask = selectedTask?.id === taskID
+            ? selectedTask
+            : fallbackTask?.id === taskID
+              ? fallbackTask
+            : [...myTasks, ...teamTasks, ...projectTasks].find((task) => task.id === taskID);
+          if (cachedTask) {
+            primeTaskDetail(cachedTask);
+            opened = true;
+          }
+        }
       }
 
       if (!opened) {
@@ -445,6 +500,89 @@
     }
   }
 
+  async function loadProjectCustomers() {
+    if (projectCustomers.length > 0 || loadingProjectCustomers) return;
+    loadingProjectCustomers = true;
+    try {
+      projectCustomers = (await ListCustomers(500, 0)) || [];
+    } catch (err) {
+      toast.danger(`Customer list could not load: ${String(err)}`);
+      projectCustomers = [];
+    } finally {
+      loadingProjectCustomers = false;
+    }
+  }
+
+  function customerDisplayName(customer: any) {
+    return customer?.business_name || customer?.trading_name || customer?.customer_id || "";
+  }
+
+  async function selectProjectCustomer(customer: any) {
+    const customerID = customer?.id || customer?.customer_id || "";
+    projectCustomerID = customerID;
+    projectCustomerSearch = customerDisplayName(customer);
+    showProjectCustomerSuggestions = false;
+    projectPocID = "";
+    projectContacts = [];
+    projectPocName = "";
+    projectPocEmail = "";
+    projectPocPhone = "";
+
+    projectCustomerName = customerDisplayName(customer);
+    if (!projectEndUserName) {
+      projectEndUserName = projectCustomerName;
+    }
+
+    if (!customerID) return;
+    try {
+      projectContacts = (await ListCustomerContacts(customerID)) || [];
+      const primary = projectContacts.find((contact) => contact.is_primary_contact) || projectContacts[0];
+      if (primary) {
+        applyProjectContact(primary);
+      }
+    } catch (err) {
+      toast.danger(`Customer contacts could not load: ${String(err)}`);
+      projectContacts = [];
+    }
+  }
+
+  function handleProjectCustomerInput() {
+    const search = projectCustomerSearch.trim();
+    projectCustomerName = search;
+    showProjectCustomerSuggestions = search.length >= 2;
+    if (projectCustomerID) {
+      const selected = projectCustomers.find((row) => row.id === projectCustomerID || row.customer_id === projectCustomerID);
+      if (selected && customerDisplayName(selected) !== search) {
+        projectCustomerID = "";
+        projectPocID = "";
+        projectContacts = [];
+        projectPocName = "";
+        projectPocEmail = "";
+        projectPocPhone = "";
+      }
+    }
+  }
+
+  function applyProjectContact(contact: any) {
+    projectPocID = contact?.id || "";
+    projectPocName = contact?.contact_name || "";
+    projectPocEmail = contact?.email || "";
+    projectPocPhone = contact?.phone || "";
+  }
+
+  function handleProjectContactSelect(event: Event) {
+    const contactID = (event.currentTarget as HTMLSelectElement).value;
+    const contact = projectContacts.find((row) => row.id === contactID);
+    if (contact) {
+      applyProjectContact(contact);
+    } else {
+      projectPocID = "";
+      projectPocName = "";
+      projectPocEmail = "";
+      projectPocPhone = "";
+    }
+  }
+
   async function handleCreateProject() {
     if (!projectName.trim()) {
       toast.warning("Project name is required");
@@ -457,10 +595,28 @@
         name: projectName.trim(),
         project_type: projectType,
         description: projectDescription.trim(),
+        customer_id: projectCustomerID,
+        customer_name: projectCustomerName.trim(),
+        end_user_name: projectEndUserName.trim(),
+        opportunity_key: projectOpportunityKey.trim(),
+        customer_poc_name: projectPocName.trim(),
+        customer_poc_email: projectPocEmail.trim(),
+        customer_poc_phone: projectPocPhone.trim(),
       });
       projectName = "";
       projectDescription = "";
       projectType = "internal";
+      projectCustomerID = "";
+      projectCustomerName = "";
+      projectCustomerSearch = "";
+      showProjectCustomerSuggestions = false;
+      projectEndUserName = "";
+      projectOpportunityKey = "";
+      projectPocID = "";
+      projectPocName = "";
+      projectPocEmail = "";
+      projectPocPhone = "";
+      projectContacts = [];
       projects = upsertProjectRow(projects, created);
       selectedProjectId = created.id;
       selectedProjectForTask = created.id;
@@ -554,12 +710,16 @@
 
   async function handleReassignSelectedTask() {
     if (!selectedTask) return;
+    if (!selectedTaskAssigneeChanged) {
+      toast.info("Choose a different assignee before confirming reassignment");
+      return;
+    }
     savingAssignment = true;
     try {
       await reassignTask(selectedTask.id, selectedTaskAssigneeDraft);
       await load();
       await loadTaskDetail(selectedTask.id);
-      toast.success("Task assignee updated");
+      toast.success("Task reassignment confirmed");
     } catch (err) {
       toast.danger(`Failed to reassign task: ${String(err)}`);
     } finally {
@@ -585,19 +745,9 @@
 
   async function selectTask(taskID: string) {
     if (!taskID) return;
-    pendingOpenTaskId = "";
-    taskModalOpen = true;
     const cachedTask = [...myTasks, ...teamTasks, ...projectTasks].find((task) => task.id === taskID);
-    if (cachedTask) {
-      primeTaskDetail(cachedTask);
-    } else {
-      queuePendingTaskOpen(taskID);
-    }
-    const opened = await loadTaskDetail(taskID, { suppressErrorToast: Boolean(cachedTask) });
-    if (!opened && cachedTask) {
-      primeTaskDetail(cachedTask);
-      toast.warning("Showing cached task details while sync catches up.");
-    }
+    queuePendingTaskOpen(taskID, cachedTask || null);
+    await openTaskAfterRefresh(taskID);
   }
 
   function closeTaskModal() {
@@ -663,13 +813,23 @@
     }
   }
 
-  function queuePendingTaskOpen(taskID: string) {
+  function queuePendingTaskOpen(taskID: string, fallbackTask?: CollaborativeTask | null) {
     if (!taskID) return;
     pendingOpenTaskId = taskID;
     selectedTaskId = taskID;
     taskModalOpen = true;
-    taskDetailLoading = true;
-    selectedTask = null;
+    if (fallbackTask) {
+      primeTaskDetail(fallbackTask);
+    } else {
+      taskDetailLoading = true;
+      selectedTask = null;
+      selectedTaskTitleDraft = "";
+      selectedTaskDescriptionDraft = "";
+      selectedTaskPriorityDraft = "medium";
+      selectedTaskAssigneeDraft = "";
+      selectedTaskDueDateDraft = "";
+      selectedTaskBlockerDraft = "";
+    }
     taskComments = [];
     taskActivity = [];
   }
@@ -716,12 +876,116 @@
     return taskID;
   }
 
+  function consumePendingTaskPayloadFromStorage(taskID: string): CollaborativeTask | null {
+    const raw = sessionStorage.getItem(pendingTaskPayloadStorageKey);
+    if (raw) {
+      sessionStorage.removeItem(pendingTaskPayloadStorageKey);
+    }
+    if (!raw) return null;
+    try {
+      const task = JSON.parse(raw) as CollaborativeTask;
+      if (task?.id && String(task.id) === taskID && task.title) {
+        return {
+          ...task,
+          id: String(task.id),
+          title: String(task.title),
+          status: task.status || "open",
+          priority: task.priority || "medium",
+        };
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
   async function selectProject(projectID: string) {
     selectedProjectId = projectID;
     selectedProjectForTask = projectID;
+    editingProject = false;
+    projectEditDraft = {};
+    projectAdminReason = "";
     projectContextLoadedFor = "";
     projectContextFailedFor = "";
+    projectModalOpen = true;
     await loadProjectContext(projectID);
+  }
+
+  function startProjectEdit() {
+    if (!selectedProject) return;
+    projectEditDraft = { ...selectedProject };
+    editingProject = true;
+  }
+
+  function cancelProjectEdit() {
+    editingProject = false;
+    projectEditDraft = {};
+  }
+
+  async function saveProjectEdit() {
+    if (!selectedProject) return;
+    if (!String(projectEditDraft.name || "").trim()) {
+      toast.warning("Project name is required");
+      return;
+    }
+    savingProjectAdmin = true;
+    try {
+      const updated = await updateProject(selectedProject.id, {
+        name: String(projectEditDraft.name || "").trim(),
+        project_type: String(projectEditDraft.project_type || "internal"),
+        description: String(projectEditDraft.description || "").trim(),
+        customer_name: String(projectEditDraft.customer_name || "").trim(),
+        end_user_name: String(projectEditDraft.end_user_name || "").trim(),
+        opportunity_key: String(projectEditDraft.opportunity_key || "").trim(),
+        customer_poc_name: String(projectEditDraft.customer_poc_name || "").trim(),
+        customer_poc_email: String(projectEditDraft.customer_poc_email || "").trim(),
+        customer_poc_phone: String(projectEditDraft.customer_poc_phone || "").trim(),
+        starts_on: projectEditDraft.starts_on,
+        ends_on: projectEditDraft.ends_on,
+        status: String(projectEditDraft.status || selectedProject.status || "active"),
+      });
+      projects = upsertProjectRow(projects, updated);
+      editingProject = false;
+      projectEditDraft = {};
+      saveSnapshot();
+      toast.success("Project updated");
+    } catch (err) {
+      toast.danger(`Failed to update project: ${String(err)}`);
+    } finally {
+      savingProjectAdmin = false;
+    }
+  }
+
+  async function applyProjectAdminAction(action: "archive" | "shelve" | "delete") {
+    if (!selectedProject) return;
+    const reason = projectAdminReason.trim() || `${action} from project admin workspace`;
+    savingProjectAdmin = true;
+    try {
+      if (action === "delete") {
+        await deleteProject(selectedProject.id, reason);
+        projects = projects.filter((project) => project.id !== selectedProject.id);
+        selectedProjectId = projects[0]?.id || "";
+        selectedProjectForTask = selectedProjectId;
+        projectMembers = [];
+        projectTasks = [];
+        projectActivity = [];
+        projectModalOpen = false;
+      } else {
+        const updated = action === "archive"
+          ? await archiveProject(selectedProject.id, reason)
+          : await shelveProject(selectedProject.id, reason);
+        projects = upsertProjectRow(projects, updated);
+      }
+      projectAdminReason = "";
+      editingProject = false;
+      projectEditDraft = {};
+      saveSnapshot();
+      toast.success(`Project ${action === "delete" ? "deleted" : action + "d"}`);
+    } catch (err) {
+      toast.danger(`Failed to ${action} project: ${String(err)}`);
+    } finally {
+      savingProjectAdmin = false;
+    }
   }
 
   function startEmployeeDrag(employeeID: string, event: DragEvent) {
@@ -747,10 +1011,11 @@
   }
 
   function handleOpenTaskEvent(event: Event) {
-    const taskID = (event as CustomEvent<{ taskID?: string }>).detail?.taskID || "";
+    const detail = (event as CustomEvent<{ taskID?: string; task?: CollaborativeTask }>).detail || {};
+    const taskID = detail.taskID || "";
     if (!taskID) return;
     activeTab = defaultWorkTabForRole(currentEmployee?.license_role);
-    queuePendingTaskOpen(taskID);
+    queuePendingTaskOpen(taskID, detail.task || null);
     void openTaskAfterRefresh(taskID);
   }
 
@@ -805,6 +1070,17 @@
   }
 
   $: selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
+  $: filteredProjectCustomers = projectCustomerSearch.trim().length < 2
+    ? []
+    : projectCustomers
+      .filter((customer) => [
+        customerDisplayName(customer),
+        customer?.customer_id,
+        customer?.customer_code,
+        customer?.short_code,
+      ].filter(Boolean).some((value) => String(value).toLowerCase().includes(projectCustomerSearch.trim().toLowerCase())))
+      .slice(0, 8);
+  $: selectedTaskAssigneeChanged = Boolean(selectedTask) && (selectedTask.assignee_employee_id || "") !== selectedTaskAssigneeDraft;
   $: boardTaskGroups = filteredTeamTasks.reduce((groups, task) => {
     const lane = normalizedBoardStatus(task);
     const targetLane = boardColumns.some((column) => column.key === lane) ? lane : "open";
@@ -868,7 +1144,7 @@
   }
 
   $: if (selectedTaskId && activeTab !== "projects" && !pendingOpenTaskId && !openingPendingTask && (!selectedTask || selectedTask.id !== selectedTaskId) && !loading) {
-    void loadTaskDetail(selectedTaskId);
+    void loadTaskDetail(selectedTaskId, { suppressErrorToast: true });
   }
 
   $: if (activeTab === "team_board" && !loading && (lastLoadFailed || (teamTasks.length === 0 && employees.length === 0 && projects.length === 0))) {
@@ -877,6 +1153,7 @@
 
   onMount(() => {
     void hydrateWorkHub();
+    void loadProjectCustomers();
     EventsOn("tasks:updated", () => void load({ silent: true }));
     EventsOn("projects:updated", () => {
       void load({ silent: true });
@@ -890,7 +1167,7 @@
     window.addEventListener("openCollaborativeTask", handleOpenTaskEvent);
     const pendingTaskID = consumePendingTaskOpenFromStorage();
     if (pendingTaskID) {
-      queuePendingTaskOpen(pendingTaskID);
+      queuePendingTaskOpen(pendingTaskID, consumePendingTaskPayloadFromStorage(pendingTaskID));
     }
   });
 
@@ -901,25 +1178,29 @@
 </script>
 
 <div class="page">
-  <header class="header">
-    <div>
-      <h1>Work.</h1>
-      <p class="subtitle">Projects, team workload, and task history in one collaborative workspace.</p>
-    </div>
+  <header class="work-topbar">
+    <section class="tabs">
+      <button class:active={activeTab === "my_work"} on:click={() => activeTab = "my_work"}>My Work</button>
+      <button class:active={activeTab === "team_board"} on:click={() => activeTab = "team_board"}>Team Board</button>
+      <button class:active={activeTab === "projects"} on:click={() => activeTab = "projects"}>Projects</button>
+    </section>
+
     {#if currentEmployee}
       <div class="identity-card">
         <span class="label">Active Employee</span>
         <strong>{currentEmployee.employee_name}</strong>
         <span class="meta">{currentEmployee.license_role || currentEmployee.resolved_by}</span>
+        {#if remoteRefreshing}
+          <span class="meta">Syncing latest changes</span>
+        {/if}
+      </div>
+    {:else if remoteRefreshing}
+      <div class="identity-card">
+        <span class="label">Workspace</span>
+        <strong>Syncing latest changes</strong>
       </div>
     {/if}
   </header>
-
-  <section class="tabs">
-    <button class:active={activeTab === "my_work"} on:click={() => activeTab = "my_work"}>My Work</button>
-    <button class:active={activeTab === "team_board"} on:click={() => activeTab = "team_board"}>Team Board</button>
-    <button class:active={activeTab === "projects"} on:click={() => activeTab = "projects"}>Projects</button>
-  </section>
 
   {#if activeTab !== "team_board"}
     <section class="composer">
@@ -1176,6 +1457,37 @@
             <option value="customer">Customer</option>
             <option value="admin">Admin</option>
           </select>
+          <input bind:value={projectOpportunityKey} placeholder="RFQ / folder key" />
+          <div class="autocomplete-field">
+            <input
+              bind:value={projectCustomerSearch}
+              placeholder={loadingProjectCustomers ? "Loading customers..." : "Type 2+ letters for customer"}
+              on:input={handleProjectCustomerInput}
+              on:focus={() => showProjectCustomerSuggestions = projectCustomerSearch.trim().length >= 2}
+              on:blur={() => setTimeout(() => showProjectCustomerSuggestions = false, 120)}
+            />
+            {#if showProjectCustomerSuggestions}
+              <div class="suggestion-list">
+                {#each filteredProjectCustomers as customer}
+                  <button type="button" on:mousedown|preventDefault={() => selectProjectCustomer(customer)}>
+                    <strong>{customerDisplayName(customer)}</strong>
+                    <span>{customer.customer_id || customer.customer_code || "Customer"}</span>
+                  </button>
+                {:else}
+                  <div class="suggestion-empty">No matching customers.</div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+          <input bind:value={projectEndUserName} placeholder="End user" />
+          <select bind:value={projectPocID} on:change={handleProjectContactSelect} disabled={!projectCustomerID || projectContacts.length === 0}>
+            <option value="">{projectCustomerID ? "Select customer POC" : "Choose customer first"}</option>
+            {#each projectContacts as contact}
+              <option value={contact.id}>{contact.contact_name}{contact.job_title ? ` - ${contact.job_title}` : ""}</option>
+            {/each}
+          </select>
+          <input bind:value={projectPocEmail} placeholder="POC email" />
+          <input bind:value={projectPocPhone} placeholder="POC phone" />
           <textarea bind:value={projectDescription} rows="2" placeholder="What is this project for?"></textarea>
           <div class="actions">
             <button class="primary" on:click={handleCreateProject} disabled={savingProject}>Create Project</button>
@@ -1195,11 +1507,46 @@
         </div>
       </article>
 
-      <article class="panel detail-panel">
+      <article class="panel roster-panel">
+        <div class="section-head">
+          <div>
+            <h2>Assignment Roster</h2>
+            <p>Choose an employee here to prefill the task assignee while you are working inside projects.</p>
+          </div>
+          <span class="count">{employees.length} people</span>
+        </div>
+        {#if employees.length === 0}
+          <div class="empty">No employees available for assignment yet.</div>
+        {:else}
+          <div class="roster-strip">
+            {#each workload as person}
+              <button
+                class="employee-chip"
+                class:selected={selectedAssignee === person.id}
+                on:click={() => selectedAssignee = person.id}
+              >
+                <strong>{person.name}</strong>
+                <span>{person.department || "Team"}</span>
+                <span>{person.openCount} active • {person.blockedCount} blocked</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </article>
+
+      <Modal bind:open={projectModalOpen} title={selectedProject?.name || "Project Detail"} size="xl" on:close={() => { projectModalOpen = false; }}>
         <div class="section-head">
           <h2>{selectedProject?.name || "Project Detail"}</h2>
           {#if selectedProject}
-            <span class="count">{selectedProject.project_type || "internal"}</span>
+            <div class="inline-actions">
+              <span class="count">{selectedProject.project_type || "internal"}</span>
+              {#if editingProject}
+                <button class="ghost-btn" on:click={cancelProjectEdit} disabled={savingProjectAdmin}>Cancel</button>
+                <button class="primary mini" on:click={saveProjectEdit} disabled={savingProjectAdmin}>Save</button>
+              {:else}
+                <button class="ghost-btn" on:click={startProjectEdit}>Edit</button>
+              {/if}
+            </div>
           {/if}
         </div>
 
@@ -1209,8 +1556,49 @@
           <div class="detail-stack">
           <div class="detail-hero">
             <div>
-              <h3>{selectedProject.name}</h3>
-              <p>{selectedProject.description || "No project description provided."}</p>
+              {#if editingProject}
+                <div class="project-admin-grid">
+                  <input bind:value={projectEditDraft.name} placeholder="Project name" />
+                  <select bind:value={projectEditDraft.project_type}>
+                    <option value="internal">Internal</option>
+                    <option value="customer">Customer</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                  <select bind:value={projectEditDraft.status}>
+                    <option value="active">Active</option>
+                    <option value="shelved">Shelved</option>
+                    <option value="archived">Archived</option>
+                  </select>
+                  <input bind:value={projectEditDraft.opportunity_key} placeholder="RFQ / folder key" />
+                  <input bind:value={projectEditDraft.customer_name} placeholder="Customer" />
+                  <input bind:value={projectEditDraft.end_user_name} placeholder="End user" />
+                  <input bind:value={projectEditDraft.customer_poc_name} placeholder="Customer POC" />
+                  <input bind:value={projectEditDraft.customer_poc_email} placeholder="POC email" />
+                  <input bind:value={projectEditDraft.customer_poc_phone} placeholder="POC phone" />
+                  <textarea bind:value={projectEditDraft.description} rows="2" placeholder="Project description"></textarea>
+                </div>
+              {:else}
+                <h3>{selectedProject.name}</h3>
+                <p>{selectedProject.description || "No project description provided."}</p>
+                <div class="project-facts">
+                  <span>{selectedProject.opportunity_key || "No workflow key"}</span>
+                  <span>{selectedProject.customer_name || "No customer"}</span>
+                  <span>{selectedProject.end_user_name || "No end user"}</span>
+                  <span>{selectedProject.customer_poc_name || "No customer POC"}</span>
+                </div>
+              {/if}
+            </div>
+          </div>
+          <div class="subpanel project-admin-actions">
+            <div class="section-head">
+              <h3>Admin Actions</h3>
+              <span class="count">Audited</span>
+            </div>
+            <input bind:value={projectAdminReason} placeholder="Reason for archive, shelve, or delete" />
+            <div class="actions">
+              <button class="ghost-btn" on:click={() => applyProjectAdminAction("shelve")} disabled={savingProjectAdmin}>Shelve</button>
+              <button class="ghost-btn" on:click={() => applyProjectAdminAction("archive")} disabled={savingProjectAdmin}>Archive</button>
+              <button class="danger-btn" on:click={() => applyProjectAdminAction("delete")} disabled={savingProjectAdmin}>Delete</button>
             </div>
           </div>
           <div class="metrics-grid compact">
@@ -1327,7 +1715,7 @@
             </div>
           </div>
         {/if}
-      </article>
+      </Modal>
     </section>
   {/if}
 </div>
@@ -1399,14 +1787,17 @@
       </div>
 
       <div class="editor-grid">
-        <select bind:value={selectedTaskAssigneeDraft}>
-          <option value="">Unassigned</option>
-          {#each employees as employee}
-            <option value={employee.id}>{employee.full_name}{employee.department ? ` • ${employee.department}` : ""}</option>
-          {/each}
-        </select>
-        <Button variant="secondary" size="sm" on:click={handleReassignSelectedTask} disabled={savingAssignment}>
-          {savingAssignment ? "Saving..." : "Save Assignee"}
+        <label class="assignment-field">
+          <span>Assignee</span>
+          <select bind:value={selectedTaskAssigneeDraft}>
+            <option value="">Unassigned</option>
+            {#each employees as employee}
+              <option value={employee.id}>{employee.full_name}{employee.department ? ` • ${employee.department}` : ""}</option>
+            {/each}
+          </select>
+        </label>
+        <Button variant={selectedTaskAssigneeChanged ? "primary" : "secondary"} size="sm" on:click={handleReassignSelectedTask} disabled={savingAssignment || !selectedTaskAssigneeChanged}>
+          {savingAssignment ? "Confirming..." : selectedTaskAssigneeChanged ? "Confirm Reassignment" : "Assignee Saved"}
         </Button>
         <input bind:value={selectedTaskDueDateDraft} type="date" />
         <Button variant="secondary" size="sm" on:click={handleUpdateDueDate} disabled={savingDueDate}>
@@ -1493,12 +1884,13 @@
 
 <style>
   .page {
-    padding: 24px;
+    padding: 16px;
     display: grid;
-    gap: 20px;
+    gap: 12px;
   }
 
   .header,
+  .work-topbar,
   .section-head,
   .task-top,
   .task-actions,
@@ -1514,7 +1906,12 @@
     align-items: flex-start;
   }
 
-  h1,
+  .work-topbar {
+    align-items: stretch;
+    min-height: 44px;
+    gap: 8px;
+  }
+
   h2,
   h3,
   p {
@@ -1541,20 +1938,22 @@
 
   .identity-card,
   .metric-card {
-    padding: 14px 16px;
+    padding: 10px 12px;
   }
 
   .identity-card {
-    min-width: 220px;
+    min-width: 180px;
+    max-width: 240px;
     display: grid;
-    gap: 4px;
+    gap: 2px;
   }
 
   .tabs {
     display: flex;
-    gap: 8px;
-    padding: 8px;
+    gap: 4px;
+    padding: 4px;
     align-items: center;
+    flex: 1;
   }
 
   .tabs button,
@@ -1569,8 +1968,8 @@
     justify-content: center;
     border: none;
     border-radius: 999px;
-    min-height: 40px;
-    padding: 10px 16px;
+    min-height: 32px;
+    padding: 7px 12px;
     background: transparent;
     color: var(--text-secondary);
     line-height: 1;
@@ -1586,7 +1985,7 @@
 
   .composer,
   .panel {
-    padding: 18px;
+    padding: 12px;
   }
 
   .composer-grid,
@@ -1599,17 +1998,17 @@
   .task-modal-grid,
   .insight-grid {
     display: grid;
-    gap: 12px;
+    gap: 8px;
   }
 
   .composer-grid {
     grid-template-columns: 2fr repeat(4, 1fr);
-    margin-top: 12px;
-    margin-bottom: 12px;
+    margin-top: 8px;
+    margin-bottom: 8px;
   }
 
   .workspace {
-    grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+    grid-template-columns: minmax(0, 1fr);
     align-items: start;
   }
 
@@ -1642,6 +2041,18 @@
     grid-template-columns: 1.5fr auto 1fr auto;
   }
 
+  .assignment-field {
+    display: grid;
+    gap: 6px;
+  }
+
+  .assignment-field span {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
   input,
   select,
   textarea,
@@ -1655,36 +2066,15 @@
     width: 100%;
     border: 1px solid var(--border);
     border-radius: 10px;
-    padding: 10px 12px;
+    padding: 8px 10px;
     background: var(--bg-base);
   }
 
   .actions {
     display: flex;
     justify-content: flex-end;
-    margin-top: 12px;
-  }
-
-  .primary {
-    border: none;
-    border-radius: 10px;
-    padding: 10px 14px;
-    background: var(--onyx);
-    color: white;
-  }
-
-  .danger {
-    background: #fff1f2;
-    color: #9f1239;
-  }
-
-  .task-list,
-  .detail-stack,
-  .timeline,
-  .project-list,
-  .board-stack {
-    display: grid;
-    gap: 12px;
+    gap: 8px;
+    margin-top: 8px;
   }
 
   .section-loading,
@@ -1695,6 +2085,54 @@
     padding: 24px;
     color: var(--text-secondary);
     text-align: center;
+  }
+
+  .primary {
+    border: none;
+    border-radius: 10px;
+    padding: 8px 12px;
+    background: var(--onyx);
+    color: white;
+  }
+
+  .primary.mini,
+  .ghost-btn,
+  .danger-btn {
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .ghost-btn {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-primary);
+  }
+
+  .danger-btn {
+    border: 1px solid #fecdd3;
+    background: #fff1f2;
+    color: #9f1239;
+  }
+
+  .danger {
+    background: #fff1f2;
+    color: #9f1239;
+  }
+
+  .task-list,
+  .detail-stack,
+  .timeline,
+  .board-stack {
+    display: grid;
+    gap: 12px;
+  }
+
+  .project-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
   }
 
   .task-gallery {
@@ -1714,9 +2152,17 @@
     width: 100%;
     border: 1px solid var(--border);
     border-radius: 14px;
-    padding: 14px;
+    padding: 10px 12px;
     background: var(--bg-base);
     text-align: left;
+  }
+
+  .project-row {
+    min-height: 82px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
   }
 
   .task-card.selectable,
@@ -1734,8 +2180,8 @@
 
   .task-shell {
     display: grid;
-    gap: 12px;
-    min-height: 176px;
+    gap: 8px;
+    min-height: 136px;
     transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
   }
 
@@ -1755,22 +2201,21 @@
 
   .task-shell-body {
     display: grid;
-    gap: 8px;
+    gap: 5px;
     align-content: start;
   }
 
   .task-shell-body h3 {
-    font-size: 16px;
+    font-size: 14px;
     line-height: 1.3;
   }
 
   .task-shell-body p {
     color: var(--text-secondary);
     font-size: 13px;
-    line-height: 1.45;
+    line-height: 1.35;
     display: -webkit-box;
-    line-clamp: 3;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
@@ -1788,7 +2233,7 @@
   }
 
   .task-shell-meta span {
-    padding: 4px 8px;
+    padding: 3px 7px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--bg-base) 82%, #e2e8f0 18%);
   }
@@ -1840,8 +2285,8 @@
 
   .pill {
     border-radius: 999px;
-    padding: 6px 10px;
-    font-size: 12px;
+    padding: 4px 8px;
+    font-size: 11.5px;
     text-transform: capitalize;
     background: #eef2ff;
     color: #312e81;
@@ -1855,11 +2300,46 @@
 
   .subpanel {
     border-top: 1px solid var(--border);
-    padding-top: 16px;
+    padding-top: 12px;
     display: grid;
     gap: 12px;
     align-content: start;
     grid-auto-rows: max-content;
+  }
+
+  .inline-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .project-admin-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .project-admin-grid textarea {
+    grid-column: 1 / -1;
+  }
+
+  .project-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .project-facts span {
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .project-admin-actions .section-head {
+    margin-bottom: 0;
   }
 
   .comment-composer,
@@ -1867,6 +2347,56 @@
   .project-composer {
     display: grid;
     gap: 10px;
+  }
+
+  .autocomplete-field {
+    position: relative;
+    min-width: 0;
+  }
+
+  .autocomplete-field input {
+    width: 100%;
+  }
+
+  .suggestion-list {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    max-height: 260px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: 0 14px 34px rgba(15, 23, 42, 0.14);
+    padding: 6px;
+  }
+
+  .suggestion-list button {
+    width: 100%;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    padding: 9px 10px;
+    text-align: left;
+    display: grid;
+    gap: 2px;
+    color: var(--text-primary);
+  }
+
+  .suggestion-list button:hover {
+    background: var(--bg-base);
+  }
+
+  .suggestion-list span,
+  .suggestion-empty {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .suggestion-empty {
+    padding: 10px;
   }
 
   .member-picker {
@@ -1902,22 +2432,22 @@
   }
 
   .board-filters {
-    padding: 14px 18px;
+    padding: 8px 10px;
   }
 
   .board-sections {
     display: grid;
-    gap: 18px;
-    margin-top: 12px;
+    gap: 10px;
+    margin-top: 8px;
   }
 
   .board-lane {
     border: 1px solid var(--border);
     border-radius: 14px;
     background: var(--bg-base);
-    padding: 14px;
+    padding: 10px;
     display: grid;
-    gap: 12px;
+    gap: 8px;
   }
 
   .lane-gallery {
@@ -1940,8 +2470,8 @@
     display: grid;
     gap: 2px;
     background: color-mix(in srgb, var(--bg-base) 88%, #dbeafe 12%);
-    min-width: 210px;
-    flex: 0 0 210px;
+    min-width: 170px;
+    flex: 0 0 170px;
   }
 
   .employee-chip.dragging {
@@ -1950,7 +2480,7 @@
 
   .roster-strip {
     display: flex;
-    gap: 12px;
+    gap: 8px;
     overflow-x: auto;
     padding-bottom: 4px;
   }
@@ -1961,8 +2491,10 @@
 
   .insight-row {
     display: grid;
-    gap: 4px;
-    padding: 12px;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
     border: 1px solid var(--border);
     border-radius: 12px;
     background: var(--bg-base);
@@ -1979,7 +2511,7 @@
   }
 
   .empty {
-    padding: 24px 8px;
+    padding: 16px 8px;
     color: var(--text-secondary);
     text-align: center;
   }
@@ -1990,17 +2522,17 @@
 
   .task-gallery-panel {
     display: grid;
-    gap: 16px;
+    gap: 10px;
   }
 
   .roster-panel {
     display: grid;
-    gap: 16px;
+    gap: 10px;
   }
 
   .task-modal-body {
     display: grid;
-    gap: 18px;
+    gap: 12px;
   }
 
   .task-modal-grid {
@@ -2017,7 +2549,7 @@
   }
 
   .task-meta.chips span {
-    padding: 6px 10px;
+    padding: 4px 8px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--bg-base) 85%, #e2e8f0 15%);
   }
@@ -2048,13 +2580,15 @@
     .metrics-grid.compact,
     .team-overview-grid,
     .task-modal-grid,
-    .insight-grid {
+    .insight-grid,
+    .project-admin-grid {
       grid-template-columns: 1fr;
     }
   }
 
   @media (max-width: 900px) {
     .header,
+    .work-topbar,
     .task-top,
     .task-actions,
     .detail-hero,

@@ -388,25 +388,25 @@
   {:else}
     <!-- KPIs -->
     <div class="kpi-grid">
-      <Card variant="elevated">
+      <Card variant="elevated" padding="sm">
         <div class="kpi">
           <span class="kpi-label">Outstanding Total</span>
           <span class="kpi-value primary">{formatBHD(totalOutstanding)} BHD</span>
         </div>
       </Card>
-      <Card variant="elevated">
+      <Card variant="elevated" padding="sm">
         <div class="kpi">
           <span class="kpi-label">Outstanding Cheques</span>
           <span class="kpi-value">{cheques.length}</span>
         </div>
       </Card>
-      <Card variant="elevated">
+      <Card variant="elevated" padding="sm">
         <div class="kpi">
           <span class="kpi-label">Stale Cheques</span>
           <span class="kpi-value warning">{staleCheques.length}</span>
         </div>
       </Card>
-      <Card variant="elevated">
+      <Card variant="elevated" padding="sm">
         <div class="kpi">
           <span class="kpi-label">Next Cheque #</span>
           <span class="kpi-value mono">{nextChequeNumber}</span>
@@ -450,18 +450,21 @@
         data={cheques}
         columns={chequeColumns}
         emptyMessage="No outstanding cheques"
+        compact={true}
       />
     {:else if activeTab === 'registers'}
       <DataTable
         data={registers}
         columns={registerColumns}
         emptyMessage="No cheque books registered"
+        compact={true}
       />
     {:else if activeTab === 'stale'}
       <DataTable
         data={staleCheques}
         columns={chequeColumns}
         emptyMessage="No stale cheques"
+        compact={true}
       />
     {/if}
   {/if}
@@ -526,32 +529,32 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: var(--space-8);
-    gap: var(--space-4);
+    padding: 32px;
+    gap: 14px;
   }
 
   .kpi-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: var(--space-4);
-    margin-bottom: var(--space-6);
+    gap: 10px;
+    margin-bottom: 12px;
   }
 
   .kpi {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: 4px;
   }
 
   .kpi-label {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
 
   .kpi-value {
-    font-size: 24px;
+    font-size: 18px;
     font-weight: 600;
   }
 
@@ -563,41 +566,41 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: var(--space-4);
-    padding: var(--space-3);
+    margin-bottom: 10px;
+    padding: 8px;
     background: var(--surface-elevated);
     border-radius: var(--radius-md);
     flex-wrap: wrap;
-    gap: var(--space-3);
+    gap: 8px;
   }
 
   .toolbar .left,
   .toolbar .right {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: 8px;
   }
 
   .account-select,
   .form-select {
-    padding: var(--space-2) var(--space-3);
+    padding: 7px 10px;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     background: var(--surface-default);
-    font-size: 14px;
+    font-size: 13px;
     min-width: 200px;
   }
 
   .tabs {
     display: flex;
-    gap: var(--space-1);
+    gap: 4px;
   }
 
   .tabs button {
-    padding: var(--space-2) var(--space-3);
+    padding: 7px 10px;
     border: none;
     background: transparent;
-    font-size: 13px;
+    font-size: 12.5px;
     color: var(--text-secondary);
     cursor: pointer;
     border-radius: var(--radius-sm);
@@ -616,11 +619,11 @@
   .form-grid {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: 12px;
   }
 
   .cheque-preview {
-    padding: var(--space-3);
+    padding: 10px;
     background: var(--surface-elevated);
     border-radius: var(--radius-sm);
     text-align: center;
@@ -630,7 +633,7 @@
     display: block;
     font-size: 11px;
     color: var(--text-secondary);
-    margin-bottom: var(--space-1);
+    margin-bottom: 4px;
   }
 
   .cheque-preview .number {

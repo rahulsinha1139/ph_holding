@@ -22,7 +22,7 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:            "PH Holdings - Asymmetrica Intelligence",
+		Title:            "PH Trading WLL - Asymmetrica Intelligence",
 		Width:            1400,
 		Height:           900,
 		WindowStartState: options.Maximised,

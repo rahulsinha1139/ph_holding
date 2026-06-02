@@ -41,9 +41,17 @@ export function AmendPurchaseOrder(arg1:string,arg2:main.POAmendment):Promise<vo
 
 export function AnalyzeDocumentWithButler(arg1:string,arg2:string,arg3:Record<string, any>):Promise<main.ButlerOCRInsight>;
 
+export function ApplyCommercialDeploymentCleanup(arg1:string):Promise<main.CommercialDeploymentCleanupResult>;
+
 export function ApplyCreditNote(arg1:string):Promise<void>;
 
+export function ApplyCustomerReceiptToInvoice(arg1:string,arg2:string,arg3:number):Promise<main.CustomerReceiptAllocation>;
+
+export function ApplyDataUpdateManifest(arg1:string,arg2:boolean):Promise<main.DataUpdateApplyResult>;
+
 export function ApplyDeploymentLicenseActivationFlush():Promise<void>;
+
+export function ApplyPendingDataUpdatesNow(arg1:boolean):Promise<main.DataUpdateAutoApplySummary>;
 
 export function ApplyReconciliation(arg1:string):Promise<void>;
 
@@ -61,9 +69,15 @@ export function ApproveStockAdjustment(arg1:number):Promise<void>;
 
 export function ApproveSupplierInvoice(arg1:string,arg2:string):Promise<void>;
 
+export function ArchiveCollaborativeProject(arg1:string,arg2:string):Promise<main.Project>;
+
 export function ArchiveStatementPDF(arg1:string,arg2:string):Promise<void>;
 
 export function AttachCalibrationCert(arg1:string,arg2:string):Promise<void>;
+
+export function AttachCostingSheetFile(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.CostingSheetAttachmentSummary>;
+
+export function AttachCostingSheetFileWithDialog(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.CostingSheetAttachmentSummary>;
 
 export function AutoExpireOffers():Promise<void>;
 
@@ -215,6 +229,8 @@ export function CreateCustomerFolder(arg1:string,arg2:string,arg3:string):Promis
 
 export function CreateCustomerFromButler(arg1:main.ButlerCustomerRequest):Promise<main.CustomerMaster>;
 
+export function CreateCustomerReceipt(arg1:main.CustomerReceiptInput):Promise<main.CustomerReceipt>;
+
 export function CreateDNFromOrder(arg1:string,arg2:Array<main.DeliveryNoteItem>):Promise<main.DeliveryNote>;
 
 export function CreateDNWithSerials(arg1:string,arg2:Array<main.DNItemInputWithSerials>):Promise<main.DeliveryNote>;
@@ -261,9 +277,13 @@ export function CreateOffer(arg1:string):Promise<main.OfferData>;
 
 export function CreateOfferDraftFromButler(arg1:main.ButlerOfferDraftRequest):Promise<main.Offer>;
 
+export function CreateOfferRevision(arg1:string):Promise<main.Offer>;
+
 export function CreateOrder(arg1:string,arg2:string,arg3:number,arg4:string,arg5:string):Promise<main.Order>;
 
 export function CreatePOFromOrder(arg1:string,arg2:string,arg3:Array<string>):Promise<main.PurchaseOrder>;
+
+export function CreatePOsFromOrder(arg1:string,arg2:Array<string>):Promise<Array<main.PurchaseOrder>>;
 
 export function CreatePayrollPeriod(arg1:main.PayrollPeriod):Promise<main.PayrollPeriod>;
 
@@ -313,11 +333,15 @@ export function DeleteBankStatement(arg1:string):Promise<void>;
 
 export function DeleteBankStatementLine(arg1:string):Promise<void>;
 
+export function DeleteCollaborativeProject(arg1:string,arg2:string):Promise<void>;
+
 export function DeleteCollaborativeTask(arg1:string):Promise<void>;
 
 export function DeleteConversation(arg1:string):Promise<void>;
 
 export function DeleteCostingSheet(arg1:number):Promise<void>;
+
+export function DeleteCostingSheetAttachment(arg1:string):Promise<void>;
 
 export function DeleteCustomer(arg1:string):Promise<void>;
 
@@ -337,7 +361,11 @@ export function DeleteFXRate(arg1:string):Promise<void>;
 
 export function DeleteGRN(arg1:string):Promise<void>;
 
+export function DeleteOffer(arg1:string):Promise<void>;
+
 export function DeleteOfferNote(arg1:string):Promise<void>;
+
+export function DeleteOpportunity(arg1:string):Promise<void>;
 
 export function DeleteOpportunityComment(arg1:string):Promise<void>;
 
@@ -386,6 +414,8 @@ export function DownloadContract(arg1:number):Promise<string>;
 export function DownloadReport(arg1:string):Promise<string>;
 
 export function EndUserActivitySession(arg1:string):Promise<void>;
+
+export function EnsureAdminDataUpdateFoundation():Promise<void>;
 
 export function EnsureAssetsTable():Promise<void>;
 
@@ -559,6 +589,8 @@ export function GetAvailableFinancialYears():Promise<Array<number>>;
 
 export function GetAvailableSerials(arg1:string):Promise<Array<main.SerialNumber>>;
 
+export function GetBackendHealth():Promise<main.BackendHealth>;
+
 export function GetBackupInfo():Promise<Record<string, any>>;
 
 export function GetBackupPolicy():Promise<main.BackupPolicy>;
@@ -669,11 +701,15 @@ export function GetCustomerHistory(arg1:string):Promise<Array<main.PredictionRec
 
 export function GetCustomerInvoiceByID(arg1:string):Promise<main.Invoice>;
 
+export function GetCustomerLedger(arg1:string,arg2:string,arg3:string):Promise<Array<main.OperationalLedgerEntry>>;
+
 export function GetCustomerNameMapping():Promise<Record<string, string>>;
 
 export function GetCustomerOpportunities(arg1:string):Promise<Array<main.OpportunitySummary>>;
 
 export function GetCustomerOrderHistorySummary(arg1:string):Promise<main.CustomerOrderHistorySummary>;
+
+export function GetCustomerReceiptAllocations(arg1:string):Promise<Array<main.CustomerReceiptAllocation>>;
 
 export function GetCustomerRecentOrders(arg1:string,arg2:number):Promise<Array<main.OrderSummary>>;
 
@@ -683,11 +719,17 @@ export function GetDBSyncSettings():Promise<main.DBSyncSettings>;
 
 export function GetDBSyncStatus():Promise<Record<string, any>>;
 
+export function GetDashboardARAgingReportYTD():Promise<main.ARAgingReport>;
+
 export function GetDashboardEvents(arg1:number):Promise<Array<main.DashboardEvent>>;
+
+export function GetDashboardPipelineByStageYTD():Promise<Array<main.SalesPipelineData>>;
 
 export function GetDashboardStats():Promise<main.DashboardStats>;
 
 export function GetDashboardStatsOptimized():Promise<Record<string, any>>;
+
+export function GetDataQualityReviewHistory(arg1:number):Promise<Array<main.DataQualityReview>>;
 
 export function GetDeliveriesByArea(arg1:string):Promise<Array<main.DeliveryPlanningItem>>;
 
@@ -714,6 +756,8 @@ export function GetDynamicFinancialDashboard(arg1:number):Promise<main.Financial
 export function GetEntityGraph(arg1:string,arg2:number):Promise<graph.GraphData>;
 
 export function GetExchangeRate(arg1:string,arg2:time.Time):Promise<number>;
+
+export function GetExpenseLedger(arg1:main.OperationalLedgerFilter):Promise<Array<main.OperationalLedgerEntry>>;
 
 export function GetFXExposureReport():Promise<Array<main.FXExposureReport>>;
 
@@ -773,9 +817,13 @@ export function GetInventoryAlertsSlowMoving(arg1:number):Promise<Array<main.Inv
 
 export function GetInventoryAlertsSummary():Promise<Record<string, number>>;
 
-export function GetInventoryItem(arg1:number):Promise<main.InventoryItem>;
+export function GetInventoryItem(arg1:string):Promise<main.InventoryItem>;
 
 export function GetInventoryItems(arg1:any,arg2:string,arg3:boolean):Promise<Array<main.InventoryItem>>;
+
+export function GetInventoryMovementsWorkspace(arg1:number):Promise<Array<main.StockMovement>>;
+
+export function GetInventoryPendingFulfillmentReport(arg1:number):Promise<Array<main.InventoryPendingFulfillmentRow>>;
 
 export function GetInventoryValuation(arg1:any):Promise<Record<string, any>>;
 
@@ -853,6 +901,12 @@ export function GetOffers(arg1:number):Promise<Array<main.OfferData>>;
 
 export function GetOffersWithNoItems():Promise<Array<Record<string, any>>>;
 
+export function GetOperationalBalanceSheet(arg1:string,arg2:string):Promise<main.OperationalBalanceSheetReport>;
+
+export function GetOperationalLedger(arg1:main.OperationalLedgerFilter):Promise<Array<main.OperationalLedgerEntry>>;
+
+export function GetOperationalProfitLoss(arg1:main.OperationalLedgerFilter):Promise<main.OperationalProfitLossReport>;
+
 export function GetOpportunityComments(arg1:string):Promise<Array<main.OpportunityComment>>;
 
 export function GetOpportunityLineItems(arg1:string):Promise<Array<main.OfferItem>>;
@@ -908,6 +962,8 @@ export function GetPipelineOpportunities(arg1:number,arg2:number):Promise<Array<
 export function GetPipelineStatistics():Promise<Record<string, any>>;
 
 export function GetPostSaleNotes(arg1:string):Promise<Array<main.PostSaleNote>>;
+
+export function GetPreparedByOptions():Promise<Array<string>>;
 
 export function GetPricingRecommendation(arg1:string,arg2:Record<string, any>):Promise<main.PricingRecommendation>;
 
@@ -999,6 +1055,8 @@ export function GetSupplierInvoicesBySupplier(arg1:string):Promise<Array<main.Su
 
 export function GetSupplierLeadTimeReport():Promise<Array<main.SupplierLeadTimeMetrics>>;
 
+export function GetSupplierLedger(arg1:string,arg2:string,arg3:string):Promise<Array<main.OperationalLedgerEntry>>;
+
 export function GetSupplierPayment(arg1:string):Promise<main.SupplierPayment>;
 
 export function GetSupplierPaymentsByInvoice(arg1:string):Promise<Array<main.SupplierPayment>>;
@@ -1011,6 +1069,8 @@ export function GetSurvivalMetrics():Promise<main.SurvivalMetrics>;
 
 export function GetSurvivalMetricsOptimized():Promise<main.SurvivalMetrics>;
 
+export function GetSyncCoverageReport():Promise<main.SyncCoverageReport>;
+
 export function GetSyncHealth():Promise<main.SyncHealth>;
 
 export function GetSyncStatus():Promise<Record<string, any>>;
@@ -1018,6 +1078,8 @@ export function GetSyncStatus():Promise<Record<string, any>>;
 export function GetToolInstallInstructions():Promise<string>;
 
 export function GetToolsStatus():Promise<integration.ToolsReport>;
+
+export function GetUnifiedOfferThread(arg1:string):Promise<Array<main.UnifiedThreadEntry>>;
 
 export function GetUnmatchedLines(arg1:string):Promise<Array<main.BankStatementLine>>;
 
@@ -1079,6 +1141,8 @@ export function ImportTallyInvoices(arg1:number):Promise<main.TallyImportResult>
 
 export function ImportTallyPurchases(arg1:number):Promise<main.TallyImportResult>;
 
+export function ImportTenderFolders(arg1:string):Promise<Array<main.TenderFolderPreview>>;
+
 export function InitDBManager():Promise<void>;
 
 export function InitializeDefaultAssets():Promise<void>;
@@ -1123,11 +1187,15 @@ export function ListCollaborativeTeamTasks(arg1:boolean):Promise<Array<main.Task
 
 export function ListConversations():Promise<Array<main.Conversation>>;
 
+export function ListCostingSheetAttachments(arg1:string):Promise<Array<main.CostingSheetAttachmentSummary>>;
+
 export function ListCreditNotes(arg1:number,arg2:number):Promise<Array<main.CreditNote>>;
 
 export function ListCustomerContacts(arg1:string):Promise<Array<main.CustomerContact>>;
 
 export function ListCustomerInvoices(arg1:number,arg2:number):Promise<Array<main.Invoice>>;
+
+export function ListCustomerReceipts(arg1:number,arg2:number):Promise<Array<main.CustomerReceipt>>;
 
 export function ListCustomers(arg1:number,arg2:number):Promise<Array<main.CustomerMaster>>;
 
@@ -1182,6 +1250,8 @@ export function ListPayrollPayouts(arg1:string):Promise<Array<main.PayrollPayout
 export function ListPayrollPeriods(arg1:boolean):Promise<Array<main.PayrollPeriod>>;
 
 export function ListPayrollRuns(arg1:string):Promise<Array<main.PayrollRun>>;
+
+export function ListPendingDataUpdateManifests():Promise<Array<main.DataUpdateManifest>>;
 
 export function ListPendingDevices():Promise<Array<main.Device>>;
 
@@ -1253,9 +1323,13 @@ export function MarkSupplierInvoicePaid(arg1:string,arg2:string,arg3:string):Pro
 
 export function MigrateBankAccountEncryption():Promise<void>;
 
+export function MigrateRemoteSchema():Promise<Record<string, any>>;
+
 export function NeedsLicenseActivation():Promise<boolean>;
 
 export function NeedsSetup():Promise<boolean>;
+
+export function OpenCostingSheetAttachment(arg1:string):Promise<void>;
 
 export function OpenExportedFile(arg1:string):Promise<void>;
 
@@ -1286,6 +1360,14 @@ export function PostJournalEntry(arg1:number):Promise<void>;
 export function PostPayrollRun(arg1:string):Promise<main.PayrollRun>;
 
 export function PredictPayment(arg1:main.Customer):Promise<main.PaymentPrediction>;
+
+export function PreviewCommercialDeploymentCleanup():Promise<main.CommercialDeploymentCleanupResult>;
+
+export function PreviewCustomerDataQuality(arg1:number):Promise<Array<main.DataQualityIssue>>;
+
+export function PreviewOrderDeleteCascade(arg1:string):Promise<Record<string, any>>;
+
+export function PreviewTenderFolders(arg1:string):Promise<Array<main.TenderFolderPreview>>;
 
 export function ProcessDocumentWithOCR(arg1:string,arg2:string):Promise<main.OCRResultSimple>;
 
@@ -1383,6 +1465,8 @@ export function ReopenReconciliation(arg1:string,arg2:string,arg3:string):Promis
 
 export function RequestDeleteApproval(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.DeleteApprovalRequest>;
 
+export function RequestEmployeeArchive(arg1:string,arg2:string):Promise<main.EmployeeArchiveRequest>;
+
 export function RerunPhase7FollowUpBackfill():Promise<main.Phase7ActionResult>;
 
 export function ResetUserPassword(arg1:string,arg2:string):Promise<void>;
@@ -1411,7 +1495,11 @@ export function ReverseJournalEntry(arg1:string,arg2:string):Promise<main.Journa
 
 export function ReverseRevaluation(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function ReviewDataQualityIssue(arg1:main.DataQualityIssue,arg2:string,arg3:string):Promise<main.DataQualityReview>;
+
 export function ReviewDeleteApprovalRequest(arg1:string,arg2:string,arg3:string):Promise<main.DeleteApprovalRequest>;
+
+export function ReviewEmployeeArchiveRequest(arg1:string,arg2:string,arg3:string):Promise<main.EmployeeArchiveRequest>;
 
 export function RevokeLicense(arg1:string):Promise<void>;
 
@@ -1495,6 +1583,8 @@ export function SetExchangeRate(arg1:string,arg2:number,arg3:time.Time,arg4:stri
 
 export function SetupAdminAccount(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.User>;
 
+export function ShelveCollaborativeProject(arg1:string,arg2:string):Promise<main.Project>;
+
 export function ShutdownJobQueue():Promise<void>;
 
 export function SimulateMargin(arg1:string,arg2:number):Promise<main.MarginSimulation>;
@@ -1561,6 +1651,8 @@ export function UpdateBankStatementLine(arg1:string,arg2:Record<string, any>):Pr
 
 export function UpdateBookBankReconciliation(arg1:string,arg2:number,arg3:number,arg4:number,arg5:number,arg6:number,arg7:string):Promise<main.BookBankReconciliation>;
 
+export function UpdateCollaborativeProject(arg1:string,arg2:Record<string, any>):Promise<main.Project>;
+
 export function UpdateCollaborativeTask(arg1:main.TaskItem):Promise<main.TaskItem>;
 
 export function UpdateCollaborativeTaskDueDate(arg1:string,arg2:string):Promise<void>;
@@ -1591,13 +1683,15 @@ export function UpdateGRN(arg1:main.GoodsReceivedNote):Promise<main.GoodsReceive
 
 export function UpdateGRNQCStatus(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
-export function UpdateInventoryItem(arg1:number,arg2:Record<string, any>):Promise<void>;
+export function UpdateInventoryItem(arg1:string,arg2:Record<string, any>):Promise<void>;
 
 export function UpdateLicenseDisplayName(arg1:string,arg2:string):Promise<main.LicenseKey>;
 
 export function UpdateOfferFull(arg1:string,arg2:main.OfferUpdateData):Promise<main.Offer>;
 
 export function UpdateOfferStatus(arg1:number,arg2:string):Promise<void>;
+
+export function UpdateOpportunityCommercialFields(arg1:string,arg2:Record<string, any>):Promise<main.Opportunity>;
 
 export function UpdateOpportunityDetails(arg1:string,arg2:string,arg3:string):Promise<main.Opportunity>;
 
@@ -1664,6 +1758,8 @@ export function UpsertEmployeeCompensationProfile(arg1:main.EmployeeCompensation
 export function ValidateCSRFToken(arg1:string):Promise<boolean>;
 
 export function ValidateCustomer(arg1:main.Customer):Promise<main.ValidationResult>;
+
+export function ValidateDataUpdateManifest(arg1:string):Promise<main.DataUpdateValidationResult>;
 
 export function ValidateFolder(arg1:string):Promise<boolean>;
 

@@ -236,6 +236,86 @@ func TestParseCostingSheet_LegacyCostingSheetLayout(t *testing.T) {
 	}
 }
 
+func TestParseCostingSheet_UsesSingleRevisionSheet(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "legacy_revision_costing.xlsx")
+	f := excelize.NewFile()
+	f.SetSheetName("Sheet1", "REV-0")
+
+	values := map[string]interface{}{
+		"A4":  "Costing Sheet",
+		"A11": "Supplier",
+		"A12": "Equipment",
+		"A13": "Model",
+		"A14": "Spec",
+		"A16": "Quantity",
+		"A18": "Conversion",
+		"A20": "FOB",
+		"A21": "Freight Air/Sea",
+		"A25": "Landed cost",
+		"A30": "Total Cost",
+		"A32": "Mark Up",
+		"A34": "Selling Price",
+		"A35": "Suggested",
+		"A36": "TOTAL SP",
+		"A46": "Total PO value expected from Client",
+		"C11": "EH",
+		"C13": "Promag W 400",
+		"C14": "Model no.: 5W4C3H",
+		"D16": 2.0,
+		"D18": 0.44,
+		"C20": 1000.0,
+		"D30": 500.0,
+		"D35": 700.0,
+		"D36": 1400.0,
+		"F46": 1400.0,
+		"G46": 140.0,
+		"H46": 1540.0,
+	}
+
+	for cell, value := range values {
+		if err := f.SetCellValue("REV-0", cell, value); err != nil {
+			t.Fatalf("failed to set %s: %v", cell, err)
+		}
+	}
+
+	if err := f.SaveAs(filePath); err != nil {
+		t.Fatalf("failed to save workbook: %v", err)
+	}
+
+	data, err := ParseCostingSheet(filePath)
+	if err != nil {
+		t.Fatalf("ParseCostingSheet failed: %v", err)
+	}
+
+	if len(data.LineItems) != 1 {
+		t.Fatalf("expected 1 line item from REV-0 sheet, got %d", len(data.LineItems))
+	}
+	if data.LineItems[0].TotalSuggestedBHD != 1400 {
+		t.Fatalf("expected line total 1400, got %.3f", data.LineItems[0].TotalSuggestedBHD)
+	}
+	if data.Totals.GrandTotal != 1540 {
+		t.Fatalf("expected grand total 1540, got %.3f", data.Totals.GrandTotal)
+	}
+}
+
+func TestParseCostingSheet_RejectsNonCostingWorkbook(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "site_requirement.xlsx")
+	f := excelize.NewFile()
+	if err := f.SetCellValue("Sheet1", "A1", "Site requirement"); err != nil {
+		t.Fatalf("failed to seed workbook: %v", err)
+	}
+	if err := f.SetCellValue("Sheet1", "A2", "Pipe size"); err != nil {
+		t.Fatalf("failed to seed workbook: %v", err)
+	}
+	if err := f.SaveAs(filePath); err != nil {
+		t.Fatalf("failed to save workbook: %v", err)
+	}
+
+	if _, err := ParseCostingSheet(filePath); err == nil {
+		t.Fatal("expected non-costing workbook to be rejected")
+	}
+}
+
 func TestParseCostingSheet_UsesModelWhenEquipmentPlaceholder(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "model_fallback.xlsx")
 	f := excelize.NewFile()

@@ -68,12 +68,12 @@ func (a *App) CreateCreditNote(invoiceID, reason string, items []CreditNoteItemI
 		lineTotal := input.Quantity * input.Rate
 		subtotal += lineTotal
 		cnItems = append(cnItems, CreditNoteItem{
-			Base:         Base{ID: uuid.New().String(), CreatedAt: now, UpdatedAt: now},
-			LineNumber:   i + 1,
-			Description:  input.Description,
-			Quantity:     input.Quantity,
-			Rate:         input.Rate,
-			TotalBHD:     lineTotal,
+			Base:        Base{ID: uuid.New().String(), CreatedAt: now, UpdatedAt: now},
+			LineNumber:  i + 1,
+			Description: input.Description,
+			Quantity:    input.Quantity,
+			Rate:        input.Rate,
+			TotalBHD:    lineTotal,
 		})
 	}
 
@@ -540,18 +540,12 @@ func (a *App) GenerateCreditNotePDF(id string) (string, error) {
 	pdf.SetTextColor(60, 60, 60)
 	pdf.MultiCell(90, 4, "We declare that this credit note shows the actual adjustment against the referenced invoice and that all particulars are true and correct.", "", "", false)
 
-	// Signature
+	// Prepared-by signature block from PH's canonical signature list.
 	pdf.SetXY(130, pdf.GetY()-15)
-	pdf.SetFont("Helvetica", "B", 8)
 	pdf.SetTextColor(29, 29, 31)
-	pdf.Cell(60, 5, fmt.Sprintf("For %s", sanitizeForPDF(profile.LegalName)))
-	pdf.Ln(20)
-	pdf.SetX(130)
-	pdf.Cell(60, 5, "________________________")
-	pdf.Ln(4)
-	pdf.SetX(130)
-	pdf.SetFont("Helvetica", "", 7)
-	pdf.Cell(60, 5, "Authorized Signatory")
+	signerName := a.resolveDocumentSignerName(firstNonEmptyString(cn.CreatedBy, a.getCurrentUserDisplayName()))
+	signatureBlock := a.resolvePreparedBySignatureBlock(signerName)
+	drawPHSignaturePDFLines(pdf, 130, pdf.GetY(), 60, 3.5, 6.6, signatureBlock, false)
 
 	// Save
 	paths := a.getAppPaths()

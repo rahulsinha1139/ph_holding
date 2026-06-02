@@ -4,6 +4,12 @@
 
 # === Build Artifacts ===
 build/
+!build/
+build/*
+!build/darwin/
+build/darwin/*
+!build/darwin/Info.plist
+!build/darwin/Info.dev.plist
 dist/
 *.exe
 *.dll
@@ -17,6 +23,7 @@ frontend/node_modules/
 
 # === Environment & Secrets ===
 .env
+.env.bak-*
 .env.local
 .env.production
 # .env.example is committed (template without secrets)
@@ -61,6 +68,7 @@ playwright-report/
 exports/intelligence/
 batch_output/
 test_output/
+temp/
 
 # === Archives & Packages ===
 *.zip
@@ -70,6 +78,7 @@ test_output/
 *.rar
 deploy_package/AsymmFlow_Deploy_*/
 deploy_package/AsymmFlow.app/
+deploy_package/AsymmFlowPHTrading.app/
 deploy_package/AsymmFlow.exe
 deploy_package/.env
 deploy_package/ph_holdings.db
@@ -93,3 +102,5 @@ mac_dev_setup/
 .agent/
 .claude/
 .gitnexus
+.opencode/
+opencode.json

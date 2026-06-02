@@ -7,7 +7,8 @@
 </script>
 
 {#if hoverable}
-  <div
+  <button
+    type="button"
     class="card"
     class:card-elevated={variant === 'elevated'}
     class:card-accent={variant === 'accent'}
@@ -16,13 +17,11 @@
     class:padding-md={padding === 'md'}
     class:padding-lg={padding === 'lg'}
     aria-label={ariaLabel}
-    role="button"
-    tabindex="0"
     on:click
     on:keydown
   >
     <slot />
-  </div>
+  </button>
 {:else}
   <div
     class="card"
@@ -42,6 +41,7 @@
   .card {
     background: var(--surface);
     border-radius: var(--border-radius);
+    border: none;
     box-shadow: var(--shadow-sm);
     transition: box-shadow var(--transition-fast);
   }

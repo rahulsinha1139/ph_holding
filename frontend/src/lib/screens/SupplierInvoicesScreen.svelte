@@ -4,10 +4,10 @@
    * Features:
    * - Full CRUD for supplier invoices
    * - 3-way matching (PO ↔ GRN ↔ Invoice)
-   * - Match status visualization (Matched, Partial, Mismatch, Pending)
-   * - Payment tracking (Pending, Partial, Paid, Overdue)
+   * - Match status visualization (Matched, Pending, Discrepancy)
+   * - Settlement tracking (Open, Partial, Settled, Disputed, Overdue)
    * - Multi-currency support with BHD conversion
-   * - Approval workflow (Pending → Verified → Approved → Paid)
+   * - Approval workflow (Pending → Matched → Approved → Paid)
    * - Overdue tracking with visual warnings
    */
 
@@ -54,7 +54,7 @@
   export let embedded = false;
 
   // Types
-  type InvoiceFilter = 'all' | 'pending' | 'matched' | 'discrepancy' | 'paid' | 'overdue';
+  type InvoiceFilter = 'all' | 'open' | 'partial' | 'settled' | 'disputed' | 'overdue';
 
   function getErrorMessage(err: unknown): string {
     if (!err) return 'Unknown error';
@@ -91,6 +91,7 @@
     // Computed fields
     days_until_due?: number;
     is_overdue?: boolean;
+    outstanding_bhd: number;
     // Note: supplier_name already exists in main.SupplierInvoice
   }
 
@@ -222,7 +223,12 @@
       sortable: true,
       width: '110px',
       render: (row: SupplierInvoiceDisplay) => {
-        return `<span class="amount-bhd">${formatMoney(row.total_bhd)}</span>`;
+        const outstanding = Number(row.outstanding_bhd || 0);
+        const baseAmount = Number(row.total_bhd || 0);
+        if (outstanding > 0 && Math.abs(outstanding - baseAmount) > 0.0001) {
+          return `<span class="amount-bhd">${formatMoney(outstanding)} <span class="amount-caption">open</span></span>`;
+        }
+        return `<span class="amount-bhd">${formatMoney(baseAmount)}</span>`;
       }
     },
     {
@@ -270,10 +276,10 @@
       key: 'actions',
       label: 'Actions',
       type: 'actions' as const,
-      width: '150px',
+      width: '140px',
       render: (row: SupplierInvoiceDisplay) => {
         return `
-          <div style="display: flex; gap: 6px; justify-content: flex-start; flex-wrap: wrap;">
+          <div style="display: flex; gap: 4px; justify-content: flex-start; flex-wrap: wrap;">
             <button
               class="action-btn action-btn-view"
               data-action="view"
@@ -303,7 +309,7 @@
                 Match
               </button>
             ` : ''}
-            ${row.status === 'Verified' ? `
+            ${row.status === 'Pending' && row.match_status === 'Matched' ? `
               <button
                 class="action-btn action-btn-approve"
                 data-action="approve"
@@ -314,15 +320,15 @@
                 Approve
               </button>
             ` : ''}
-            ${row.status === 'Approved' && row.payment_status === 'Unpaid' ? `
+            ${row.status === 'Approved' && Number(row.outstanding_bhd || 0) > 0 ? `
               <button
                 class="action-btn action-btn-pay"
                 data-action="pay"
                 data-id="${row.id}"
-                aria-label="Mark as paid"
-                title="Mark Paid"
+                aria-label="Settle invoice"
+                title="Settle Invoice"
               >
-                Pay
+                Settle
               </button>
             ` : ''}
           </div>
@@ -376,25 +382,43 @@
     `;
   }
 
+  function getOutstandingBHD(invoice: SupplierInvoiceDisplay): number {
+    return Number(invoice.outstanding_bhd || 0);
+  }
+
+  function isDisputedInvoice(invoice: SupplierInvoiceDisplay): boolean {
+    return invoice.status === 'Dispute' || invoice.match_status === 'Discrepancy';
+  }
+
+  function getSettlementStatus(invoice: SupplierInvoiceDisplay): string {
+    if (isDisputedInvoice(invoice)) return 'Disputed';
+    if (invoice.is_overdue) return 'Overdue';
+    if (getOutstandingBHD(invoice) <= 0.001) return 'Settled';
+    if (invoice.payment_status === 'Partial') return 'Partial';
+    return 'Open';
+  }
+
   // Payment status badge renderer
   function renderPaymentStatus(invoice: SupplierInvoiceDisplay): string {
     const icons = {
-      'Paid': '',
-      'Unpaid': '',
-      'Scheduled': '',
+      'Settled': '',
+      'Partial': '',
+      'Open': '',
+      'Disputed': '',
       'Overdue': ''
     };
 
     const colors = {
-      'Paid': '#10B981',
-      'Unpaid': '#6B7280',
-      'Scheduled': '#3B82F6',
+      'Settled': '#10B981',
+      'Partial': '#F59E0B',
+      'Open': '#6B7280',
+      'Disputed': '#B91C1C',
       'Overdue': '#DC2626'
     };
 
-    const status = invoice.is_overdue ? 'Overdue' : (invoice.payment_status || 'Unpaid');
-    const color = colors[status] || colors['Unpaid'];
-    const icon = icons[status] || icons['Unpaid'];
+    const status = getSettlementStatus(invoice);
+    const color = colors[status] || colors['Open'];
+    const icon = icons[status] || icons['Open'];
 
     return `
       <span
@@ -418,20 +442,20 @@
   // Filter tabs
   const filterTabs: { value: InvoiceFilter; label: string; count: number }[] = [
     { value: 'all', label: 'All Invoices', count: 0 },
-    { value: 'pending', label: 'Pending Match', count: 0 },
-    { value: 'matched', label: 'Matched', count: 0 },
-    { value: 'discrepancy', label: 'Discrepancy', count: 0 },
-    { value: 'paid', label: 'Paid', count: 0 },
+    { value: 'open', label: 'Open', count: 0 },
+    { value: 'partial', label: 'Partial', count: 0 },
+    { value: 'settled', label: 'Settled', count: 0 },
+    { value: 'disputed', label: 'Disputed', count: 0 },
     { value: 'overdue', label: 'Overdue', count: 0 }
   ];
 
   // Update tab counts
   $: {
     filterTabs[0].count = invoices.length;
-    filterTabs[1].count = invoices.filter(i => i.match_status === 'Pending').length;
-    filterTabs[2].count = invoices.filter(i => i.match_status === 'Matched').length;
-    filterTabs[3].count = invoices.filter(i => i.match_status === 'Discrepancy').length;
-    filterTabs[4].count = invoices.filter(i => i.payment_status === 'Paid').length;
+    filterTabs[1].count = invoices.filter(i => getSettlementStatus(i) === 'Open').length;
+    filterTabs[2].count = invoices.filter(i => getSettlementStatus(i) === 'Partial').length;
+    filterTabs[3].count = invoices.filter(i => getSettlementStatus(i) === 'Settled').length;
+    filterTabs[4].count = invoices.filter(i => getSettlementStatus(i) === 'Disputed').length;
     filterTabs[5].count = invoices.filter(i => i.is_overdue).length;
   }
 
@@ -440,14 +464,14 @@
     let result = [...invoices];
 
     // Apply tab filter (existing logic)
-    if (selectedFilter === 'pending') {
-      result = result.filter(i => i.match_status === 'Pending');
-    } else if (selectedFilter === 'matched') {
-      result = result.filter(i => i.match_status === 'Matched');
-    } else if (selectedFilter === 'discrepancy') {
-      result = result.filter(i => i.match_status === 'Discrepancy');
-    } else if (selectedFilter === 'paid') {
-      result = result.filter(i => i.payment_status === 'Paid');
+    if (selectedFilter === 'open') {
+      result = result.filter(i => getSettlementStatus(i) === 'Open');
+    } else if (selectedFilter === 'partial') {
+      result = result.filter(i => getSettlementStatus(i) === 'Partial');
+    } else if (selectedFilter === 'settled') {
+      result = result.filter(i => getSettlementStatus(i) === 'Settled');
+    } else if (selectedFilter === 'disputed') {
+      result = result.filter(i => getSettlementStatus(i) === 'Disputed');
     } else if (selectedFilter === 'overdue') {
       result = result.filter(i => i.is_overdue);
     }
@@ -573,8 +597,9 @@
       subtotal_bhd: subtotalBHD,
       vat_bhd: vatBHD,
       total_bhd: totalBHD,
+      outstanding_bhd: Number(invoice.outstanding_bhd || 0),
       days_until_due: daysUntilDue,
-      is_overdue: daysUntilDue < 0 && invoice.payment_status !== 'Paid',
+      is_overdue: daysUntilDue < 0 && Number(invoice.outstanding_bhd || 0) > 0,
       // supplier_name already comes from database - no mapping needed!
       supplier_name: invoice.supplier_name || suppliersMap.get(invoice.supplier_id) || undefined
     } as SupplierInvoiceDisplay;
@@ -777,13 +802,13 @@
         paymentData.payment_reference,
         paymentData.payment_method
       );
-      toast.success('Invoice marked as paid successfully');
+      toast.success('Invoice settled successfully');
       showPaymentModal = false;
       invoiceToMarkPaid = null;
       await loadInvoices();
     } catch (err) {
       console.error('Failed to mark invoice as paid:', err);
-      toast.danger('Failed to mark invoice as paid: ' + getErrorMessage(err));
+      toast.danger('Failed to settle invoice: ' + getErrorMessage(err));
     } finally {
       paymentLoading = false;
     }
@@ -855,7 +880,10 @@
 
       existingPaymentCount = existingPayments.length;
       existingPaymentTotalBhd = existingPayments.reduce((sum, payment) => sum + Number(payment?.amount_bhd || 0), 0);
-      createPaymentEntry = invoice.payment_status === 'Paid' && existingPaymentCount === 0;
+      createPaymentEntry =
+        invoice.payment_status === 'Paid' &&
+        existingPaymentCount === 0 &&
+        Number(invoice.outstanding_bhd || 0) > 0;
       editingInvoice = {
         ...invoice,
         supplier_id: invoice.supplier_id || '',
@@ -889,8 +917,21 @@
           normalizedInvoice.supplier_name = supplier.supplier_name;
         }
       }
-      if (normalizedInvoice.payment_status === 'Paid') {
-        normalizedInvoice.status = 'Paid';
+      if (normalizedInvoice.status === 'Approved' && normalizedInvoice.match_status !== 'Matched') {
+        toast.warning('3-way match must be Matched before approval');
+        return;
+      }
+      if (normalizedInvoice.payment_status === 'Paid' && existingPaymentCount === 0 && !createPaymentEntry) {
+        toast.warning('Enable payment ledger creation or use Mark Paid to settle this invoice');
+        return;
+      }
+      if (
+        normalizedInvoice.payment_status === 'Paid' &&
+        existingPaymentCount > 0 &&
+        existingPaymentTotalBhd + 0.001 < Number(normalizedInvoice.total_bhd || 0)
+      ) {
+        toast.warning('Use Supplier Payments to settle the remaining balance on partially paid invoices');
+        return;
       }
       const shouldCreatePaymentEntry =
         normalizedInvoice.payment_status === 'Paid' &&
@@ -957,6 +998,7 @@
         stickyHeader={true}
         maxHeight="400px"
         showBorder={false}
+        compact={true}
       />
     </Card>
   </div>
@@ -1024,19 +1066,20 @@
           stickyHeader={true}
           maxHeight="calc(100vh - 300px)"
           showBorder={false}
+          compact={true}
         />
       </Card>
 
       <!-- Summary Stats -->
       <div class="stats-grid">
-        <Card padding="md">
+        <Card padding="sm">
           <div class="stat">
             <div class="stat-label">Total Invoices</div>
             <div class="stat-value">{invoices.length}</div>
           </div>
         </Card>
 
-        <Card padding="md">
+        <Card padding="sm">
           <div class="stat">
             <div class="stat-label">Total Amount (BHD)</div>
             <div class="stat-value">
@@ -1045,16 +1088,16 @@
           </div>
         </Card>
 
-        <Card padding="md">
+        <Card padding="sm">
           <div class="stat">
-            <div class="stat-label">Unpaid</div>
+            <div class="stat-label">Open</div>
             <div class="stat-value stat-warning">
-              {invoices.filter(i => i.payment_status === 'Unpaid').length}
+              {invoices.filter(i => Number(i.outstanding_bhd || 0) > 0).length}
             </div>
           </div>
         </Card>
 
-        <Card padding="md">
+        <Card padding="sm">
           <div class="stat">
             <div class="stat-label">Overdue</div>
             <div class="stat-value stat-danger">
@@ -1063,7 +1106,7 @@
           </div>
         </Card>
 
-        <Card padding="md">
+        <Card padding="sm">
           <div class="stat">
             <div class="stat-label">Match Rate</div>
             <div class="stat-value stat-success">
@@ -1288,7 +1331,7 @@
             <span>GRN Match</span>
           </div>
           <div class="match-item" class:matched={selectedInvoice.match_status === 'Matched'}>
-            <span class="match-icon">{selectedInvoice.match_status === 'Matched' ? 'Yes' : 'Pending'}</span>
+            <span class="match-icon">{selectedInvoice.match_status === 'Matched' ? 'Yes' : selectedInvoice.match_status}</span>
             <span>{selectedInvoice.match_status}</span>
           </div>
         </div>
@@ -1322,12 +1365,16 @@
             <span class="detail-label">Total (BHD)</span>
             <span class="detail-value amount-highlight">{formatMoney(selectedInvoice.total_bhd)} BHD</span>
           </div>
+          <div class="detail-item">
+            <span class="detail-label">Outstanding</span>
+            <span class="detail-value amount-highlight">{formatMoney(selectedInvoice.outstanding_bhd || 0)} BHD</span>
+          </div>
         </div>
       </div>
 
-      {#if selectedInvoice.payment_status === 'Paid'}
+      {#if selectedInvoice.payment_status === 'Paid' || selectedInvoice.payment_status === 'Partial'}
         <div class="detail-section">
-          <h4>Payment Information</h4>
+          <h4>Settlement Information</h4>
           <div class="detail-grid">
             <div class="detail-item">
               <span class="detail-label">Payment Date</span>
@@ -1441,9 +1488,9 @@
       <FormGroup label="Status">
         <select class="select-input" bind:value={editingInvoice.status}>
           <option value="Pending">Pending</option>
-          <option value="Verified">Verified</option>
           <option value="Approved">Approved</option>
           <option value="Rejected">Rejected</option>
+          <option value="Dispute">Dispute</option>
         </select>
       </FormGroup>
       <FormGroup label="Amount (Foreign)">
@@ -1459,14 +1506,14 @@
         <Input type="date" bind:value={editingInvoice.due_date} />
       </FormGroup>
       <FormGroup label="Payment Status">
-        <select class="select-input" bind:value={editingInvoice.payment_status}>
+        <select class="select-input" bind:value={editingInvoice.payment_status} disabled={existingPaymentCount > 0}>
           <option value="Unpaid">Unpaid</option>
-          <option value="Scheduled">Scheduled</option>
+          <option value="Partial">Partial</option>
           <option value="Paid">Paid</option>
         </select>
       </FormGroup>
       <FormGroup label="Payment Method">
-        <select class="select-input" bind:value={editingInvoice.payment_method}>
+        <select class="select-input" bind:value={editingInvoice.payment_method} disabled={existingPaymentCount > 0}>
           <option value="">Not Set</option>
           <option value="Bank Transfer">Bank Transfer</option>
           <option value="Cheque">Cheque</option>
@@ -1478,28 +1525,29 @@
         </select>
       </FormGroup>
       <FormGroup label="Payment Date">
-        <Input type="date" bind:value={editingInvoice.payment_date} />
+        <Input type="date" bind:value={editingInvoice.payment_date} disabled={existingPaymentCount > 0} />
       </FormGroup>
       <FormGroup label="Payment Ref">
-        <Input type="text" bind:value={editingInvoice.payment_ref} placeholder="Transfer / cheque reference" />
+        <Input type="text" bind:value={editingInvoice.payment_ref} placeholder="Transfer / cheque reference" disabled={existingPaymentCount > 0} />
       </FormGroup>
     </div>
-    {#if editingInvoice.payment_status === 'Paid'}
+    {#if existingPaymentCount > 0}
       <div class="payment-entry-card">
-        {#if existingPaymentCount > 0}
-          <p class="payment-entry-note">
-            This invoice already has {existingPaymentCount} supplier payment entr{existingPaymentCount === 1 ? 'y' : 'ies'}
-            totaling {formatMoney(existingPaymentTotalBhd)} BHD.
-          </p>
-        {:else}
-          <label class="payment-entry-toggle">
-            <input type="checkbox" bind:checked={createPaymentEntry} />
-            <span>Create supplier payment ledger entry from this payment info</span>
-          </label>
-          <p class="payment-entry-note">
-            This will make the payment appear in Supplier Payments and Bank Reconciliation matching.
-          </p>
-        {/if}
+        <p class="payment-entry-note">
+          This invoice already has {existingPaymentCount} supplier payment entr{existingPaymentCount === 1 ? 'y' : 'ies'}
+          totaling {formatMoney(existingPaymentTotalBhd)} BHD. Payment status and payment metadata are now ledger-derived.
+        </p>
+      </div>
+    {/if}
+    {#if editingInvoice.payment_status === 'Paid' && existingPaymentCount === 0}
+      <div class="payment-entry-card">
+        <label class="payment-entry-toggle">
+          <input type="checkbox" bind:checked={createPaymentEntry} />
+          <span>Create supplier payment ledger entry from this payment info</span>
+        </label>
+        <p class="payment-entry-note">
+          This will make the payment appear in Supplier Payments and Bank Reconciliation matching.
+        </p>
       </div>
     {/if}
     <svelte:fragment slot="footer">
@@ -1513,13 +1561,13 @@
   .supplier-invoices-container {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 10px;
   }
 
   .supplier-invoices-embedded {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
   }
 
   .header-embedded {
@@ -1554,7 +1602,7 @@
 
   .header-embedded h2 {
     margin: 0;
-    font-size: 18px;
+    font-size: 16px;
     font-weight: 600;
     color: var(--text-primary);
   }
@@ -1562,19 +1610,19 @@
   /* Filter Tabs */
   .filter-tabs {
     display: flex;
-    gap: 8px;
+    gap: 6px;
     overflow-x: auto;
   }
 
   .filter-tab {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
+    gap: 6px;
+    padding: 6px 10px;
     background: transparent;
     border: none;
     border-radius: var(--border-radius-sm);
-    font-size: 14px;
+    font-size: 12.5px;
     font-weight: 500;
     color: var(--text-secondary);
     cursor: pointer;
@@ -1596,8 +1644,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 24px;
-    height: 20px;
+    min-width: 20px;
+    height: 18px;
     padding: 0 6px;
     background: rgba(0, 0, 0, 0.1);
     border-radius: 10px;
@@ -1612,8 +1660,8 @@
   /* Stats Grid */
   .stats-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
   }
 
   .stat {
@@ -1630,7 +1678,7 @@
   }
 
   .stat-value {
-    font-size: 24px;
+    font-size: 18px;
     font-weight: 600;
     color: var(--text-primary);
   }
@@ -1649,8 +1697,8 @@
 
   /* Action Buttons */
   :global(.action-btn) {
-    padding: 4px 10px;
-    font-size: 12px;
+    padding: 3px 7px;
+    font-size: 11.5px;
     font-weight: 500;
     border: none;
     border-radius: var(--border-radius-sm);
@@ -1799,11 +1847,20 @@
   }
 
   :global(.supplier-invoices-container .data-table th),
-  :global(.supplier-invoices-container .data-table td) {
+  :global(.supplier-invoices-container .data-table td),
+  :global(.supplier-invoices-embedded .data-table th),
+  :global(.supplier-invoices-embedded .data-table td) {
     vertical-align: top;
+    padding: 6px 8px;
   }
 
-  :global(.supplier-invoices-container .data-table .text-right) {
+  :global(.supplier-invoices-container .table-row),
+  :global(.supplier-invoices-embedded .table-row) {
+    height: 34px;
+  }
+
+  :global(.supplier-invoices-container .data-table .text-right),
+  :global(.supplier-invoices-embedded .data-table .text-right) {
     white-space: nowrap;
   }
 

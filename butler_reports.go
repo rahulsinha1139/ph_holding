@@ -69,7 +69,7 @@ func (a *App) GenerateButlerReport(reportType string, query string) (string, err
 
 		if !hasFinanceAccess {
 			log.Printf("🔒 Butler report generation blocked: type=%s user_role=%s lacks finance:view", reportType, userRole)
-			return "", fmt.Errorf("permission denied: %s reports require manager or admin privileges (finance:view permission)", reportType)
+			return "", fmt.Errorf("permission denied: %s reports require finance or admin privileges (finance:view permission)", reportType)
 		}
 	}
 

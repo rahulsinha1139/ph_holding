@@ -288,12 +288,24 @@ func (a *App) StartLogin() (string, error) {
 
 	// Open in default browser
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("OAuth browser opener", r)
+			}
+		}()
 		time.Sleep(100 * time.Millisecond) // Give server time to start
 		openBrowser(authURL)
 	}()
 
 	// Wait for callback in background
-	go a.authManager.waitForCallback()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("OAuth callback waiter", r)
+			}
+		}()
+		a.authManager.waitForCallback()
+	}()
 
 	log.Printf("🔐 OAuth2 login initiated. Auth URL: %s", authURL)
 	return authURL, nil
@@ -404,7 +416,7 @@ func (am *AuthManager) startCallbackServer() error {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PH Holdings - Login Successful</title>
+    <title>PH Trading WLL - Login Successful</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -432,7 +444,7 @@ func (am *AuthManager) startCallbackServer() error {
     <div class="container">
         <div class="icon">✅</div>
         <h1>Login Successful!</h1>
-        <p>You can close this window and return to PH Holdings.</p>
+        <p>You can close this window and return to PH Trading WLL.</p>
     </div>
 </body>
 </html>
@@ -441,7 +453,7 @@ func (am *AuthManager) startCallbackServer() error {
 
 	// Health check
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "PH Holdings OAuth2 callback server running")
+		fmt.Fprintf(w, "PH Trading WLL OAuth2 callback server running")
 	})
 
 	am.httpServer = &http.Server{
@@ -451,6 +463,11 @@ func (am *AuthManager) startCallbackServer() error {
 
 	// Start in goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil && am.app != nil {
+				am.app.recordBackgroundPanic("OAuth callback server", r)
+			}
+		}()
 		if err := am.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("⚠️ Callback server error: %v", err)
 		}

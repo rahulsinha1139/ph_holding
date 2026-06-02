@@ -895,6 +895,32 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class BackendHealth {
+	    ready: boolean;
+	    healthy: boolean;
+	    database_ready: boolean;
+	    startup_error?: string;
+	    db_path?: string;
+	    log_path?: string;
+	    updated_at?: string;
+	    uptime_seconds: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new BackendHealth(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ready = source["ready"];
+	        this.healthy = source["healthy"];
+	        this.database_ready = source["database_ready"];
+	        this.startup_error = source["startup_error"];
+	        this.db_path = source["db_path"];
+	        this.log_path = source["log_path"];
+	        this.updated_at = source["updated_at"];
+	        this.uptime_seconds = source["uptime_seconds"];
+	    }
+	}
 	export class BackupPolicy {
 	    auto_backup_enabled: boolean;
 	    frequency_days: number;
@@ -2768,6 +2794,69 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class CommercialDeploymentCleanupTableResult {
+	    table: string;
+	    local_rows: number;
+	    remote_rows: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommercialDeploymentCleanupTableResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.table = source["table"];
+	        this.local_rows = source["local_rows"];
+	        this.remote_rows = source["remote_rows"];
+	        this.error = source["error"];
+	    }
+	}
+	export class CommercialDeploymentCleanupResult {
+	    dry_run: boolean;
+	    confirmation_required?: string;
+	    remote_required: boolean;
+	    remote_connected: boolean;
+	    local_total: number;
+	    remote_total: number;
+	    tables: CommercialDeploymentCleanupTableResult[];
+	    messages?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CommercialDeploymentCleanupResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dry_run = source["dry_run"];
+	        this.confirmation_required = source["confirmation_required"];
+	        this.remote_required = source["remote_required"];
+	        this.remote_connected = source["remote_connected"];
+	        this.local_total = source["local_total"];
+	        this.remote_total = source["remote_total"];
+	        this.tables = this.convertValues(source["tables"], CommercialDeploymentCleanupTableResult);
+	        this.messages = source["messages"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	
 	export class CompleteFlowResult {
 	    tender_id: string;
@@ -3077,6 +3166,60 @@ export namespace main {
 	        this.userPriceSet = source["userPriceSet"];
 	    }
 	}
+	export class CostingSheetAttachmentSummary {
+	    id: string;
+	    scope_id: string;
+	    costing_number: string;
+	    file_name: string;
+	    file_ext: string;
+	    mime_type: string;
+	    file_size: number;
+	    file_hash: string;
+	    storage_mode: string;
+	    local_path: string;
+	    notes: string;
+	    uploaded_by: string;
+	    created_at: time.Time;
+	
+	    static createFrom(source: any = {}) {
+	        return new CostingSheetAttachmentSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.scope_id = source["scope_id"];
+	        this.costing_number = source["costing_number"];
+	        this.file_name = source["file_name"];
+	        this.file_ext = source["file_ext"];
+	        this.mime_type = source["mime_type"];
+	        this.file_size = source["file_size"];
+	        this.file_hash = source["file_hash"];
+	        this.storage_mode = source["storage_mode"];
+	        this.local_path = source["local_path"];
+	        this.notes = source["notes"];
+	        this.uploaded_by = source["uploaded_by"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class CostingExportData {
 	    division: string;
 	    source: string;
@@ -3108,6 +3251,8 @@ export namespace main {
 	    taxCategory: string;
 	    customerTRN: string;
 	    body: string;
+	    attachmentScopeId: string;
+	    attachments: CostingSheetAttachmentSummary[];
 	    lineItems: CostingExportLineItem[];
 	    subtotal: number;
 	    discount: number;
@@ -3158,6 +3303,8 @@ export namespace main {
 	        this.taxCategory = source["taxCategory"];
 	        this.customerTRN = source["customerTRN"];
 	        this.body = source["body"];
+	        this.attachmentScopeId = source["attachmentScopeId"];
+	        this.attachments = this.convertValues(source["attachments"], CostingSheetAttachmentSummary);
 	        this.lineItems = this.convertValues(source["lineItems"], CostingExportLineItem);
 	        this.subtotal = source["subtotal"];
 	        this.discount = source["discount"];
@@ -3356,6 +3503,7 @@ export namespace main {
 		    return a;
 		}
 	}
+	
 	export class CostingSheetData {
 	    id: number;
 	    rfq_id: number;
@@ -4126,6 +4274,10 @@ export namespace main {
 	    phone: string;
 	    address: string;
 	    is_primary_contact: boolean;
+	    is_decision_maker: boolean;
+	    decision_role: string;
+	    reports_to_contact_id: string;
+	    reports_to_name: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new CustomerContact(source);
@@ -4145,6 +4297,10 @@ export namespace main {
 	        this.phone = source["phone"];
 	        this.address = source["address"];
 	        this.is_primary_contact = source["is_primary_contact"];
+	        this.is_decision_maker = source["is_decision_maker"];
+	        this.decision_role = source["decision_role"];
+	        this.reports_to_contact_id = source["reports_to_contact_id"];
+	        this.reports_to_name = source["reports_to_name"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -4216,6 +4372,7 @@ export namespace main {
 	    invoice_number: string;
 	    invoice_date: time.Time;
 	    grand_total_bhd: number;
+	    outstanding_bhd: number;
 	    status: string;
 	
 	    static createFrom(source: any = {}) {
@@ -4228,6 +4385,7 @@ export namespace main {
 	        this.invoice_number = source["invoice_number"];
 	        this.invoice_date = this.convertValues(source["invoice_date"], time.Time);
 	        this.grand_total_bhd = source["grand_total_bhd"];
+	        this.outstanding_bhd = source["outstanding_bhd"];
 	        this.status = source["status"];
 	    }
 	
@@ -4526,11 +4684,158 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class CustomerReceipt {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    version: number;
+	    created_by: string;
+	    receipt_number: string;
+	    customer_id: string;
+	    customer_name: string;
+	    division: string;
+	    receipt_date: time.Time;
+	    amount_bhd: number;
+	    applied_amount_bhd: number;
+	    unapplied_amount_bhd: number;
+	    payment_method: string;
+	    reference: string;
+	    status: string;
+	    notes: string;
+	    updated_by: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CustomerReceipt(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.version = source["version"];
+	        this.created_by = source["created_by"];
+	        this.receipt_number = source["receipt_number"];
+	        this.customer_id = source["customer_id"];
+	        this.customer_name = source["customer_name"];
+	        this.division = source["division"];
+	        this.receipt_date = this.convertValues(source["receipt_date"], time.Time);
+	        this.amount_bhd = source["amount_bhd"];
+	        this.applied_amount_bhd = source["applied_amount_bhd"];
+	        this.unapplied_amount_bhd = source["unapplied_amount_bhd"];
+	        this.payment_method = source["payment_method"];
+	        this.reference = source["reference"];
+	        this.status = source["status"];
+	        this.notes = source["notes"];
+	        this.updated_by = source["updated_by"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CustomerReceiptAllocation {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    version: number;
+	    created_by: string;
+	    receipt_id: string;
+	    invoice_id: string;
+	    invoice_number: string;
+	    payment_id: string;
+	    allocated_amount_bhd: number;
+	    allocation_date: time.Time;
+	    status: string;
+	    updated_by: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CustomerReceiptAllocation(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.version = source["version"];
+	        this.created_by = source["created_by"];
+	        this.receipt_id = source["receipt_id"];
+	        this.invoice_id = source["invoice_id"];
+	        this.invoice_number = source["invoice_number"];
+	        this.payment_id = source["payment_id"];
+	        this.allocated_amount_bhd = source["allocated_amount_bhd"];
+	        this.allocation_date = this.convertValues(source["allocation_date"], time.Time);
+	        this.status = source["status"];
+	        this.updated_by = source["updated_by"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CustomerReceiptInput {
+	    customer_id: string;
+	    customer_name: string;
+	    invoice_id: string;
+	    amount_bhd: number;
+	    receipt_date: string;
+	    payment_method: string;
+	    reference: string;
+	    division: string;
+	    notes: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CustomerReceiptInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.customer_id = source["customer_id"];
+	        this.customer_name = source["customer_name"];
+	        this.invoice_id = source["invoice_id"];
+	        this.amount_bhd = source["amount_bhd"];
+	        this.receipt_date = source["receipt_date"];
+	        this.payment_method = source["payment_method"];
+	        this.reference = source["reference"];
+	        this.division = source["division"];
+	        this.notes = source["notes"];
+	    }
+	}
 	export class CustomerRevenueData {
 	    customer_id: string;
 	    customer_name: string;
 	    revenue: number;
 	    invoice_count: number;
+	    year: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new CustomerRevenueData(source);
@@ -4542,6 +4847,7 @@ export namespace main {
 	        this.customer_name = source["customer_name"];
 	        this.revenue = source["revenue"];
 	        this.invoice_count = source["invoice_count"];
+	        this.year = source["year"];
 	    }
 	}
 	export class CustomerTypeItem {
@@ -4813,6 +5119,9 @@ export namespace main {
 	    records_pushed: number;
 	    records_pulled: number;
 	    tables_processed: number;
+	    data_updates_checked: number;
+	    data_updates_applied: number;
+	    data_update_failures: number;
 	    duration: string;
 	    error?: string;
 	
@@ -4826,6 +5135,9 @@ export namespace main {
 	        this.records_pushed = source["records_pushed"];
 	        this.records_pulled = source["records_pulled"];
 	        this.tables_processed = source["tables_processed"];
+	        this.data_updates_checked = source["data_updates_checked"];
+	        this.data_updates_applied = source["data_updates_applied"];
+	        this.data_update_failures = source["data_update_failures"];
 	        this.duration = source["duration"];
 	        this.error = source["error"];
 	    }
@@ -4984,6 +5296,315 @@ export namespace main {
 	        this.severity = source["severity"];
 	        this.confidence = source["confidence"];
 	        this.timestamp = this.convertValues(source["timestamp"], time.Time);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DataQualityIssue {
+	    id: string;
+	    severity: string;
+	    issue_type: string;
+	    entity_type: string;
+	    entity_id: string;
+	    summary: string;
+	    detail: string;
+	    primary_action: string;
+	    review_status: string;
+	    review_note: string;
+	    reviewed_by: string;
+	    reviewed_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DataQualityIssue(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.severity = source["severity"];
+	        this.issue_type = source["issue_type"];
+	        this.entity_type = source["entity_type"];
+	        this.entity_id = source["entity_id"];
+	        this.summary = source["summary"];
+	        this.detail = source["detail"];
+	        this.primary_action = source["primary_action"];
+	        this.review_status = source["review_status"];
+	        this.review_note = source["review_note"];
+	        this.reviewed_by = source["reviewed_by"];
+	        this.reviewed_at = source["reviewed_at"];
+	    }
+	}
+	export class DataQualityReview {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    version: number;
+	    created_by: string;
+	    issue_id: string;
+	    issue_type: string;
+	    severity: string;
+	    entity_type: string;
+	    entity_id: string;
+	    summary: string;
+	    detail: string;
+	    primary_action: string;
+	    status: string;
+	    review_note: string;
+	    reviewed_by_id: string;
+	    reviewed_by: string;
+	    reviewed_at?: time.Time;
+	
+	    static createFrom(source: any = {}) {
+	        return new DataQualityReview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.version = source["version"];
+	        this.created_by = source["created_by"];
+	        this.issue_id = source["issue_id"];
+	        this.issue_type = source["issue_type"];
+	        this.severity = source["severity"];
+	        this.entity_type = source["entity_type"];
+	        this.entity_id = source["entity_id"];
+	        this.summary = source["summary"];
+	        this.detail = source["detail"];
+	        this.primary_action = source["primary_action"];
+	        this.status = source["status"];
+	        this.review_note = source["review_note"];
+	        this.reviewed_by_id = source["reviewed_by_id"];
+	        this.reviewed_by = source["reviewed_by"];
+	        this.reviewed_at = this.convertValues(source["reviewed_at"], time.Time);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DataUpdateTableImpact {
+	    table: string;
+	    operation: string;
+	    count: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DataUpdateTableImpact(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.table = source["table"];
+	        this.operation = source["operation"];
+	        this.count = source["count"];
+	    }
+	}
+	export class DataUpdateApplyResult {
+	    manifest_id: string;
+	    version: string;
+	    dry_run: boolean;
+	    applied: boolean;
+	    already_applied: boolean;
+	    backup_path: string;
+	    operation_count: number;
+	    tables: DataUpdateTableImpact[];
+	    integrity_check: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DataUpdateApplyResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.manifest_id = source["manifest_id"];
+	        this.version = source["version"];
+	        this.dry_run = source["dry_run"];
+	        this.applied = source["applied"];
+	        this.already_applied = source["already_applied"];
+	        this.backup_path = source["backup_path"];
+	        this.operation_count = source["operation_count"];
+	        this.tables = this.convertValues(source["tables"], DataUpdateTableImpact);
+	        this.integrity_check = source["integrity_check"];
+	        this.error = source["error"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DataUpdateAutoApplySummary {
+	    source: string;
+	    dry_run: boolean;
+	    pending_count: number;
+	    applied_count: number;
+	    already_applied_count: number;
+	    failed_count: number;
+	    results: DataUpdateApplyResult[];
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DataUpdateAutoApplySummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.source = source["source"];
+	        this.dry_run = source["dry_run"];
+	        this.pending_count = source["pending_count"];
+	        this.applied_count = source["applied_count"];
+	        this.already_applied_count = source["already_applied_count"];
+	        this.failed_count = source["failed_count"];
+	        this.results = this.convertValues(source["results"], DataUpdateApplyResult);
+	        this.error = source["error"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DataUpdateManifest {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    version: number;
+	    created_by: string;
+	    version_label: string;
+	    title: string;
+	    description: string;
+	    status: string;
+	    published_at?: time.Time;
+	    min_app_version: string;
+	    manifest_hash: string;
+	    apply_mode: string;
+	    source: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DataUpdateManifest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.version = source["version"];
+	        this.created_by = source["created_by"];
+	        this.version_label = source["version_label"];
+	        this.title = source["title"];
+	        this.description = source["description"];
+	        this.status = source["status"];
+	        this.published_at = this.convertValues(source["published_at"], time.Time);
+	        this.min_app_version = source["min_app_version"];
+	        this.manifest_hash = source["manifest_hash"];
+	        this.apply_mode = source["apply_mode"];
+	        this.source = source["source"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class DataUpdateValidationResult {
+	    manifest_id: string;
+	    version: string;
+	    title: string;
+	    status: string;
+	    valid: boolean;
+	    operation_count: number;
+	    issues: string[];
+	    tables: DataUpdateTableImpact[];
+	    already_applied: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DataUpdateValidationResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.manifest_id = source["manifest_id"];
+	        this.version = source["version"];
+	        this.title = source["title"];
+	        this.status = source["status"];
+	        this.valid = source["valid"];
+	        this.operation_count = source["operation_count"];
+	        this.issues = source["issues"];
+	        this.tables = this.convertValues(source["tables"], DataUpdateTableImpact);
+	        this.already_applied = source["already_applied"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -5827,6 +6448,10 @@ export namespace main {
 	    emergency_contact: string;
 	    notes: string;
 	    is_active: boolean;
+	    archived_at?: time.Time;
+	    archived_by: string;
+	    archive_reason: string;
+	    archive_request_id: string;
 	    manager_name?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -5854,6 +6479,10 @@ export namespace main {
 	        this.emergency_contact = source["emergency_contact"];
 	        this.notes = source["notes"];
 	        this.is_active = source["is_active"];
+	        this.archived_at = this.convertValues(source["archived_at"], time.Time);
+	        this.archived_by = source["archived_by"];
+	        this.archive_reason = source["archive_reason"];
+	        this.archive_request_id = source["archive_request_id"];
 	        this.manager_name = source["manager_name"];
 	    }
 	
@@ -5909,6 +6538,78 @@ export namespace main {
 	        this.is_primary = source["is_primary"];
 	        this.employee_name = source["employee_name"];
 	        this.device_name = source["device_name"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class EmployeeArchiveRequest {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    version: number;
+	    created_by: string;
+	    employee_id: string;
+	    employee_name: string;
+	    requested_by: string;
+	    requested_by_name: string;
+	    reason: string;
+	    status: string;
+	    required_approvals: number;
+	    first_approved_by: string;
+	    first_approved_by_name: string;
+	    first_approved_at?: time.Time;
+	    second_approved_by: string;
+	    second_approved_by_name: string;
+	    second_approved_at?: time.Time;
+	    rejected_by: string;
+	    rejected_by_name: string;
+	    rejected_at?: time.Time;
+	    review_notes: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EmployeeArchiveRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.version = source["version"];
+	        this.created_by = source["created_by"];
+	        this.employee_id = source["employee_id"];
+	        this.employee_name = source["employee_name"];
+	        this.requested_by = source["requested_by"];
+	        this.requested_by_name = source["requested_by_name"];
+	        this.reason = source["reason"];
+	        this.status = source["status"];
+	        this.required_approvals = source["required_approvals"];
+	        this.first_approved_by = source["first_approved_by"];
+	        this.first_approved_by_name = source["first_approved_by_name"];
+	        this.first_approved_at = this.convertValues(source["first_approved_at"], time.Time);
+	        this.second_approved_by = source["second_approved_by"];
+	        this.second_approved_by_name = source["second_approved_by_name"];
+	        this.second_approved_at = this.convertValues(source["second_approved_at"], time.Time);
+	        this.rejected_by = source["rejected_by"];
+	        this.rejected_by_name = source["rejected_by_name"];
+	        this.rejected_at = this.convertValues(source["rejected_at"], time.Time);
+	        this.review_notes = source["review_notes"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -6017,6 +6718,10 @@ export namespace main {
 	    blocked_task_count: number;
 	    overdue_task_count: number;
 	    completion_rate: number;
+	    opportunity_ytd: number;
+	    opportunity_won_ytd: number;
+	    opportunity_lost_ytd: number;
+	    revenue_ytd: number;
 	    primary_license_key?: string;
 	    primary_device_name?: string;
 	
@@ -6041,6 +6746,10 @@ export namespace main {
 	        this.blocked_task_count = source["blocked_task_count"];
 	        this.overdue_task_count = source["overdue_task_count"];
 	        this.completion_rate = source["completion_rate"];
+	        this.opportunity_ytd = source["opportunity_ytd"];
+	        this.opportunity_won_ytd = source["opportunity_won_ytd"];
+	        this.opportunity_lost_ytd = source["opportunity_lost_ytd"];
+	        this.revenue_ytd = source["revenue_ytd"];
 	        this.primary_license_key = source["primary_license_key"];
 	        this.primary_device_name = source["primary_device_name"];
 	    }
@@ -6364,6 +7073,9 @@ export namespace main {
 	    customer_id?: string;
 	    opportunity_id?: string;
 	    order_id?: string;
+	    inventory_linked: boolean;
+	    inventory_item_id?: string;
+	    inventory_reference: string;
 	    cost_center: string;
 	    currency: string;
 	    amount: number;
@@ -6414,6 +7126,9 @@ export namespace main {
 	        this.customer_id = source["customer_id"];
 	        this.opportunity_id = source["opportunity_id"];
 	        this.order_id = source["order_id"];
+	        this.inventory_linked = source["inventory_linked"];
+	        this.inventory_item_id = source["inventory_item_id"];
+	        this.inventory_reference = source["inventory_reference"];
 	        this.cost_center = source["cost_center"];
 	        this.currency = source["currency"];
 	        this.amount = source["amount"];
@@ -7803,6 +8518,40 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class InventoryPendingFulfillmentRow {
+	    order_id: string;
+	    order_number: string;
+	    customer_name: string;
+	    product_code: string;
+	    description: string;
+	    ordered_quantity: number;
+	    delivered_quantity: number;
+	    invoiced_quantity: number;
+	    pending_quantity: number;
+	    available_quantity: number;
+	    shortage_quantity: number;
+	    status: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new InventoryPendingFulfillmentRow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.order_id = source["order_id"];
+	        this.order_number = source["order_number"];
+	        this.customer_name = source["customer_name"];
+	        this.product_code = source["product_code"];
+	        this.description = source["description"];
+	        this.ordered_quantity = source["ordered_quantity"];
+	        this.delivered_quantity = source["delivered_quantity"];
+	        this.invoiced_quantity = source["invoiced_quantity"];
+	        this.pending_quantity = source["pending_quantity"];
+	        this.available_quantity = source["available_quantity"];
+	        this.shortage_quantity = source["shortage_quantity"];
+	        this.status = source["status"];
+	    }
+	}
 	export class Invoice {
 	    id: string;
 	    created_at: time.Time;
@@ -8031,6 +8780,7 @@ export namespace main {
 	    payment_date?: time.Time;
 	    payment_ref: string;
 	    payment_method: string;
+	    outstanding_bhd: number;
 	    ocr_document_id: string;
 	    ocr_confidence: number;
 	    division: string;
@@ -8078,6 +8828,7 @@ export namespace main {
 	        this.payment_date = this.convertValues(source["payment_date"], time.Time);
 	        this.payment_ref = source["payment_ref"];
 	        this.payment_method = source["payment_method"];
+	        this.outstanding_bhd = source["outstanding_bhd"];
 	        this.ocr_document_id = source["ocr_document_id"];
 	        this.ocr_confidence = source["ocr_confidence"];
 	        this.division = source["division"];
@@ -8525,6 +9276,10 @@ export namespace main {
 	    created_by: string;
 	    offer_number: string;
 	    revision_number: number;
+	    revision_of_offer_id: string;
+	    revision_root_offer_id: string;
+	    superseded_by_offer_id: string;
+	    superseded_at?: time.Time;
 	    rfq_id: string;
 	    customer_id: string;
 	    customer_name: string;
@@ -8553,6 +9308,7 @@ export namespace main {
 	    terms_and_conditions: string;
 	    subject: string;
 	    body: string;
+	    attachment_scope_id: string;
 	    coc_coo: string;
 	    test_certificate: string;
 	    installation: string;
@@ -8575,6 +9331,10 @@ export namespace main {
 	        this.created_by = source["created_by"];
 	        this.offer_number = source["offer_number"];
 	        this.revision_number = source["revision_number"];
+	        this.revision_of_offer_id = source["revision_of_offer_id"];
+	        this.revision_root_offer_id = source["revision_root_offer_id"];
+	        this.superseded_by_offer_id = source["superseded_by_offer_id"];
+	        this.superseded_at = this.convertValues(source["superseded_at"], time.Time);
 	        this.rfq_id = source["rfq_id"];
 	        this.customer_id = source["customer_id"];
 	        this.customer_name = source["customer_name"];
@@ -8603,6 +9363,7 @@ export namespace main {
 	        this.terms_and_conditions = source["terms_and_conditions"];
 	        this.subject = source["subject"];
 	        this.body = source["body"];
+	        this.attachment_scope_id = source["attachment_scope_id"];
 	        this.coc_coo = source["coc_coo"];
 	        this.test_certificate = source["test_certificate"];
 	        this.installation = source["installation"];
@@ -9005,6 +9766,7 @@ export namespace main {
 	    activated: boolean;
 	    activated_at?: time.Time;
 	    issued_at: time.Time;
+	    updated_at: time.Time;
 	    expires_at?: time.Time;
 	    notes: string;
 	    created_by: string;
@@ -9023,6 +9785,7 @@ export namespace main {
 	        this.activated = source["activated"];
 	        this.activated_at = this.convertValues(source["activated_at"], time.Time);
 	        this.issued_at = this.convertValues(source["issued_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
 	        this.expires_at = this.convertValues(source["expires_at"], time.Time);
 	        this.notes = source["notes"];
 	        this.created_by = source["created_by"];
@@ -9534,6 +10297,7 @@ export namespace main {
 	    version: number;
 	    created_by: string;
 	    offer_id: string;
+	    task_id: string;
 	    follow_up_date: time.Time;
 	    notes: string;
 	    status: string;
@@ -9552,6 +10316,7 @@ export namespace main {
 	        this.version = source["version"];
 	        this.created_by = source["created_by"];
 	        this.offer_id = source["offer_id"];
+	        this.task_id = source["task_id"];
 	        this.follow_up_date = this.convertValues(source["follow_up_date"], time.Time);
 	        this.notes = source["notes"];
 	        this.status = source["status"];
@@ -9919,6 +10684,150 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class OperationalBalanceSheetReport {
+	    as_of_date: string;
+	    division: string;
+	    cash_bhd: number;
+	    accounts_receivable_bhd: number;
+	    customer_credits_bhd: number;
+	    accounts_payable_bhd: number;
+	    expense_liability_bhd: number;
+	    net_position_bhd: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new OperationalBalanceSheetReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.as_of_date = source["as_of_date"];
+	        this.division = source["division"];
+	        this.cash_bhd = source["cash_bhd"];
+	        this.accounts_receivable_bhd = source["accounts_receivable_bhd"];
+	        this.customer_credits_bhd = source["customer_credits_bhd"];
+	        this.accounts_payable_bhd = source["accounts_payable_bhd"];
+	        this.expense_liability_bhd = source["expense_liability_bhd"];
+	        this.net_position_bhd = source["net_position_bhd"];
+	    }
+	}
+	export class OperationalLedgerEntry {
+	    id: string;
+	    source_type: string;
+	    source_id: string;
+	    source_number: string;
+	    entry_date: string;
+	    party_id: string;
+	    party_name: string;
+	    party_type: string;
+	    description: string;
+	    debit_bhd: number;
+	    credit_bhd: number;
+	    balance_bhd: number;
+	    status: string;
+	    division: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new OperationalLedgerEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.source_type = source["source_type"];
+	        this.source_id = source["source_id"];
+	        this.source_number = source["source_number"];
+	        this.entry_date = source["entry_date"];
+	        this.party_id = source["party_id"];
+	        this.party_name = source["party_name"];
+	        this.party_type = source["party_type"];
+	        this.description = source["description"];
+	        this.debit_bhd = source["debit_bhd"];
+	        this.credit_bhd = source["credit_bhd"];
+	        this.balance_bhd = source["balance_bhd"];
+	        this.status = source["status"];
+	        this.division = source["division"];
+	    }
+	}
+	export class OperationalLedgerFilter {
+	    division: string;
+	    start_date: string;
+	    end_date: string;
+	    customer_id: string;
+	    supplier_id: string;
+	    vendor_id: string;
+	    source_type: string;
+	    status: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new OperationalLedgerFilter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.division = source["division"];
+	        this.start_date = source["start_date"];
+	        this.end_date = source["end_date"];
+	        this.customer_id = source["customer_id"];
+	        this.supplier_id = source["supplier_id"];
+	        this.vendor_id = source["vendor_id"];
+	        this.source_type = source["source_type"];
+	        this.status = source["status"];
+	    }
+	}
+	export class OperationalProfitLossReport {
+	    start_date: string;
+	    end_date: string;
+	    division: string;
+	    revenue_bhd: number;
+	    cogs_bhd: number;
+	    gross_profit_bhd: number;
+	    gross_margin_percent: number;
+	    expenses_bhd: number;
+	    net_income_bhd: number;
+	    net_margin_percent: number;
+	    invoice_count: number;
+	    expense_count: number;
+	    expense_breakdown: AccountBalance[];
+	
+	    static createFrom(source: any = {}) {
+	        return new OperationalProfitLossReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.start_date = source["start_date"];
+	        this.end_date = source["end_date"];
+	        this.division = source["division"];
+	        this.revenue_bhd = source["revenue_bhd"];
+	        this.cogs_bhd = source["cogs_bhd"];
+	        this.gross_profit_bhd = source["gross_profit_bhd"];
+	        this.gross_margin_percent = source["gross_margin_percent"];
+	        this.expenses_bhd = source["expenses_bhd"];
+	        this.net_income_bhd = source["net_income_bhd"];
+	        this.net_margin_percent = source["net_margin_percent"];
+	        this.invoice_count = source["invoice_count"];
+	        this.expense_count = source["expense_count"];
+	        this.expense_breakdown = this.convertValues(source["expense_breakdown"], AccountBalance);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class Opportunity {
 	    id: string;
 	    created_at: time.Time;
@@ -10037,6 +10946,7 @@ export namespace main {
 	    comment: string;
 	    created_by: string;
 	    created_at: time.Time;
+	    updated_at: time.Time;
 	
 	    static createFrom(source: any = {}) {
 	        return new OpportunityComment(source);
@@ -10049,6 +10959,107 @@ export namespace main {
 	        this.comment = source["comment"];
 	        this.created_by = source["created_by"];
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class OpportunityEditConflict {
+	    id: string;
+	    created_at: time.Time;
+	    updated_at: time.Time;
+	    version: number;
+	    created_by: string;
+	    opportunity_id: string;
+	    folder_number: string;
+	    operation: string;
+	    status: string;
+	    expected_version: number;
+	    current_version: number;
+	    attempted_by: string;
+	    attempted_role: string;
+	    proposed_changes_json: string;
+	    current_snapshot_json: string;
+	    base_snapshot_json: string;
+	    resolution_action: string;
+	    resolution_note: string;
+	    resolved_by: string;
+	    resolved_at?: time.Time;
+	
+	    static createFrom(source: any = {}) {
+	        return new OpportunityEditConflict(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.version = source["version"];
+	        this.created_by = source["created_by"];
+	        this.opportunity_id = source["opportunity_id"];
+	        this.folder_number = source["folder_number"];
+	        this.operation = source["operation"];
+	        this.status = source["status"];
+	        this.expected_version = source["expected_version"];
+	        this.current_version = source["current_version"];
+	        this.attempted_by = source["attempted_by"];
+	        this.attempted_role = source["attempted_role"];
+	        this.proposed_changes_json = source["proposed_changes_json"];
+	        this.current_snapshot_json = source["current_snapshot_json"];
+	        this.base_snapshot_json = source["base_snapshot_json"];
+	        this.resolution_action = source["resolution_action"];
+	        this.resolution_note = source["resolution_note"];
+	        this.resolved_by = source["resolved_by"];
+	        this.resolved_at = this.convertValues(source["resolved_at"], time.Time);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class OpportunityConflictResolutionResult {
+	    conflict: OpportunityEditConflict;
+	    opportunity: Opportunity;
+	
+	    static createFrom(source: any = {}) {
+	        return new OpportunityConflictResolutionResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conflict = this.convertValues(source["conflict"], OpportunityEditConflict);
+	        this.opportunity = this.convertValues(source["opportunity"], Opportunity);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -10502,6 +11513,7 @@ export namespace main {
 	    idempotency_key: string;
 	    journal_entry_id: string;
 	    bank_account_id: string;
+	    receipt_id?: string;
 	    reference: string;
 	    division: string;
 	    updated_by: string;
@@ -10526,6 +11538,7 @@ export namespace main {
 	        this.idempotency_key = source["idempotency_key"];
 	        this.journal_entry_id = source["journal_entry_id"];
 	        this.bank_account_id = source["bank_account_id"];
+	        this.receipt_id = source["receipt_id"];
 	        this.reference = source["reference"];
 	        this.division = source["division"];
 	        this.updated_by = source["updated_by"];
@@ -11427,6 +12440,12 @@ export namespace main {
 	    customer_id?: string;
 	    opportunity_id?: string;
 	    order_id?: string;
+	    customer_name: string;
+	    end_user_name: string;
+	    opportunity_key: string;
+	    customer_poc_name: string;
+	    customer_poc_email: string;
+	    customer_poc_phone: string;
 	    starts_on?: time.Time;
 	    ends_on?: time.Time;
 	
@@ -11448,6 +12467,12 @@ export namespace main {
 	        this.customer_id = source["customer_id"];
 	        this.opportunity_id = source["opportunity_id"];
 	        this.order_id = source["order_id"];
+	        this.customer_name = source["customer_name"];
+	        this.end_user_name = source["end_user_name"];
+	        this.opportunity_key = source["opportunity_key"];
+	        this.customer_poc_name = source["customer_poc_name"];
+	        this.customer_poc_email = source["customer_poc_email"];
+	        this.customer_poc_phone = source["customer_poc_phone"];
 	        this.starts_on = this.convertValues(source["starts_on"], time.Time);
 	        this.ends_on = this.convertValues(source["ends_on"], time.Time);
 	    }
@@ -11578,6 +12603,7 @@ export namespace main {
 	    comment: string;
 	    created_by: string;
 	    created_at: time.Time;
+	    updated_at: time.Time;
 	
 	    static createFrom(source: any = {}) {
 	        return new RFQComment(source);
@@ -11590,6 +12616,7 @@ export namespace main {
 	        this.comment = source["comment"];
 	        this.created_by = source["created_by"];
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -11622,6 +12649,7 @@ export namespace main {
 	    stage: string;
 	    created_at: time.Time;
 	    updated_at: time.Time;
+	    created_by: string;
 	    document_hash: string;
 	    visit_locations: string;
 	    product_details: string;
@@ -11644,6 +12672,7 @@ export namespace main {
 	        this.stage = source["stage"];
 	        this.created_at = this.convertValues(source["created_at"], time.Time);
 	        this.updated_at = this.convertValues(source["updated_at"], time.Time);
+	        this.created_by = source["created_by"];
 	        this.document_hash = source["document_hash"];
 	        this.visit_locations = source["visit_locations"];
 	        this.product_details = source["product_details"];
@@ -12439,11 +13468,17 @@ export namespace main {
 	    inventory_item_id: string;
 	    movement_type: string;
 	    movement_number: string;
+	    reference_type: string;
+	    reference_id: string;
+	    reference_number: string;
+	    counterparty_id: string;
+	    counterparty_name: string;
 	    quantity: number;
 	    direction: string;
 	    balance_before: number;
 	    balance_after: number;
 	    movement_date: time.Time;
+	    notes: string;
 	    unit_cost: number;
 	    total_value: number;
 	
@@ -12461,11 +13496,17 @@ export namespace main {
 	        this.inventory_item_id = source["inventory_item_id"];
 	        this.movement_type = source["movement_type"];
 	        this.movement_number = source["movement_number"];
+	        this.reference_type = source["reference_type"];
+	        this.reference_id = source["reference_id"];
+	        this.reference_number = source["reference_number"];
+	        this.counterparty_id = source["counterparty_id"];
+	        this.counterparty_name = source["counterparty_name"];
 	        this.quantity = source["quantity"];
 	        this.direction = source["direction"];
 	        this.balance_before = source["balance_before"];
 	        this.balance_after = source["balance_after"];
 	        this.movement_date = this.convertValues(source["movement_date"], time.Time);
+	        this.notes = source["notes"];
 	        this.unit_cost = source["unit_cost"];
 	        this.total_value = source["total_value"];
 	    }
@@ -12502,6 +13543,10 @@ export namespace main {
 	    phone: string;
 	    address: string;
 	    is_primary_contact: boolean;
+	    is_decision_maker: boolean;
+	    decision_role: string;
+	    reports_to_contact_id: string;
+	    reports_to_name: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SupplierContact(source);
@@ -12521,6 +13566,10 @@ export namespace main {
 	        this.phone = source["phone"];
 	        this.address = source["address"];
 	        this.is_primary_contact = source["is_primary_contact"];
+	        this.is_decision_maker = source["is_decision_maker"];
+	        this.decision_role = source["decision_role"];
+	        this.reports_to_contact_id = source["reports_to_contact_id"];
+	        this.reports_to_name = source["reports_to_name"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -12598,6 +13647,8 @@ export namespace main {
 	    invoice_number: string;
 	    invoice_date: time.Time;
 	    total_bhd: number;
+	    outstanding_bhd: number;
+	    payment_status: string;
 	    status: string;
 	
 	    static createFrom(source: any = {}) {
@@ -12610,6 +13661,8 @@ export namespace main {
 	        this.invoice_number = source["invoice_number"];
 	        this.invoice_date = this.convertValues(source["invoice_date"], time.Time);
 	        this.total_bhd = source["total_bhd"];
+	        this.outstanding_bhd = source["outstanding_bhd"];
+	        this.payment_status = source["payment_status"];
 	        this.status = source["status"];
 	    }
 	
@@ -12962,6 +14015,78 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class SyncTableCoverage {
+	    table: string;
+	    local_exists: boolean;
+	    local_has_updated_at: boolean;
+	    local_rows: number;
+	    remote_checked: boolean;
+	    remote_exists: boolean;
+	    remote_has_updated_at: boolean;
+	    status: string;
+	    note: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SyncTableCoverage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.table = source["table"];
+	        this.local_exists = source["local_exists"];
+	        this.local_has_updated_at = source["local_has_updated_at"];
+	        this.local_rows = source["local_rows"];
+	        this.remote_checked = source["remote_checked"];
+	        this.remote_exists = source["remote_exists"];
+	        this.remote_has_updated_at = source["remote_has_updated_at"];
+	        this.status = source["status"];
+	        this.note = source["note"];
+	    }
+	}
+	export class SyncCoverageReport {
+	    generated_at: string;
+	    sync_tables_total: number;
+	    local_tables_total: number;
+	    remote_online: boolean;
+	    missing_local_tables: string[];
+	    missing_remote_tables: string[];
+	    untracked_local_tables: string[];
+	    tables: SyncTableCoverage[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SyncCoverageReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.generated_at = source["generated_at"];
+	        this.sync_tables_total = source["sync_tables_total"];
+	        this.local_tables_total = source["local_tables_total"];
+	        this.remote_online = source["remote_online"];
+	        this.missing_local_tables = source["missing_local_tables"];
+	        this.missing_remote_tables = source["missing_remote_tables"];
+	        this.untracked_local_tables = source["untracked_local_tables"];
+	        this.tables = this.convertValues(source["tables"], SyncTableCoverage);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class SyncHealth {
 	    is_online: boolean;
 	    last_sync_at: string;
@@ -12988,6 +14113,7 @@ export namespace main {
 	        this.uptime_seconds = source["uptime_seconds"];
 	    }
 	}
+	
 	export class SystemInfo {
 	    os: string;
 	    cpu: string;
@@ -13320,6 +14446,28 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class TenderFolderPreview {
+	    folder_path: string;
+	    folder_name: string;
+	    workflow_key: string;
+	    title: string;
+	    existing: boolean;
+	    status: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TenderFolderPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.folder_path = source["folder_path"];
+	        this.folder_name = source["folder_name"];
+	        this.workflow_key = source["workflow_key"];
+	        this.title = source["title"];
+	        this.existing = source["existing"];
+	        this.status = source["status"];
+	    }
+	}
 	export class TenderItem {
 	    product_id: string;
 	    product_name: string;
@@ -13451,6 +14599,48 @@ export namespace main {
 	    }
 	}
 	
+	export class UnifiedThreadEntry {
+	    id: string;
+	    source_type: string;
+	    source_id: string;
+	    workflow_key: string;
+	    comment: string;
+	    created_by: string;
+	    created_at: time.Time;
+	
+	    static createFrom(source: any = {}) {
+	        return new UnifiedThreadEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.source_type = source["source_type"];
+	        this.source_id = source["source_id"];
+	        this.workflow_key = source["workflow_key"];
+	        this.comment = source["comment"];
+	        this.created_by = source["created_by"];
+	        this.created_at = this.convertValues(source["created_at"], time.Time);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	export class UserActivityChartRow {
 	    label: string;

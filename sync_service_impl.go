@@ -139,6 +139,15 @@ func (a *App) pullChangesInternal(since time.Time) error {
 
 // pullTableChanges handles pulling changes for a single table
 func (s *DBSyncService) pullTableChanges(localDB, remoteDB *gorm.DB, sm syncableModel, since time.Time) (int, int, error) {
+	if s.app != nil && s.app.dbManager != nil {
+		remoteAvailable, err := s.app.dbManager.remoteSyncTableAvailableForSync(sm.tableName, "pull")
+		if err != nil {
+			return 0, 0, err
+		}
+		if !remoteAvailable {
+			return 0, 0, nil
+		}
+	}
 	// Query remote for records updated after 'since'
 	var remoteRecords []map[string]interface{}
 
@@ -281,6 +290,15 @@ func (a *App) pushChangesInternal() error {
 
 // pushTableChanges handles pushing changes for a single table
 func (s *DBSyncService) pushTableChanges(localDB, remoteDB *gorm.DB, sm syncableModel) (int, int, error) {
+	if s.app != nil && s.app.dbManager != nil {
+		remoteAvailable, err := s.app.dbManager.remoteSyncTableAvailableForSync(sm.tableName, "push")
+		if err != nil {
+			return 0, 0, err
+		}
+		if !remoteAvailable {
+			return 0, 0, nil
+		}
+	}
 	// Find local records that haven't been synced or have been modified since last sync
 	lastSync, exists := s.lastSyncTimes[sm.tableName]
 	if !exists {
@@ -416,6 +434,11 @@ func (a *App) StartPeriodicSync(interval time.Duration) {
 
 	a.dbSyncService.wg.Add(1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Periodic document sync", r)
+			}
+		}()
 		defer a.dbSyncService.wg.Done()
 
 		ticker := time.NewTicker(a.dbSyncService.syncInterval)
@@ -512,6 +535,14 @@ func (a *App) performBidirectionalSync() {
 		a.dbSyncService.circuitOpen = false
 	}
 	a.dbSyncService.syncMutex.Unlock()
+
+	if !syncFailed {
+		if summary, err := a.applyPendingDataUpdatesInternal(false, "periodic_sync"); err != nil {
+			log.Printf("[SYNC] Published data update auto-apply failed: %v", err)
+		} else if summary.AppliedCount > 0 {
+			log.Printf("[SYNC] Applied %d published data update(s)", summary.AppliedCount)
+		}
+	}
 
 	log.Println("[SYNC] === Bidirectional sync complete ===")
 }

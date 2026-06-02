@@ -2,12 +2,13 @@
   import { createEventDispatcher, onMount } from "svelte";
   import { fade } from "svelte/transition";
   import { toast } from "$lib/stores/toasts";
-  import { permissions } from "$lib/stores/authContext";
+  import { currentUser, permissions } from "$lib/stores/authContext";
   import { setTextScale, setTextScalePreset, textScale, textScalePreset, type TextScalePreset } from "$lib/stores/textScale";
   import { formatNumber } from "$lib/utils/formatters";
   import WabiSpinner from "$lib/components/ui/WabiSpinner.svelte";
   import {
     UpdateSettings,
+    SetAPIKeys,
     GetSettings,
     BrowseFolder,
     TestAIConnection,
@@ -34,6 +35,8 @@
     SetExchangeRate,
     GetSupportedCurrencies,
     GetSyncHealth,
+    GetSyncCoverageReport,
+    MigrateRemoteSchema,
     GetBackupInfo,
     GetBackupPolicy,
     SaveBackupPolicy,
@@ -45,6 +48,8 @@
   // Props
   export let embedded = false;
   $: embedded;
+  const dispatch = createEventDispatcher();
+
   const dispatch = createEventDispatcher();
 
   // State
@@ -85,13 +90,25 @@
     },
     office: { outlook_enabled: false, excel_enabled: false },
     business: { default_margin: 20, vat_rate: 10 },
+    sync: {
+      enabled: false,
+      db_host: "",
+      db_port: "5432",
+      db_name: "postgres",
+      db_user: "postgres",
+      db_password: "",
+      db_sslmode: "require",
+    },
+    ocr: {
+      engine_url: "https://api.asymmetrica.ai/engine",
+      service_token: "",
+    },
   };
 
   let userRole = 'staff';
   let importYear = 2025;
   let importing = false;
   let importResult: any = null;
-  let supabaseForm = { url: '', anonKey: '', serviceKey: '', dbHost: '', dbPort: '5432', dbName: 'postgres', dbPassword: '' };
   let testingConnection = false;
   let reportYear = 2025;
   let generatingReport = false;
@@ -99,6 +116,8 @@
   let bsReport: any = null;
   let availableYears: number[] = [];
   let syncHealth: any = null;
+  let syncCoverage: any = null;
+  let migratingRemoteSchema = false;
   let backupInfo: any = null;
   let backupPolicy: any = null;
   let backupRunning = false;
@@ -129,27 +148,55 @@
   let rateNotes = '';
   let savingRate = false;
 
-  $: isAdmin = userRole === 'admin';
-  function hasPermission(permission: string): boolean {
-    const permissionList = Array.isArray($permissions) ? $permissions : [];
-    if (permissionList.length === 0) return false;
-    if (permissionList.includes('*')) return true;
-    if (permissionList.includes(permission)) return true;
-    const [resource] = permission.split(':');
+  $: activePermissions = Array.isArray($permissions) ? $permissions : [];
+  $: currentRoleName = String(
+    ($currentUser as any)?.role_name ||
+      ($currentUser as any)?.role?.display_name ||
+      ($currentUser as any)?.role?.name ||
+      ($currentUser as any)?.job_title ||
+      userRole ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+  function permissionMatches(permissionList: string[], permission: string): boolean {
+    if (permissionList.includes("*") || permissionList.includes(permission)) return true;
+    const [resource] = permission.split(":");
     return permissionList.includes(`${resource}:*`);
   }
-  $: canOpenDeployment = hasPermission('settings:update');
-  $: sections = [
-    { id: "general", label: "General" },
-    ...(canOpenDeployment ? [{ id: "deployment", label: "Deployment" }] : []),
-    { id: "folders", label: "Directories" },
-    { id: "ai", label: "AI & Intelligence" },
-    { id: "business", label: "Business Rules" },
-    { id: "currency", label: "Currency Rates" },
-    ...(isAdmin ? [{ id: "data", label: "Data Import" }] : []),
-    ...(isAdmin ? [{ id: "reports", label: "Financial Reports" }] : []),
-    ...(isAdmin ? [{ id: "sync", label: "Supabase Sync" }] : []),
-  ];
+  function hasPermission(permission: string): boolean {
+    const permissionList = Array.isArray(activePermissions) ? activePermissions : [];
+    if (["admin", "administrator"].includes(currentRoleName)) return true;
+    return permissionMatches(permissionList, permission);
+  }
+  $: isAdmin = userRole === 'admin';
+  $: canUpdateSettings =
+    ["admin", "administrator"].includes(currentRoleName) ||
+    permissionMatches(activePermissions, "settings:update");
+  $: canManageAPIKeys =
+    canUpdateSettings ||
+    permissionMatches(activePermissions, "settings:api_keys");
+  $: canViewFullSettings = canUpdateSettings;
+  $: canOpenDeployment =
+    isAdmin ||
+    ["admin", "administrator"].includes(currentRoleName) ||
+    canUpdateSettings;
+  $: sections = canViewFullSettings
+    ? [
+        { id: "general", label: "General" },
+        ...(canOpenDeployment ? [{ id: "deployment", label: "Deployment" }] : []),
+        { id: "folders", label: "Directories" },
+        { id: "ai", label: "AI & Intelligence" },
+        { id: "business", label: "Business Rules" },
+        { id: "currency", label: "Currency Rates" },
+        ...(isAdmin ? [{ id: "data", label: "Data Import" }] : []),
+        ...(isAdmin ? [{ id: "reports", label: "Financial Reports" }] : []),
+        ...(isAdmin ? [{ id: "sync", label: "Remote Sync" }] : []),
+      ]
+    : [{ id: "ai", label: "AI & Intelligence" }];
+  $: if (sections.length > 0 && !sections.some((section) => section.id === activeSection)) {
+    activeSection = sections[0].id;
+  }
 
   function openDeploymentWorkspace() {
     dispatch("navigate", { screen: "deployment" });
@@ -268,22 +315,22 @@
   }
 
   async function testSupabase() {
-    if (!supabaseForm.dbHost || !supabaseForm.dbPassword) {
-      toast.warning('DB Host and Password are required');
+    if (!settings.sync.db_host || !settings.sync.db_password || settings.sync.db_password.includes('*') || settings.sync.db_password === '(not set)' || settings.sync.db_password === '(not configured)') {
+      toast.warning('Enter the remote DB host and actual password first');
       return;
     }
     testingConnection = true;
     try {
       const ok = await TestSupabaseConnection(
-        supabaseForm.dbHost,
-        supabaseForm.dbPort || '5432',
-        'postgres',
-        supabaseForm.dbPassword,
-        supabaseForm.dbName || 'postgres',
-        'require'
+        settings.sync.db_host,
+        settings.sync.db_port || '5432',
+        settings.sync.db_user || 'postgres',
+        settings.sync.db_password,
+        settings.sync.db_name || 'postgres',
+        settings.sync.db_sslmode || 'require'
       );
       if (ok) {
-        toast.success('Supabase connection successful');
+        toast.success('Remote PostgreSQL connection successful');
       } else {
         toast.danger('Connection failed - check credentials');
       }
@@ -300,22 +347,48 @@
       const res = await GetSettings();
       if (res) settings = { ...settings, ...res };
       try { userRole = await GetCurrentUserRole() || 'staff'; } catch { userRole = 'staff'; }
-      try { availableYears = await GetFinancialReportYears() || []; } catch { availableYears = []; }
-      await refreshRolloutData();
+      if (canViewFullSettings) {
+        try { availableYears = await GetFinancialReportYears() || []; } catch { availableYears = []; }
+        await refreshRolloutData();
+      }
     } catch (e) {
       toast.danger("Failed to load settings");
     } finally {
       loading = false;
     }
-    // Detect GPU in background (non-blocking)
-    detectHardware();
+    if (canViewFullSettings) {
+      // Detect GPU in background (non-blocking)
+      detectHardware();
+    }
   }
 
   async function refreshRolloutData() {
     try { syncHealth = await GetSyncHealth(); } catch { syncHealth = null; }
+    await loadSyncCoverage();
     await loadBackupState();
     try { rolloutStatus = await GetPhase7RolloutStatus(); } catch { rolloutStatus = null; }
     await Promise.all([loadRolloutOps(), loadPilotReadiness()]);
+  }
+
+  async function loadSyncCoverage() {
+    try {
+      syncCoverage = await GetSyncCoverageReport();
+    } catch {
+      syncCoverage = null;
+    }
+  }
+
+  async function repairRemoteSchema() {
+    migratingRemoteSchema = true;
+    try {
+      await MigrateRemoteSchema();
+      toast.success("Remote sync schema repaired");
+      await refreshRolloutData();
+    } catch (e: any) {
+      toast.danger("Remote schema repair failed: " + (e?.message || e));
+    } finally {
+      migratingRemoteSchema = false;
+    }
   }
 
   async function loadBackupState() {
@@ -459,6 +532,15 @@
     }
   }
 
+  function openDeploymentWorkspace() {
+    dispatch("navigate", { screen: "deployment" });
+  }
+
+  function handleTextScaleSlider(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    setTextScale(Number(input.value) / 100);
+  }
+
   function formatIssue(issue: string): string {
     if (!issue) return 'Unknown issue';
     return issue.replace(/_/g, ' ').replace(/\b\w/g, (match) => match.toUpperCase());
@@ -482,11 +564,31 @@
     }
   }
 
+  function apiKeyPayload(): Record<string, string> {
+    return {
+      aimlapi_key: settings.apiKeys.aimlapi_key || '',
+      aiml_model: settings.apiKeys.aiml_model || 'grok-4.1',
+      openai_key: settings.apiKeys.openai_key || '',
+      anthropic_key: settings.apiKeys.anthropic_key || '',
+      mistral_key: settings.apiKeys.mistral_key || '',
+      azure_endpoint: settings.apiKeys.azure_endpoint || '',
+    };
+  }
+
+  async function saveAPIKeysOnly() {
+    await SetAPIKeys(apiKeyPayload());
+  }
+
   async function save() {
     saving = true;
     try {
-      await UpdateSettings(settings as Record<string, any>);
-      toast.success("Settings saved");
+      if (activeSection === "ai" && canManageAPIKeys) {
+        await saveAPIKeysOnly();
+        toast.success("API keys saved securely");
+      } else {
+        await UpdateSettings(settings as Record<string, any>);
+        toast.success("Settings saved");
+      }
     } catch (e) {
       toast.danger("Save failed");
     } finally {
@@ -534,7 +636,7 @@
     testingMistral = true;
     try {
       // Save settings first so the backend has the key
-      await save();
+      await saveAPIKeysOnly();
 
       // Test the connection
       const result = await TestMistralConnection();
@@ -586,11 +688,13 @@
 
   onMount(async () => {
     await loadSettings();
-    await loadCurrencyRates();
+    if (canViewFullSettings) {
+      await loadCurrencyRates();
+    }
   });
 </script>
 
-<div class="page">
+    <div class="page" data-embedded={embedded}>
   <header class="header">
     <div class="header-content">
       <h1>Settings.</h1>
@@ -634,11 +738,11 @@
           {#if canOpenDeployment}
             <div class="deployment-card">
               <div class="deployment-card-copy">
-                <h4>Deployment Workspace</h4>
-                <p>Open rollout and production-support controls directly from Settings.</p>
+                <span>Admin Workspace</span>
+                <strong>Deployment</strong>
               </div>
-              <button class="btn-primary" on:click={openDeploymentWorkspace}>
-                Open Deployment Workspace
+              <button class="btn-secondary" type="button" on:click={openDeploymentWorkspace}>
+                Open Workspace
               </button>
             </div>
           {/if}
@@ -676,9 +780,9 @@
             </div>
           </div>
           <div class="form-group">
-            <label for="settings-company-name">Company Name</label>
+            <label for="company-name">Company Name</label>
             <input
-              id="settings-company-name"
+              id="company-name"
               type="text"
               bind:value={settings.companyName}
               class="input-clean"
@@ -686,8 +790,8 @@
           </div>
           <div class="row">
             <div class="form-group half">
-              <label for="settings-base-currency">Base Currency</label>
-              <select id="settings-base-currency" bind:value={settings.currency} class="input-clean">
+              <label for="base-currency">Base Currency</label>
+              <select id="base-currency" bind:value={settings.currency} class="input-clean">
                 <option value="BHD">BHD (Bahraini Dinar)</option>
                 <option value="USD">USD (US Dollar)</option>
                 <option value="EUR">EUR (Euro)</option>
@@ -698,8 +802,8 @@
             </div>
             <!-- Dark mode commented out - not yet functional
             <div class="form-group half">
-              <label>Interface Theme</label>
-              <select bind:value={settings.theme} class="input-clean">
+              <label for="interface-theme">Interface Theme</label>
+              <select id="interface-theme" bind:value={settings.theme} class="input-clean">
                 <option value="light">Light (Milestoners)</option>
                 <option value="dark">Dark (Onyx)</option>
                 <option value="system">System Default</option>
@@ -726,6 +830,35 @@
             <label for="excel">Enable Excel Automations</label>
           </div>
         </div>
+      {:else if activeSection === "deployment"}
+        <div class="section" in:fade>
+          <h3>Deployment Workspace</h3>
+          <p class="hint">Deployment tools are kept inside Settings for admin review.</p>
+
+          <div class="deployment-card deployment-card-large">
+            <div class="deployment-card-copy">
+              <span>VPS Migration</span>
+              <strong>Open deployment workspace</strong>
+              <small>Package validation, rollout checks, and pilot support actions.</small>
+            </div>
+            <button class="btn-primary" type="button" on:click={openDeploymentWorkspace}>
+              Open Workspace
+            </button>
+          </div>
+
+          <div class="result-stats deployment-stats">
+            <span>Sync Tables: {syncHealth?.tables_in_sync ?? "n/a"}</span>
+            <span>Pending Ops: {rolloutStatus?.pending_collaborative_ops ?? 0}</span>
+            <span>Failed Ops: {rolloutStatus?.failed_collaborative_ops ?? 0}</span>
+            <span>Ready Employees: {pilotSummary?.ready_employees ?? 0}</span>
+            <span>Unlinked Licenses: {pilotSummary?.unlinked_licenses ?? 0}</span>
+          </div>
+
+          <div class="deployment-note">
+            <strong>Admin-only access</strong>
+            <span>The workspace remains available as an internal route and is hidden from the main sidebar.</span>
+          </div>
+        </div>
       {:else if activeSection === "folders"}
         <div class="section" in:fade>
           <h3>Directory Mapping</h3>
@@ -734,10 +867,10 @@
           {#each Object.keys(settings.folders) as key}
             {#if key !== "extra_paths"}
               <div class="form-group">
-                <label for={`settings-folder-${key}`}>{key.replace("_path", "").toUpperCase()}</label>
+                <label for={`folder-${key}`}>{key.replace("_path", "").toUpperCase()}</label>
                 <div class="input-group">
                   <input
-                    id={`settings-folder-${key}`}
+                    id={`folder-${key}`}
                     type="text"
                     bind:value={settings.folders[key]}
                     class="input-clean"
@@ -756,12 +889,12 @@
           <h3>Artificial Intelligence</h3>
 
           <div class="form-group">
-            <label for="settings-aiml-key">AIML API Key <span style="font-size:0.8em; color: var(--accent);">(Butler primary — Grok 4)</span></label>
+            <label for="aiml-api-key">AIML API Key <span style="font-size:0.8em; color: var(--accent);">(Butler primary — Grok 4)</span></label>
             <p style="font-size:0.8em; color: var(--text-muted); margin: 2px 0 6px;">Powers Butler AI chat with Grok's large context window. Get key at api.aimlapi.com</p>
             <div class="input-group">
               {#if showKeyInput}
                 <input
-                  id="settings-aiml-key"
+                  id="aiml-api-key"
                   type="text"
                   bind:value={settings.apiKeys.aimlapi_key}
                   class="input-clean"
@@ -769,7 +902,7 @@
                 />
               {:else}
                 <input
-                  id="settings-aiml-key"
+                  id="aiml-api-key"
                   type="password"
                   bind:value={settings.apiKeys.aimlapi_key}
                   class="input-clean"
@@ -784,9 +917,9 @@
           </div>
 
           <div class="form-group">
-            <label for="settings-grok-model">Grok Model</label>
+            <label for="grok-model">Grok Model</label>
             <p style="font-size:0.8em; color: var(--text-muted); margin: 2px 0 6px;">Select the backend model for Butler chat. It will fallback automatically if the model is unavailable.</p>
-            <select id="settings-grok-model" class="input-clean" bind:value={settings.apiKeys.aiml_model}>
+            <select id="grok-model" class="input-clean" bind:value={settings.apiKeys.aiml_model}>
               <option value="grok-4.1">grok-4.1</option>
               <option value="grok-4">grok-4</option>
               <option value="grok-2-vision-1212">grok-2-vision-1212</option>
@@ -796,12 +929,12 @@
           </div>
 
           <div class="form-group" style="margin-top: 16px;">
-            <label for="settings-mistral-key">Mistral API Key <span style="font-size:0.8em; color: var(--text-muted);">(OCR/document analysis + fallback chat)</span></label>
+            <label for="mistral-api-key">Mistral API Key <span style="font-size:0.8em; color: var(--text-muted);">(OCR/document analysis + fallback chat)</span></label>
             <p style="font-size:0.8em; color: var(--text-muted); margin: 2px 0 6px;">Used for "Analyze with Butler" document OCR. Falls back to this if AIML key not set.</p>
             <div class="input-group">
               {#if showMistralKey}
                 <input
-                  id="settings-mistral-key"
+                  id="mistral-api-key"
                   type="text"
                   bind:value={settings.apiKeys.mistral_key}
                   class="input-clean"
@@ -809,7 +942,7 @@
                 />
               {:else}
                 <input
-                  id="settings-mistral-key"
+                  id="mistral-api-key"
                   type="password"
                   bind:value={settings.apiKeys.mistral_key}
                   class="input-clean"
@@ -830,45 +963,47 @@
             </button>
           </div>
 
-          <h3>Hardware Acceleration</h3>
-          <div class="gpu-card">
-            <div class="gpu-header">
-              <span class="gpu-icon">GPU</span>
-              <span>{settings.gpu.device_name || "No GPU Detected"}</span>
+          {#if canViewFullSettings}
+            <h3>Hardware Acceleration</h3>
+            <div class="gpu-card">
+              <div class="gpu-header">
+                <span class="gpu-icon">GPU</span>
+                <span>{settings.gpu.device_name || "No GPU Detected"}</span>
+              </div>
+              {#if settings.gpu.detected}
+                <div class="gpu-stats">
+                  <span>VRAM: {settings.gpu.vram_mb} MB</span>
+                  <span>Vendor: {settings.gpu.vendor}</span>
+                </div>
+                <div class="toggle-row">
+                  <input
+                    type="checkbox"
+                    id="use_gpu"
+                    bind:checked={settings.gpu.use_gpu}
+                  />
+                  <label for="use_gpu">Use GPU for Local Inference</label>
+                </div>
+              {/if}
             </div>
-            {#if settings.gpu.detected}
-              <div class="gpu-stats">
-                <span>VRAM: {settings.gpu.vram_mb} MB</span>
-                <span>Vendor: {settings.gpu.vendor}</span>
-              </div>
-              <div class="toggle-row">
-                <input
-                  type="checkbox"
-                  id="use_gpu"
-                  bind:checked={settings.gpu.use_gpu}
-                />
-                <label for="use_gpu">Use GPU for Local Inference</label>
-              </div>
-            {/if}
-          </div>
+          {/if}
         </div>
       {:else if activeSection === "business"}
         <div class="section" in:fade>
           <h3>Financial Rules</h3>
           <div class="row">
             <div class="form-group half">
-              <label for="settings-default-margin">Default Margin (%)</label>
+              <label for="default-margin">Default Margin (%)</label>
               <input
-                id="settings-default-margin"
+                id="default-margin"
                 type="number"
                 bind:value={settings.business.default_margin}
                 class="input-clean"
               />
             </div>
             <div class="form-group half">
-              <label for="settings-vat-rate">VAT Rate (%)</label>
+              <label for="vat-rate">VAT Rate (%)</label>
               <input
-                id="settings-vat-rate"
+                id="vat-rate"
                 type="number"
                 bind:value={settings.business.vat_rate}
                 class="input-clean"
@@ -937,9 +1072,9 @@
             <div class="edit-rate-form" style="margin-top: 1.5rem; padding: 1rem; background: var(--surface-elevated); border-radius: 8px;">
               <h4>Update {editingCurrency} Rate</h4>
               <div class="form-group">
-                <label for="settings-new-rate">New Rate (1 {editingCurrency} = ? BHD)</label>
+                <label for="new-rate">New Rate (1 {editingCurrency} = ? BHD)</label>
                 <input
-                  id="settings-new-rate"
+                  id="new-rate"
                   type="number"
                   step="0.0001"
                   min="0.0001"
@@ -949,9 +1084,9 @@
                 />
               </div>
               <div class="form-group">
-                <label for="settings-rate-notes">Notes (optional)</label>
+                <label for="rate-notes">Notes (optional)</label>
                 <input
-                  id="settings-rate-notes"
+                  id="rate-notes"
                   type="text"
                   bind:value={rateNotes}
                   class="input-clean"
@@ -986,8 +1121,8 @@
           <p class="hint">Import historical data from Tally Excel exports. Files are loaded from Data_for_database/Tally_data directory.</p>
 
           <div class="form-group">
-            <label for="settings-import-year">Import Year</label>
-            <input id="settings-import-year" type="number" bind:value={importYear} class="input-clean" min="2000" max="2030" />
+            <label for="import-year">Import Year</label>
+            <input id="import-year" type="number" bind:value={importYear} class="input-clean" min="2000" max="2030" />
           </div>
 
           <div class="import-actions">
@@ -1039,15 +1174,15 @@
           <p class="hint">Generate Profit & Loss and Balance Sheet reports from imported Tally data.</p>
 
           <div class="form-group">
-            <label for="settings-report-year">Report Year</label>
+            <label for="report-year">Report Year</label>
             {#if availableYears.length > 0}
-              <select id="settings-report-year" bind:value={reportYear} class="input-clean">
+              <select id="report-year" bind:value={reportYear} class="input-clean">
                 {#each availableYears as yr}
                   <option value={yr}>{yr}</option>
                 {/each}
               </select>
             {:else}
-              <input id="settings-report-year" type="number" bind:value={reportYear} class="input-clean" min="2000" max="2030" />
+              <input id="report-year" type="number" bind:value={reportYear} class="input-clean" min="2000" max="2030" />
               <p class="hint-small">No imported data found. Import Tally data first.</p>
             {/if}
           </div>
@@ -1183,48 +1318,67 @@
         </div>
       {:else if activeSection === "sync"}
         <div class="section" in:fade>
-          <h3>Supabase Connection</h3>
-          <p class="hint">Configure remote database sync via Supabase for multi-device access.</p>
+          <h3>Remote PostgreSQL Sync</h3>
+          <p class="hint">Configure the VPS PostgreSQL target used for multi-device sync. Your local SQLite database remains the seeded offline source of truth for build and flow testing.</p>
 
-          <div class="form-group">
-            <label for="settings-supabase-url">Supabase URL</label>
-            <input id="settings-supabase-url" type="text" bind:value={supabaseForm.url} class="input-clean" placeholder="https://xxxx.supabase.co" />
-          </div>
-          <div class="form-group">
-            <label for="settings-supabase-anon-key">Anon Key</label>
-            <input id="settings-supabase-anon-key" type="password" bind:value={supabaseForm.anonKey} class="input-clean" placeholder="eyJ..." />
-          </div>
-          <div class="form-group">
-            <label for="settings-supabase-service-key">Service Key</label>
-            <input id="settings-supabase-service-key" type="password" bind:value={supabaseForm.serviceKey} class="input-clean" placeholder="eyJ..." />
+          <div class="toggle-row">
+            <input id="sync-enabled" type="checkbox" bind:checked={settings.sync.enabled} />
+            <label for="sync-enabled">Enable remote database sync</label>
           </div>
 
           <h3>Database Connection</h3>
           <div class="row">
             <div class="form-group half">
-              <label for="settings-db-host">DB Host</label>
-              <input id="settings-db-host" type="text" bind:value={supabaseForm.dbHost} class="input-clean" placeholder="db.xxxx.supabase.co" />
+              <label for="db-host">DB Host</label>
+              <input id="db-host" type="text" bind:value={settings.sync.db_host} class="input-clean" placeholder="5.223.95.178" />
             </div>
             <div class="form-group half">
-              <label for="settings-db-port">DB Port</label>
-              <input id="settings-db-port" type="text" bind:value={supabaseForm.dbPort} class="input-clean" />
+              <label for="db-port">DB Port</label>
+              <input id="db-port" type="text" bind:value={settings.sync.db_port} class="input-clean" />
             </div>
           </div>
           <div class="row">
             <div class="form-group half">
-              <label for="settings-db-name">DB Name</label>
-              <input id="settings-db-name" type="text" bind:value={supabaseForm.dbName} class="input-clean" placeholder="postgres" />
+              <label for="db-name">DB Name</label>
+              <input id="db-name" type="text" bind:value={settings.sync.db_name} class="input-clean" placeholder="asymmflow" />
             </div>
             <div class="form-group half">
-              <label for="settings-db-password">DB Password</label>
-              <input id="settings-db-password" type="password" bind:value={supabaseForm.dbPassword} class="input-clean" placeholder="Database password" />
+              <label for="db-user">DB User</label>
+              <input id="db-user" type="text" bind:value={settings.sync.db_user} class="input-clean" placeholder="postgres" />
+            </div>
+          </div>
+          <div class="row">
+            <div class="form-group half">
+              <label for="db-sslmode">SSL Mode</label>
+              <select id="db-sslmode" bind:value={settings.sync.db_sslmode} class="input-clean">
+                <option value="disable">disable</option>
+                <option value="require">require</option>
+                <option value="verify-ca">verify-ca</option>
+                <option value="verify-full">verify-full</option>
+              </select>
+            </div>
+            <div class="form-group half">
+              <label for="db-password">DB Password</label>
+              <input id="db-password" type="password" bind:value={settings.sync.db_password} class="input-clean" placeholder="Remote database password" />
             </div>
           </div>
 
           <div class="action-row">
             <button class="btn-secondary" on:click={testSupabase} disabled={testingConnection}>
-              {testingConnection ? 'Testing...' : 'Test Connection'}
+              {testingConnection ? 'Testing...' : 'Test Remote DB'}
             </button>
+          </div>
+
+          <h3>OCR Runtime</h3>
+          <p class="hint">Configure the Asymm Engine endpoint and service token used for OCR and document runtime analysis.</p>
+
+          <div class="form-group">
+            <label for="ocr-engine-url">Engine URL</label>
+            <input id="ocr-engine-url" type="text" bind:value={settings.ocr.engine_url} class="input-clean" placeholder="https://api.asymmetrica.ai/engine" />
+          </div>
+          <div class="form-group">
+            <label for="ocr-service-token">Service Token</label>
+            <input id="ocr-service-token" type="password" bind:value={settings.ocr.service_token} class="input-clean" placeholder="Runtime service token" />
           </div>
 
           <h3>Operational Status</h3>
@@ -1233,6 +1387,58 @@
             <span>Tables In Sync: {syncHealth?.tables_in_sync ?? 0}</span>
             <span>Last Sync: {syncHealth?.last_sync_at ? new Date(syncHealth.last_sync_at).toLocaleString() : 'Never'}</span>
             <span>Backups: {syncHealth?.backup_count ?? 0}</span>
+          </div>
+          <div class="sync-coverage-panel">
+            <div class="sync-coverage-head">
+              <div>
+                <strong>Schema Coverage</strong>
+                <p class="hint compact-hint">Checks whether every canonical sync table exists locally and on the remote database.</p>
+              </div>
+              <div class="action-row compact-actions">
+                <button class="btn-secondary" on:click={loadSyncCoverage}>Refresh Coverage</button>
+                <button class="btn-primary" on:click={repairRemoteSchema} disabled={migratingRemoteSchema}>
+                  {migratingRemoteSchema ? 'Repairing...' : 'Repair Remote Schema'}
+                </button>
+              </div>
+            </div>
+            <div class="result-stats">
+              <span>Canonical Tables: {syncCoverage?.sync_tables_total ?? 'n/a'}</span>
+              <span>Remote Missing: {syncCoverage?.missing_remote_tables?.length ?? 0}</span>
+              <span>Local Missing: {syncCoverage?.missing_local_tables?.length ?? 0}</span>
+              <span>Untracked Local: {syncCoverage?.untracked_local_tables?.length ?? 0}</span>
+            </div>
+            {#if syncCoverage?.missing_remote_tables?.length}
+              <div class="schema-warning">Remote needs: {syncCoverage.missing_remote_tables.slice(0, 12).join(', ')}{syncCoverage.missing_remote_tables.length > 12 ? '...' : ''}</div>
+            {/if}
+            {#if syncCoverage?.untracked_local_tables?.length}
+              <div class="schema-note">Local-only tables: {syncCoverage.untracked_local_tables.slice(0, 12).join(', ')}{syncCoverage.untracked_local_tables.length > 12 ? '...' : ''}</div>
+            {/if}
+          </div>
+
+          <h3>Database Backups</h3>
+          <div class="backup-panel">
+            <div class="result-stats">
+              <span>Stored Backups: {backupInfo?.count ?? 0}</span>
+              <span>Last Backup: {backupPolicy?.last_backup_at ? new Date(backupPolicy.last_backup_at).toLocaleString() : (backupInfo?.last_backup || 'Never')}</span>
+              <span>Next Due: {backupPolicy?.next_backup_due_at ? new Date(backupPolicy.next_backup_due_at).toLocaleString() : 'Next startup'}</span>
+              <span>Folder: {backupInfo?.backup_dir || 'App data backups'}</span>
+            </div>
+            <div class="row backup-controls">
+              <label class="toggle-inline" for="backup-auto-enabled">
+                <input id="backup-auto-enabled" type="checkbox" bind:checked={backupAutoEnabled} />
+                Auto Backup
+              </label>
+              <div class="form-group compact">
+                <label for="backup-frequency-days">Frequency</label>
+                <input id="backup-frequency-days" type="number" min="1" max="30" bind:value={backupFrequencyDays} class="input-clean" />
+              </div>
+              <button class="btn-secondary" on:click={saveBackupPolicy} disabled={savingBackupPolicy}>
+                {savingBackupPolicy ? 'Saving...' : 'Save Schedule'}
+              </button>
+              <button class="btn-primary" on:click={runManualBackup} disabled={backupRunning}>
+                {backupRunning ? 'Backing up...' : 'Backup Now'}
+              </button>
+            </div>
           </div>
 
           <h3>Database Backups</h3>
@@ -1574,6 +1780,167 @@
     margin-bottom: 16px;
   }
 
+  .deployment-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 16px;
+    margin: 0 0 20px;
+    background: color-mix(in srgb, var(--surface-elevated, #F7FAF7) 88%, white);
+    border: 1px solid var(--border, #DDE8DD);
+    border-radius: 8px;
+  }
+  .deployment-card-large {
+    align-items: flex-start;
+    padding: 20px;
+  }
+  .deployment-card-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .deployment-card-copy span {
+    color: var(--steel, #667569);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0;
+  }
+  .deployment-card-copy strong {
+    color: var(--onyx, #25312B);
+    font-size: 16px;
+    font-weight: 700;
+  }
+  .deployment-card-copy small {
+    color: var(--text-secondary, #667569);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .deployment-stats {
+    margin: 14px 0 18px;
+    padding: 14px;
+    background: var(--surface, #FFFFFF);
+    border: 1px solid var(--border, #DDE8DD);
+    border-radius: 8px;
+  }
+  .deployment-note {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px 16px;
+    border-left: 3px solid var(--brand-indigo, #3E8F47);
+    background: var(--brand-indigo-tint, rgba(62, 143, 71, 0.08));
+    border-radius: 6px;
+  }
+  .deployment-note strong {
+    color: var(--onyx, #25312B);
+    font-size: 13px;
+  }
+  .deployment-note span {
+    color: var(--text-secondary, #667569);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .readability-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+    gap: 16px;
+    padding: 18px 20px;
+    margin: 16px 0 22px;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 8px;
+    background: var(--surface, #FFFFFF);
+  }
+  .readability-copy h4 {
+    margin: 0 0 6px;
+    color: var(--onyx, #1D1D1F);
+    font-size: 15px;
+  }
+  .readability-copy p {
+    margin: 0;
+    color: var(--steel, #86868B);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .readability-controls {
+    display: grid;
+    gap: 12px;
+    align-content: center;
+  }
+  .text-preset-buttons {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .text-preset-buttons button {
+    display: grid;
+    gap: 2px;
+    justify-items: center;
+    min-height: 52px;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 8px;
+    background: var(--surface-elevated, #FAFAFA);
+    color: var(--text-primary, #1D1D1F);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .text-preset-buttons button span {
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-weight: 800;
+  }
+  .text-preset-buttons button:nth-child(2) span {
+    font-size: 18px;
+  }
+  .text-preset-buttons button:nth-child(3) span {
+    font-size: 21px;
+  }
+  .text-preset-buttons button:hover,
+  .text-preset-buttons button.active {
+    background: var(--onyx, #1D1D1F);
+    border-color: var(--onyx, #1D1D1F);
+    color: #fff;
+  }
+  .text-scale-slider {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text-secondary, #86868B);
+  }
+  .text-scale-slider span {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-primary, #1D1D1F);
+  }
+  .text-scale-slider input {
+    width: 100%;
+    accent-color: var(--onyx, #1D1D1F);
+  }
+
+  .backup-panel {
+    display: grid;
+    gap: 14px;
+    padding: 16px;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 8px;
+    background: var(--surface-elevated, #FAFAFA);
+    margin-bottom: 20px;
+  }
+  .backup-controls {
+    align-items: flex-end;
+    flex-wrap: wrap;
+  }
+  .form-group.compact {
+    width: 130px;
+    margin-bottom: 0;
+  }
+
   .form-group {
     margin-bottom: 20px;
   }
@@ -1758,131 +2125,45 @@
     font-size: 13px;
     color: var(--steel, #86868B);
   }
-  .backup-panel {
-    display: grid;
-    gap: 14px;
-    padding: 16px;
+  .sync-coverage-panel {
+    margin-top: 16px;
+    padding: 14px;
     border: 1px solid var(--border, #E5E5E5);
     border-radius: 8px;
     background: var(--surface-elevated, #FAFAFA);
-    margin-bottom: 20px;
   }
-  .backup-controls {
-    align-items: flex-end;
-    flex-wrap: wrap;
-  }
-  .form-group.compact {
-    width: 130px;
-    margin-bottom: 0;
-  }
-  .deployment-card {
+  .sync-coverage-head {
     display: flex;
-    align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 18px 20px;
-    margin: 16px 0;
-    border: 1px solid var(--border, #E5E5E5);
-    border-radius: 14px;
-    background: linear-gradient(135deg, rgba(248, 248, 250, 0.95), rgba(255, 255, 255, 0.98));
+    align-items: flex-start;
+    margin-bottom: 10px;
   }
-  .deployment-card-copy h4 {
-    margin: 0 0 6px;
-    font-size: 15px;
-    color: var(--onyx, #1D1D1F);
+  .compact-hint {
+    margin: 4px 0 0;
   }
-  .deployment-card-copy p {
-    margin: 0;
-    font-size: 13px;
-    line-height: 1.5;
-    color: var(--steel, #86868B);
+  .compact-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 0;
   }
-  .readability-card {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
-    gap: 16px;
-    padding: 18px 20px;
-    margin: 16px 0 22px;
-    border: 1px solid var(--border, #E5E5E5);
-    border-radius: 14px;
-    background: var(--surface, #FFFFFF);
-  }
-  .readability-copy h4 {
-    margin: 0 0 6px;
-    color: var(--onyx, #1D1D1F);
-    font-size: 15px;
-  }
-  .readability-copy p {
-    margin: 0;
-    color: var(--steel, #86868B);
-    font-size: 13px;
-    line-height: 1.5;
-  }
-  .readability-controls {
-    display: grid;
-    gap: 12px;
-    align-content: center;
-  }
-  .text-preset-buttons {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-  }
-  .text-preset-buttons button {
-    display: grid;
-    gap: 2px;
-    justify-items: center;
-    min-height: 52px;
-    border: 1px solid var(--border, #E5E5E5);
+  .schema-warning,
+  .schema-note {
+    margin-top: 10px;
+    padding: 10px 12px;
     border-radius: 8px;
-    background: var(--surface-elevated, #FAFAFA);
-    color: var(--text-primary, #1D1D1F);
-    cursor: pointer;
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 13px;
   }
-  .text-preset-buttons button span {
-    font-family: var(--font-display);
-    font-size: 15px;
-    font-weight: 800;
+  .schema-warning {
+    border: 1px solid #F2B8B5;
+    background: #FFF4F4;
+    color: #B42318;
   }
-  .text-preset-buttons button:nth-child(2) span {
-    font-size: 18px;
-  }
-  .text-preset-buttons button:nth-child(3) span {
-    font-size: 21px;
-  }
-  .text-preset-buttons button:hover,
-  .text-preset-buttons button.active {
-    background: var(--onyx, #1D1D1F);
-    border-color: var(--onyx, #1D1D1F);
-    color: #fff;
-  }
-  .text-scale-slider {
-    display: grid;
-    gap: 6px;
-    margin: 0;
-    text-transform: none;
-    letter-spacing: 0;
-    color: var(--text-secondary, #86868B);
-  }
-  .text-scale-slider span {
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--text-primary, #1D1D1F);
-  }
-  .text-scale-slider input {
-    width: 100%;
-    accent-color: var(--onyx, #1D1D1F);
-  }
-  .deployment-note {
-    margin-top: 16px;
-  }
-  .info-box {
-    padding: 16px;
-    background: var(--surface-elevated, #FAFAFA);
-    border-radius: 12px;
-    border-left: 3px solid var(--onyx, #1D1D1F);
+  .schema-note {
+    border: 1px solid var(--border, #E5E5E5);
+    background: #FFFFFF;
+    color: var(--steel, #686C6A);
   }
   .rollout-actions {
     display: flex;
@@ -2123,12 +2404,13 @@
     .rollout-ops-row {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+    .deployment-card,
+    .readability-card {
+      grid-template-columns: 1fr;
+    }
     .deployment-card {
       flex-direction: column;
       align-items: flex-start;
-    }
-    .readability-card {
-      grid-template-columns: 1fr;
     }
   }
 </style>

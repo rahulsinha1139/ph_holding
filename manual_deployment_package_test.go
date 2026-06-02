@@ -37,7 +37,7 @@ func resolveDeploymentSource(candidates ...string) (string, error) {
 		if candidate == "" {
 			continue
 		}
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+		if _, err := os.Stat(candidate); err == nil {
 			return candidate, nil
 		}
 	}
@@ -200,8 +200,10 @@ func scrubCleanSlateWorkflowData(db *gorm.DB) error {
 			DELETE FROM notification_receipts
 			WHERE notification_id IN (
 				SELECT id FROM notifications
-				WHERE source_type = 'task'
+				WHERE source_type IN ('task', 'project', 'followup')
 				   OR notification_type LIKE 'task%'
+				   OR notification_type LIKE 'project%'
+				   OR notification_type LIKE 'followup%'
 			)
 		`).Error; err != nil {
 			return err
@@ -210,8 +212,10 @@ func scrubCleanSlateWorkflowData(db *gorm.DB) error {
 	if db.Migrator().HasTable("notifications") {
 		if err := db.Exec(`
 			DELETE FROM notifications
-			WHERE source_type = 'task'
+			WHERE source_type IN ('task', 'project', 'followup')
 			   OR notification_type LIKE 'task%'
+			   OR notification_type LIKE 'project%'
+			   OR notification_type LIKE 'followup%'
 		`).Error; err != nil {
 			return err
 		}
@@ -222,6 +226,8 @@ func scrubCleanSlateWorkflowData(db *gorm.DB) error {
 		"task_comments",
 		"task_items",
 		"followup_tasks",
+		"project_members",
+		"projects",
 	} {
 		if db.Migrator().HasTable(table) {
 			if err := db.Exec("DELETE FROM " + table).Error; err != nil {
@@ -302,7 +308,7 @@ func scrubCleanSlateWorkflowData(db *gorm.DB) error {
 	if db.Migrator().HasTable("collaborative_pending_operations") {
 		if err := db.Exec(`
 			DELETE FROM collaborative_pending_operations
-			WHERE entity_type IN ('task', 'task_activity', 'task_comment')
+			WHERE entity_type IN ('task', 'task_activity', 'task_comment', 'project', 'project_member', 'followup')
 		`).Error; err != nil {
 			return err
 		}
@@ -349,7 +355,7 @@ func scrubCleanSlateWorkflowData(db *gorm.DB) error {
 	return nil
 }
 
-func TestSanitizeDeploymentDatabaseScrubsTasksAndGeneratedPH25DeliveryNotes(t *testing.T) {
+func TestSanitizeDeploymentDatabaseScrubsWorkflowRowsAndGeneratedPH25DeliveryNotes(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:sanitize-clean-slate?mode=memory&cache=shared"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
@@ -705,8 +711,12 @@ func TestPrepareDeploymentPackage(t *testing.T) {
 		t.Fatalf("failed to create top-level package data dir: %v", err)
 	}
 
-	macAppBundle := filepath.Join("build", "bin", "AsymmFlow.app")
-	if _, err := os.Stat(macAppBundle); err != nil {
+	macAppBundle, err := resolveDeploymentSource(
+		filepath.Join("build", "bin", "AsymmFlow.app"),
+		filepath.Join("build", "bin", appMacBundleName),
+		filepath.Join("deploy_package", "AsymmFlow.app"),
+	)
+	if err != nil {
 		t.Fatalf("failed to locate mac app bundle: %v", err)
 	}
 
@@ -720,7 +730,34 @@ func TestPrepareDeploymentPackage(t *testing.T) {
 	envSrc := filepath.Join("deploy_package", ".env")
 	dbSrc := filepath.Join(".", "ph_holdings.db")
 	templateImage := filepath.Join("deploy_package", "data", "PH Trading Quotation Template.png")
-	ahsTemplateImage := filepath.Join("CRITICAL_PH_CONTEXT_SSOT", "AHS Trading Letterhead.jpg")
+	ahsTemplateImage, err := resolveDeploymentSource(
+		filepath.Join("CRITICAL_PH_CONTEXT_SSOT", "AHS Trading Letterhead.jpg"),
+		filepath.Join("deploy_package", "data", "AHS Trading Letterhead.jpg"),
+	)
+	if err != nil {
+		t.Fatalf("failed to locate AHS letterhead image: %v", err)
+	}
+	signoffChecklistMD, err := resolveDeploymentSource(
+		filepath.Join("docs", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md"),
+		filepath.Join("deploy_package", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md"),
+	)
+	if err != nil {
+		t.Fatalf("failed to locate deployment signoff markdown: %v", err)
+	}
+	signoffChecklistPDF, err := resolveDeploymentSource(
+		filepath.Join("docs", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf"),
+		filepath.Join("deploy_package", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf"),
+	)
+	if err != nil {
+		t.Fatalf("failed to locate deployment signoff PDF: %v", err)
+	}
+	mentorGuide, err := resolveDeploymentSource(
+		filepath.Join("docs", "MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md"),
+		filepath.Join("deploy_package", "MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md"),
+	)
+	if err != nil {
+		t.Fatalf("failed to locate mentor import guide: %v", err)
+	}
 
 	copyTargets := []struct {
 		src string
@@ -734,12 +771,12 @@ func TestPrepareDeploymentPackage(t *testing.T) {
 		{ahsTemplateImage, filepath.Join(packageDir, "data", "AHS Trading Letterhead.jpg")},
 		{templateImage, filepath.Join("deploy_package", "data", "PH Trading Quotation Template.png")},
 		{ahsTemplateImage, filepath.Join("deploy_package", "data", "AHS Trading Letterhead.jpg")},
-		{filepath.Join("docs", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md"), filepath.Join(packageDir, "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md")},
-		{filepath.Join("docs", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf"), filepath.Join(packageDir, "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf")},
-		{filepath.Join("docs", "MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md"), filepath.Join(packageDir, "MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md")},
-		{filepath.Join("docs", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md"), filepath.Join("deploy_package", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md")},
-		{filepath.Join("docs", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf"), filepath.Join("deploy_package", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf")},
-		{filepath.Join("docs", "MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md"), filepath.Join("deploy_package", "MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md")},
+		{signoffChecklistMD, filepath.Join(packageDir, "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md")},
+		{signoffChecklistPDF, filepath.Join(packageDir, "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf")},
+		{mentorGuide, filepath.Join(packageDir, "MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md")},
+		{signoffChecklistMD, filepath.Join("deploy_package", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.md")},
+		{signoffChecklistPDF, filepath.Join("deploy_package", "DEPLOYMENT_SIGNOFF_CHECKLIST_2026_04_08.pdf")},
+		{mentorGuide, filepath.Join("deploy_package", "MENTOR_2025_ONEDRIVE_IMPORT_GUIDE_2026_04_10.md")},
 	}
 
 	for _, target := range copyTargets {
@@ -764,10 +801,12 @@ func TestPrepareDeploymentPackage(t *testing.T) {
 		t.Fatalf("failed to build deployment env: %v", err)
 	}
 
-	// Sanitize the built app bundle in place before packaging so direct local testing
-	// and packaged distribution both use the same clean license state.
-	if err := sanitizeAppBundle(macAppBundle, deploymentEnv, dbSrc); err != nil {
-		t.Fatalf("failed to sanitize mac app bundle: %v", err)
+	sanitizedMacAppBundle := filepath.Join(t.TempDir(), filepath.Base(macAppBundle))
+	if err := copyDeploymentDir(macAppBundle, sanitizedMacAppBundle); err != nil {
+		t.Fatalf("failed to copy mac app bundle for packaging: %v", err)
+	}
+	if err := sanitizeAppBundle(sanitizedMacAppBundle, deploymentEnv, dbSrc); err != nil {
+		t.Fatalf("failed to sanitize mac app bundle copy: %v", err)
 	}
 	for _, target := range []string{
 		filepath.Join(packageDir, ".env"),
@@ -785,7 +824,7 @@ func TestPrepareDeploymentPackage(t *testing.T) {
 		if err := os.RemoveAll(target); err != nil {
 			t.Fatalf("failed to reset app bundle target %s: %v", target, err)
 		}
-		if err := copyDeploymentDir(macAppBundle, target); err != nil {
+		if err := copyDeploymentDir(sanitizedMacAppBundle, target); err != nil {
 			t.Fatalf("failed to copy app bundle to %s: %v", target, err)
 		}
 		if err := sanitizeAppBundle(target, deploymentEnv, dbSrc); err != nil {
@@ -973,6 +1012,7 @@ func copyDeploymentFile(src, dst string) error {
 
 func deploymentVerificationHoldSyncTables() string {
 	return strings.Join([]string{
+		"license_keys",
 		"payments",
 		"supplier_invoices",
 		"supplier_invoice_items",

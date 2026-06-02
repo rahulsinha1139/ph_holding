@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-04-12T09:23:02.5589939+05:30",
+  "database_path": "ph_holdings.db",
+  "source_export_dir": "reports\\onedrive_2026_seed_20260412_092212",
+  "stage_rows": 0,
+  "active_db_rows": 79,
+  "matched_rows": 0,
+  "anomaly_rows": 0,
+  "missing_db_matches": 0,
+  "revenue_mismatches": 0,
+  "offer_total_mismatches": 0,
+  "offer_item_total_mismatches": 0,
+  "stage_subtotal_mismatches": 0,
+  "stage_grand_total_math_mismatches": 0,
+  "offer_total_below_item_sum": 0,
+  "db_revenue_below_item_sum": 0,
+  "stage_zero_items_nonzero_total": 0,
+  "stage_missing_commercial_data": 0,
+  "db_missing_product_details": 0,
+  "db_missing_offer_items": 0,
+  "sample_count": 0,
+  "output_dir": "reports\\onedrive_post_import_audit_20260412_092302"
+}

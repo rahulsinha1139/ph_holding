@@ -74,6 +74,13 @@ type App struct {
 	collaborationSyncMu       sync.Mutex                  // Prevent overlapping collaboration sync runs
 	collaborationSyncInitMu   sync.Mutex                  // Guards collaboration loop initialization/reset
 	shutdownOnce              sync.Once                   // Ensures app shutdown cleanup runs exactly once
+	startupMu                 sync.RWMutex                // Guards startup health fields read by pre-license UI
+	startupReady              bool                        // Startup completed enough for frontend calls
+	startupHealthy            bool                        // Backend initialized without fatal startup errors
+	startupError              string                      // Sanitized startup failure for UI diagnostics
+	startupDBPath             string                      // Resolved DB path used at startup
+	startupLogPath            string                      // App log path for support
+	startupUpdatedAt          time.Time                   // Last startup status update
 	startupImporting          bool                        // Bypass RBAC during startup data import
 	startupImportStartTime    time.Time                   // Timestamp when startup import began (for timeout enforcement)
 	currentUser               *User                       // Current logged-in user
@@ -105,7 +112,14 @@ var (
 // GetCSRFToken generates a new CSRF token valid for 1 hour
 // Used for defense-in-depth on critical operations (payments, invoices)
 func (a *App) GetCSRFToken() string {
-	token := generateSecureToken(32)
+	token, err := generateSecureToken(32)
+	if err != nil {
+		log.Printf("CRITICAL: CSRF token generation failed: %v", err)
+		if AppLogger != nil {
+			AppLogger.Error("CSRF token generation failed", err, nil)
+		}
+		return ""
+	}
 
 	csrfTokenMutex.Lock()
 	defer csrfTokenMutex.Unlock()
@@ -142,14 +156,14 @@ func (a *App) ValidateCSRFToken(token string) bool {
 }
 
 // generateSecureToken creates a cryptographically secure random token
-func generateSecureToken(length int) string {
+func generateSecureToken(length int) (string, error) {
 	bytes := make([]byte, length)
 	if _, err := rand.Read(bytes); err != nil {
 		// SECURITY: crypto/rand failure is a critical system issue.
 		// Do NOT fall back to predictable tokens - that silently degrades security.
-		log.Fatalf("CRITICAL: crypto/rand.Read failed, cannot generate secure token: %v", err)
+		return "", fmt.Errorf("crypto/rand.Read failed: %w", err)
 	}
-	return hex.EncodeToString(bytes)
+	return hex.EncodeToString(bytes), nil
 }
 
 // sanitizeSearchQuery removes SQL special characters from user search input
@@ -184,6 +198,19 @@ type ApplicationPaths struct {
 	AsymmMathRoot string `json:"asymm_math_root"`
 }
 
+// BackendHealth is intentionally pre-license: the activation UI needs to know
+// whether it is talking to a healthy Wails backend before blaming the license.
+type BackendHealth struct {
+	Ready         bool   `json:"ready"`
+	Healthy       bool   `json:"healthy"`
+	DatabaseReady bool   `json:"database_ready"`
+	StartupError  string `json:"startup_error,omitempty"`
+	DBPath        string `json:"db_path,omitempty"`
+	LogPath       string `json:"log_path,omitempty"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
+}
+
 // getAppPaths returns application paths without RBAC check (for internal backend use).
 // Use GetApplicationPaths() for frontend-facing calls that need permission gating.
 func (a *App) getAppPaths() *ApplicationPaths {
@@ -203,10 +230,13 @@ func (a *App) getAppPaths() *ApplicationPaths {
 	if err := os.MkdirAll(testDir, 0755); err != nil {
 		// CWD not writable — use platform data directory
 		if homeDir, hErr := os.UserHomeDir(); hErr == nil {
-			dataDir := filepath.Join(homeDir, ".local", "share", "AsymmFlow")
-			os.MkdirAll(dataDir, 0755)
-			log.Printf("CWD not writable, using data dir: %s", dataDir)
-			projectRoot = dataDir
+			dataDir := filepath.Join(homeDir, ".local", "share", appDataDirName)
+			if mkErr := os.MkdirAll(dataDir, 0755); mkErr != nil {
+				log.Printf("Failed to create fallback data dir %s: %v", dataDir, mkErr)
+			} else {
+				log.Printf("CWD not writable, using data dir: %s", dataDir)
+				projectRoot = dataDir
+			}
 		}
 	}
 
@@ -235,6 +265,96 @@ func (a *App) GetApplicationPaths() *ApplicationPaths {
 		return nil
 	}
 	return a.getAppPaths()
+}
+
+func (a *App) setStartupStatus(ready bool, healthy bool, startupErr string, dbPath string, logPath string) {
+	if a == nil {
+		return
+	}
+	a.startupMu.Lock()
+	defer a.startupMu.Unlock()
+	a.startupReady = ready
+	a.startupHealthy = healthy
+	a.startupError = strings.TrimSpace(startupErr)
+	if strings.TrimSpace(dbPath) != "" {
+		a.startupDBPath = strings.TrimSpace(dbPath)
+	}
+	if strings.TrimSpace(logPath) != "" {
+		a.startupLogPath = strings.TrimSpace(logPath)
+	}
+	a.startupUpdatedAt = time.Now()
+}
+
+func (a *App) completeStartupStatus(dbPath string, logPath string) {
+	if a == nil {
+		return
+	}
+	a.startupMu.Lock()
+	defer a.startupMu.Unlock()
+	a.startupReady = true
+	a.startupHealthy = strings.TrimSpace(a.startupError) == ""
+	if strings.TrimSpace(dbPath) != "" {
+		a.startupDBPath = strings.TrimSpace(dbPath)
+	}
+	if strings.TrimSpace(logPath) != "" {
+		a.startupLogPath = strings.TrimSpace(logPath)
+	}
+	a.startupUpdatedAt = time.Now()
+}
+
+func (a *App) recordBackgroundPanic(component string, recovered interface{}) {
+	if recovered == nil {
+		return
+	}
+	component = strings.TrimSpace(component)
+	if component == "" {
+		component = "background worker"
+	}
+	message := fmt.Sprintf("%s panic: %v", component, recovered)
+	log.Printf("🔥 %s", message)
+	if AppLogger != nil {
+		AppLogger.Error(message, fmt.Errorf("%v", recovered), nil)
+	}
+}
+
+func (a *App) GetBackendHealth() BackendHealth {
+	if a == nil {
+		return BackendHealth{
+			Ready:        false,
+			Healthy:      false,
+			StartupError: "Backend is not initialized",
+		}
+	}
+
+	a.startupMu.RLock()
+	health := BackendHealth{
+		Ready:        a.startupReady,
+		Healthy:      a.startupHealthy,
+		StartupError: a.startupError,
+		DBPath:       a.startupDBPath,
+		LogPath:      a.startupLogPath,
+	}
+	updatedAt := a.startupUpdatedAt
+	a.startupMu.RUnlock()
+
+	health.DatabaseReady = a.db != nil
+	if health.LogPath == "" {
+		health.LogPath = appDebugLogPath()
+	}
+	if !updatedAt.IsZero() {
+		health.UpdatedAt = updatedAt.Format(time.RFC3339)
+	}
+	if !a.appStartTime.IsZero() {
+		health.UptimeSeconds = int64(time.Since(a.appStartTime).Seconds())
+	}
+	if !health.Ready && health.StartupError == "" {
+		health.StartupError = "Backend is still starting"
+	}
+	if health.Ready && !health.DatabaseReady && health.StartupError == "" {
+		health.StartupError = "Database is not initialized"
+		health.Healthy = false
+	}
+	return health
 }
 
 // NewApp creates a new App application struct
@@ -271,6 +391,7 @@ func rotateLogFile(logPath string, maxSize int64, keepCount int) {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.appStartTime = time.Now()
+	a.setStartupStatus(false, false, "", "", "")
 
 	appendStartupDiagnostic("ONSTARTUP: begin")
 	appendStartupDiagnostic("ONSTARTUP: cwd=%s", func() string { d, _ := os.Getwd(); return d }())
@@ -280,6 +401,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// 1. Setup File Logging with rotation (FIX: Handle error, store file handle for cleanup)
 	logPath := appDebugLogPath()
+	a.setStartupStatus(false, false, "", "", logPath)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
 		appendStartupDiagnostic("ONSTARTUP: failed to create log directory for %s: %v", logPath, err)
 	}
@@ -309,10 +431,11 @@ func (a *App) startup(ctx context.Context) {
 
 	defer func() {
 		if r := recover(); r != nil {
+			a.setStartupStatus(true, false, fmt.Sprintf("Backend startup panic: %v", r), "", logPath)
 			appendStartupDiagnostic("ONSTARTUP: panic: %v", r)
 			log.Printf("🔥 CRITICAL PANIC: %v", r)
 			if AppLogger != nil {
-				AppLogger.Fatal("Application panic", fmt.Errorf("%v", r), map[string]interface{}{
+				AppLogger.Error("Application startup panic", fmt.Errorf("%v", r), map[string]interface{}{
 					"stack_trace": AppLogger.GetStackTrace(2),
 				})
 			}
@@ -362,6 +485,7 @@ func (a *App) startup(ctx context.Context) {
 	if dbPath == "" {
 		dbPath = getDatabasePath()
 	}
+	a.setStartupStatus(false, false, "", dbPath, logPath)
 
 	// Production fix: packaged apps may launch with an unexpected CWD.
 	// Resolve relative DB paths against executable-relative locations first,
@@ -404,10 +528,10 @@ func (a *App) startup(ctx context.Context) {
 			var dataDir string
 			if goruntime.GOOS == "windows" {
 				if appData := os.Getenv("APPDATA"); appData != "" {
-					dataDir = filepath.Join(appData, "AsymmFlow")
+					dataDir = filepath.Join(appData, appDataDirName)
 				}
 			} else if homeDir, hErr := os.UserHomeDir(); hErr == nil {
-				dataDir = filepath.Join(homeDir, ".local", "share", "AsymmFlow")
+				dataDir = filepath.Join(homeDir, ".local", "share", appDataDirName)
 			}
 
 			if dataDir != "" {
@@ -435,16 +559,19 @@ func (a *App) startup(ctx context.Context) {
 				var dataDir string
 				if goruntime.GOOS == "windows" {
 					if appData := os.Getenv("APPDATA"); appData != "" {
-						dataDir = filepath.Join(appData, "AsymmFlow")
+						dataDir = filepath.Join(appData, appDataDirName)
 					}
 				} else if homeDir, hErr := os.UserHomeDir(); hErr == nil {
-					dataDir = filepath.Join(homeDir, ".local", "share", "AsymmFlow")
+					dataDir = filepath.Join(homeDir, ".local", "share", appDataDirName)
 				}
 
 				if dataDir != "" {
-					os.MkdirAll(dataDir, 0755)
-					dbPath = filepath.Join(dataDir, dbName)
-					log.Printf("DB will be created in data directory: %s", dbPath)
+					if err := os.MkdirAll(dataDir, 0755); err != nil {
+						log.Printf("Failed to create data directory %s: %v", dataDir, err)
+					} else {
+						dbPath = filepath.Join(dataDir, dbName)
+						log.Printf("DB will be created in data directory: %s", dbPath)
+					}
 				}
 			}
 		}
@@ -477,6 +604,7 @@ func (a *App) startup(ctx context.Context) {
 	if err != nil {
 		// FIX 3: Sanitize error message - don't expose internal paths to user
 		sanitizedMsg := "Failed to connect to database. Please check your installation and ensure the application has proper file permissions."
+		a.setStartupStatus(true, false, sanitizedMsg, dbPath, logPath)
 
 		// Log detailed error internally for debugging
 		AppLogger.Error("Database connection failed", err, map[string]interface{}{
@@ -499,6 +627,7 @@ func (a *App) startup(ctx context.Context) {
 	AppLogger.Info("SQLite database connected successfully", map[string]interface{}{
 		"path": dbPath,
 	})
+	a.setStartupStatus(false, false, "", dbPath, logPath)
 
 	// Configure connection pool for SQLite (limited settings)
 	sqlDB, poolErr := a.db.DB()
@@ -599,6 +728,8 @@ func (a *App) startup(ctx context.Context) {
 				&DBInvoiceItem{},
 				&InvoiceSequence{}, // Race-condition-safe invoice numbering
 				&Payment{},
+				&CustomerReceipt{},
+				&CustomerReceiptAllocation{},
 				&Shipment{},
 
 				// Analytics
@@ -612,6 +743,7 @@ func (a *App) startup(ctx context.Context) {
 				// RFQs → Costings → Offers
 				&RFQData{},
 				&CostingSheetData{},
+				&CostingSheetAttachment{},
 				&CostingLineItemData{},
 				&OfferData{},
 
@@ -654,6 +786,9 @@ func (a *App) startup(ctx context.Context) {
 				// Device Registration & Approval System
 				&Device{},
 				&DeviceUser{},
+				&DataUpdateManifest{},
+				&DataUpdateOperation{},
+				&DataUpdateReceipt{},
 				&Employee{},
 				&EmployeeAccessLink{},
 				&UserActivitySession{},
@@ -664,6 +799,7 @@ func (a *App) startup(ctx context.Context) {
 				&Notification{},
 				&NotificationReceipt{},
 				&DeleteApprovalRequest{},
+				&EmployeeArchiveRequest{},
 				&TaskItem{},
 				&TaskComment{},
 				&TaskActivity{},
@@ -678,6 +814,10 @@ func (a *App) startup(ctx context.Context) {
 				&SupplierInvoiceItem{},
 				&DeliveryNote{},
 				&DeliveryNoteItem{},
+				&Warehouse{},
+				&InventoryItem{},
+				&StockMovement{},
+				&StockAdjustment{},
 
 				// Chat Persistence (Butler AI Conversations)
 				&Conversation{},
@@ -689,6 +829,9 @@ func (a *App) startup(ctx context.Context) {
 				// Offer Follow-Ups
 				&OfferFollowUp{},
 				&OfferNote{},
+				&RFQComment{},
+				&OpportunityComment{},
+				&DataQualityReview{},
 
 				// Sync Infrastructure
 				&SyncRecord{},
@@ -696,6 +839,9 @@ func (a *App) startup(ctx context.Context) {
 				// Tally Data Imports
 				&TallyInvoiceImport{},
 				&TallyPurchaseImport{},
+				&IntelligenceOpportunityEnrichment{},
+				&IntelligenceLineItemEnrichment{},
+				&IntelligenceOrderEnrichment{},
 
 				// Phase 23: E-Invoicing & Serial Tracking
 				&CreditNote{},
@@ -729,21 +875,22 @@ func (a *App) startup(ctx context.Context) {
 		// Ensure release-critical workflow foundations exist regardless of main migration path.
 		foundationErr := a.ensureCriticalDeploymentFoundations()
 		if foundationErr != nil {
+			a.setStartupStatus(true, false, fmt.Sprintf("Critical deployment foundation initialization failed: %v", foundationErr), dbPath, logPath)
 			AppLogger.Error("Critical deployment foundation initialization failed", foundationErr, nil)
 		}
 		a.enforceCriticalDeploymentState("startup", foundationErr)
 
 		// Seed license keys (10 per role) if needed
-		if err := a.SeedLicenseKeys(); err != nil {
+		if err := a.seedLicenseKeysInternal(); err != nil {
 			AppLogger.Warn("License key seeding warning", map[string]interface{}{"error": err.Error()})
 		}
 
 		// Assign keys to named employees
-		if err := a.SeedEmployeeKeys(); err != nil {
+		if err := a.seedEmployeeKeysInternal(); err != nil {
 			AppLogger.Warn("Employee key assignment warning", map[string]interface{}{"error": err.Error()})
 		}
 
-		if err := a.ApplyDeploymentLicenseActivationFlush(); err != nil {
+		if err := a.applyDeploymentLicenseActivationFlushInternal(); err != nil {
 			AppLogger.Warn("Deployment license activation flush warning", map[string]interface{}{"error": err.Error()})
 		}
 
@@ -825,6 +972,7 @@ func (a *App) startup(ctx context.Context) {
 	AppLogger.Info("Geometry Bridge initialized", map[string]interface{}{
 		"pipelines": 4,
 	})
+	ensureBundledAIEnvironment()
 
 	// Register Mistral API key provider (encrypted DB -> settings.json -> env fallback)
 	SetMistralKeyProvider(func() string {
@@ -904,7 +1052,7 @@ func (a *App) startup(ctx context.Context) {
 
 	diagLog("STARTUP: Initializing DBManager...")
 	a.InitDBManager()
-	a.StartCollaborativeSyncLoop(8 * time.Second)
+	a.startCollaborativeSyncLoopInternal(8 * time.Second)
 	diagLog("STARTUP: DBManager done")
 	a.dbSyncService = newDBSyncService(a)
 
@@ -1130,6 +1278,12 @@ func (a *App) startup(ctx context.Context) {
 			}
 			resultChan := make(chan importResult, 1)
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						a.recordBackgroundPanic("Tally startup import", r)
+						resultChan <- importResult{nil, fmt.Errorf("tally startup import panic: %v", r)}
+					}
+				}()
 				r, e := a.ImportAllTallyData()
 				resultChan <- importResult{r, e}
 			}()
@@ -1185,6 +1339,8 @@ func (a *App) startup(ctx context.Context) {
 	} else {
 		log.Println("✓ File Watcher disabled in config")
 	}
+
+	a.completeStartupStatus(dbPath, logPath)
 }
 
 func shouldSkipCriticalAutoMigrate(db *gorm.DB, model interface{}) bool {
@@ -1194,26 +1350,42 @@ func shouldSkipCriticalAutoMigrate(db *gorm.DB, model interface{}) bool {
 
 	switch model.(type) {
 	case *RFQComment:
-		namedModel, ok := model.(tableNamer)
-		if !ok {
-			return false
-		}
-		tableName := namedModel.TableName()
-		if !db.Migrator().HasTable(tableName) {
-			return false
-		}
-
-		requiredColumns := []string{"id", "rfq_id", "comment", "created_by", "created_at"}
-		for _, column := range requiredColumns {
-			if !db.Migrator().HasColumn(model, column) {
-				return false
-			}
-		}
-		log.Printf("ℹ️ Skipping AutoMigrate for %s: existing SQLite table already matches required columns", tableName)
-		return true
+		return shouldSkipCriticalAutoMigrateWhenColumnsExist(db, model, []string{"id", "rfq_id", "comment", "created_by", "created_at"})
+	case *BankStatement:
+		return shouldSkipCriticalAutoMigrateWhenColumnsExist(db, model, []string{
+			"id", "bank_account_id", "statement_number", "statement_date", "period_start", "period_end",
+			"opening_balance", "closing_balance", "currency", "total_debits", "total_credits",
+			"status", "imported_from", "import_method", "balance_verified", "division", "notes",
+		})
+	case *BankStatementLine:
+		return shouldSkipCriticalAutoMigrateWhenColumnsExist(db, model, []string{
+			"id", "bank_statement_id", "line_number", "transaction_date", "value_date", "description",
+			"reference", "debit", "credit", "balance", "transaction_type", "is_matched",
+			"match_type", "match_confidence", "matched_payment_id", "matched_invoice_ids",
+			"matched_expense_id", "verified_by", "verified_at",
+		})
 	default:
 		return false
 	}
+}
+
+func shouldSkipCriticalAutoMigrateWhenColumnsExist(db *gorm.DB, model interface{}, requiredColumns []string) bool {
+	namedModel, ok := model.(tableNamer)
+	if !ok {
+		return false
+	}
+	tableName := namedModel.TableName()
+	if !db.Migrator().HasTable(tableName) {
+		return false
+	}
+
+	for _, column := range requiredColumns {
+		if !db.Migrator().HasColumn(model, column) {
+			return false
+		}
+	}
+	log.Printf("ℹ️ Skipping AutoMigrate for %s: existing SQLite table already matches required columns", tableName)
+	return true
 }
 
 // beforeClose owns the desktop close path. Wails on macOS cancels the native
@@ -1221,8 +1393,19 @@ func shouldSkipCriticalAutoMigrate(db *gorm.DB, model interface{}) bool {
 // the app from lingering if a background sync or WebKit quit callback stalls.
 func (a *App) beforeClose(ctx context.Context) bool {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Close cleanup", r)
+				os.Exit(1)
+			}
+		}()
 		done := make(chan struct{})
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					a.recordBackgroundPanic("Shutdown cleanup", r)
+				}
+			}()
 			a.shutdown(ctx)
 			close(done)
 		}()
@@ -1241,8 +1424,13 @@ func (a *App) beforeClose(ctx context.Context) bool {
 func waitForShutdownStep(label string, timeout time.Duration, wait func()) bool {
 	done := make(chan struct{})
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("WARNING: Shutdown step panicked: %s: %v", label, r)
+			}
+			close(done)
+		}()
 		wait()
-		close(done)
 	}()
 
 	select {
@@ -1282,7 +1470,7 @@ func (a *App) shutdownInternal(ctx context.Context) {
 
 	// Stop all background sync goroutines (wait for each to finish before closing connections)
 	waitForShutdownStep("background database sync", 500*time.Millisecond, a.StopBackgroundDBSync)
-	waitForShutdownStep("collaboration sync loop", 500*time.Millisecond, a.StopCollaborativeSyncLoop)
+	waitForShutdownStep("collaboration sync loop", 500*time.Millisecond, a.stopCollaborativeSyncLoopInternal)
 	if a.dbSyncService != nil {
 		waitForShutdownStep("periodic sync service", 500*time.Millisecond, a.StopPeriodicSync)
 	}
@@ -1349,10 +1537,17 @@ func (a *App) runCustomMigrations() {
 	a.addColumnIfNotExists("rfq_datas", "visit_locations", "TEXT")
 	a.addColumnIfNotExists("rfq_datas", "product_details", "TEXT")
 	a.addColumnIfNotExists("rfq_datas", "source_doc_path", "TEXT")
+	a.addColumnIfNotExists("rfq_datas", "created_by", "TEXT")
 	a.addColumnIfNotExists("opportunities", "product_details", "TEXT")
 	a.addColumnIfNotExists("opportunities", "division", "TEXT DEFAULT 'PH Trading'")
+	for _, table := range []string{"customer_contacts", "supplier_contacts"} {
+		a.addColumnIfNotExists(table, "is_decision_maker", "BOOLEAN DEFAULT 0")
+		a.addColumnIfNotExists(table, "decision_role", "TEXT")
+		a.addColumnIfNotExists(table, "reports_to_contact_id", "TEXT")
+		a.addColumnIfNotExists(table, "reports_to_name", "TEXT")
+	}
 
-	// Migration 3: Migrate offer numbers from OFR-YYYYMMDD-XXXX to XX-25 format
+	// Migration 3: Repair legacy generated offer numbers from folder/reference values.
 	a.migrateOfferNumbers()
 
 	// Migration 3b: Ensure offers support division-aware storage for PH/AHS flows
@@ -1479,11 +1674,16 @@ func (a *App) ensureCrossModuleSchemaExtensions() {
 	}
 
 	// Mature deployment databases skip runCustomMigrations() during startup,
-	// so keep the offer division repair in the always-run foundation path too.
+	// so keep offer-number and division repairs in the always-run foundation path too.
+	a.migrateOfferNumbers()
 	a.migrateOfferDivisionSupport()
 	a.addColumnIfNotExists("offers", "terms_and_conditions", "TEXT")
 	a.addColumnIfNotExists("offers", "subject", "TEXT")
 	a.addColumnIfNotExists("offers", "body", "TEXT")
+	a.addColumnIfNotExists("offers", "attachment_scope_id", "TEXT")
+	a.addColumnIfNotExists("rfq_comments", "updated_at", "DATETIME")
+	a.addColumnIfNotExists("opportunity_comments", "updated_at", "DATETIME")
+	a.addColumnIfNotExists("costing_line_items", "updated_at", "DATETIME")
 	if err := repairImportedCommercialDocuments(a.db); err != nil {
 		log.Printf("⚠️ Commercial document repair skipped: %v", err)
 	}
@@ -1511,13 +1711,22 @@ func (a *App) ensureCrossModuleSchemaExtensions() {
 	a.addColumnIfNotExists("supplier_invoices", "ocr_document_id", "TEXT")
 	a.addColumnIfNotExists("supplier_invoices", "ocr_confidence", "REAL DEFAULT 0")
 	a.addColumnIfNotExists("payments", "division", "TEXT DEFAULT 'PH Trading'")
+	a.addColumnIfNotExists("payments", "receipt_id", "TEXT")
 	a.addColumnIfNotExists("supplier_payments", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("credit_notes", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("bank_statements", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("bank_statements", "notes", "TEXT")
+	if err := a.db.AutoMigrate(&CustomerReceipt{}, &CustomerReceiptAllocation{}); err != nil {
+		log.Printf("⚠️ Customer receipt migration: %v", err)
+	}
 	if err := a.db.AutoMigrate(&BankLinePaymentAllocation{}); err != nil {
 		log.Printf("⚠️ BankLinePaymentAllocation migration: %v", err)
 	}
+	if err := a.ensureCostingAttachmentStorageReady(); err != nil {
+		log.Printf("⚠️ Costing attachment migration: %v", err)
+	}
+	a.addColumnIfNotExists("bank_line_payment_allocations", "customer_payment_id", "TEXT")
+	a.addColumnIfNotExists("bank_line_payment_allocations", "customer_receipt_id", "TEXT")
 	a.addColumnIfNotExists("expense_entries", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("recurring_expenses", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("bank_expense_entries", "division", "TEXT DEFAULT 'PH Trading'")
@@ -2090,59 +2299,136 @@ func (a *App) migrateInvoiceCheckConstraint() {
 	}
 }
 
-// migrateOfferNumbers converts offer numbers from OFR-YYYYMMDD-XXXX and QUO-YYYY-XX to XX-YY format
+// migrateOfferNumbers repairs legacy generated offer numbers. PH Trading's
+// commercial offer number is the physical folder/reference number, so do not
+// rewrite old references into sequential NN-YY values.
 func (a *App) migrateOfferNumbers() {
-	var offers []Offer
-	if err := a.db.Find(&offers).Error; err != nil {
-		log.Printf("⚠️ Failed to fetch offers for migration: %v", err)
-		return
+	repaired := a.repairGeneratedOfferNumbersFromReferences()
+	if repaired > 0 {
+		log.Printf("✅ Repaired %d generated offer numbers from folder/reference values", repaired)
+	}
+}
+
+func (a *App) repairGeneratedOfferNumbersFromReferences() int {
+	if a.db == nil {
+		return 0
 	}
 
-	migrated := 0
-	for _, offer := range offers {
-		oldNum := offer.OfferNumber
-		newNum := ""
+	type offerNumberRepairCandidate struct {
+		ID                string `gorm:"column:id"`
+		OfferNumber       string `gorm:"column:offer_number"`
+		CustomerReference string `gorm:"column:customer_reference"`
+		FolderNumber      string `gorm:"column:folder_number"`
+		EHRef             string `gorm:"column:eh_ref"`
+	}
 
-		// Skip if already in XX-YY format
-		if matched, _ := regexp.MatchString(`^\d+-\d{2}$`, oldNum); matched {
+	var rows []offerNumberRepairCandidate
+	if err := a.db.Raw(`
+		SELECT
+			o.id,
+			COALESCE(o.offer_number, '') AS offer_number,
+			COALESCE(o.customer_reference, '') AS customer_reference,
+			COALESCE(op.folder_number, '') AS folder_number,
+			COALESCE(op.eh_ref, '') AS eh_ref
+		FROM offers o
+		LEFT JOIN opportunities op ON op.offer_id = o.id AND op.deleted_at IS NULL
+		WHERE o.deleted_at IS NULL
+	`).Scan(&rows).Error; err != nil {
+		log.Printf("⚠️ Failed to inspect offer numbers for repair: %v", err)
+		return 0
+	}
+
+	referenceUseCount := make(map[string]int)
+	for _, row := range rows {
+		if !isGeneratedYearSequenceOfferNumber(row.OfferNumber) {
+			continue
+		}
+		reference := cleanOfferNumber(firstNonEmptyString(row.FolderNumber, row.CustomerReference, row.EHRef))
+		if reference == "" || reference == cleanOfferNumber(row.OfferNumber) {
+			continue
+		}
+		referenceUseCount[reference]++
+	}
+
+	repaired := 0
+	for _, row := range rows {
+		current := cleanOfferNumber(row.OfferNumber)
+		if !isGeneratedYearSequenceOfferNumber(current) {
 			continue
 		}
 
-		if strings.HasPrefix(oldNum, "QUO-") {
-			// QUO-2025-50 → 50-25
-			parts := strings.Split(oldNum, "-")
-			if len(parts) == 3 && len(parts[1]) >= 4 {
-				num := parts[2]       // "50"
-				year := parts[1][2:4] // "25" from "2025"
-				newNum = fmt.Sprintf("%s-%s", num, year)
-			}
-		} else if strings.HasPrefix(oldNum, "OFR-") {
-			// OFR-20250131-0001 → need to assign new sequential number
-			// For date-based format, we'll assign based on creation order
-			year := time.Now().Year() % 100
-			// Get next sequential number for this year
-			var maxNum int
-			yearSuffix := fmt.Sprintf("-%02d", year)
-			a.db.Model(&Offer{}).
-				Where("offer_number LIKE ?", "%"+yearSuffix).
-				Select("COALESCE(MAX(CAST(SUBSTR(offer_number, 1, INSTR(offer_number, '-')-1) AS INTEGER)), 0)").
-				Scan(&maxNum)
-			newNum = fmt.Sprintf("%d-%02d", maxNum+1, year)
+		reference := cleanOfferNumber(firstNonEmptyString(row.FolderNumber, row.CustomerReference, row.EHRef))
+		if reference == "" || reference == current {
+			continue
+		}
+		if referenceUseCount[reference] > 1 {
+			log.Printf("ℹ️ Skipping offer number repair %s → %s because the reference is shared by %d offers", current, reference, referenceUseCount[reference])
+			continue
 		}
 
-		if newNum != "" && newNum != oldNum {
-			if err := a.db.Model(&offer).Update("offer_number", newNum).Error; err != nil {
-				log.Printf("⚠️ Failed to migrate offer %s → %s: %v", oldNum, newNum, err)
-			} else {
-				log.Printf("✅ Migrated offer number: %s → %s", oldNum, newNum)
-				migrated++
-			}
+		var conflictCount int64
+		if err := a.db.Model(&Offer{}).Where("offer_number = ? AND id <> ?", reference, row.ID).Count(&conflictCount).Error; err != nil {
+			log.Printf("⚠️ Failed to check offer number conflict for %s: %v", reference, err)
+			continue
 		}
+		if conflictCount > 0 {
+			log.Printf("ℹ️ Skipping offer number repair %s → %s because that offer number already exists", current, reference)
+			continue
+		}
+
+		if err := a.db.Model(&Offer{}).Where("id = ?", row.ID).Update("offer_number", reference).Error; err != nil {
+			log.Printf("⚠️ Failed to repair offer number %s → %s: %v", current, reference, err)
+			continue
+		}
+		log.Printf("✅ Repaired offer number: %s → %s", current, reference)
+		repaired++
 	}
 
-	if migrated > 0 {
-		log.Printf("✅ Migrated %d offer numbers to XX-YY format", migrated)
+	return repaired
+}
+
+func isGeneratedYearSequenceOfferNumber(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
 	}
+	return regexp.MustCompile(`^\d{1,4}-\d{2}$`).MatchString(value)
+}
+
+func desiredOfferNumberFromReferences(currentOfferNumber, fallback string, references ...string) string {
+	current := cleanOfferNumber(currentOfferNumber)
+	fallback = cleanOfferNumber(fallback)
+	reference := cleanOfferNumber(firstNonEmptyString(references...))
+
+	if reference != "" && (current == "" || isGeneratedYearSequenceOfferNumber(current)) {
+		return reference
+	}
+	if current != "" {
+		return current
+	}
+	if reference != "" {
+		return reference
+	}
+	return fallback
+}
+
+func desiredOfferNumberFromOfferUpdate(data OfferUpdateData, fallback string) string {
+	return desiredOfferNumberFromReferences(
+		data.OfferNumber,
+		fallback,
+		data.FolderNumber,
+		data.CustomerReference,
+	)
+}
+
+func desiredOfferNumberFromCosting(data CostingExportData, fallback string) string {
+	return desiredOfferNumberFromReferences(
+		data.OfferNumber,
+		fallback,
+		data.FolderNumber,
+		data.CostingId,
+		data.RfqReference,
+	)
 }
 
 // PredictPayment performs payment prediction for a single customer
@@ -2374,6 +2660,38 @@ type DashboardStats struct {
 	FreshStartDate   string  `json:"fresh_start_date"`
 }
 
+const dashboardChartYear = 2026
+
+func dashboardYTDWindow() (int, time.Time, time.Time) {
+	now := time.Now()
+	loc := now.Location()
+	start := time.Date(dashboardChartYear, time.January, 1, 0, 0, 0, 0, loc)
+	end := time.Date(dashboardChartYear+1, time.January, 1, 0, 0, 0, 0, loc)
+
+	if now.Year() == dashboardChartYear {
+		end = time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc)
+	} else if now.Year() < dashboardChartYear {
+		end = start
+	}
+
+	return dashboardChartYear, start, end
+}
+
+func opportunityInDashboardYTD(opp Opportunity, start time.Time, end time.Time) bool {
+	year := opp.Year
+	if year == 0 && !opp.OfferDate.IsZero() {
+		year = opp.OfferDate.Year()
+	}
+	if year != dashboardChartYear {
+		return false
+	}
+
+	if !opp.OfferDate.IsZero() {
+		return !opp.OfferDate.Before(start) && opp.OfferDate.Before(end)
+	}
+	return true
+}
+
 type orderReceivableExposureRow struct {
 	OrderValueBHD float64 `gorm:"column:order_value_bhd"`
 	InvoicedBHD   float64 `gorm:"column:invoiced_bhd"`
@@ -2553,10 +2871,7 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 	}
 	if bookedOrderValue > stats.TotalRevenue {
 		stats.TotalRevenue = bookedOrderValue
-		stats.RevenueMeta = fmt.Sprintf("Confirmed orders FY%d", activityYear)
-		if usesOperationalFreshStart(activityYear) {
-			stats.RevenueMeta = fmt.Sprintf("Fresh orders from %s", operationalStart.Format("2 Jan 2006"))
-		}
+		stats.RevenueMeta = fmt.Sprintf("Confirmed orders YTD %d", activityYear)
 	}
 
 	// 4. Win Rate
@@ -2624,6 +2939,28 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 		log.Printf("Warning: Failed to count pending invoices: %v", err)
 	}
 	stats.PendingInvoices = int(pendingCount)
+	if stats.OutstandingAR <= 0 {
+		var invoiceCountInWindow int64
+		if err := a.db.Model(&Invoice{}).
+			Where("invoice_date >= ? AND invoice_date < ?", operationalStart, yearEnd).
+			Count(&invoiceCountInWindow).Error; err != nil {
+			log.Printf("Warning: Failed to count invoice rows for dashboard AR fallback: %v", err)
+		} else if invoiceCountInWindow == 0 {
+			if exposure, pendingOrders, err := a.calculateUninvoicedOrderExposure(operationalStart, yearEnd); err != nil {
+				log.Printf("Warning: Failed to calculate uninvoiced order exposure: %v", err)
+			} else if exposure > 0 {
+				stats.OutstandingAR = exposure
+				if stats.PendingInvoices == 0 {
+					stats.PendingInvoices = pendingOrders
+				}
+			}
+		}
+	}
+
+	collectibleValue := invoiceRevenue + stats.OutstandingAR
+	if collectibleValue > 0 {
+		stats.CollectionRate = math.Round((invoiceRevenue/collectibleValue)*1000) / 10
+	}
 
 	if outstandingAR <= 0 {
 		orderReceivableFallback, ordersPendingInvoice, err := a.calculateUninvoicedOrderExposure(operationalStart, yearEnd)
@@ -2733,15 +3070,56 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 	return stats, nil
 }
 
+func (a *App) dashboardRevenueWindow() (int, time.Time, time.Time) {
+	now := time.Now()
+	loc := now.Location()
+	year := now.Year()
+	start := time.Date(year, time.January, 1, 0, 0, 0, 0, loc)
+	end := time.Date(year, time.December, 31, 23, 59, 59, int(time.Second-time.Nanosecond), loc)
+
+	if a == nil || a.db == nil {
+		return year, start, end
+	}
+
+	postedStatuses := []string{"Sent", "Overdue", "PartiallyPaid", "Paid"}
+	var currentYearCount int64
+	if err := a.db.Model(&Invoice{}).
+		Where("deleted_at IS NULL").
+		Where("status IN ?", postedStatuses).
+		Where("invoice_date >= ? AND invoice_date <= ?", start, end).
+		Count(&currentYearCount).Error; err == nil && currentYearCount > 0 {
+		return year, start, end
+	}
+
+	var latestYear int
+	if err := a.db.Raw(`
+		SELECT COALESCE(MAX(CAST(strftime('%Y', invoice_date) AS INTEGER)), ?)
+		FROM invoices
+		WHERE deleted_at IS NULL
+		  AND status IN ('Sent', 'Overdue', 'PartiallyPaid', 'Paid')
+		  AND invoice_date IS NOT NULL
+	`, year).Scan(&latestYear).Error; err != nil || latestYear <= 0 {
+		return year, start, end
+	}
+	if latestYear == year {
+		return year, start, end
+	}
+
+	fallbackStart := time.Date(latestYear, time.January, 1, 0, 0, 0, 0, loc)
+	fallbackEnd := time.Date(latestYear, time.December, 31, 23, 59, 59, int(time.Second-time.Nanosecond), loc)
+	return latestYear, fallbackStart, fallbackEnd
+}
+
 // CustomerRevenueData represents revenue aggregated by customer for charts
 type CustomerRevenueData struct {
 	CustomerID   string  `json:"customer_id"`
 	CustomerName string  `json:"customer_name"`
 	Revenue      float64 `json:"revenue"`
 	InvoiceCount int     `json:"invoice_count"`
+	Year         int     `json:"year"`
 }
 
-// GetMonthlyRevenueByCustomer retrieves revenue data grouped by customer for dashboard charts (Current Year Only)
+// GetMonthlyRevenueByCustomer retrieves revenue data grouped by customer for the dashboard revenue view.
 func (a *App) GetMonthlyRevenueByCustomer() ([]CustomerRevenueData, error) {
 	if err := a.requirePermission("dashboard:view"); err != nil {
 		return nil, err
@@ -2752,34 +3130,32 @@ func (a *App) GetMonthlyRevenueByCustomer() ([]CustomerRevenueData, error) {
 
 	var results []CustomerRevenueData
 
-	// Use latest invoice year (same approach as dashboard stats)
-	var latestYear int
-	if err := a.db.Model(&Invoice{}).Select("COALESCE(MAX(strftime('%Y', invoice_date)), 0)").Scan(&latestYear).Error; err != nil || latestYear == 0 {
-		latestYear = time.Now().Year()
-	}
+	year, yearStart, yearEnd := a.dashboardRevenueWindow()
 
-	// Query to aggregate revenue by customer (latest year with data)
+	// Query to aggregate posted invoice revenue by customer for the active revenue window.
 	// Join invoices with customers to get customer names
 	query := `
 		SELECT
 			c.id as customer_id,
 			c.business_name as customer_name,
 			COALESCE(SUM(i.grand_total_bhd), 0) as revenue,
-			COUNT(i.id) as invoice_count
+			COUNT(i.id) as invoice_count,
+			? as year
 		FROM customers c
-		LEFT JOIN invoices i ON i.customer_id = c.id AND i.status NOT IN ('Cancelled', 'Void')
-			AND strftime('%Y', i.invoice_date) = ?
+		LEFT JOIN invoices i ON i.customer_id = c.id
+			AND i.status IN ('Sent', 'Overdue', 'PartiallyPaid', 'Paid')
+			AND i.invoice_date >= ? AND i.invoice_date <= ?
 		GROUP BY c.id, c.business_name
 		HAVING revenue > 0
 		ORDER BY revenue DESC
 	`
 
-	if err := a.db.Raw(query, fmt.Sprintf("%d", latestYear)).Scan(&results).Error; err != nil {
+	if err := a.db.Raw(query, year, yearStart, yearEnd).Scan(&results).Error; err != nil {
 		log.Printf("Error fetching customer revenue data: %v", err)
 		return nil, newError("DB_QUERY_FAILED", "Failed to retrieve customer revenue data", err.Error())
 	}
 
-	log.Printf("Retrieved revenue data for %d customers (year %d)", len(results), latestYear)
+	log.Printf("Retrieved revenue data for %d customers (revenue year %d)", len(results), year)
 	return results, nil
 }
 
@@ -3025,6 +3401,11 @@ func withTimeout(ctx context.Context, operation func() error) error {
 
 	// Run operation in goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				errChan <- fmt.Errorf("database operation panic: %v", r)
+			}
+		}()
 		errChan <- operation()
 	}()
 
@@ -3371,9 +3752,7 @@ func (a *App) GetReceivablesAging(customerID string) ReceivablesAgingSummary {
 		return ReceivablesAgingSummary{}
 	}
 	invoices := a.linkedInvoicesForCustomer(linkIndex, customer)
-	orders := a.linkedOrdersForCustomer(linkIndex, customer)
-	orderExposure := linkedOrderExposure(orders, invoices)
-	aging := linkedReceivablesAging(invoices, orderExposure)
+	aging := linkedReceivablesAging(invoices, 0)
 
 	log.Printf("Receivables aging for customer %s: Total %.2f BHD (Current: %.2f, 30-60: %.2f, 60-90: %.2f, 90-120: %.2f, 120+: %.2f)",
 		customerID, aging.TotalOutstanding, aging.Current, aging.Days30_60, aging.Days60_90, aging.Days90_120, aging.Days120Plus)
@@ -3523,11 +3902,12 @@ type CustomerFullProfile struct {
 }
 
 type InvoiceSummary struct {
-	ID            string    `json:"id"`
-	InvoiceNumber string    `json:"invoice_number"`
-	InvoiceDate   time.Time `json:"invoice_date"`
-	GrandTotalBHD float64   `json:"grand_total_bhd"`
-	Status        string    `json:"status"`
+	ID             string    `json:"id"`
+	InvoiceNumber  string    `json:"invoice_number"`
+	InvoiceDate    time.Time `json:"invoice_date"`
+	GrandTotalBHD  float64   `json:"grand_total_bhd"`
+	OutstandingBHD float64   `json:"outstanding_bhd"`
+	Status         string    `json:"status"`
 }
 
 // GetCustomerFullProfile retrieves complete customer profile with all relationships
@@ -3541,8 +3921,6 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 		return profile, fmt.Errorf("database not initialized")
 	}
 
-	// 1. Get customer master through the canonical linkage layer. Transactional rows
-	// use a mix of UUIDs, business customer codes, and names depending on import path.
 	linkIndex := a.buildCustomerLinkIndex()
 	customer, ok := linkIndex.resolve(customerID, customerID)
 	if !ok {
@@ -3571,85 +3949,123 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 
 	invoices := a.linkedInvoicesForCustomer(linkIndex, customer)
 	orders := a.linkedOrdersForCustomer(linkIndex, customer)
-	offers := a.linkedOffersForCustomer(linkIndex, customer)
 	rfqs := a.linkedRFQsForCustomer(linkIndex, customer)
+	offers := a.linkedOffersForCustomer(linkIndex, customer)
 	opportunities := a.linkedOpportunitiesForCustomer(linkIndex, customer)
 
-	var postedInvoiceValue float64
-	for _, inv := range invoices {
-		if invoicePostedStatus(inv.Status) {
-			postedInvoiceValue += inv.GrandTotalBHD
-		}
-	}
+	// 2. Get contacts
+	var contacts []CustomerContact
+	contactIDs := uniqueNonEmptyStrings(customer.ID, customer.CustomerID, customer.CustomerCode)
+	a.db.Where("customer_id IN ?", contactIDs).Find(&contacts)
+	profile.Contacts = contacts
 
+	// Calculate order and receivables exposure through the same linkage rules used by CRM dashboards.
 	var totalOrderValue float64
-	ordersByOfferID := make(map[string]bool)
+	recentOrders := make([]OrderSummary, 0, len(orders))
 	for _, order := range orders {
 		if !commercialOrderStatus(order.Status) {
 			continue
 		}
 		orderValue := customerCommercialOrderValue(order)
-		totalOrderValue += orderValue
 		profile.TotalOrders++
-		if profile.LastOrderDate == nil || order.OrderDate.After(*profile.LastOrderDate) {
-			last := order.OrderDate
-			profile.LastOrderDate = &last
-		}
-		if strings.TrimSpace(order.OfferID) != "" {
-			ordersByOfferID[order.OfferID] = true
+		totalOrderValue += orderValue
+		if len(recentOrders) < 5 {
+			recentOrders = append(recentOrders, OrderSummary{
+				OrderNumber:   order.OrderNumber,
+				OrderDate:     order.OrderDate,
+				TotalValueBHD: roundTo3(orderValue),
+				Status:        order.Status,
+			})
 		}
 	}
 	if profile.TotalOrders > 0 {
 		profile.AvgOrderValue = roundTo3(totalOrderValue / float64(profile.TotalOrders))
 	}
+	profile.RecentOrders = recentOrders
 
-	pipelineEvents := buildCustomerPipelineEvents(customer.ID, rfqs, offers, opportunities, true)
-	orderExposure := linkedOrderExposure(orders, invoices)
-	var activePipelineValue float64
-	for _, event := range pipelineEvents {
-		if event.Value <= 0 || closedLostStage(event.Status) {
-			continue
-		}
-		if strings.TrimSpace(event.OfferID) != "" && ordersByOfferID[event.OfferID] {
-			continue
-		}
-		activePipelineValue += event.Value
-	}
-	profile.TotalRevenue = roundTo3(postedInvoiceValue + orderExposure + activePipelineValue)
-
-	// 2. Get contacts
-	var allContacts []CustomerContact
-	a.db.Find(&allContacts)
-	contacts := make([]CustomerContact, 0, len(allContacts))
-	for _, contact := range allContacts {
-		if linkIndex.matches(customer, contact.CustomerID, "") {
-			contacts = append(contacts, contact)
-		}
-	}
-	profile.Contacts = contacts
-
-	// 3. Get AR aging
-	profile.ARAgingBuckets = linkedReceivablesAging(invoices, orderExposure)
+	profile.ARAgingBuckets = linkedReceivablesAging(invoices, 0)
 	profile.OutstandingBHD = profile.ARAgingBuckets.TotalOutstanding
 
 	// Calculate overdue
 	profile.OverdueBHD = profile.ARAgingBuckets.Days30_60 + profile.ARAgingBuckets.Days60_90 +
 		profile.ARAgingBuckets.Days90_120 + profile.ARAgingBuckets.Days120Plus
 
-	// 4. Get RFQ stats
-	wonCount := 0
-	recentRFQs := make([]OpportunitySummary, 0)
+	// Commercial value includes deduped orders, posted invoices, offers, RFQs, and pipeline rows.
+	commercialEvents := newCustomerCommercialEventCollector()
+	for _, order := range orders {
+		if !commercialOrderStatus(order.Status) {
+			continue
+		}
+		commercialEvents.add(customerCommercialEvent{
+			CustomerID: customer.ID,
+			OfferID:    order.OfferID,
+			Ref:        order.OrderNumber,
+			Project:    firstNonEmpty(order.CustomerReference, order.OrderNumber),
+			Status:     order.Status,
+			Source:     "order",
+			Date:       order.OrderDate,
+			Value:      customerCommercialOrderValue(order),
+		},
+			"order:"+order.ID,
+			"order_number:"+order.OrderNumber,
+			"offer:"+order.OfferID,
+			"rfq:"+order.RFQID,
+		)
+	}
+	for _, inv := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, time.Now())
+		if !isCustomerInvoicePostedStatus(state.Status) {
+			continue
+		}
+		commercialEvents.add(customerCommercialEvent{
+			CustomerID: customer.ID,
+			OfferID:    inv.OfferID,
+			Ref:        inv.InvoiceNumber,
+			Project:    firstNonEmpty(inv.CustomerReference, inv.InvoiceNumber),
+			Status:     inv.Status,
+			Source:     "invoice",
+			Date:       inv.InvoiceDate,
+			Value:      inv.GrandTotalBHD,
+		},
+			"invoice:"+inv.ID,
+			"invoice_number:"+inv.InvoiceNumber,
+			"order:"+inv.OrderID,
+			"offer:"+inv.OfferID,
+			"rfq:"+inv.RfqID,
+		)
+	}
+
+	pipelineEvents := buildCustomerPipelineEvents(customer.ID, rfqs, offers, opportunities, true)
 	for _, event := range pipelineEvents {
-		profile.RFQsFloated++
+		commercialEvents.add(event,
+			"pipeline:"+event.Ref,
+			"offer:"+event.OfferID,
+			zeroPipelineEventAlias(customer.ID, event.Project, event.Status),
+		)
+	}
+	for _, event := range commercialEvents.events {
+		if event.Value > 0 {
+			profile.TotalRevenue += event.Value
+		}
+	}
+	profile.TotalRevenue = roundTo3(profile.TotalRevenue)
+
+	// 4. Get RFQ stats
+	profile.RFQsFloated = len(pipelineEvents)
+	wonCount := 0
+	recentRFQs := make([]OpportunitySummary, 0, len(pipelineEvents))
+	for _, event := range pipelineEvents {
 		if closedWonStage(event.Status) {
 			wonCount++
 		}
-		recentRFQs = append(recentRFQs, OpportunitySummary{
-			Project:   firstNonEmpty(event.Project, event.Ref),
-			Value:     event.Value,
-			Status:    event.Status,
-			CreatedAt: event.Date,
-		})
+		if len(recentRFQs) < 5 {
+			recentRFQs = append(recentRFQs, OpportunitySummary{
+				Project:   firstNonEmpty(event.Project, event.Ref),
+				Value:     roundTo3(event.Value),
+				Status:    event.Status,
+				CreatedAt: event.Date,
+			})
+		}
 	}
 	profile.RFQsWon = wonCount
 	if profile.RFQsFloated > 0 {
@@ -3661,35 +4077,22 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 	}
 	profile.RecentRFQs = recentRFQs
 
-	// 5. Get recent orders
-	recentOrders := make([]OrderSummary, 0, len(orders))
-	for _, order := range orders {
-		if !commercialOrderStatus(order.Status) {
-			continue
-		}
-		recentOrders = append(recentOrders, OrderSummary{
-			OrderNumber:   order.OrderNumber,
-			OrderDate:     order.OrderDate,
-			TotalValueBHD: customerCommercialOrderValue(order),
-			Status:        order.Status,
-		})
-	}
-	sortOrderSummariesByDate(recentOrders)
-	if len(recentOrders) > 5 {
-		recentOrders = recentOrders[:5]
-	}
-	profile.RecentOrders = recentOrders
-
 	// 6. Get recent invoices
+	now := time.Now()
 	recentInvoices := make([]InvoiceSummary, 0, len(invoices))
 	for _, inv := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
 		recentInvoices = append(recentInvoices, InvoiceSummary{
-			ID:            inv.ID,
-			InvoiceNumber: inv.InvoiceNumber,
-			InvoiceDate:   inv.InvoiceDate,
-			GrandTotalBHD: inv.GrandTotalBHD,
-			Status:        inv.Status,
+			ID:             inv.ID,
+			InvoiceNumber:  inv.InvoiceNumber,
+			InvoiceDate:    inv.InvoiceDate,
+			GrandTotalBHD:  inv.GrandTotalBHD,
+			OutstandingBHD: state.OutstandingBHD,
+			Status:         state.Status,
 		})
+		if len(recentInvoices) >= 5 {
+			break
+		}
 	}
 	sortInvoiceSummariesByDate(recentInvoices)
 	if len(recentInvoices) > 5 {
@@ -3698,17 +4101,15 @@ func (a *App) GetCustomerFullProfile(customerID string) (CustomerFullProfile, er
 	profile.RecentInvoices = recentInvoices
 
 	// 7. Get payment history
-	if err := a.requirePermission("payments:view"); err == nil {
-		profile.PaymentHistory = a.linkedPaymentHistoryForCustomer(linkIndex, customer, 6)
-	}
+	profile.PaymentHistory = a.linkedPaymentHistoryForCustomer(linkIndex, customer, 6)
 
 	// 8. Get notes
 	var notes []EntityNote
-	a.db.Where("entity_type = ? AND entity_id = ?", "customer", customerID).Order("created_at DESC").Find(&notes)
+	a.db.Where("entity_type = ? AND entity_id IN ?", "customer", contactIDs).Order("created_at DESC").Find(&notes)
 	profile.Notes = notes
 
 	log.Printf("📋 Customer Full Profile: %s (%s) - %d contacts, %d notes",
-		customer.BusinessName, customerID, len(contacts), len(notes))
+		customer.BusinessName, customer.ID, len(contacts), len(notes))
 
 	return profile, nil
 }
@@ -3808,11 +4209,13 @@ type POSummary struct {
 }
 
 type SupplierInvoiceSummary struct {
-	ID            string    `json:"id"`
-	InvoiceNumber string    `json:"invoice_number"`
-	InvoiceDate   time.Time `json:"invoice_date"`
-	TotalBHD      float64   `json:"total_bhd"`
-	Status        string    `json:"status"`
+	ID             string    `json:"id"`
+	InvoiceNumber  string    `json:"invoice_number"`
+	InvoiceDate    time.Time `json:"invoice_date"`
+	TotalBHD       float64   `json:"total_bhd"`
+	OutstandingBHD float64   `json:"outstanding_bhd"`
+	PaymentStatus  string    `json:"payment_status"`
+	Status         string    `json:"status"`
 }
 
 // GetSupplierFullProfile retrieves complete supplier profile
@@ -3839,9 +4242,13 @@ func (a *App) GetSupplierFullProfile(supplierID string) (SupplierFullProfile, er
 	profile.TaxID = supplier.TaxID
 	profile.Country = supplier.Country
 	profile.Address = supplier.Address
-	profile.PrimaryContact = supplier.PrimaryContact
-	profile.Email = supplier.Email
-	profile.Phone = supplier.Phone
+	primaryContact, err := a.resolveSupplierPrimaryContactFields(supplier)
+	if err != nil {
+		return profile, fmt.Errorf("failed to resolve supplier primary contact: %w", err)
+	}
+	profile.PrimaryContact = primaryContact.Name
+	profile.Email = primaryContact.Email
+	profile.Phone = primaryContact.Phone
 	profile.BankName = supplier.BankName
 	profile.AccountNumber = supplier.AccountNumber
 	profile.IBAN = supplier.IBAN
@@ -3851,10 +4258,14 @@ func (a *App) GetSupplierFullProfile(supplierID string) (SupplierFullProfile, er
 
 	// Parse JSON arrays
 	if supplier.BrandsHandled != "" {
-		json.Unmarshal([]byte(supplier.BrandsHandled), &profile.BrandsHandled)
+		if err := json.Unmarshal([]byte(supplier.BrandsHandled), &profile.BrandsHandled); err != nil {
+			log.Printf("WARNING: failed to parse supplier brands for %s: %v", supplierID, err)
+		}
 	}
 	if supplier.ProductTypes != "" {
-		json.Unmarshal([]byte(supplier.ProductTypes), &profile.ProductTypes)
+		if err := json.Unmarshal([]byte(supplier.ProductTypes), &profile.ProductTypes); err != nil {
+			log.Printf("WARNING: failed to parse supplier product types for %s: %v", supplierID, err)
+		}
 	}
 
 	// 2. Get PO metrics
@@ -3889,23 +4300,42 @@ func (a *App) GetSupplierFullProfile(supplierID string) (SupplierFullProfile, er
 	var invoices []SupplierInvoice
 	a.db.Where("supplier_id = ?", supplierID).Order("invoice_date DESC").Limit(5).Find(&invoices)
 	invSummaries := make([]SupplierInvoiceSummary, 0, len(invoices))
-	var outstanding, overdue float64
+	stateByInvoiceID, err := a.buildSupplierInvoicePaymentStateMap(a.db, invoices)
+	if err != nil {
+		log.Printf("⚠️ Failed to build supplier recent invoice payment states: %v", err)
+	}
 	for _, inv := range invoices {
+		state := stateByInvoiceID[inv.ID]
 		invSummaries = append(invSummaries, SupplierInvoiceSummary{
-			ID:            inv.ID,
-			InvoiceNumber: inv.InvoiceNumber,
-			InvoiceDate:   inv.InvoiceDate,
-			TotalBHD:      inv.TotalBHD,
-			Status:        inv.Status,
+			ID:             inv.ID,
+			InvoiceNumber:  inv.InvoiceNumber,
+			InvoiceDate:    inv.InvoiceDate,
+			TotalBHD:       inv.TotalBHD,
+			OutstandingBHD: state.OutstandingBHD,
+			PaymentStatus:  state.PaymentStatus,
+			Status:         state.InvoiceStatus,
 		})
-		if inv.Status != "Paid" {
-			outstanding += inv.TotalBHD
+	}
+	profile.RecentInvoices = invSummaries
+
+	var openInvoices []SupplierInvoice
+	var outstanding, overdue float64
+	if err := a.db.Where("supplier_id = ?", supplierID).Find(&openInvoices).Error; err != nil {
+		log.Printf("⚠️ Failed to load supplier invoices for profile aging: %v", err)
+	} else if states, err := a.buildSupplierInvoicePaymentStateMap(a.db, openInvoices); err != nil {
+		log.Printf("⚠️ Failed to build supplier profile payment states: %v", err)
+	} else {
+		for _, inv := range openInvoices {
+			amount := states[inv.ID].OutstandingBHD
+			if amount <= FloatingPointTolerance {
+				continue
+			}
+			outstanding += amount
 			if time.Since(inv.DueDate).Hours()/24 > 30 {
-				overdue += inv.TotalBHD
+				overdue += amount
 			}
 		}
 	}
-	profile.RecentInvoices = invSummaries
 	profile.OutstandingBHD = outstanding
 	profile.OverdueBHD = overdue
 
@@ -4030,6 +4460,7 @@ type RFQData struct {
 	Stage     string    `json:"stage" gorm:"index;size:50;default:'RFQ Received'"` // 9-stage pipeline
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	CreatedBy string    `json:"created_by" gorm:"size:100"`
 	// New fields for enhanced opportunity management
 	DocumentHash   string `json:"document_hash" gorm:"size:64"`     // SHA-256 hash of source document for duplicate detection
 	VisitLocations string `json:"visit_locations" gorm:"type:text"` // JSON array of site visit locations
@@ -4044,6 +4475,7 @@ type RFQComment struct {
 	Comment   string    `json:"comment" gorm:"type:text"`
 	CreatedBy string    `json:"created_by" gorm:"size:100"`
 	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func (RFQComment) TableName() string { return "rfq_comments" }
@@ -4055,6 +4487,7 @@ type OpportunityComment struct {
 	Comment       string    `json:"comment" gorm:"type:text"`
 	CreatedBy     string    `json:"created_by" gorm:"size:100"`
 	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func (OpportunityComment) TableName() string { return "opportunity_comments" }
@@ -4109,6 +4542,7 @@ func (a *App) createRFQ(client, project, reference string, value float64, notes 
 		Notes:     notes,
 		Status:    "pending",
 		Stage:     "RFQ Received",
+		CreatedBy: a.resolveCurrentPreparedByName(""),
 	}
 
 	result := a.db.Create(rfq)
@@ -4788,7 +5222,18 @@ func repairImportedOpportunityMetadata(db *gorm.DB) error {
 	}
 
 	var imported []Opportunity
-	if err := db.Where("source = ? OR source LIKE ?", "onedrive_import", "%_onedrive").Find(&imported).Error; err != nil {
+	if err := db.Where(`
+		deleted_at IS NULL
+		AND (
+			source = ?
+			OR source LIKE ?
+			OR source LIKE ?
+			OR year IS NULL
+			OR year = 0
+			OR year < 2024
+			OR year > 2030
+		)
+	`, "onedrive_import", "%_onedrive", "%_excel").Find(&imported).Error; err != nil {
 		return err
 	}
 
@@ -4797,7 +5242,7 @@ func repairImportedOpportunityMetadata(db *gorm.DB) error {
 		normalized := normalizeOpportunityForList(opp)
 		updates := map[string]interface{}{}
 
-		if normalized.FolderNumber != "" && normalized.FolderNumber != opp.FolderNumber {
+		if normalized.FolderNumber != "" && normalized.FolderNumber != opp.FolderNumber && importedOpportunityFolderNumberAvailable(db, normalized.FolderNumber, opp.ID) {
 			updates["folder_number"] = normalized.FolderNumber
 		}
 		if normalized.Title != "" && normalized.Title != opp.Title {
@@ -4806,8 +5251,13 @@ func repairImportedOpportunityMetadata(db *gorm.DB) error {
 		if normalized.FolderName != "" && normalized.FolderName != opp.FolderName {
 			updates["folder_name"] = normalized.FolderName
 		}
-		if normalized.Year != 0 && normalized.Year != opp.Year {
-			updates["year"] = normalized.Year
+		normalizedYear := normalized.Year
+		if inferredYear := inferImportedOpportunityYear(opp, normalized); inferredYear != 0 &&
+			(normalizedYear == 0 || normalizedYear < 2024 || normalizedYear > 2030 || opp.Year == 0 || opp.Year < 2024 || opp.Year > 2030) {
+			normalizedYear = inferredYear
+		}
+		if normalizedYear != 0 && normalizedYear != opp.Year {
+			updates["year"] = normalizedYear
 		}
 		if normalized.OppNumber != 0 && normalized.OppNumber != opp.OppNumber {
 			updates["opp_number"] = normalized.OppNumber
@@ -4844,6 +5294,95 @@ func repairImportedOpportunityMetadata(db *gorm.DB) error {
 	}
 
 	return nil
+}
+
+func importedOpportunityFolderNumberAvailable(db *gorm.DB, folderNumber string, currentID string) bool {
+	if db == nil || strings.TrimSpace(folderNumber) == "" {
+		return false
+	}
+	var count int64
+	if err := db.Model(&Opportunity{}).
+		Unscoped().
+		Where("folder_number = ? AND id <> ?", strings.TrimSpace(folderNumber), currentID).
+		Count(&count).Error; err != nil {
+		return false
+	}
+	return count == 0
+}
+
+func inferImportedOpportunityYear(original Opportunity, normalized Opportunity) int {
+	for _, value := range []string{
+		normalized.FolderNumber,
+		original.FolderNumber,
+		normalized.FolderName,
+		original.FolderName,
+		normalized.Title,
+		original.Title,
+	} {
+		if year := fullYearFromText(value); year != 0 {
+			return year
+		}
+	}
+
+	for _, value := range []string{normalized.Source, original.Source} {
+		if year := fullYearFromText(value); year != 0 {
+			return year
+		}
+	}
+
+	for _, value := range []string{
+		normalized.FolderNumber,
+		original.FolderNumber,
+		normalized.FolderName,
+		original.FolderName,
+		normalized.Title,
+		original.Title,
+	} {
+		if year := shortCommercialYearFromText(value); year != 0 {
+			return year
+		}
+	}
+
+	for _, value := range []string{normalized.Source, original.Source} {
+		if strings.Contains(value, "2026") {
+			return 2026
+		}
+		if strings.Contains(value, "2025") {
+			return 2025
+		}
+		if strings.Contains(value, "2024") {
+			return 2024
+		}
+	}
+
+	return 0
+}
+
+func fullYearFromText(value string) int {
+	m := regexp.MustCompile(`\b(20[2-3][0-9])\b`).FindStringSubmatch(value)
+	if len(m) != 2 {
+		return 0
+	}
+	year, _ := strconv.Atoi(m[1])
+	if year < 2024 || year > 2030 {
+		return 0
+	}
+	return year
+}
+
+func shortCommercialYearFromText(value string) int {
+	matches := regexp.MustCompile(`(?:^|[^0-9])(2[4-9]|30)(?:$|[^0-9])`).FindAllStringSubmatch(value, -1)
+	for _, match := range matches {
+		if len(match) != 2 {
+			continue
+		}
+		yy, _ := strconv.Atoi(match[1])
+		year := 2000 + yy
+		if year >= 2024 && year <= 2030 {
+			return year
+		}
+	}
+	return 0
 }
 
 type convertedOfferItemRestore struct {
@@ -5158,6 +5697,24 @@ func repairImportedCommercialDocuments(db *gorm.DB) error {
 		return err
 	}
 
+	if results, err := backfillWonOfferItemsFromOpportunityProductDetailsDB(db); err != nil {
+		return err
+	} else if repaired, _ := results["repaired"].(int); repaired > 0 {
+		log.Printf("✅ Repaired won offer item shells: %v", results)
+	}
+
+	if repaired, err := repairOrdersWithNoItemsFromOfferItems(db); err != nil {
+		return err
+	} else if repaired > 0 {
+		log.Printf("✅ Backfilled %d orders from linked offer items", repaired)
+	}
+
+	if repaired, err := repairTerminalOfferOpportunityStages(db); err != nil {
+		return err
+	} else if repaired > 0 {
+		log.Printf("✅ Reconciled %d terminal offer/opportunity stages", repaired)
+	}
+
 	return nil
 }
 
@@ -5304,7 +5861,7 @@ func (a *App) generateRFQNumber() string {
 //   - Forward progress allowed: RFQ Received → Offer Sent → Follow-up → PO → Order → In Process → Delivered → Closed (Payment)
 //   - Any stage → Closed (Lost) allowed (one-way terminal)
 func (a *App) UpdateRFQStage(rfqID uint, stage string) error {
-	if err := a.requirePermission("offers:edit"); err != nil {
+	if err := a.requirePermission("dashboard:view"); err != nil {
 		return err
 	}
 	if a.db == nil {
@@ -5315,6 +5872,7 @@ func (a *App) UpdateRFQStage(rfqID uint, stage string) error {
 		"RFQ Received", "Offer Sent", "Follow-up/Eval",
 		"PO/LOI Received", "Order Placed", "In Process",
 		"Delivered", "Closed (Payment)", "Closed (Lost)",
+		"New", "Qualified", "Proposal", "Quoted", "Won", "Lost", "On Hold",
 	}
 	valid := false
 	for _, s := range validStages {
@@ -5375,13 +5933,12 @@ func (a *App) DeleteRFQ(id uint) error {
 	if a.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
-	if ok, err := a.guardDeleteOrRequest("offers:edit", "rfq", strconv.FormatUint(uint64(id), 10), fmt.Sprintf("RFQ #%d", id)); !ok {
+	if err := a.requireAdminDelete("delete RFQs"); err != nil {
+		log.Printf("🔒 DeleteRFQ blocked: %v", err)
 		return err
 	}
-
-	// SERVER-SIDE PERMISSION CHECK: Require offers:edit for RFQ deletion
-	if err := a.requirePermission("offers:edit"); err != nil {
-		log.Printf("🔒 DeleteRFQ blocked: %v", err)
+	if err := a.requirePermission("offers:delete"); err != nil {
+		log.Printf("🔒 DeleteRFQ permission blocked: %v", err)
 		return err
 	}
 
@@ -5416,8 +5973,8 @@ func (a *App) UpdateRFQ(id uint, updates RFQUpdateRequest) (*RFQData, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	// SERVER-SIDE PERMISSION CHECK: Require offers:edit for RFQ updates
-	if err := a.requirePermission("offers:edit"); err != nil {
+	// RFQ/opportunity corrections are allowed for all licensed employees.
+	if err := a.requirePermission("dashboard:view"); err != nil {
 		log.Printf("🔒 UpdateRFQ blocked: %v", err)
 		return nil, err
 	}
@@ -5431,6 +5988,9 @@ func (a *App) UpdateRFQ(id uint, updates RFQUpdateRequest) (*RFQData, error) {
 	validStatuses := map[string]bool{
 		"New": true, "In Progress": true, "Quoted": true, "Proposal": true,
 		"Won": true, "Lost": true, "Closed": true, "On Hold": true, "": true,
+		"RFQ Received": true, "Qualified": true, "Offer Sent": true,
+		"Follow-up/Eval": true, "PO/LOI Received": true, "Order Placed": true,
+		"In Process": true, "Delivered": true, "Closed (Payment)": true, "Closed (Lost)": true,
 	}
 
 	// Update only provided fields with validation
@@ -5469,6 +6029,7 @@ func (a *App) UpdateRFQ(id uint, updates RFQUpdateRequest) (*RFQData, error) {
 			return nil, fmt.Errorf("invalid status: %s", updates.Status)
 		}
 		rfq.Status = updates.Status
+		rfq.Stage = updates.Status
 	}
 	if updates.VisitLocations != "" {
 		if len(updates.VisitLocations) > 2000 {
@@ -5597,17 +6158,12 @@ func (a *App) DeleteRFQWithCascade(id uint, cascade bool) (*DeleteCascadeResult,
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
-	entityType := "rfq"
-	if cascade {
-		entityType = "rfq_cascade"
-	}
-	if ok, err := a.guardDeleteOrRequest("offers:edit", entityType, strconv.FormatUint(uint64(id), 10), fmt.Sprintf("RFQ #%d", id)); !ok {
+	if err := a.requireAdminDelete("delete RFQs"); err != nil {
+		log.Printf("🔒 DeleteRFQWithCascade blocked: %v", err)
 		return nil, err
 	}
-
-	// SERVER-SIDE PERMISSION CHECK: Require offers:edit for RFQ cascade delete
-	if err := a.requirePermission("offers:edit"); err != nil {
-		log.Printf("🔒 DeleteRFQWithCascade blocked: %v", err)
+	if err := a.requirePermission("offers:delete"); err != nil {
+		log.Printf("🔒 DeleteRFQWithCascade permission blocked: %v", err)
 		return nil, err
 	}
 
@@ -5808,8 +6364,8 @@ func (a *App) GetRFQComments(rfqID uint) ([]RFQComment, error) {
 }
 
 func (a *App) GetOpportunityComments(opportunityID string) ([]OpportunityComment, error) {
-	if !a.currentSessionIsManagementOrAbove() {
-		return nil, fmt.Errorf("opportunity comments are limited to authorized roles")
+	if err := a.requirePermission("offers:view"); err != nil {
+		return nil, err
 	}
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
@@ -5879,44 +6435,46 @@ type CostingSheetData struct {
 }
 
 type persistedCostingPayload struct {
-	LineItems          []CostingExportLineItem `json:"lineItems"`
-	Division           string                  `json:"division"`
-	Date               string                  `json:"date"`
-	PreparedBy         string                  `json:"preparedBy"`
-	CustomerName       string                  `json:"customerName"`
-	ContactPerson      string                  `json:"contactPerson"`
-	RfqReference       string                  `json:"rfqReference"`
-	FolderNumber       string                  `json:"folderNumber"`
-	CostingID          string                  `json:"costingId"`
-	Subject            string                  `json:"subject"`
-	EstDelivery        string                  `json:"estDelivery"`
-	DeliveryTerms      string                  `json:"deliveryTerms"`
-	PaymentTerms       string                  `json:"paymentTerms"`
-	OrderType          string                  `json:"orderType"`
-	CountryOfOrigin    string                  `json:"countryOfOrigin"`
-	CocCoo             string                  `json:"cocCoo"`
-	TestCertificate    string                  `json:"testCertificate"`
-	Installation       string                  `json:"installation"`
-	Commissioning      string                  `json:"commissioning"`
-	Testing            string                  `json:"testing"`
-	Subtotal           float64                 `json:"subtotal"`
-	Discount           float64                 `json:"discount"`
-	NetAmount          float64                 `json:"netAmount"`
-	VAT                float64                 `json:"vat"`
-	GrandTotal         float64                 `json:"grandTotal"`
-	TotalCost          float64                 `json:"totalCost"`
-	Profit             float64                 `json:"profit"`
-	ProfitPercent      float64                 `json:"profitPercent"`
-	QuoteType          string                  `json:"quoteType"`
-	VatRate            float64                 `json:"vatRate"`
-	HiddenCharges      float64                 `json:"hiddenCharges"`
-	PlaceOfSupply      string                  `json:"placeOfSupply"`
-	TaxCategory        string                  `json:"taxCategory"`
-	CustomerTRN        string                  `json:"customerTRN"`
-	Body               string                  `json:"body"`
-	TermsAndConditions string                  `json:"termsAndConditions"`
-	OpportunityId      uint                    `json:"opportunityId"`
-	ProjectName        string                  `json:"projectName"`
+	LineItems          []CostingExportLineItem         `json:"lineItems"`
+	Division           string                          `json:"division"`
+	Date               string                          `json:"date"`
+	PreparedBy         string                          `json:"preparedBy"`
+	CustomerName       string                          `json:"customerName"`
+	ContactPerson      string                          `json:"contactPerson"`
+	RfqReference       string                          `json:"rfqReference"`
+	FolderNumber       string                          `json:"folderNumber"`
+	CostingID          string                          `json:"costingId"`
+	Subject            string                          `json:"subject"`
+	EstDelivery        string                          `json:"estDelivery"`
+	DeliveryTerms      string                          `json:"deliveryTerms"`
+	PaymentTerms       string                          `json:"paymentTerms"`
+	OrderType          string                          `json:"orderType"`
+	CountryOfOrigin    string                          `json:"countryOfOrigin"`
+	CocCoo             string                          `json:"cocCoo"`
+	TestCertificate    string                          `json:"testCertificate"`
+	Installation       string                          `json:"installation"`
+	Commissioning      string                          `json:"commissioning"`
+	Testing            string                          `json:"testing"`
+	Subtotal           float64                         `json:"subtotal"`
+	Discount           float64                         `json:"discount"`
+	NetAmount          float64                         `json:"netAmount"`
+	VAT                float64                         `json:"vat"`
+	GrandTotal         float64                         `json:"grandTotal"`
+	TotalCost          float64                         `json:"totalCost"`
+	Profit             float64                         `json:"profit"`
+	ProfitPercent      float64                         `json:"profitPercent"`
+	QuoteType          string                          `json:"quoteType"`
+	VatRate            float64                         `json:"vatRate"`
+	HiddenCharges      float64                         `json:"hiddenCharges"`
+	PlaceOfSupply      string                          `json:"placeOfSupply"`
+	TaxCategory        string                          `json:"taxCategory"`
+	CustomerTRN        string                          `json:"customerTRN"`
+	Body               string                          `json:"body"`
+	AttachmentScopeID  string                          `json:"attachmentScopeId"`
+	Attachments        []CostingSheetAttachmentSummary `json:"attachments"`
+	TermsAndConditions string                          `json:"termsAndConditions"`
+	OpportunityId      uint                            `json:"opportunityId"`
+	ProjectName        string                          `json:"projectName"`
 }
 
 func parsePersistedCosting(itemsJSON string) (*persistedCostingPayload, error) {
@@ -6036,6 +6594,7 @@ func (a *App) CreateCostingSheet(rfqID uint, itemsJSON string, createdBy string)
 		log.Printf("🔒 CreateCostingSheet blocked: %v", err)
 		return nil, err
 	}
+	createdBy = a.resolveCurrentPreparedByName(createdBy)
 
 	// Fetch RFQ to get name
 	var rfq RFQData
@@ -6283,6 +6842,7 @@ func (a *App) UpdateCostingSheet(id uint, data CostingSheetData) (*CostingSheetD
 	// Preserve ID and timestamps
 	data.ID = existing.ID
 	data.CreatedAt = existing.CreatedAt
+	data.CreatedBy = a.resolveCurrentPreparedByName(data.CreatedBy)
 
 	// Update costing sheet
 	if err := a.db.Model(&existing).Updates(data).Error; err != nil {
@@ -6866,10 +7426,6 @@ func cleanOfferNumber(value string) string {
 	return limitReferenceRunes(value, 50)
 }
 
-func desiredOfferNumberFromCosting(data CostingExportData, fallback string) string {
-	return cleanOfferNumber(firstNonEmptyString(data.FolderNumber, data.CostingId, data.RfqReference, data.OfferNumber, fallback))
-}
-
 func offerNumberWithRevision(offerNumber string, revisionNumber int) string {
 	base := strings.TrimSpace(offerNumber)
 	if base == "" || revisionNumber <= 0 {
@@ -6882,12 +7438,38 @@ func offerNumberWithRevision(offerNumber string, revisionNumber int) string {
 	return fmt.Sprintf("%s-R%d", base, revisionNumber)
 }
 
+func isTerminalOfferStage(stage string) bool {
+	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case "won", "lost":
+		return true
+	default:
+		return false
+	}
+}
+
+func canonicalOfferStage(stage string) string {
+	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case "won":
+		return "Won"
+	case "lost":
+		return "Lost"
+	case "quoted":
+		return "Quoted"
+	case "rfq":
+		return "RFQ"
+	case "expired":
+		return "Expired"
+	default:
+		return strings.TrimSpace(stage)
+	}
+}
+
 func (a *App) ensureOfferNumberAvailable(tx *gorm.DB, offerNumber, excludeOfferID string) error {
 	if strings.TrimSpace(offerNumber) == "" {
 		return fmt.Errorf("offer number is required")
 	}
 
-	query := tx.Model(&Offer{}).Where("offer_number = ?", strings.TrimSpace(offerNumber))
+	query := tx.Unscoped().Model(&Offer{}).Where("offer_number = ?", strings.TrimSpace(offerNumber))
 	if strings.TrimSpace(excludeOfferID) != "" {
 		query = query.Where("id <> ?", strings.TrimSpace(excludeOfferID))
 	}
@@ -6900,6 +7482,113 @@ func (a *App) ensureOfferNumberAvailable(tx *gorm.DB, offerNumber, excludeOfferI
 		return fmt.Errorf("offer number %q already exists; use the correct unique folder/reference number", offerNumber)
 	}
 	return nil
+}
+
+func (a *App) availableOfferNumberForCosting(tx *gorm.DB, data CostingExportData, preferred, excludeOfferID string) (string, error) {
+	if tx == nil {
+		return "", fmt.Errorf("database not initialized")
+	}
+
+	candidates := []string{}
+	addCandidate := func(value string) {
+		value = cleanOfferNumber(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if strings.EqualFold(existing, value) {
+				return
+			}
+		}
+		candidates = append(candidates, value)
+	}
+
+	addCandidate(preferred)
+	addCandidate(data.OfferNumber)
+	addCandidate(data.CostingId)
+	addCandidate(data.FolderNumber)
+	addCandidate(data.RfqReference)
+
+	if len(candidates) == 0 {
+		addCandidate(a.generateOfferNumber())
+	}
+
+	for _, candidate := range candidates {
+		available, err := offerNumberAvailable(tx, candidate, excludeOfferID)
+		if err != nil {
+			return "", err
+		}
+		if available {
+			return candidate, nil
+		}
+	}
+
+	revisionRoot := cleanOfferNumber(firstNonEmptyString(data.FolderNumber, preferred, data.CostingId, data.RfqReference))
+	if revisionRoot == "" {
+		revisionRoot = a.generateOfferNumber()
+	}
+	revisionRoot = stripOfferRevisionSuffix(revisionRoot)
+	for revision := 1; revision <= 99; revision++ {
+		candidate := cleanOfferNumber(fmt.Sprintf("%s-R%d", revisionRoot, revision))
+		available, err := offerNumberAvailable(tx, candidate, excludeOfferID)
+		if err != nil {
+			return "", err
+		}
+		if available {
+			return candidate, nil
+		}
+	}
+
+	return "", fmt.Errorf("offer number %q already exists and no revision number is available", preferred)
+}
+
+func offerNumberAvailable(tx *gorm.DB, offerNumber, excludeOfferID string) (bool, error) {
+	offerNumber = strings.TrimSpace(offerNumber)
+	if offerNumber == "" {
+		return false, nil
+	}
+	query := tx.Unscoped().Model(&Offer{}).Where("offer_number = ?", offerNumber)
+	if strings.TrimSpace(excludeOfferID) != "" {
+		query = query.Where("id <> ?", strings.TrimSpace(excludeOfferID))
+	}
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count == 0, nil
+}
+
+func stripOfferRevisionSuffix(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	re := regexp.MustCompile(`(?i)[-_\s]*(?:rev\.?|r)\s*\d+$`)
+	return strings.TrimSpace(re.ReplaceAllString(value, ""))
+}
+
+func offerRevisionSuffixNumber(value string) int {
+	matches := regexp.MustCompile(`(?i)(?:[-_\s]*(?:rev\.?|r)\s*)(\d+)$`).FindStringSubmatch(strings.TrimSpace(value))
+	if len(matches) != 2 {
+		return 0
+	}
+	parsed, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func friendlyOfferSaveError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "UNIQUE constraint failed: offers.offer_number") ||
+		strings.Contains(msg, "duplicate key value") && strings.Contains(msg, "offers") && strings.Contains(msg, "offer_number") {
+		return fmt.Errorf("offer number already exists; use the existing offer edit flow or create a new revision")
+	}
+	return err
 }
 
 func shouldConvertForeignCommercialSubtotal(rawSubtotal, convertedSubtotal, totalCost float64) bool {
@@ -7011,6 +7700,7 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
+	data.PreparedBy = a.resolveCurrentPreparedByName(data.PreparedBy)
 
 	// Validate VatRate bounds (0-100)
 	if data.VatRate < 0 || data.VatRate > 100 {
@@ -7086,6 +7776,14 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 	if offerNumber == "" {
 		offerNumber = a.generateOfferNumber()
 	}
+	if resolvedOfferNumber, err := a.availableOfferNumberForCosting(a.db, data, offerNumber, ""); err == nil {
+		if resolvedOfferNumber != offerNumber {
+			log.Printf("ℹ️ Costing offer number %s already exists; using revision offer number %s", offerNumber, resolvedOfferNumber)
+		}
+		offerNumber = resolvedOfferNumber
+	} else {
+		return nil, err
+	}
 
 	offer := &Offer{
 		Base:            Base{ID: uuid.New().String()},
@@ -7112,6 +7810,7 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 		TermsAndConditions: data.TermsAndConditions,
 		Subject:            strings.TrimSpace(data.Subject),
 		Body:               strings.TrimSpace(data.Body),
+		AttachmentScopeID:  normaliseCostingAttachmentScope(data.AttachmentScopeID),
 		VatRate:            data.VatRate,
 		Division:           normalizeDivisionName(data.Division),
 		DiscountPercent: func() float64 {
@@ -7144,11 +7843,22 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 				return fmt.Errorf("an active offer already exists for this RFQ (RFQ #%d)", data.OpportunityId)
 			}
 		}
+		resolvedOfferNumber, err := a.availableOfferNumberForCosting(tx, data, offer.OfferNumber, "")
+		if err != nil {
+			return err
+		}
+		offer.OfferNumber = resolvedOfferNumber
 		if err := a.ensureOfferNumberAvailable(tx, offer.OfferNumber, ""); err != nil {
 			return err
 		}
 		if err := tx.Create(offer).Error; err != nil {
-			return err
+			return friendlyOfferSaveError(err)
+		}
+		if data.VatRate == 0 {
+			if err := tx.Model(offer).Update("vat_rate", 0).Error; err != nil {
+				return fmt.Errorf("failed to persist zero VAT rate: %w", err)
+			}
+			offer.VatRate = 0
 		}
 		if err := a.syncRFQReferenceFromCosting(tx, data.OpportunityId, customerReference); err != nil {
 			log.Printf("⚠️ Warning: Failed to sync RFQ #%d reference from costing: %v", data.OpportunityId, err)
@@ -7219,6 +7929,7 @@ func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error)
 	if a.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
+	data.PreparedBy = a.resolveCurrentPreparedByName(data.PreparedBy)
 	if data.VatRate < 0 || data.VatRate > 100 {
 		return nil, fmt.Errorf("VAT rate must be between 0%% and 100%%, got %.1f%%", data.VatRate)
 	}
@@ -7238,7 +7949,7 @@ func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error)
 	if err := a.db.Preload("Items").First(&offer, "id = ?", offerID).Error; err != nil {
 		return nil, fmt.Errorf("offer not found: %w", err)
 	}
-	if offer.Stage == "Won" || offer.Stage == "Lost" {
+	if isTerminalOfferStage(offer.Stage) {
 		return nil, fmt.Errorf("cannot edit terminal offer stage '%s'", offer.Stage)
 	}
 
@@ -7314,6 +8025,9 @@ func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error)
 	}
 	if strings.TrimSpace(data.Body) != "" {
 		offer.Body = strings.TrimSpace(data.Body)
+	}
+	if scope := normaliseCostingAttachmentScope(data.AttachmentScopeID); scope != "" {
+		offer.AttachmentScopeID = scope
 	}
 	offer.VatRate = data.VatRate
 	offer.Division = normalizeDivisionName(data.Division)
@@ -7447,35 +8161,32 @@ func (a *App) linkOfferToOpportunity(offer *Offer, opportunityRecordID, folderNu
 	}
 }
 
-// generateOfferNumber creates a new offer number in XX-YY format
-// Example: 50-25, 51-25 (matching OneDrive folder convention)
+// generateOfferNumber creates a fallback identifier only when no folder or
+// customer reference is available. PH Trading's real offer number should come
+// from the physical folder/reference, not from an auto-incrementing year series.
 func (a *App) generateOfferNumber() string {
-	year := time.Now().Year() % 100 // 25 for 2025
-	yearSuffix := fmt.Sprintf("-%02d", year)
-
-	var maxNum int
-
-	// Use GORM transaction (SQLite single-writer ensures serialization)
-	err := a.db.Transaction(func(tx *gorm.DB) error {
-		// Find highest number for this year within the transaction
-		if err := tx.Model(&Offer{}).
-			Where("offer_number LIKE ?", "%"+yearSuffix).
-			Select("COALESCE(MAX(CAST(SUBSTR(offer_number, 1, INSTR(offer_number, '-')-1) AS INTEGER)), 0)").
-			Scan(&maxNum).Error; err != nil {
-			return err
-		}
-		return nil
-	})
-
-	if err != nil {
-		log.Printf("Warning: Offer number generation failed: %v, falling back to best-effort", err)
-		a.db.Model(&Offer{}).
-			Where("offer_number LIKE ?", "%"+yearSuffix).
-			Select("COALESCE(MAX(CAST(SUBSTR(offer_number, 1, INSTR(offer_number, '-')-1) AS INTEGER)), 0)").
-			Scan(&maxNum)
+	base := fmt.Sprintf("PH-%s", time.Now().Format("20060102-150405"))
+	if a.db == nil {
+		return base
 	}
 
-	return fmt.Sprintf("%d-%02d", maxNum+1, year)
+	for suffix := 0; suffix < 100; suffix++ {
+		candidate := base
+		if suffix > 0 {
+			candidate = fmt.Sprintf("%s-%02d", base, suffix)
+		}
+
+		var count int64
+		if err := a.db.Model(&Offer{}).Where("offer_number = ?", candidate).Count(&count).Error; err != nil {
+			log.Printf("Warning: fallback offer number conflict check failed: %v", err)
+			return candidate
+		}
+		if count == 0 {
+			return candidate
+		}
+	}
+
+	return fmt.Sprintf("%s-%s", base, uuid.New().String()[:8])
 }
 
 // GetAllOffers retrieves all offers with their items using the proper Offer model
@@ -7564,6 +8275,229 @@ func (a *App) GetOffersWithNoItems() ([]map[string]interface{}, error) {
 	return result, nil
 }
 
+// DeleteOffer removes an unconverted offer from the live commercial pipeline.
+// Converted/won offers remain immutable because orders and invoices depend on
+// them for traceability.
+func (a *App) DeleteOffer(offerID string) error {
+	offerID = strings.TrimSpace(offerID)
+	if offerID == "" {
+		return fmt.Errorf("offer id is required")
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	var offer Offer
+	if err := a.db.Where("id = ?", offerID).First(&offer).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fmt.Errorf("offer not found")
+		}
+		return fmt.Errorf("failed to load offer: %w", err)
+	}
+
+	label := strings.TrimSpace(offer.OfferNumber)
+	if label == "" {
+		label = offer.ID
+	}
+	if ok, err := a.guardDeleteOrRequest("offers:delete", "offer", offer.ID, fmt.Sprintf("Offer %s", label)); !ok {
+		return err
+	}
+	if err := a.requirePermission("offers:delete"); err != nil {
+		return err
+	}
+
+	stage := strings.ToLower(strings.TrimSpace(offer.Stage))
+	if stage == "won" {
+		return fmt.Errorf("won offers cannot be deleted; reverse the linked order flow or mark a replacement through the controlled workflow")
+	}
+
+	var linkedOrders int64
+	if err := a.db.Model(&Order{}).Where("offer_id = ?", offer.ID).Count(&linkedOrders).Error; err != nil {
+		return fmt.Errorf("failed to inspect linked orders: %w", err)
+	}
+	if linkedOrders > 0 {
+		return fmt.Errorf("cannot delete offer %s because %d linked order(s) exist", label, linkedOrders)
+	}
+
+	var linkedInvoices int64
+	if err := a.db.Model(&Invoice{}).Where("offer_id = ? OR quote_id = ?", offer.ID, offer.ID).Count(&linkedInvoices).Error; err != nil {
+		return fmt.Errorf("failed to inspect linked invoices: %w", err)
+	}
+	if linkedInvoices > 0 {
+		return fmt.Errorf("cannot delete offer %s because %d linked invoice(s) exist", label, linkedInvoices)
+	}
+
+	return a.db.Transaction(func(tx *gorm.DB) error {
+		now := time.Now()
+		oppUpdates := map[string]interface{}{
+			"offer_id":   "",
+			"updated_at": now,
+		}
+		if stage == "quoted" || stage == "rfq" || stage == "" {
+			oppUpdates["stage"] = "Proposal"
+		}
+		if err := tx.Model(&Opportunity{}).Where("offer_id = ?", offer.ID).Updates(oppUpdates).Error; err != nil {
+			return fmt.Errorf("failed to unlink offer from opportunity: %w", err)
+		}
+		if err := tx.Where("offer_id = ?", offer.ID).Delete(&OfferFollowUp{}).Error; err != nil {
+			return fmt.Errorf("failed to delete offer follow-ups: %w", err)
+		}
+		if err := tx.Where("offer_id = ?", offer.ID).Delete(&OfferNote{}).Error; err != nil {
+			return fmt.Errorf("failed to delete offer notes: %w", err)
+		}
+		if err := tx.Where("offer_id = ?", offer.ID).Delete(&OfferItem{}).Error; err != nil {
+			return fmt.Errorf("failed to delete offer items: %w", err)
+		}
+		if err := tx.Delete(&offer).Error; err != nil {
+			return fmt.Errorf("failed to delete offer: %w", err)
+		}
+		return nil
+	})
+}
+
+func (a *App) nextOfferRevisionIdentity(tx *gorm.DB, source Offer) (int, string, error) {
+	if tx == nil {
+		return 0, "", fmt.Errorf("database not initialized")
+	}
+	revisionRoot := stripOfferRevisionSuffix(firstNonEmptyString(source.OfferNumber, source.CustomerReference))
+	if revisionRoot == "" {
+		revisionRoot = a.generateOfferNumber()
+	}
+
+	start := source.RevisionNumber + 1
+	if suffix := offerRevisionSuffixNumber(source.OfferNumber); suffix >= start {
+		start = suffix + 1
+	}
+	if start < 1 {
+		start = 1
+	}
+
+	for revision := start; revision <= 99; revision++ {
+		candidate := cleanOfferNumber(fmt.Sprintf("%s-R%d", revisionRoot, revision))
+		available, err := offerNumberAvailable(tx, candidate, "")
+		if err != nil {
+			return 0, "", err
+		}
+		if available {
+			return revision, candidate, nil
+		}
+	}
+	return 0, "", fmt.Errorf("no available revision number for offer %s", source.OfferNumber)
+}
+
+func cloneOfferItemsForRevision(sourceItems []OfferItem, newOfferID string) []OfferItem {
+	items := make([]OfferItem, 0, len(sourceItems))
+	for idx, sourceItem := range sourceItems {
+		item := sourceItem
+		item.Base = Base{ID: uuid.New().String()}
+		item.OfferID = newOfferID
+		if item.LineNumber <= 0 {
+			item.LineNumber = idx + 1
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+// CreateOfferRevision creates a new quoted offer from an existing offer while
+// preserving the source commercial document for audit and order traceability.
+func (a *App) CreateOfferRevision(sourceOfferID string) (*Offer, error) {
+	if err := a.requirePermission("offers:create"); err != nil {
+		if editErr := a.requirePermission("offers:edit"); editErr != nil {
+			return nil, err
+		}
+	}
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	sourceOfferID = strings.TrimSpace(sourceOfferID)
+	if sourceOfferID == "" {
+		return nil, fmt.Errorf("source offer id is required")
+	}
+
+	var created Offer
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		var source Offer
+		if err := tx.Preload("Items").First(&source, "id = ?", sourceOfferID).Error; err != nil {
+			return fmt.Errorf("source offer not found: %w", err)
+		}
+		if strings.EqualFold(strings.TrimSpace(source.Stage), "Won") {
+			return fmt.Errorf("won offers cannot be re-quoted; create an amendment/order workflow instead")
+		}
+		if len(source.Items) == 0 {
+			return fmt.Errorf("cannot create revision for offer %s because it has no line items", source.OfferNumber)
+		}
+
+		revisionNumber, offerNumber, err := a.nextOfferRevisionIdentity(tx, source)
+		if err != nil {
+			return err
+		}
+
+		now := time.Now()
+		rootOfferID := strings.TrimSpace(source.RevisionRootOfferID)
+		if rootOfferID == "" {
+			rootOfferID = strings.TrimSpace(source.RevisionOfOfferID)
+		}
+		if rootOfferID == "" {
+			rootOfferID = source.ID
+		}
+
+		newOffer := source
+		newOffer.Base = Base{ID: uuid.New().String(), CreatedBy: a.getCurrentUserID()}
+		newOffer.OfferNumber = offerNumber
+		newOffer.RevisionNumber = revisionNumber
+		newOffer.RevisionOfOfferID = source.ID
+		newOffer.RevisionRootOfferID = rootOfferID
+		newOffer.SupersededByOfferID = ""
+		newOffer.SupersededAt = nil
+		newOffer.Stage = "Quoted"
+		newOffer.LostReason = ""
+		newOffer.QuotationDate = now
+		newOffer.ValidityDate = now.AddDate(0, 0, 30)
+		newOffer.Items = nil
+
+		if err := tx.Create(&newOffer).Error; err != nil {
+			return friendlyOfferSaveError(err)
+		}
+
+		items := cloneOfferItemsForRevision(source.Items, newOffer.ID)
+		if err := tx.Create(&items).Error; err != nil {
+			return fmt.Errorf("failed to create revision line items: %w", err)
+		}
+
+		sourceUpdates := map[string]interface{}{
+			"superseded_by_offer_id": newOffer.ID,
+			"superseded_at":          now,
+			"updated_at":             now,
+		}
+		if strings.EqualFold(source.Stage, "Quoted") || strings.EqualFold(source.Stage, "RFQ") {
+			sourceUpdates["stage"] = "Expired"
+		}
+		if err := tx.Model(&Offer{}).Where("id = ?", source.ID).Updates(sourceUpdates).Error; err != nil {
+			return fmt.Errorf("failed to mark source offer as superseded: %w", err)
+		}
+
+		if err := tx.Model(&Opportunity{}).Where("offer_id = ?", source.ID).Updates(map[string]interface{}{
+			"offer_id":    newOffer.ID,
+			"stage":       "Quoted",
+			"updated_at":  now,
+			"closed_date": nil,
+		}).Error; err != nil {
+			log.Printf("⚠️ Failed to relink opportunity to offer revision %s: %v", newOffer.OfferNumber, err)
+		}
+
+		newOffer.Items = items
+		created = newOffer
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("✅ Created Offer revision %s from %s", created.OfferNumber, sourceOfferID)
+	return &created, nil
+}
+
 func deriveCanonicalOpportunityFolderFromOfferNumber(offerNumber string) string {
 	normalized := normalizeImportedOfferNumber(offerNumber)
 	if normalized == "" {
@@ -7587,14 +8521,24 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 		return nil, fmt.Errorf("database not initialized")
 	}
 
+	return backfillWonOfferItemsFromOpportunityProductDetailsDB(a.db)
+}
+
+func backfillWonOfferItemsFromOpportunityProductDetailsDB(db *gorm.DB) (map[string]interface{}, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
 	type offerShell struct {
-		ID          string `gorm:"column:id"`
-		OfferNumber string `gorm:"column:offer_number"`
+		ID            string  `gorm:"column:id"`
+		OfferNumber   string  `gorm:"column:offer_number"`
+		TotalValueBHD float64 `gorm:"column:total_value_bhd"`
+		VatRate       float64 `gorm:"column:vat_rate"`
 	}
 
 	var shells []offerShell
-	if err := a.db.Raw(`
-		SELECT o.id, o.offer_number
+	if err := db.Raw(`
+		SELECT o.id, o.offer_number, COALESCE(o.total_value_bhd, 0) AS total_value_bhd, COALESCE(o.vat_rate, 10) AS vat_rate
 		FROM offers o
 		LEFT JOIN offer_items oi ON oi.offer_id = o.id AND oi.deleted_at IS NULL
 		WHERE o.deleted_at IS NULL
@@ -7623,18 +8567,24 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 	repaired := 0
 
 	for _, shell := range shells {
-		folderNumber := deriveCanonicalOpportunityFolderFromOfferNumber(shell.OfferNumber)
-		if folderNumber == "" {
-			skipReasons = append(skipReasons, fmt.Sprintf("%s:no_folder_match", shell.OfferNumber))
-			continue
-		}
-
 		var opportunity Opportunity
-		if err := a.db.
-			Where("deleted_at IS NULL AND (source = ? OR source LIKE ?) AND folder_number = ? AND stage = ?", "onedrive_import", "%_onedrive", folderNumber, "Won").
-			First(&opportunity).Error; err != nil {
-			if err != gorm.ErrRecordNotFound {
-				return nil, fmt.Errorf("failed to load opportunity for offer %s: %w", shell.OfferNumber, err)
+		opportunityErr := db.
+			Where("deleted_at IS NULL AND offer_id = ?", shell.ID).
+			Order("CASE WHEN LOWER(COALESCE(stage, '')) = 'won' THEN 0 ELSE 1 END").
+			First(&opportunity).Error
+		if opportunityErr == gorm.ErrRecordNotFound {
+			folderNumber := deriveCanonicalOpportunityFolderFromOfferNumber(shell.OfferNumber)
+			if folderNumber == "" {
+				skipReasons = append(skipReasons, fmt.Sprintf("%s:no_opportunity_link", shell.OfferNumber))
+				continue
+			}
+			opportunityErr = db.
+				Where("deleted_at IS NULL AND (source = ? OR source LIKE ?) AND folder_number = ? AND stage = ?", "onedrive_import", "%_onedrive", folderNumber, "Won").
+				First(&opportunity).Error
+		}
+		if opportunityErr != nil {
+			if opportunityErr != gorm.ErrRecordNotFound {
+				return nil, fmt.Errorf("failed to load opportunity for offer %s: %w", shell.OfferNumber, opportunityErr)
 			}
 			skipReasons = append(skipReasons, fmt.Sprintf("%s:no_verified_opportunity", shell.OfferNumber))
 			continue
@@ -7642,15 +8592,31 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 
 		items := parseOpportunityProductDetails(opportunity.ProductDetails)
 		if len(items) == 0 {
-			skipReasons = append(skipReasons, fmt.Sprintf("%s:no_product_details", shell.OfferNumber))
-			continue
+			fallbackTotal := commercialNetFromGross(opportunity.RevenueBHD, shell.VatRate)
+			if fallbackTotal <= 0 {
+				fallbackTotal = commercialNetFromGross(shell.TotalValueBHD, shell.VatRate)
+			}
+			if fallbackTotal <= 0 {
+				skipReasons = append(skipReasons, fmt.Sprintf("%s:no_product_details", shell.OfferNumber))
+				continue
+			}
+			items = []OfferItem{{
+				Base:        Base{ID: uuid.New().String()},
+				LineNumber:  1,
+				Description: fmt.Sprintf("Per Offer %s", shell.OfferNumber),
+				Equipment:   fmt.Sprintf("Per Offer %s", shell.OfferNumber),
+				Quantity:    1,
+				UnitPrice:   fallbackTotal,
+				TotalPrice:  fallbackTotal,
+				Currency:    "BHD",
+			}}
 		}
 
 		previousOfferID := strings.TrimSpace(opportunity.OfferID)
 		needsRelink := previousOfferID != "" && previousOfferID != shell.ID
 		now := time.Now()
 
-		err := a.db.Transaction(func(tx *gorm.DB) error {
+		err := db.Transaction(func(tx *gorm.DB) error {
 			if err := tx.Where("offer_id = ?", shell.ID).Delete(&OfferItem{}).Error; err != nil {
 				return fmt.Errorf("failed to clear stale items for %s: %w", shell.OfferNumber, err)
 			}
@@ -7686,6 +8652,7 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 				Where("id = ?", shell.ID).
 				Updates(map[string]interface{}{
 					"total_value_bhd": opportunity.RevenueBHD,
+					"vat_rate":        shell.VatRate,
 					"updated_at":      now,
 				}).Error; err != nil {
 				return fmt.Errorf("failed to update offer total for %s: %w", shell.OfferNumber, err)
@@ -7709,12 +8676,16 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 
 		if needsRelink {
 			relinked++
-			if err := a.softDeleteOfferIfUnlinked(previousOfferID); err == nil {
+			if err := softDeleteOfferIfUnlinkedDB(db, previousOfferID); err == nil {
 				cleaned++
 			}
 		}
 		repaired++
-		repairedExamples = append(repairedExamples, fmt.Sprintf("%s→%s", shell.OfferNumber, folderNumber))
+		matchLabel := strings.TrimSpace(opportunity.FolderNumber)
+		if matchLabel == "" {
+			matchLabel = strings.TrimSpace(opportunity.ID)
+		}
+		repairedExamples = append(repairedExamples, fmt.Sprintf("%s→%s", shell.OfferNumber, matchLabel))
 	}
 
 	results["repaired"] = repaired
@@ -7724,6 +8695,185 @@ func (a *App) BackfillWonOfferItemsFromOpportunityProductDetails() (map[string]i
 	results["examples"] = repairedExamples
 	results["skips"] = skipReasons
 	return results, nil
+}
+
+func softDeleteOfferIfUnlinkedDB(db *gorm.DB, offerID string) error {
+	offerID = strings.TrimSpace(offerID)
+	if db == nil || offerID == "" {
+		return nil
+	}
+
+	var refCount int64
+	if err := db.Model(&Opportunity{}).
+		Where("offer_id = ? AND deleted_at IS NULL", offerID).
+		Count(&refCount).Error; err != nil {
+		return err
+	}
+	if refCount > 0 {
+		return nil
+	}
+
+	now := time.Now()
+	if err := db.Model(&Offer{}).
+		Where("id = ? AND deleted_at IS NULL", offerID).
+		Update("deleted_at", now).Error; err != nil {
+		return err
+	}
+	return db.Model(&OfferItem{}).
+		Where("offer_id = ? AND deleted_at IS NULL", offerID).
+		Update("deleted_at", now).Error
+}
+
+func commercialNetFromGross(gross float64, vatRate float64) float64 {
+	if gross <= 0 {
+		return 0
+	}
+	if vatRate <= 0 {
+		return roundTo3(gross)
+	}
+	return roundTo3(gross / (1 + (vatRate / 100.0)))
+}
+
+func repairOrdersWithNoItemsFromOfferItems(db *gorm.DB) (int, error) {
+	if db == nil {
+		return 0, nil
+	}
+
+	var orders []Order
+	if err := db.Raw(`
+		SELECT o.*
+		FROM orders o
+		LEFT JOIN order_items oi ON oi.order_id = o.id AND oi.deleted_at IS NULL
+		WHERE o.deleted_at IS NULL
+		  AND TRIM(COALESCE(o.offer_id, '')) != ''
+		GROUP BY o.id
+		HAVING COUNT(oi.id) = 0
+	`).Scan(&orders).Error; err != nil {
+		return 0, fmt.Errorf("failed to query empty orders for offer backfill: %w", err)
+	}
+
+	repaired := 0
+	now := time.Now()
+	for _, order := range orders {
+		var offerItems []OfferItem
+		if err := db.
+			Where("offer_id = ? AND deleted_at IS NULL", order.OfferID).
+			Order("line_number ASC, created_at ASC").
+			Find(&offerItems).Error; err != nil {
+			return repaired, fmt.Errorf("failed to load offer items for order %s: %w", order.OrderNumber, err)
+		}
+		if len(offerItems) == 0 {
+			continue
+		}
+
+		dbItems := make([]OrderItem, 0, len(offerItems))
+		computedTotal := 0.0
+		for index, item := range offerItems {
+			lineTotal := commercialLineTotal(item.Quantity, item.UnitPrice, item.TotalPrice)
+			computedTotal += lineTotal
+			dbItems = append(dbItems, OrderItem{
+				Base:                Base{ID: uuid.New().String(), CreatedAt: now, UpdatedAt: now},
+				OrderID:             order.ID,
+				LineNumber:          index + 1,
+				ProductID:           item.ProductID,
+				ProductCode:         item.ProductCode,
+				Description:         item.Description,
+				Quantity:            item.Quantity,
+				UnitPrice:           item.UnitPrice,
+				Equipment:           item.Equipment,
+				Model:               item.Model,
+				Specification:       item.Specification,
+				DetailedDescription: item.DetailedDescription,
+				Currency:            item.Currency,
+				FOB:                 item.FOB,
+				Freight:             item.Freight,
+				TotalCost:           item.TotalCost,
+				MarginPercent:       item.MarginPercent,
+				TotalPrice:          lineTotal,
+			})
+		}
+		if len(dbItems) == 0 {
+			continue
+		}
+
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(&dbItems).Error; err != nil {
+				return fmt.Errorf("failed to create order items for %s: %w", order.OrderNumber, err)
+			}
+			if computedTotal <= 0 {
+				return nil
+			}
+			return tx.Model(&Order{}).Where("id = ?", order.ID).Updates(map[string]interface{}{
+				"total_value_bhd": computedTotal,
+				"grand_total_bhd": computedTotal,
+				"updated_at":      now,
+			}).Error
+		}); err != nil {
+			return repaired, err
+		}
+		repaired++
+	}
+
+	return repaired, nil
+}
+
+func repairTerminalOfferOpportunityStages(db *gorm.DB) (int, error) {
+	if db == nil {
+		return 0, nil
+	}
+
+	type terminalStageMismatch struct {
+		OfferID          string `gorm:"column:offer_id"`
+		OfferNumber      string `gorm:"column:offer_number"`
+		OfferStage       string `gorm:"column:offer_stage"`
+		OpportunityID    string `gorm:"column:opportunity_id"`
+		OpportunityStage string `gorm:"column:opportunity_stage"`
+	}
+
+	var rows []terminalStageMismatch
+	if err := db.Raw(`
+		SELECT o.id AS offer_id,
+		       o.offer_number,
+		       o.stage AS offer_stage,
+		       opp.id AS opportunity_id,
+		       opp.stage AS opportunity_stage
+		FROM offers o
+		JOIN opportunities opp ON opp.offer_id = o.id AND opp.deleted_at IS NULL
+		WHERE o.deleted_at IS NULL
+		  AND LOWER(COALESCE(o.stage, '')) IN ('won', 'lost')
+		  AND LOWER(COALESCE(opp.stage, '')) != LOWER(COALESCE(o.stage, ''))
+	`).Scan(&rows).Error; err != nil {
+		return 0, fmt.Errorf("failed to query terminal offer/opportunity stage mismatches: %w", err)
+	}
+
+	now := time.Now()
+	repaired := 0
+	for _, row := range rows {
+		stage := canonicalOfferStage(row.OfferStage)
+		if !isTerminalOfferStage(stage) {
+			continue
+		}
+
+		var opportunity Opportunity
+		if err := db.First(&opportunity, "id = ?", row.OpportunityID).Error; err != nil {
+			return repaired, fmt.Errorf("failed to load opportunity %s for terminal stage repair: %w", row.OpportunityID, err)
+		}
+
+		updates := map[string]interface{}{
+			"stage":      stage,
+			"updated_at": now,
+		}
+		if opportunity.ClosedDate == nil {
+			updates["closed_date"] = now
+		}
+
+		if err := db.Model(&Opportunity{}).Where("id = ?", row.OpportunityID).Updates(updates).Error; err != nil {
+			return repaired, fmt.Errorf("failed to reconcile opportunity %s for offer %s: %w", row.OpportunityID, row.OfferNumber, err)
+		}
+		repaired++
+	}
+
+	return repaired, nil
 }
 
 // GetOrdersWithNoItems returns orders that have zero line items in order_items.
@@ -7773,6 +8923,10 @@ func (a *App) GetOrdersWithNoItems() ([]map[string]interface{}, error) {
 	return result, nil
 }
 
+func sameCalendarDate(a, b time.Time) bool {
+	return a.Year() == b.Year() && a.Month() == b.Month() && a.Day() == b.Day()
+}
+
 // UpdateOfferFull updates an offer's details and line items
 func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, error) {
 	if err := a.requirePermission("offers:edit"); err != nil {
@@ -7787,16 +8941,17 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 		return nil, fmt.Errorf("offer not found: %v", err)
 	}
 
-	// SECURITY: Won and Lost stages are terminal - block regression (audit requirement)
-	if offer.Stage == "Won" || offer.Stage == "Lost" {
-		if data.Stage != "" && data.Stage != offer.Stage {
-			return nil, fmt.Errorf("cannot change terminal offer stage '%s' (audit requirement)", offer.Stage)
-		}
+	// SECURITY: Won and Lost stages are terminal. Commercial corrections must
+	// happen through notes/follow-ups or a new revision so order/invoice history
+	// remains traceable.
+	if isTerminalOfferStage(offer.Stage) {
+		return nil, fmt.Errorf("cannot edit terminal offer stage '%s'; create a revision for further commercial changes", offer.Stage)
 	}
 
-	// Update header fields
-	if strings.TrimSpace(data.OfferNumber) != "" {
-		offer.OfferNumber = cleanOfferNumber(data.OfferNumber)
+	// Update header fields. PH Trading offer numbers follow the folder/reference
+	// number; generated NN-YY values are only legacy placeholders.
+	if resolvedOfferNumber := desiredOfferNumberFromOfferUpdate(data, offer.OfferNumber); resolvedOfferNumber != "" {
+		offer.OfferNumber = resolvedOfferNumber
 	}
 	if data.CustomerName != "" {
 		offer.CustomerName = data.CustomerName
@@ -7821,10 +8976,13 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 	}
 	if data.ValidityDate != "" {
 		if t, err := time.Parse("2006-01-02", data.ValidityDate); err == nil {
-			// P1 FIX #1: Validate validity date is in the future
-			if err := ValidateOfferExpiry(t); err != nil {
-				log.Printf("⚠️ Offer validity date validation failed during update: %v", err)
-				return nil, err
+			// Historical offers may already have an expired validity date; allow
+			// saving other metadata when the existing date is unchanged.
+			if !sameCalendarDate(t, offer.ValidityDate) {
+				if err := ValidateOfferExpiry(t); err != nil {
+					log.Printf("⚠️ Offer validity date validation failed during update: %v", err)
+					return nil, err
+				}
 			}
 			offer.ValidityDate = t
 		}
@@ -7845,7 +9003,7 @@ func (a *App) UpdateOfferFull(offerID string, data OfferUpdateData) (*Offer, err
 	if data.QuoteType != "" {
 		offer.QuoteType = data.QuoteType
 	}
-	if data.VatRate >= 0 && data.VatRate <= 100 {
+	if (data.VatRate != 0 || len(data.Items) > 0) && data.VatRate >= 0 && data.VatRate <= 100 {
 		offer.VatRate = data.VatRate
 	}
 	if strings.TrimSpace(data.Division) != "" {
@@ -7966,8 +9124,12 @@ func (a *App) AddOfferNote(offerID string, content string) (OfferNote, error) {
 	}
 	// Sanitize HTML to prevent stored XSS
 	trimmed = html.EscapeString(trimmed)
+	createdBy := a.getCurrentUserDisplayName()
+	if strings.TrimSpace(createdBy) == "" {
+		createdBy = a.getCurrentUserID()
+	}
 	note := OfferNote{
-		Base:     Base{CreatedBy: "System"},
+		Base:     Base{CreatedBy: createdBy},
 		OfferID:  offerID,
 		NoteDate: time.Now(),
 		Content:  trimmed,
@@ -8027,6 +9189,10 @@ func (a *App) MarkOfferWon(offerID string, customerPO string) (*Order, error) {
 
 	if offerID == "" {
 		return nil, fmt.Errorf("offer ID is required")
+	}
+	customerPO = strings.TrimSpace(customerPO)
+	if customerPO == "" {
+		return nil, fmt.Errorf("customer PO number is required to mark an offer as won")
 	}
 
 	// Use transaction for atomicity: if order creation fails, stage reverts
@@ -8164,49 +9330,7 @@ func (a *App) MarkOfferWon(offerID string, customerPO string) (*Order, error) {
 
 		log.Printf("✅ Offer %s WON → Created Order %s (%.3f BHD, %d items, RFQID=%s)", offer.OfferNumber, orderNumber, offer.TotalValueBHD, len(newOrder.Items), newOrder.RFQID)
 
-		// Auto-create Draft Purchase Order in Operations pipeline
-		// Generate PO number inline (using tx, not a.db) to avoid nested transaction deadlock on SQLite
-		poYear := time.Now().Year()
-		var poSeq InvoiceSequence
-		if err := tx.Where("prefix = ? AND year = ?", "PO", poYear).First(&poSeq).Error; err != nil {
-			poSeq = InvoiceSequence{Prefix: "PO", Year: poYear, LastNumber: 0}
-			tx.Create(&poSeq)
-		}
-		poSeq.LastNumber++
-		tx.Model(&InvoiceSequence{}).Where("prefix = ? AND year = ?", "PO", poYear).Update("last_number", poSeq.LastNumber)
-		poNumber := fmt.Sprintf("PO-%d/%03d", poYear, poSeq.LastNumber)
-		{
-			po := &PurchaseOrder{
-				Base:             Base{ID: uuid.New().String()},
-				OrderID:          newOrder.ID,
-				PONumber:         poNumber,
-				PODate:           time.Now(),
-				ExpectedDelivery: time.Now().AddDate(0, 0, 42), // 6 weeks default
-				Currency:         "EUR",
-				ExchangeRate:     0.0,
-				SubtotalForeign:  0,
-				SubtotalBHD:      offer.TotalValueBHD,
-				TotalBHD:         offer.TotalValueBHD,
-				PaymentTerms:     "Net 30",
-				Status:           "Draft",
-			}
-			// Map order items to PO items
-			for _, oi := range newOrder.Items {
-				po.Items = append(po.Items, PurchaseOrderItem{
-					Base:        Base{ID: uuid.New().String()},
-					OrderItemID: oi.ID,
-					ProductID:   oi.ProductID,
-					ProductCode: oi.ProductCode,
-					Description: oi.Description,
-					Quantity:    oi.Quantity,
-				})
-			}
-			if err := tx.Create(po).Error; err != nil {
-				log.Printf("⚠ Failed to auto-create Draft PO for order %s: %v", orderNumber, err)
-			} else {
-				log.Printf("✅ Auto-created Draft PO %s → Operations pipeline", poNumber)
-			}
-		}
+		log.Printf("ℹ️ Supplier PO creation deferred for order %s; use CreatePOFromOrder so supplier, costing, approval, and line validation are enforced", orderNumber)
 
 		order = newOrder
 		return nil
@@ -8718,7 +9842,160 @@ func (a *App) UpdateOrder(id string, order Order) (*Order, error) {
 	return &existing, nil
 }
 
-// DeleteOrder deletes an order and its items (only if no invoices/POs/DNs linked)
+type orderDeleteCascadeSnapshot struct {
+	Order             Order
+	InvoiceIDs        []string
+	PurchaseOrderIDs  []string
+	DeliveryNoteIDs   []string
+	OrderItemCount    int64
+	InvoiceItemCount  int64
+	PurchaseItemCount int64
+	DeliveryItemCount int64
+	PaymentCount      int64
+}
+
+func appendOrderLinkClause(clauses *[]string, args *[]interface{}, column string, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	*clauses = append(*clauses, fmt.Sprintf("%s = ?", column))
+	*args = append(*args, value)
+}
+
+func orderLinkedInvoiceCondition(order Order) (string, []interface{}) {
+	clauses := []string{}
+	args := []interface{}{}
+	appendOrderLinkClause(&clauses, &args, "order_id", order.ID)
+	appendOrderLinkClause(&clauses, &args, "order_id", order.OrderNumber)
+	appendOrderLinkClause(&clauses, &args, "customer_reference", order.OrderNumber)
+	appendOrderLinkClause(&clauses, &args, "customer_reference", order.CustomerReference)
+	appendOrderLinkClause(&clauses, &args, "customer_po_number", order.CustomerPONumber)
+	appendOrderLinkClause(&clauses, &args, "offer_id", order.OfferID)
+	appendOrderLinkClause(&clauses, &args, "offer_number", order.OfferNumber)
+	if len(clauses) == 0 {
+		return "order_id = ?", []interface{}{order.ID}
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")", args
+}
+
+func orderLinkedChildCondition(order Order) (string, []interface{}) {
+	clauses := []string{}
+	args := []interface{}{}
+	appendOrderLinkClause(&clauses, &args, "order_id", order.ID)
+	appendOrderLinkClause(&clauses, &args, "order_id", order.OrderNumber)
+	if len(clauses) == 0 {
+		return "order_id = ?", []interface{}{order.ID}
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")", args
+}
+
+func (a *App) collectOrderDeleteCascade(db *gorm.DB, orderID string) (*orderDeleteCascadeSnapshot, error) {
+	var order Order
+	if err := db.First(&order, "id = ?", strings.TrimSpace(orderID)).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, newError("ORDER_NOT_FOUND", "Order does not exist", orderID)
+		}
+		return nil, fmt.Errorf("failed to load order: %w", err)
+	}
+
+	invoiceWhere, invoiceArgs := orderLinkedInvoiceCondition(order)
+	childWhere, childArgs := orderLinkedChildCondition(order)
+
+	snapshot := &orderDeleteCascadeSnapshot{Order: order}
+	if err := db.Model(&Invoice{}).Where(invoiceWhere, invoiceArgs...).Pluck("id", &snapshot.InvoiceIDs).Error; err != nil {
+		return nil, fmt.Errorf("failed to find linked invoices: %w", err)
+	}
+	if err := db.Model(&PurchaseOrder{}).Where(childWhere, childArgs...).Pluck("id", &snapshot.PurchaseOrderIDs).Error; err != nil {
+		return nil, fmt.Errorf("failed to find linked purchase orders: %w", err)
+	}
+	if err := db.Model(&DeliveryNote{}).Where(childWhere, childArgs...).Pluck("id", &snapshot.DeliveryNoteIDs).Error; err != nil {
+		return nil, fmt.Errorf("failed to find linked delivery notes: %w", err)
+	}
+	if err := db.Model(&OrderItem{}).Where("order_id = ?", order.ID).Count(&snapshot.OrderItemCount).Error; err != nil {
+		return nil, fmt.Errorf("failed to count order items: %w", err)
+	}
+	if len(snapshot.InvoiceIDs) > 0 {
+		if err := db.Model(&DBInvoiceItem{}).Where("invoice_id IN ?", snapshot.InvoiceIDs).Count(&snapshot.InvoiceItemCount).Error; err != nil {
+			return nil, fmt.Errorf("failed to count invoice items: %w", err)
+		}
+		if err := db.Model(&Payment{}).Where("invoice_id IN ?", snapshot.InvoiceIDs).Count(&snapshot.PaymentCount).Error; err != nil {
+			return nil, fmt.Errorf("failed to count linked payments: %w", err)
+		}
+	}
+	if len(snapshot.PurchaseOrderIDs) > 0 {
+		if err := db.Model(&PurchaseOrderItem{}).Where("purchase_order_id IN ?", snapshot.PurchaseOrderIDs).Count(&snapshot.PurchaseItemCount).Error; err != nil {
+			return nil, fmt.Errorf("failed to count purchase order items: %w", err)
+		}
+	}
+	if len(snapshot.DeliveryNoteIDs) > 0 {
+		if err := db.Model(&DeliveryNoteItem{}).Where("delivery_note_id IN ?", snapshot.DeliveryNoteIDs).Count(&snapshot.DeliveryItemCount).Error; err != nil {
+			return nil, fmt.Errorf("failed to count delivery note items: %w", err)
+		}
+	}
+	return snapshot, nil
+}
+
+func orderDeletePreviewMap(snapshot *orderDeleteCascadeSnapshot) map[string]interface{} {
+	summary := []string{fmt.Sprintf("%d order item(s)", snapshot.OrderItemCount)}
+	if len(snapshot.InvoiceIDs) > 0 {
+		summary = append(summary, fmt.Sprintf("%d customer invoice(s)", len(snapshot.InvoiceIDs)))
+	}
+	if snapshot.InvoiceItemCount > 0 {
+		summary = append(summary, fmt.Sprintf("%d invoice line item(s)", snapshot.InvoiceItemCount))
+	}
+	if len(snapshot.PurchaseOrderIDs) > 0 {
+		summary = append(summary, fmt.Sprintf("%d purchase order(s)", len(snapshot.PurchaseOrderIDs)))
+	}
+	if snapshot.PurchaseItemCount > 0 {
+		summary = append(summary, fmt.Sprintf("%d purchase order line item(s)", snapshot.PurchaseItemCount))
+	}
+	if len(snapshot.DeliveryNoteIDs) > 0 {
+		summary = append(summary, fmt.Sprintf("%d delivery note(s)", len(snapshot.DeliveryNoteIDs)))
+	}
+	if snapshot.DeliveryItemCount > 0 {
+		summary = append(summary, fmt.Sprintf("%d delivery note line item(s)", snapshot.DeliveryItemCount))
+	}
+
+	blocked := snapshot.PaymentCount > 0
+	blockReason := ""
+	if blocked {
+		blockReason = fmt.Sprintf("cannot delete order with %d linked payment(s); cancel or reverse payments first", snapshot.PaymentCount)
+	}
+
+	return map[string]interface{}{
+		"order_id":                  snapshot.Order.ID,
+		"order_number":              snapshot.Order.OrderNumber,
+		"invoice_count":             len(snapshot.InvoiceIDs),
+		"invoice_item_count":        snapshot.InvoiceItemCount,
+		"purchase_order_count":      len(snapshot.PurchaseOrderIDs),
+		"purchase_order_item_count": snapshot.PurchaseItemCount,
+		"delivery_note_count":       len(snapshot.DeliveryNoteIDs),
+		"delivery_note_item_count":  snapshot.DeliveryItemCount,
+		"order_item_count":          snapshot.OrderItemCount,
+		"payment_count":             snapshot.PaymentCount,
+		"blocked":                   blocked,
+		"block_reason":              blockReason,
+		"summary":                   summary,
+	}
+}
+
+// PreviewOrderDeleteCascade tells the UI exactly which dependent records will be removed.
+func (a *App) PreviewOrderDeleteCascade(orderID string) (map[string]interface{}, error) {
+	if err := a.requirePermission("orders:delete"); err != nil {
+		return nil, err
+	}
+	if a.db == nil {
+		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+	snapshot, err := a.collectOrderDeleteCascade(a.db, orderID)
+	if err != nil {
+		return nil, err
+	}
+	return orderDeletePreviewMap(snapshot), nil
+}
+
+// DeleteOrder deletes an order and its dependent records after payment checks.
 func (a *App) DeleteOrder(orderID string) error {
 	if ok, err := a.guardDeleteOrRequest("orders:delete", "order", orderID, "Order"); !ok {
 		return err
@@ -8730,78 +10007,59 @@ func (a *App) DeleteOrder(orderID string) error {
 		return newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
-	// SECURITY: Check for payments before allowing deletion (audit requirement)
-	var paymentCount int64
-	if err := a.db.Model(&Payment{}).
-		Joins("JOIN invoices ON invoices.id = payments.invoice_id").
-		Where("invoices.order_id = ?", orderID).
-		Count(&paymentCount).Error; err != nil {
-		log.Printf("⚠️ Failed to check payment count for order %s: %v", orderID, err)
+	snapshot, err := a.collectOrderDeleteCascade(a.db, orderID)
+	if err != nil {
+		return err
 	}
-	if paymentCount > 0 {
+	if snapshot.PaymentCount > 0 {
 		return newError("PAYMENT_EXISTS",
-			fmt.Sprintf("cannot delete order with %d payment(s) - use Cancel instead (audit requirement)", paymentCount),
+			fmt.Sprintf("cannot delete order with %d payment(s) - use Cancel instead (audit requirement)", snapshot.PaymentCount),
 			"")
 	}
 
-	// Cascade delete all linked records in a transaction
-	// Frontend already shows confirm() dialog, so user explicitly approved deletion
-	err := a.db.Transaction(func(tx *gorm.DB) error {
-		// 1. Delete invoice items for linked invoices
-		var invoices []Invoice
-		if err := tx.Where("order_id = ?", orderID).Find(&invoices).Error; err != nil {
-			return fmt.Errorf("failed to find linked invoices: %w", err)
+	err = a.db.Transaction(func(tx *gorm.DB) error {
+		fresh, err := a.collectOrderDeleteCascade(tx, orderID)
+		if err != nil {
+			return err
 		}
-		for _, invoice := range invoices {
-			if err := tx.Where("invoice_id = ?", invoice.ID).Delete(&DBInvoiceItem{}).Error; err != nil {
-				return fmt.Errorf("failed to delete invoice items for invoice %s: %w", invoice.ID, err)
+		if fresh.PaymentCount > 0 {
+			return newError("PAYMENT_EXISTS",
+				fmt.Sprintf("cannot delete order with %d payment(s) - use Cancel instead (audit requirement)", fresh.PaymentCount),
+				"")
+		}
+
+		if len(fresh.InvoiceIDs) > 0 {
+			if err := tx.Where("invoice_id IN ?", fresh.InvoiceIDs).Delete(&DBInvoiceItem{}).Error; err != nil {
+				return fmt.Errorf("failed to delete invoice items: %w", err)
+			}
+			if err := tx.Where("id IN ?", fresh.InvoiceIDs).Delete(&Invoice{}).Error; err != nil {
+				return fmt.Errorf("failed to delete invoices: %w", err)
 			}
 		}
 
-		// 2. Delete invoices
-		if err := tx.Where("order_id = ?", orderID).Delete(&Invoice{}).Error; err != nil {
-			return fmt.Errorf("failed to delete invoices: %w", err)
-		}
-
-		// 3. Delete purchase order items for linked purchase orders
-		var purchaseOrders []PurchaseOrder
-		if err := tx.Where("order_id = ?", orderID).Find(&purchaseOrders).Error; err != nil {
-			return fmt.Errorf("failed to find linked purchase orders: %w", err)
-		}
-		for _, po := range purchaseOrders {
-			if err := tx.Where("purchase_order_id = ?", po.ID).Delete(&PurchaseOrderItem{}).Error; err != nil {
-				return fmt.Errorf("failed to delete PO items for PO %s: %w", po.ID, err)
+		if len(fresh.PurchaseOrderIDs) > 0 {
+			if err := tx.Where("purchase_order_id IN ?", fresh.PurchaseOrderIDs).Delete(&PurchaseOrderItem{}).Error; err != nil {
+				return fmt.Errorf("failed to delete purchase order items: %w", err)
+			}
+			if err := tx.Where("id IN ?", fresh.PurchaseOrderIDs).Delete(&PurchaseOrder{}).Error; err != nil {
+				return fmt.Errorf("failed to delete purchase orders: %w", err)
 			}
 		}
 
-		// 4. Delete purchase orders
-		if err := tx.Where("order_id = ?", orderID).Delete(&PurchaseOrder{}).Error; err != nil {
-			return fmt.Errorf("failed to delete purchase orders: %w", err)
-		}
-
-		// 5. Delete delivery note items for linked delivery notes
-		var deliveryNotes []DeliveryNote
-		if err := tx.Where("order_id = ?", orderID).Find(&deliveryNotes).Error; err != nil {
-			return fmt.Errorf("failed to find linked delivery notes: %w", err)
-		}
-		for _, dn := range deliveryNotes {
-			if err := tx.Where("delivery_note_id = ?", dn.ID).Delete(&DeliveryNoteItem{}).Error; err != nil {
-				return fmt.Errorf("failed to delete delivery note items for DN %s: %w", dn.ID, err)
+		if len(fresh.DeliveryNoteIDs) > 0 {
+			if err := tx.Where("delivery_note_id IN ?", fresh.DeliveryNoteIDs).Delete(&DeliveryNoteItem{}).Error; err != nil {
+				return fmt.Errorf("failed to delete delivery note items: %w", err)
+			}
+			if err := tx.Where("id IN ?", fresh.DeliveryNoteIDs).Delete(&DeliveryNote{}).Error; err != nil {
+				return fmt.Errorf("failed to delete delivery notes: %w", err)
 			}
 		}
 
-		// 6. Delete delivery notes
-		if err := tx.Where("order_id = ?", orderID).Delete(&DeliveryNote{}).Error; err != nil {
-			return fmt.Errorf("failed to delete delivery notes: %w", err)
-		}
-
-		// 7. Delete order items
-		if err := tx.Where("order_id = ?", orderID).Delete(&OrderItem{}).Error; err != nil {
+		if err := tx.Where("order_id = ?", fresh.Order.ID).Delete(&OrderItem{}).Error; err != nil {
 			return fmt.Errorf("failed to delete order items: %w", err)
 		}
 
-		// 8. Delete the order itself
-		if err := tx.Delete(&Order{}, "id = ?", orderID).Error; err != nil {
+		if err := tx.Delete(&Order{}, "id = ?", fresh.Order.ID).Error; err != nil {
 			return fmt.Errorf("failed to delete order: %w", err)
 		}
 
@@ -8812,7 +10070,7 @@ func (a *App) DeleteOrder(orderID string) error {
 		return fmt.Errorf("cascade delete order failed: %w", err)
 	}
 
-	log.Printf("🗑️ Cascade deleted order %s and all linked records (invoices, POs, delivery notes)", orderID)
+	log.Printf("🗑️ Cascade deleted order %s and dependent records: %v", orderID, orderDeletePreviewMap(snapshot)["summary"])
 	return nil
 }
 
@@ -10197,7 +11455,9 @@ func (a *App) GetCRMSupplierDashboard() CRMSupplierDashboard {
 	// 2. Detect the latest year with data (handles future system dates)
 	var latestYear int
 	row := a.db.Raw("SELECT MAX(CAST(strftime('%Y', invoice_date) AS INTEGER)) FROM supplier_invoices WHERE deleted_at IS NULL").Row()
-	row.Scan(&latestYear)
+	if err := row.Scan(&latestYear); err != nil {
+		log.Printf("WARNING: failed to detect supplier invoice latest year: %v", err)
+	}
 	if latestYear == 0 {
 		latestYear = time.Now().Year()
 	}
@@ -10245,14 +11505,25 @@ func (a *App) GetCRMSupplierDashboard() CRMSupplierDashboard {
 	supplierOutstanding := make(map[string]float64)
 	supplierOverdue := make(map[string]float64)
 	var totalOutstanding, totalOverdue float64
+	supplierStates, err := a.buildSupplierInvoicePaymentStateMap(a.db, supplierInvoices)
+	if err != nil {
+		log.Printf("⚠️ Failed to build supplier dashboard payment states: %v", err)
+	}
 
 	for _, inv := range supplierInvoices {
-		supplierOutstanding[inv.SupplierID] += inv.TotalBHD
-		totalOutstanding += inv.TotalBHD
+		amount := inv.TotalBHD
+		if state, ok := supplierStates[inv.ID]; ok {
+			amount = state.OutstandingBHD
+		}
+		if amount <= FloatingPointTolerance {
+			continue
+		}
+		supplierOutstanding[inv.SupplierID] += amount
+		totalOutstanding += amount
 
 		if time.Since(inv.DueDate).Hours()/24 > 30 {
-			supplierOverdue[inv.SupplierID] += inv.TotalBHD
-			totalOverdue += inv.TotalBHD
+			supplierOverdue[inv.SupplierID] += amount
+			totalOverdue += amount
 		}
 	}
 	dashboard.OutstandingPayables = totalOutstanding
@@ -10377,14 +11648,25 @@ func (a *App) GetCRMSupplierDashboardByYear(year int) CRMSupplierDashboard {
 	supplierOutstanding := make(map[string]float64)
 	supplierOverdue := make(map[string]float64)
 	var totalOutstanding, totalOverdue float64
+	supplierStates, err := a.buildSupplierInvoicePaymentStateMap(a.db, supplierInvoices)
+	if err != nil {
+		log.Printf("⚠️ Failed to build yearly supplier dashboard payment states: %v", err)
+	}
 
 	for _, inv := range supplierInvoices {
-		supplierOutstanding[inv.SupplierID] += inv.TotalBHD
-		totalOutstanding += inv.TotalBHD
+		amount := inv.TotalBHD
+		if state, ok := supplierStates[inv.ID]; ok {
+			amount = state.OutstandingBHD
+		}
+		if amount <= FloatingPointTolerance {
+			continue
+		}
+		supplierOutstanding[inv.SupplierID] += amount
+		totalOutstanding += amount
 
 		if time.Since(inv.DueDate).Hours()/24 > 30 {
-			supplierOverdue[inv.SupplierID] += inv.TotalBHD
-			totalOverdue += inv.TotalBHD
+			supplierOverdue[inv.SupplierID] += amount
+			totalOverdue += amount
 		}
 	}
 	dashboard.OutstandingPayables = totalOutstanding
@@ -10853,9 +12135,35 @@ func (a *App) saveUserSettings(settings map[string]interface{}) error {
 	return nil
 }
 
+func (a *App) getStoredSettingString(userSettings map[string]interface{}, key string, defaultValue string) string {
+	if a.settingsService != nil {
+		if value, err := a.settingsService.GetSetting(key); err == nil && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	if value, ok := getSettingOrDefault(userSettings, key, defaultValue).(string); ok {
+		return value
+	}
+	return defaultValue
+}
+
+func (a *App) buildAPIKeySettings(userSettings map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"aimlapi_key":    maskSecret(a.getStoredSettingString(userSettings, "apiKeys.aimlapi_key", "")),
+		"aiml_model":     a.getStoredSettingString(userSettings, "apiKeys.aiml_model", getAIMLModelID()),
+		"openai_key":     maskSecret(a.getStoredSettingString(userSettings, "apiKeys.openai_key", "")),
+		"anthropic_key":  maskSecret(a.getStoredSettingString(userSettings, "apiKeys.anthropic_key", "")),
+		"mistral_key":    maskSecret(a.getStoredSettingString(userSettings, "apiKeys.mistral_key", "")),
+		"azure_endpoint": a.getStoredSettingString(userSettings, "apiKeys.azure_endpoint", ""),
+	}
+}
+
 func (a *App) GetSettings() (map[string]interface{}, error) {
-	if err := a.requirePermission("settings:view"); err != nil {
-		return nil, err
+	fullSettingsAccess := a.requirePermission("settings:update") == nil
+	if !fullSettingsAccess {
+		if err := a.requireAnyPermission("settings:view", "settings:api_keys"); err != nil {
+			return nil, err
+		}
 	}
 	if a.config == nil {
 		return map[string]interface{}{
@@ -10871,6 +12179,16 @@ func (a *App) GetSettings() (map[string]interface{}, error) {
 	}
 
 	cfg := a.config
+	apiKeySettings := a.buildAPIKeySettings(userSettings)
+
+	if !fullSettingsAccess {
+		settings := map[string]interface{}{
+			"restricted": true,
+			"apiKeys":    apiKeySettings,
+		}
+		log.Printf("⚙️ Retrieved restricted API settings")
+		return settings, nil
+	}
 
 	// Build settings structure matching frontend expectations
 	settings := map[string]interface{}{
@@ -10886,14 +12204,7 @@ func (a *App) GetSettings() (map[string]interface{}, error) {
 			"customers_path": getSettingOrDefault(userSettings, "folders.customers_path", ""),
 			"reports_path":   getSettingOrDefault(userSettings, "folders.reports_path", ""),
 		},
-		"apiKeys": map[string]interface{}{
-			"aimlapi_key":    maskSecret(getSettingOrDefault(userSettings, "apiKeys.aimlapi_key", "").(string)),
-			"aiml_model":     getSettingOrDefault(userSettings, "apiKeys.aiml_model", getAIMLModelID()).(string),
-			"openai_key":     maskSecret(getSettingOrDefault(userSettings, "apiKeys.openai_key", "").(string)),
-			"anthropic_key":  maskSecret(getSettingOrDefault(userSettings, "apiKeys.anthropic_key", "").(string)),
-			"mistral_key":    maskSecret(getSettingOrDefault(userSettings, "apiKeys.mistral_key", "").(string)),
-			"azure_endpoint": getSettingOrDefault(userSettings, "apiKeys.azure_endpoint", ""),
-		},
+		"apiKeys": apiKeySettings,
 		"gpu": map[string]interface{}{
 			"detected":    getSettingOrDefault(userSettings, "gpu.detected", false),
 			"vendor":      getSettingOrDefault(userSettings, "gpu.vendor", ""),
@@ -11311,7 +12622,7 @@ func (a *App) SeedBankDemoData() error {
 
 // TestAIConnection tests connection to AI provider (AIMLAPI/OpenAI)
 func (a *App) TestAIConnection(provider string, apiKey string) error {
-	if err := a.requirePermission("settings:update"); err != nil {
+	if err := a.requireAnyPermission("settings:update", "settings:api_keys"); err != nil {
 		return err
 	}
 	if provider == "" || apiKey == "" {
@@ -11374,7 +12685,7 @@ func (a *App) GetFolderPaths() (map[string]string, error) {
 
 // SetAPIKeys updates API keys securely - encrypts and persists to DB
 func (a *App) SetAPIKeys(apiKeys map[string]string) error {
-	if err := a.requirePermission("settings:update"); err != nil {
+	if err := a.requireAnyPermission("settings:update", "settings:api_keys"); err != nil {
 		return err
 	}
 	if a.config == nil {
@@ -11399,7 +12710,7 @@ func (a *App) SetAPIKeys(apiKeys map[string]string) error {
 	}
 
 	// Update AIMLAPI key (also used as primary Butler/Grok backend)
-	if key, ok := apiKeys["aimlapi_key"]; ok && key != "" && key != "****" {
+	if key, ok := apiKeys["aimlapi_key"]; ok && key != "" && !strings.Contains(key, "*") {
 		a.config.AI.APIKey = key
 		os.Setenv("AIML_API_KEY", key)
 		persistKey("apiKeys.aimlapi_key", key)
@@ -11413,21 +12724,21 @@ func (a *App) SetAPIKeys(apiKeys map[string]string) error {
 	}
 
 	// Update Mistral key
-	if key, ok := apiKeys["mistral_key"]; ok && key != "" && key != "****" {
+	if key, ok := apiKeys["mistral_key"]; ok && key != "" && !strings.Contains(key, "*") {
 		os.Setenv("MISTRAL_API_KEY", key)
 		persistKey("apiKeys.mistral_key", key)
 		log.Println("AI configuration updated")
 	}
 
 	// Update OpenAI key
-	if key, ok := apiKeys["openai_key"]; ok && key != "" && key != "****" {
+	if key, ok := apiKeys["openai_key"]; ok && key != "" && !strings.Contains(key, "*") {
 		os.Setenv("OPENAI_API_KEY", key)
 		persistKey("apiKeys.openai_key", key)
 		log.Println("AI configuration updated")
 	}
 
 	// Update Anthropic key
-	if key, ok := apiKeys["anthropic_key"]; ok && key != "" && key != "****" {
+	if key, ok := apiKeys["anthropic_key"]; ok && key != "" && !strings.Contains(key, "*") {
 		os.Setenv("ANTHROPIC_API_KEY", key)
 		persistKey("apiKeys.anthropic_key", key)
 		log.Println("AI configuration updated")
@@ -12882,6 +14193,11 @@ func (a *App) WatchInboxForTestFile(inboxPath string) error {
 	// For now, just log that we're watching
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Setup inbox watcher", r)
+			}
+		}()
 		// Simple polling approach for setup test
 		for i := 0; i < 60; i++ { // Watch for 60 seconds
 			time.Sleep(1 * time.Second)
@@ -13811,6 +15127,15 @@ func (a *App) routeToInvoice(data map[string]interface{}, fileName string) (stri
 	return invoice.ID, nil
 }
 
+func firstPositiveFloat(values ...float64) float64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
 func (a *App) routeToPurchaseOrder(data map[string]interface{}, fileName string) (string, error) {
 	division := normalizeDivisionName(getStringField(data, "division"))
 	poNumber := getStringField(data, "po_number")
@@ -13818,74 +15143,101 @@ func (a *App) routeToPurchaseOrder(data map[string]interface{}, fileName string)
 		poNumber = fmt.Sprintf("PO-OCR-%s", time.Now().Format("20060102-150405"))
 	}
 
-	// Look up supplier
+	// Look up supplier. OCR-created POs must still use the normal PO creation path
+	// so supplier, item, threshold, and approval rules are enforced.
 	supplierName := getStringField(data, "supplier_name")
 	var supplierID string
-	if supplierName != "" {
+	if suppliedID := strings.TrimSpace(getStringField(data, "supplier_id")); suppliedID != "" {
 		var supplier SupplierMaster
-		if err := a.db.Where("business_name LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(supplierName)+"%").First(&supplier).Error; err == nil {
+		if err := a.db.First(&supplier, "id = ?", suppliedID).Error; err == nil {
 			supplierID = supplier.ID
+			supplierName = supplier.SupplierName
 		}
+	} else if supplierName != "" {
+		var supplier SupplierMaster
+		like := "%" + escapeLikeWildcards(supplierName) + "%"
+		if err := a.db.Where("supplier_name LIKE ? ESCAPE '\\\\' OR supplier_code LIKE ? ESCAPE '\\\\'", like, like).First(&supplier).Error; err == nil {
+			supplierID = supplier.ID
+			supplierName = supplier.SupplierName
+		}
+	}
+	if strings.TrimSpace(supplierID) == "" {
+		return "", newError("SUPPLIER_REQUIRED", "Supplier is required before creating a purchase order from OCR", fmt.Sprintf("file=%s supplier=%s", fileName, supplierName))
 	}
 
 	poDate := parseDate(getStringField(data, "invoice_date"))
 	if poDate.IsZero() {
 		poDate = time.Now()
 	}
+	expectedDelivery := parseDate(firstNonEmptyString(getStringField(data, "expected_delivery"), getStringField(data, "delivery_date")))
+	if expectedDelivery.IsZero() {
+		expectedDelivery = poDate.AddDate(0, 0, 30)
+	}
 
-	total := getFloatField(data, "total")
 	currency := getStringField(data, "currency")
 	if currency == "" {
 		currency = "BHD"
 	}
+	exchangeRate := getFloatField(data, "exchange_rate")
+	paymentTerms := firstNonEmptyString(getStringField(data, "payment_terms"), "Net 30")
 
-	po := &PurchaseOrder{
-		PONumber:     poNumber,
-		PODate:       poDate,
-		SupplierID:   supplierID,
-		Currency:     currency,
-		SubtotalBHD:  total - getFloatField(data, "vat"),
-		VATAmount:    getFloatField(data, "vat"),
-		TotalBHD:     total,
-		TotalForeign: total,
-		Status:       "Draft",
-		PaymentTerms: "Net 30",
-		Division:     division,
+	lineItems, _ := data["line_items"].([]interface{})
+	items := make([]PurchaseOrderItem, 0, len(lineItems))
+	for i, item := range lineItems {
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		description := strings.TrimSpace(getStringField(itemMap, "description"))
+		quantity := getFloatField(itemMap, "quantity")
+		unitPrice := firstPositiveFloat(
+			getFloatField(itemMap, "unit_price"),
+			getFloatField(itemMap, "unit_price_foreign"),
+			getFloatField(itemMap, "price"),
+		)
+		totalPrice := firstPositiveFloat(
+			getFloatField(itemMap, "total_price"),
+			getFloatField(itemMap, "total"),
+			getFloatField(itemMap, "amount"),
+		)
+		if quantity <= 0 && totalPrice > 0 {
+			quantity = 1
+		}
+		if unitPrice <= 0 && totalPrice > 0 && quantity > 0 {
+			unitPrice = totalPrice / quantity
+		}
+		if description == "" {
+			description = fmt.Sprintf("OCR line item %d", i+1)
+		}
+		items = append(items, PurchaseOrderItem{
+			Description:      description,
+			Quantity:         quantity,
+			UnitPriceForeign: unitPrice,
+		})
+	}
+	if len(items) == 0 {
+		return "", newError("ITEMS_REQUIRED", "At least one valid line item is required before creating a purchase order from OCR", fileName)
 	}
 
-	if err := a.db.Create(po).Error; err != nil {
+	po := PurchaseOrder{
+		PONumber:         poNumber,
+		PODate:           poDate,
+		ExpectedDelivery: expectedDelivery,
+		SupplierID:       supplierID,
+		Currency:         currency,
+		ExchangeRate:     exchangeRate,
+		PaymentTerms:     paymentTerms,
+		Division:         division,
+		Items:            items,
+	}
+
+	created, err := a.CreatePurchaseOrder(po)
+	if err != nil {
 		return "", err
 	}
 
-	// Save line items if present
-	if lineItems, ok := data["line_items"]; ok && lineItems != nil {
-		if items, ok := lineItems.([]interface{}); ok && len(items) > 0 {
-			for i, item := range items {
-				if itemMap, ok := item.(map[string]interface{}); ok {
-					poItem := PurchaseOrderItem{
-						PurchaseOrderID:  po.ID,
-						Description:      getStringField(itemMap, "description"),
-						Quantity:         getFloatField(itemMap, "quantity"),
-						UnitPriceBHD:     getFloatField(itemMap, "unit_price"),
-						UnitPriceForeign: getFloatField(itemMap, "unit_price"),
-						TotalBHD:         getFloatField(itemMap, "total_price"),
-						TotalForeign:     getFloatField(itemMap, "total_price"),
-					}
-					if poItem.TotalBHD == 0 && poItem.Quantity > 0 && poItem.UnitPriceBHD > 0 {
-						poItem.TotalBHD = poItem.Quantity * poItem.UnitPriceBHD
-						poItem.TotalForeign = poItem.TotalBHD
-					}
-					if err := a.db.Create(&poItem).Error; err != nil {
-						log.Printf("⚠️ Failed to save PO item %d: %v", i+1, err)
-					}
-				}
-			}
-			log.Printf("📦 Saved %d line items for PO %s", len(items), po.ID)
-		}
-	}
-
-	log.Printf("📦 PurchaseOrder created from OCR: ID=%s, PO=%s, Total=%.3f", po.ID, poNumber, total)
-	return po.ID, nil
+	log.Printf("📦 PurchaseOrder created from OCR: ID=%s, PO=%s, Total=%.3f", created.ID, created.PONumber, created.TotalBHD)
+	return created.ID, nil
 }
 
 func (a *App) routeToSupplierInvoice(data map[string]interface{}, fileName string, ocrDocID string, ocrConfidence float64) (string, error) {
@@ -14133,6 +15485,7 @@ func (a *App) routeToBankStatement(data map[string]interface{}, fileName string,
 	explicitBankAccountID := strings.TrimSpace(getStringField(data, "bank_account_id"))
 	bankName := getStringField(data, "bank_name")
 	accountNumber := getStringField(data, "account_number")
+	iban := getStringField(data, "iban")
 	butlerSummary := strings.TrimSpace(getStringField(data, "butler_summary"))
 	userNotes := strings.TrimSpace(getStringField(data, "notes"))
 	statementNotes := butlerSummary
@@ -14267,6 +15620,14 @@ func (a *App) routeToBankStatement(data map[string]interface{}, fileName string,
 		if acct.ID == bankAccountID {
 			matchedAccount = acct
 			break
+		}
+	}
+	if explicitBankAccountID != "" {
+		if err := validateParsedStatementMatchesSelectedAccount(&parsedStatement{
+			AccountNumber: accountNumber,
+			IBAN:          iban,
+		}, matchedAccount); err != nil {
+			return "", err
 		}
 	}
 
@@ -14539,6 +15900,13 @@ func getStringField(data map[string]interface{}, key string) string {
 	return ""
 }
 
+func setRuntimeEnv(name, value string) error {
+	if err := os.Setenv(name, value); err != nil {
+		return fmt.Errorf("failed to apply runtime setting %s: %w", name, err)
+	}
+	return nil
+}
+
 func getFloatField(data map[string]interface{}, key string) float64 {
 	if v, ok := data[key]; ok {
 		switch val := v.(type) {
@@ -14739,6 +16107,11 @@ func (a *App) ProcessOffersBatch(offersFolder string) (*BatchOfferResult, error)
 
 	// Start goroutine to emit progress events to frontend via Wails runtime
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Batch offer progress emitter", r)
+			}
+		}()
 		for progress := range progressChan {
 			errStr := ""
 			if progress.Error != nil {
@@ -15778,29 +17151,26 @@ func (a *App) SeedDefaultRoles() error {
 			ID:          "role_manager",
 			Name:        "manager",
 			DisplayName: "Manager",
-			Description: "All operations INCLUDING finance (no device/user management)",
+			Description: "Commercial and operations management without company financials",
 			Permissions: `[
 				"dashboard:view",
 				"customers:view", "customers:edit",
 				"suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:update",
 				"invoices:view", "invoices:create", "invoices:update", "invoices:approve",
 				"orders:view", "orders:create", "orders:edit", "orders:update",
-				"payments:view", "payments:create", "payments:update", "payments:record",
-				"reports:view", "reports:generate",
-				"settings:view",
+				"reports:view",
+				"settings:view", "settings:api_keys",
 				"data:import",
 				"documents:view", "documents:create", "documents:classify",
 				"intelligence:chat",
-				"finance:view", "finance:create",
-				"expenses:view", "expenses:create", "expenses:update",
-				"payroll:view", "payroll:create", "payroll:update", "payroll:approve",
 				"projects:view", "projects:create", "projects:update",
 				"tasks:view", "tasks:create", "tasks:update",
 				"notifications:view", "notifications:update",
 				"hr:view", "hr:create", "hr:update",
 				"offers:view", "offers:create", "offers:edit",
 				"po:view", "po:create", "po:update", "po:approve",
-				"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm"
+				"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
+				"inventory:view", "inventory:create", "inventory:update"
 			]`,
 		},
 		{
@@ -15822,8 +17192,10 @@ func (a *App) SeedDefaultRoles() error {
 				"notifications:view", "notifications:update",
 				"po:view", "po:create",
 				"delivery_notes:view", "delivery_notes:create", "delivery_notes:update",
+				"inventory:view",
 				"documents:view", "documents:create", "documents:classify",
 				"intelligence:chat",
+				"settings:api_keys",
 				"reports:view"
 			]`,
 		},
@@ -15841,12 +17213,13 @@ func (a *App) SeedDefaultRoles() error {
 				"notifications:view", "notifications:update",
 				"grn:view", "grn:create",
 				"delivery_notes:view", "delivery_notes:create", "delivery_notes:update", "delivery_notes:dispatch", "delivery_notes:confirm",
+				"inventory:view", "inventory:create", "inventory:update",
 				"orders:view", "orders:update",
 				"invoices:view", "invoices:create", "invoices:update",
 				"documents:view", "documents:create", "documents:classify",
 				"intelligence:chat",
 				"reports:view",
-				"settings:view"
+				"settings:view", "settings:api_keys"
 			]`,
 		},
 		{
@@ -15861,10 +17234,11 @@ func (a *App) SeedDefaultRoles() error {
 				"invoices:view",
 				"orders:view",
 				"payments:view",
+				"inventory:view",
 				"documents:view", "documents:create", "documents:classify",
 				"intelligence:chat",
 				"reports:view",
-				"settings:view",
+				"settings:view", "settings:api_keys",
 				"offers:view",
 				"projects:view",
 				"tasks:view", "tasks:create", "tasks:update",
@@ -16350,6 +17724,24 @@ func (a *App) requirePermission(permission string) error {
 	return fmt.Errorf("access denied: not authenticated - please activate your license")
 }
 
+func (a *App) requireAnyPermission(permissions ...string) error {
+	var firstErr error
+	for _, permission := range permissions {
+		if strings.TrimSpace(permission) == "" {
+			continue
+		}
+		if err := a.requirePermission(permission); err == nil {
+			return nil
+		} else if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	return fmt.Errorf("access denied: no permission supplied")
+}
+
 func permissionAliases(permission string) []string {
 	aliases := map[string]struct{}{
 		permission: {},
@@ -16395,8 +17787,13 @@ func permissionAliases(permission string) []string {
 }
 
 func permissionGranted(granted, required string) bool {
-	if granted == "*" || required == "*" {
+	granted = strings.TrimSpace(granted)
+	required = strings.TrimSpace(required)
+	if granted == "*" {
 		return true
+	}
+	if required == "*" {
+		return false
 	}
 
 	grantedAliases := permissionAliases(granted)
@@ -16620,9 +18017,9 @@ func (a *App) currentSessionCanViewFinanceDashboard() bool {
 			roleName = strings.ToLower(strings.TrimSpace(a.currentUser.Role.DisplayName))
 		}
 		switch roleName {
-		case "admin", "administrator", "developer", "manager", "finance":
+		case "admin", "administrator", "developer", "finance":
 			return true
-		case "sales", "operations", "staff":
+		case "manager", "management", "sales", "operations", "staff":
 			return false
 		}
 
@@ -16642,9 +18039,9 @@ func (a *App) currentSessionCanViewFinanceDashboard() bool {
 
 	roleName := strings.ToLower(strings.TrimSpace(a.GetCurrentUserRole()))
 	switch roleName {
-	case "admin", "administrator", "developer", "manager", "finance":
+	case "admin", "administrator", "developer", "finance":
 		return true
-	case "sales", "operations", "staff":
+	case "manager", "management", "sales", "operations", "staff":
 		return false
 	}
 
@@ -16768,6 +18165,11 @@ func (a *App) logAudit(userID *string, action, resource string, resourceID *stri
 
 	// Use background context to ensure log is written even if request cancels
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Audit log writer", r)
+			}
+		}()
 		a.db.Create(&logEntry)
 	}()
 }
@@ -16914,6 +18316,16 @@ func (a *App) getCurrentUserDisplayName() string {
 	}
 
 	return a.getCurrentUserID()
+}
+
+func (a *App) resolveCurrentPreparedByName(fallback string) string {
+	for _, candidate := range []string{a.getCurrentUserDisplayName(), fallback} {
+		name := strings.TrimSpace(candidate)
+		if name != "" && !strings.EqualFold(name, "system") {
+			return name
+		}
+	}
+	return "System"
 }
 
 // getCurrentUserID returns the ID of the currently authenticated user.
@@ -17233,6 +18645,10 @@ type CostingExportData struct {
 	CustomerTRN   string `json:"customerTRN"`
 	Body          string `json:"body"`
 
+	// Technical attachments stored separately and referenced by stable costing scope.
+	AttachmentScopeID string                          `json:"attachmentScopeId"`
+	Attachments       []CostingSheetAttachmentSummary `json:"attachments"`
+
 	// Line Items
 	LineItems []CostingExportLineItem `json:"lineItems"`
 
@@ -17346,8 +18762,8 @@ func (a *App) CreateOfferDraftFromButler(req ButlerOfferDraftRequest) (*Offer, e
 	}
 
 	vatRate := req.VatRate
-	if vatRate == 0 {
-		vatRate = 10
+	if vatRate < 0 || vatRate > 100 {
+		return nil, fmt.Errorf("VAT rate must be between 0%% and 100%%, got %.1f%%", vatRate)
 	}
 
 	exportData := CostingExportData{
@@ -17935,6 +19351,43 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 	pdf.SetXY(leftMargin, currentY)
 	pdf.Cell(nil, "Prices are exclusive of VAT unless otherwise stated. Delivery subject to availability.")
 
+	if len(data.Attachments) > 0 {
+		requiredHeight := 22 + float64(len(data.Attachments))*12
+		if currentY+requiredHeight > 750 {
+			pdf.AddPage()
+			drawCostingLetterhead()
+			currentY = 90.0
+		}
+		currentY += 20
+		if hasBold {
+			pdf.SetFont("mainBold", "", 9)
+		} else {
+			pdf.SetFont("main", "", 9)
+		}
+		pdf.SetXY(leftMargin, currentY)
+		pdf.Cell(nil, "Technical Datasheets Attached")
+		currentY += 14
+		pdf.SetFont("main", "", 8)
+		for _, attachment := range data.Attachments {
+			fileName := strings.TrimSpace(attachment.FileName)
+			if fileName == "" {
+				continue
+			}
+			sizeLabel := fmt.Sprintf("%.1f MB", float64(attachment.FileSize)/(1024*1024))
+			line := fmt.Sprintf("- %s (%s)", fileName, sizeLabel)
+			for _, wrapped := range wrapText(line, 95) {
+				if currentY > 750 {
+					pdf.AddPage()
+					drawCostingLetterhead()
+					currentY = 90.0
+				}
+				pdf.SetXY(leftMargin, currentY)
+				pdf.Cell(nil, sanitizeForPDF(wrapped))
+				currentY += 10
+			}
+		}
+	}
+
 	// === TERMS AND CONDITIONS PAGE ===
 	// T&C must immediately follow the commercial line items; annexure stays last.
 	if data.TermsAndConditions != "" {
@@ -18007,18 +19460,65 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 
 		preparedBy := strings.TrimSpace(data.PreparedBy)
 		if preparedBy != "" {
-			ensureTermsSpace(62)
-			tcY += 20
-			pdf.SetFont("main", "", 9)
-			pdf.SetXY(leftMargin, tcY)
-			pdf.Cell(nil, "For "+division)
-			tcY += 24
-			pdf.SetLineWidth(0.4)
-			pdf.Line(leftMargin, tcY, leftMargin+190, tcY)
-			pdf.SetXY(leftMargin, tcY+8)
-			pdf.Cell(nil, "Prepared by: "+preparedBy)
-			pdf.SetXY(leftMargin+260, tcY+8)
-			pdf.Cell(nil, "Signature")
+			block := a.resolvePreparedBySignatureBlock(preparedBy)
+			signatureLines := []struct {
+				text string
+				bold bool
+			}{
+				{"Best Regards,", false},
+				{"", false},
+				{block.DisplayName, true},
+				{block.Title, false},
+				{block.Company, false},
+			}
+			for _, line := range block.Address {
+				signatureLines = append(signatureLines, struct {
+					text string
+					bold bool
+				}{line, false})
+			}
+			if strings.TrimSpace(block.Mobile) != "" {
+				signatureLines = append(signatureLines, struct {
+					text string
+					bold bool
+				}{"Mob: " + block.Mobile, false})
+			}
+			if strings.TrimSpace(block.Office) != "" {
+				signatureLines = append(signatureLines, struct {
+					text string
+					bold bool
+				}{"Office: " + block.Office, false})
+			}
+			if strings.TrimSpace(block.Fax) != "" {
+				signatureLines = append(signatureLines, struct {
+					text string
+					bold bool
+				}{"Fax: " + block.Fax, false})
+			}
+			if strings.TrimSpace(block.Email) != "" {
+				signatureLines = append(signatureLines, struct {
+					text string
+					bold bool
+				}{block.Email, false})
+			}
+
+			ensureTermsSpace(float64(len(signatureLines))*10 + 22)
+			tcY += 18
+			for _, line := range signatureLines {
+				text := strings.TrimSpace(line.text)
+				if text == "" {
+					tcY += 6
+					continue
+				}
+				if line.bold && hasBold {
+					pdf.SetFont("mainBold", "", 9)
+				} else {
+					pdf.SetFont("main", "", 9)
+				}
+				pdf.SetXY(leftMargin, tcY)
+				pdf.Cell(nil, sanitizeForPDF(text))
+				tcY += 10
+			}
 		}
 	}
 
@@ -18127,6 +19627,9 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 	if err := pdf.WritePdf(outputPath); err != nil {
 		return "", fmt.Errorf("failed to write PDF: %v", err)
 	}
+	if err := a.appendCostingPDFDatasheets(outputPath, data.Attachments); err != nil {
+		return "", err
+	}
 
 	log.Printf("✅ Generated PDF quotation: %s", outputPath)
 	return outputPath, nil
@@ -18162,18 +19665,9 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 	outputDir := a.getExportDir("customer", data.CustomerName, "RFQ", time.Now().Year())
 	outputPath := filepath.Join(outputDir, xlsxFileName)
 
-	templatePath := findCostingTemplatePath(paths.ProjectRoot)
-	if templatePath == "" {
-		log.Printf("⚠️ Costing template not found; generating standalone workbook: %s", outputPath)
-		if err := writeStandaloneCostingWorkbook(data, outputPath); err != nil {
-			return "", err
-		}
-		return outputPath, nil
-	}
-
-	workbook, err := excelize.OpenFile(templatePath)
+	workbook, templateSource, err := openCostingTemplateWorkbook(paths.ProjectRoot)
 	if err != nil {
-		return "", fmt.Errorf("failed to open costing template: %v", err)
+		return "", fmt.Errorf("failed to open PH costing template: %v", err)
 	}
 	defer workbook.Close()
 
@@ -18330,12 +19824,15 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 	if err := appendDetailedCostingWorkbookSheet(workbook, data); err != nil {
 		return "", err
 	}
+	if sheetIndex, err := workbook.GetSheetIndex(costingSheet); err == nil && sheetIndex >= 0 {
+		workbook.SetActiveSheet(sheetIndex)
+	}
 
 	if err := workbook.SaveAs(outputPath); err != nil {
 		return "", fmt.Errorf("failed to write XLSX file: %v", err)
 	}
 
-	log.Printf("✅ Generated Excel costing sheet from template: %s", outputPath)
+	log.Printf("✅ Generated Excel costing sheet from PH template (%s): %s", templateSource, outputPath)
 	return outputPath, nil
 }
 
@@ -18345,11 +19842,9 @@ func appendDetailedCostingWorkbookSheet(workbook *excelize.File, data CostingExp
 		_ = workbook.DeleteSheet(sheet)
 	}
 
-	index, err := workbook.NewSheet(sheet)
-	if err != nil {
+	if _, err := workbook.NewSheet(sheet); err != nil {
 		return fmt.Errorf("failed to create detailed costing sheet: %v", err)
 	}
-	workbook.SetActiveSheet(index)
 
 	titleStyle, _ := workbook.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 16, Color: "1D1D1F"},
@@ -19253,6 +20748,23 @@ func (a *App) GetARAgingReport() (*ARAgingReport, error) {
 	if err := a.requirePermission("finance:view"); err != nil {
 		return nil, err
 	}
+	return a.buildARAgingReport(nil, nil)
+}
+
+// GetDashboardARAgingReportYTD returns 2026 YTD receivables aging totals for all dashboard roles.
+func (a *App) GetDashboardARAgingReportYTD() (*ARAgingReport, error) {
+	if err := a.requirePermission("dashboard:view"); err != nil {
+		return nil, err
+	}
+	_, yearStart, yearEnd := dashboardYTDWindow()
+	report, err := a.buildARAgingReport(&yearStart, &yearEnd)
+	if report != nil {
+		report.Details = nil
+	}
+	return report, err
+}
+
+func (a *App) buildARAgingReport(start *time.Time, end *time.Time) (*ARAgingReport, error) {
 	if a.db == nil {
 		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
@@ -19261,11 +20773,13 @@ func (a *App) GetARAgingReport() (*ARAgingReport, error) {
 		Details: make([]ARAgingDetail, 0),
 	}
 
-	// Query unpaid/outstanding invoices
+	// Query all open-balance invoices and normalize collectible/open state in-memory.
 	var invoices []Invoice
-	err := a.db.Where("status != ? AND deleted_at IS NULL AND outstanding_bhd > 0", "Paid").
-		Order("due_date ASC").
-		Find(&invoices).Error
+	query := a.db.Where("outstanding_bhd > 0")
+	if start != nil && end != nil {
+		query = query.Where("invoice_date >= ? AND invoice_date < ?", *start, *end)
+	}
+	err := query.Order("due_date ASC").Find(&invoices).Error
 
 	if err != nil {
 		log.Printf("⚠️ AR aging query failed: %v", err)
@@ -19275,12 +20789,17 @@ func (a *App) GetARAgingReport() (*ARAgingReport, error) {
 	// Calculate aging buckets
 	now := time.Now()
 	for _, inv := range invoices {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if !state.IsCollectible {
+			continue
+		}
+
 		daysOverdue := int(now.Sub(inv.DueDate).Hours() / 24)
 		if daysOverdue < 0 {
 			daysOverdue = 0 // Not yet due
 		}
 
-		amount := inv.OutstandingBHD
+		amount := state.OutstandingBHD
 		detail := ARAgingDetail{
 			CustomerID:   inv.CustomerID,
 			CustomerName: inv.CustomerName,
@@ -19384,6 +20903,78 @@ func (a *App) GetSalesPipeline() ([]SalesPipelineData, error) {
 	return pipeline, nil
 }
 
+// GetDashboardPipelineByStageYTD returns 2026 YTD pipeline stage totals for all dashboard roles.
+func (a *App) GetDashboardPipelineByStageYTD() ([]SalesPipelineData, error) {
+	if err := a.requirePermission("dashboard:view"); err != nil {
+		return nil, err
+	}
+	if a.db == nil {
+		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
+	}
+
+	year, yearStart, yearEnd := dashboardYTDWindow()
+	var raw []Opportunity
+	if err := a.db.Find(&raw).Error; err != nil {
+		log.Printf("⚠️ Dashboard pipeline query failed: %v", err)
+		return []SalesPipelineData{}, nil
+	}
+
+	grouped := make(map[string]*SalesPipelineData)
+	for _, opp := range raw {
+		normalized := normalizeOpportunityForList(opp)
+		if shouldSuppressSyntheticOCR(normalized) || !opportunityInDashboardYTD(normalized, yearStart, yearEnd) {
+			continue
+		}
+
+		stage := strings.TrimSpace(normalized.Stage)
+		if stage == "" {
+			stage = "Unstaged"
+		}
+		key := strings.ToLower(stage)
+		row, exists := grouped[key]
+		if !exists {
+			row = &SalesPipelineData{
+				Stage: stage,
+				Color: dashboardStageColor(stage),
+			}
+			grouped[key] = row
+		}
+		row.Count++
+		row.Value += normalized.RevenueBHD
+	}
+
+	pipeline := make([]SalesPipelineData, 0, len(grouped))
+	for _, row := range grouped {
+		pipeline = append(pipeline, *row)
+	}
+	sort.Slice(pipeline, func(i, j int) bool {
+		if pipeline[i].Count == pipeline[j].Count {
+			return pipeline[i].Value > pipeline[j].Value
+		}
+		return pipeline[i].Count > pipeline[j].Count
+	})
+
+	log.Printf("Retrieved dashboard pipeline stage data for %d stages (YTD %d)", len(pipeline), year)
+	return pipeline, nil
+}
+
+func dashboardStageColor(stage string) string {
+	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case "qualified":
+		return "#0EA5E9"
+	case "proposal", "quoted":
+		return "#6366F1"
+	case "negotiation":
+		return "#F59E0B"
+	case "won":
+		return "#10B981"
+	case "lost":
+		return "#EF4444"
+	default:
+		return "#6B7280"
+	}
+}
+
 // GetAPAgingReport generates accounts payable aging report
 // Based on unpaid supplier invoices, grouped by due date buckets
 func (a *App) GetAPAgingReport() (*ARAgingReport, error) {
@@ -19398,8 +20989,7 @@ func (a *App) GetAPAgingReport() (*ARAgingReport, error) {
 		Details: make([]ARAgingDetail, 0),
 	}
 
-	// Query unpaid/outstanding supplier invoices
-	// Note: SupplierInvoice doesn't have OutstandingBHD field, so we use TotalBHD for unpaid invoices
+	// Query unpaid/outstanding supplier invoices.
 	var invoices []SupplierInvoice
 	err := a.db.Where("payment_status != ? AND deleted_at IS NULL", "Paid").
 		Order("due_date ASC").
@@ -19410,16 +21000,24 @@ func (a *App) GetAPAgingReport() (*ARAgingReport, error) {
 		return report, nil // Return empty report on error
 	}
 
+	states, err := a.buildSupplierInvoicePaymentStateMap(a.db, invoices)
+	if err != nil {
+		log.Printf("⚠️ AP aging payment-state lookup failed: %v", err)
+		return report, nil
+	}
+
 	// Calculate aging buckets (same logic as AR aging, but for payables)
 	now := time.Now()
 	for _, inv := range invoices {
+		amount := states[inv.ID].OutstandingBHD
+		if amount <= FloatingPointTolerance {
+			continue
+		}
 		daysOverdue := int(now.Sub(inv.DueDate).Hours() / 24)
 		if daysOverdue < 0 {
 			daysOverdue = 0 // Not yet due
 		}
 
-		// Use TotalBHD for unpaid invoices
-		amount := inv.TotalBHD
 		detail := ARAgingDetail{
 			CustomerID:   inv.SupplierID,   // Using same struct, but for suppliers
 			CustomerName: inv.SupplierName, // Supplier name in customer field
@@ -19788,7 +21386,7 @@ func (a *App) SeedDefaultChartOfAccounts() error {
 // ============================================================================
 
 // GetInventoryItems retrieves inventory items with optional filters
-func (a *App) GetInventoryItems(warehouseID *uint, stockStatus string, lowStockOnly bool) ([]InventoryItem, error) {
+func (a *App) GetInventoryItems(warehouseID *string, stockStatus string, lowStockOnly bool) ([]InventoryItem, error) {
 	if err := a.requirePermission("inventory:view"); err != nil {
 		return nil, err
 	}
@@ -19799,8 +21397,8 @@ func (a *App) GetInventoryItems(warehouseID *uint, stockStatus string, lowStockO
 	var items []InventoryItem
 	query := a.db.Where("deleted_at IS NULL AND is_active = ?", true).Order("product_code ASC")
 
-	if warehouseID != nil && *warehouseID > 0 {
-		query = query.Where("warehouse_id = ?", *warehouseID)
+	if warehouseID != nil && strings.TrimSpace(*warehouseID) != "" {
+		query = query.Where("warehouse_id = ?", strings.TrimSpace(*warehouseID))
 	}
 
 	if stockStatus != "" && stockStatus != "All" {
@@ -19820,7 +21418,7 @@ func (a *App) GetInventoryItems(warehouseID *uint, stockStatus string, lowStockO
 }
 
 // GetInventoryItem retrieves a single inventory item by ID
-func (a *App) GetInventoryItem(itemID uint) (*InventoryItem, error) {
+func (a *App) GetInventoryItem(itemID string) (*InventoryItem, error) {
 	if err := a.requirePermission("inventory:view"); err != nil {
 		return nil, err
 	}
@@ -19828,8 +21426,13 @@ func (a *App) GetInventoryItem(itemID uint) (*InventoryItem, error) {
 		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return nil, newError("INVALID_INPUT", "Inventory item ID is required", "")
+	}
+
 	var item InventoryItem
-	if err := a.db.Preload("Movements").First(&item, itemID).Error; err != nil {
+	if err := a.db.First(&item, "id = ?", itemID).Error; err != nil {
 		return nil, newError("ITEM_NOT_FOUND", "Inventory item not found", err.Error())
 	}
 
@@ -19845,13 +21448,36 @@ func (a *App) CreateInventoryItem(item InventoryItem) (*InventoryItem, error) {
 		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
-	// Validate
+	item.ProductID = strings.TrimSpace(item.ProductID)
+	item.ProductCode = strings.TrimSpace(item.ProductCode)
+	item.WarehouseID = strings.TrimSpace(item.WarehouseID)
+	item.StockStatus = strings.TrimSpace(item.StockStatus)
+
+	if item.ProductID == "" && item.ProductCode == "" {
+		return nil, newError("INVALID_INPUT", "Product code or product ID is required", "")
+	}
+
+	// Validate/enrich from product master when present.
 	if item.ProductID != "" {
 		var product ProductMaster
 		if err := a.db.First(&product, "id = ?", item.ProductID).Error; err == nil {
-			// result["product_name"] = product.ProductName
-			// result["product_code"] = product.ProductCode
+			if item.ProductCode == "" {
+				item.ProductCode = product.ProductCode
+			}
 		}
+	}
+
+	var existing InventoryItem
+	duplicate := a.db.Where("deleted_at IS NULL AND warehouse_id = ?", item.WarehouseID)
+	if item.ProductID != "" {
+		duplicate = duplicate.Where("product_id = ?", item.ProductID)
+	} else {
+		duplicate = duplicate.Where("product_code = ?", item.ProductCode)
+	}
+	if err := duplicate.First(&existing).Error; err == nil {
+		return nil, newError("DUPLICATE_INVENTORY_ITEM", "Inventory item already exists for this product and warehouse", existing.ID)
+	} else if err != gorm.ErrRecordNotFound {
+		return nil, newError("DB_QUERY_FAILED", "Failed to check existing inventory item", err.Error())
 	}
 
 	// Set defaults
@@ -19871,7 +21497,7 @@ func (a *App) CreateInventoryItem(item InventoryItem) (*InventoryItem, error) {
 }
 
 // UpdateInventoryItem updates an inventory item
-func (a *App) UpdateInventoryItem(itemID uint, updates map[string]interface{}) error {
+func (a *App) UpdateInventoryItem(itemID string, updates map[string]interface{}) error {
 	if err := a.requirePermission("inventory:update"); err != nil {
 		return err
 	}
@@ -19879,11 +21505,16 @@ func (a *App) UpdateInventoryItem(itemID uint, updates map[string]interface{}) e
 		return newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return newError("INVALID_INPUT", "Inventory item ID is required", "")
+	}
+
 	if err := a.db.Model(&InventoryItem{}).Where("id = ?", itemID).Updates(updates).Error; err != nil {
 		return newError("DB_UPDATE_FAILED", "Failed to update inventory item", err.Error())
 	}
 
-	log.Printf("✅ Updated inventory item #%d", itemID)
+	log.Printf("✅ Updated inventory item %s", itemID)
 	return nil
 }
 
@@ -19904,6 +21535,20 @@ func (a *App) RecordStockMovement(movement StockMovement) (*StockMovement, error
 	if movement.Direction != "IN" && movement.Direction != "OUT" {
 		return nil, newError("INVALID_INPUT", "Direction must be IN or OUT", "")
 	}
+	if movement.MovementDate.IsZero() {
+		movement.MovementDate = time.Now()
+	}
+	movement.MovementType = strings.TrimSpace(movement.MovementType)
+	if movement.MovementType == "" {
+		movement.MovementType = "Manual Adjustment"
+	}
+	movement.MovementNumber = strings.TrimSpace(movement.MovementNumber)
+	movement.ReferenceType = strings.TrimSpace(movement.ReferenceType)
+	movement.ReferenceID = strings.TrimSpace(movement.ReferenceID)
+	movement.ReferenceNumber = strings.TrimSpace(movement.ReferenceNumber)
+	movement.CounterpartyID = strings.TrimSpace(movement.CounterpartyID)
+	movement.CounterpartyName = strings.TrimSpace(movement.CounterpartyName)
+	movement.Notes = strings.TrimSpace(movement.Notes)
 
 	// Start transaction
 	tx := a.db.Begin()
@@ -19915,7 +21560,7 @@ func (a *App) RecordStockMovement(movement StockMovement) (*StockMovement, error
 
 	// Get current inventory item
 	var item InventoryItem
-	if err := tx.First(&item, movement.InventoryItemID).Error; err != nil {
+	if err := tx.First(&item, "id = ?", movement.InventoryItemID).Error; err != nil {
 		tx.Rollback()
 		return nil, newError("ITEM_NOT_FOUND", "Inventory item not found", err.Error())
 	}
@@ -19944,27 +21589,15 @@ func (a *App) RecordStockMovement(movement StockMovement) (*StockMovement, error
 	// Update stock status
 	item.StockStatus = a.calculateStockStatus(item.QuantityOnHand, item.ReorderPoint, item.MinimumStock, item.MaximumStock)
 
-	// Update valuation if cost provided
-	if movement.UnitCost > 0 {
-		// Weighted average cost
-		if movement.Direction == "IN" {
-			totalValue := (item.UnitCost * movement.BalanceBefore) + (movement.UnitCost * movement.Quantity)
-			item.UnitCost = totalValue / item.QuantityOnHand
-			item.LastPurchaseCost = movement.UnitCost
-		}
-		movement.TotalValue = movement.Quantity * movement.UnitCost
-	} else {
-		movement.UnitCost = item.UnitCost
-		movement.TotalValue = movement.Quantity * item.UnitCost
-	}
-
-	item.TotalValue = item.QuantityOnHand * item.UnitCost
+	a.applyInventoryMovementValuation(&item, &movement)
 
 	// Generate movement number if not provided
 	if movement.MovementNumber == "" {
 		year := time.Now().Year()
+		yearStart := time.Date(year, time.January, 1, 0, 0, 0, 0, time.Local)
+		yearEnd := yearStart.AddDate(1, 0, 0)
 		var count int64
-		tx.Model(&StockMovement{}).Where("YEAR(movement_date) = ?", year).Count(&count)
+		tx.Model(&StockMovement{}).Where("movement_date >= ? AND movement_date < ?", yearStart, yearEnd).Count(&count)
 		movement.MovementNumber = fmt.Sprintf("MOV-%d-%05d", year, count+1)
 	}
 
@@ -20009,7 +21642,7 @@ func (a *App) calculateStockStatus(onHand, reorderPoint, minStock, maxStock floa
 }
 
 // GetStockMovements retrieves stock movements with filters
-func (a *App) GetStockMovements(itemID *uint, movementType string, startDate, endDate time.Time, limit int) ([]StockMovement, error) {
+func (a *App) GetStockMovements(itemID *string, movementType string, startDate, endDate time.Time, limit int) ([]StockMovement, error) {
 	if err := a.requirePermission("inventory:view"); err != nil {
 		return nil, err
 	}
@@ -20024,8 +21657,8 @@ func (a *App) GetStockMovements(itemID *uint, movementType string, startDate, en
 	var movements []StockMovement
 	query := a.db.Where("deleted_at IS NULL").Order("movement_date DESC, created_at DESC").Limit(limit)
 
-	if itemID != nil && *itemID > 0 {
-		query = query.Where("inventory_item_id = ?", *itemID)
+	if itemID != nil && strings.TrimSpace(*itemID) != "" {
+		query = query.Where("inventory_item_id = ?", strings.TrimSpace(*itemID))
 	}
 
 	if movementType != "" && movementType != "All" {
@@ -20191,7 +21824,7 @@ func (a *App) GetLowStockItems() ([]InventoryItem, error) {
 }
 
 // GetInventoryValuation calculates total inventory value
-func (a *App) GetInventoryValuation(warehouseID *uint) (map[string]interface{}, error) {
+func (a *App) GetInventoryValuation(warehouseID *string) (map[string]interface{}, error) {
 	if err := a.requirePermission("inventory:view"); err != nil {
 		return nil, err
 	}
@@ -20199,29 +21832,32 @@ func (a *App) GetInventoryValuation(warehouseID *uint) (map[string]interface{}, 
 		return nil, newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
 
-	query := a.db.Model(&InventoryItem{}).Where("deleted_at IS NULL AND is_active = ?", true)
+	query := a.db.Where("deleted_at IS NULL AND is_active = ?", true)
 
-	if warehouseID != nil && *warehouseID > 0 {
-		query = query.Where("warehouse_id = ?", *warehouseID)
+	if warehouseID != nil && strings.TrimSpace(*warehouseID) != "" {
+		query = query.Where("warehouse_id = ?", strings.TrimSpace(*warehouseID))
 	}
 
-	var result struct {
-		TotalValue float64
-		TotalItems int64
-		TotalQty   float64
+	var items []InventoryItem
+	if err := query.Find(&items).Error; err != nil {
+		return nil, newError("DB_QUERY_FAILED", "Failed to calculate inventory valuation", err.Error())
 	}
 
-	query.Select("SUM(total_value) as total_value, COUNT(*) as total_items, SUM(quantity_on_hand) as total_qty").
-		Scan(&result)
+	totalValue := 0.0
+	totalQty := 0.0
+	for _, item := range items {
+		totalValue += a.resolveInventoryItemTotalValue(item)
+		totalQty += item.QuantityOnHand
+	}
 
 	valuation := map[string]interface{}{
-		"total_value":    result.TotalValue,
-		"total_items":    result.TotalItems,
-		"total_quantity": result.TotalQty,
+		"total_value":    roundBHD(totalValue),
+		"total_items":    int64(len(items)),
+		"total_quantity": totalQty,
 		"warehouse_id":   warehouseID,
 	}
 
-	log.Printf("✅ Inventory valuation: %.2f BHD (%d items)", result.TotalValue, result.TotalItems)
+	log.Printf("✅ Inventory valuation: %.2f BHD (%d items)", totalValue, len(items))
 	return valuation, nil
 }
 
@@ -20767,7 +22403,8 @@ func (a *App) buildCRMCustomerDashboardForRange(start, end, activeStart time.Tim
 	}
 	now := time.Now()
 	for _, inv := range invoices {
-		if !invoicePostedStatus(inv.Status) {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if !isCustomerInvoicePostedStatus(state.Status) {
 			continue
 		}
 		customer, ok := linkIndex.resolve(inv.CustomerID, inv.CustomerName)
@@ -20778,11 +22415,11 @@ func (a *App) buildCRMCustomerDashboardForRange(start, end, activeStart time.Tim
 			invoicedByOrderID[inv.OrderID] += inv.GrandTotalBHD
 		}
 
-		if invoiceOpenStatus(inv.Status) {
-			outstanding := invoiceOutstandingValue(inv)
+		if state.IsOpen {
+			outstanding := state.OutstandingBHD
 			customerActiveInvoices[customer.ID]++
 			customerOutstanding[customer.ID] += outstanding
-			if daysOverdueFrom(now, inv.DueDate) > 30 {
+			if state.IsOverdue && daysOverdueFrom(now, inv.DueDate) > 30 {
 				customerOverdue[customer.ID] += outstanding
 			}
 		}
@@ -20828,7 +22465,8 @@ func (a *App) buildCRMCustomerDashboardForRange(start, end, activeStart time.Tim
 	}
 
 	for _, inv := range invoices {
-		if !invoicePostedStatus(inv.Status) {
+		state := customerInvoicePaymentStateFromInvoice(inv, now)
+		if !isCustomerInvoicePostedStatus(state.Status) {
 			continue
 		}
 		customer, ok := linkIndex.resolve(inv.CustomerID, inv.CustomerName)
@@ -21060,6 +22698,7 @@ func (a *App) GetCRMCustomerDashboardByYear(year int) CRMCustomerDashboard {
 	if year < 2020 || year > time.Now().Year()+1 {
 		return CRMCustomerDashboard{}
 	}
+
 	if a.db == nil {
 		log.Printf("⚠️ GetCRMCustomerDashboardByYear: Database not initialized")
 		return CRMCustomerDashboard{}
@@ -21079,8 +22718,8 @@ func (a *App) GetCRMCustomerDashboardByYear(year int) CRMCustomerDashboard {
 // DATA FIX UTILITIES
 // ============================================================================
 
-// FixDatabaseDates corrects dates that are 1 year off (2026 -> 2025)
-// This is a one-time fix for data imported with incorrect years
+// FixDatabaseDates corrects legacy imported dates that are still beyond the
+// current calendar year. It must not touch current-year operating data.
 func (a *App) FixDatabaseDates() (map[string]int, error) {
 	// SECURITY: Admin-only permission for database manipulation
 	if err := a.requirePermission("*"); err != nil {
@@ -21091,7 +22730,8 @@ func (a *App) FixDatabaseDates() (map[string]int, error) {
 	}
 
 	results := make(map[string]int)
-	log.Println("🔧 Starting database date fix (subtracting 1 year from dates >= 2026)...")
+	currentYear := time.Now().Year()
+	log.Printf("🔧 Starting database date fix (subtracting 1 year from dates after %d)...", currentYear)
 
 	// Fix Purchase Orders dates
 	poResult := a.db.Exec(`
@@ -21099,8 +22739,8 @@ func (a *App) FixDatabaseDates() (map[string]int, error) {
 		SET po_date = date(po_date, '-1 year'),
 		    expected_delivery = date(expected_delivery, '-1 year'),
 		    updated_at = datetime('now')
-		WHERE strftime('%Y', po_date) >= '2026'
-	`)
+		WHERE CAST(strftime('%Y', po_date) AS INTEGER) > ?
+	`, currentYear)
 	if poResult.Error != nil {
 		log.Printf("⚠️ Error fixing PO dates: %v", poResult.Error)
 	} else {
@@ -21114,8 +22754,8 @@ func (a *App) FixDatabaseDates() (map[string]int, error) {
 		SET invoice_date = date(invoice_date, '-1 year'),
 		    due_date = date(due_date, '-1 year'),
 		    updated_at = datetime('now')
-		WHERE strftime('%Y', invoice_date) >= '2026'
-	`)
+		WHERE CAST(strftime('%Y', invoice_date) AS INTEGER) > ?
+	`, currentYear)
 	if invResult.Error != nil {
 		log.Printf("⚠️ Error fixing invoice dates: %v", invResult.Error)
 	} else {
@@ -21129,8 +22769,8 @@ func (a *App) FixDatabaseDates() (map[string]int, error) {
 		SET invoice_date = date(invoice_date, '-1 year'),
 		    due_date = date(due_date, '-1 year'),
 		    updated_at = datetime('now')
-		WHERE strftime('%Y', invoice_date) >= '2026'
-	`)
+		WHERE CAST(strftime('%Y', invoice_date) AS INTEGER) > ?
+	`, currentYear)
 	if siResult.Error != nil {
 		log.Printf("⚠️ Error fixing supplier invoice dates: %v", siResult.Error)
 	} else {
@@ -21144,8 +22784,8 @@ func (a *App) FixDatabaseDates() (map[string]int, error) {
 		SET order_date = date(order_date, '-1 year'),
 		    required_date = date(required_date, '-1 year'),
 		    updated_at = datetime('now')
-		WHERE strftime('%Y', order_date) >= '2026'
-	`)
+		WHERE CAST(strftime('%Y', order_date) AS INTEGER) > ?
+	`, currentYear)
 	if orderResult.Error != nil {
 		log.Printf("⚠️ Error fixing order dates: %v", orderResult.Error)
 	} else {
@@ -21158,8 +22798,8 @@ func (a *App) FixDatabaseDates() (map[string]int, error) {
 		UPDATE payments
 		SET payment_date = date(payment_date, '-1 year'),
 		    updated_at = datetime('now')
-		WHERE strftime('%Y', payment_date) >= '2026'
-	`)
+		WHERE CAST(strftime('%Y', payment_date) AS INTEGER) > ?
+	`, currentYear)
 	if payResult.Error != nil {
 		log.Printf("⚠️ Error fixing payment dates: %v", payResult.Error)
 	} else {
@@ -21172,8 +22812,8 @@ func (a *App) FixDatabaseDates() (map[string]int, error) {
 		UPDATE supplier_payments
 		SET payment_date = date(payment_date, '-1 year'),
 		    updated_at = datetime('now')
-		WHERE strftime('%Y', payment_date) >= '2026'
-	`)
+		WHERE CAST(strftime('%Y', payment_date) AS INTEGER) > ?
+	`, currentYear)
 	if spResult.Error != nil {
 		log.Printf("⚠️ Error fixing supplier payment dates: %v", spResult.Error)
 	} else {
@@ -21186,8 +22826,8 @@ func (a *App) FixDatabaseDates() (map[string]int, error) {
 		UPDATE delivery_notes
 		SET delivery_date = date(delivery_date, '-1 year'),
 		    updated_at = datetime('now')
-		WHERE strftime('%Y', delivery_date) >= '2026'
-	`)
+		WHERE CAST(strftime('%Y', delivery_date) AS INTEGER) > ?
+	`, currentYear)
 	if dnResult.Error != nil {
 		log.Printf("⚠️ Error fixing delivery note dates: %v", dnResult.Error)
 	} else {
@@ -21200,8 +22840,8 @@ func (a *App) FixDatabaseDates() (map[string]int, error) {
 		UPDATE goods_received_notes
 		SET received_date = date(received_date, '-1 year'),
 		    updated_at = datetime('now')
-		WHERE strftime('%Y', received_date) >= '2026'
-	`)
+		WHERE CAST(strftime('%Y', received_date) AS INTEGER) > ?
+	`, currentYear)
 	if grnResult.Error != nil {
 		log.Printf("⚠️ Error fixing GRN dates: %v", grnResult.Error)
 	} else {
@@ -21215,8 +22855,8 @@ func (a *App) FixDatabaseDates() (map[string]int, error) {
 		SET rfq_date = date(rfq_date, '-1 year'),
 		    due_date = date(due_date, '-1 year'),
 		    updated_at = datetime('now')
-		WHERE strftime('%Y', rfq_date) >= '2026'
-	`)
+		WHERE CAST(strftime('%Y', rfq_date) AS INTEGER) > ?
+	`, currentYear)
 	if rfqResult.Error != nil {
 		log.Printf("⚠️ Error fixing RFQ dates: %v", rfqResult.Error)
 	} else {
@@ -21230,8 +22870,8 @@ func (a *App) FixDatabaseDates() (map[string]int, error) {
 		SET offer_date = date(offer_date, '-1 year'),
 		    valid_until = date(valid_until, '-1 year'),
 		    updated_at = datetime('now')
-		WHERE strftime('%Y', offer_date) >= '2026'
-	`)
+		WHERE CAST(strftime('%Y', offer_date) AS INTEGER) > ?
+	`, currentYear)
 	if offerResult.Error != nil {
 		log.Printf("⚠️ Error fixing offer dates: %v", offerResult.Error)
 	} else {
@@ -21423,20 +23063,35 @@ func (a *App) BackfillOfferItemCostBreakdown() (map[string]interface{}, error) {
 		{"user_price_set", "INTEGER DEFAULT 0"},
 	}
 
+	type offerItemSchemaColumn struct {
+		Name string `gorm:"column:name"`
+	}
+	var existingColumns []offerItemSchemaColumn
+	if err := a.db.Raw("PRAGMA table_info(offer_items)").Scan(&existingColumns).Error; err != nil {
+		log.Printf("  ⚠️ Failed to inspect offer_items schema: %v", err)
+	}
+	existingColumnSet := make(map[string]bool, len(existingColumns))
+	for _, col := range existingColumns {
+		existingColumnSet[strings.ToLower(strings.TrimSpace(col.Name))] = true
+	}
+
 	for _, col := range columns {
 		// SECURITY FIX: Validate column name to prevent SQL injection
 		if !isValidSQLIdentifier(col.name) {
 			log.Printf("  ⚠️ Invalid column name rejected: %s", col.name)
 			continue
 		}
+		if existingColumnSet[strings.ToLower(col.name)] {
+			log.Printf("  Column %s: already exists", col.name)
+			continue
+		}
 
-		// Try to add column (will fail silently if exists)
 		alterSQL := fmt.Sprintf("ALTER TABLE offer_items ADD COLUMN %s %s", col.name, col.datatype)
 		if err := a.db.Exec(alterSQL).Error; err != nil {
-			// Column likely exists, ignore error
 			log.Printf("  Column %s: already exists or error (%v)", col.name, err)
 		} else {
 			log.Printf("  ✅ Added column: %s", col.name)
+			existingColumnSet[strings.ToLower(col.name)] = true
 		}
 	}
 

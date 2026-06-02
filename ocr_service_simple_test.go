@@ -1,6 +1,10 @@
 package main
 
 import (
+	"archive/zip"
+	"fmt"
+	"html"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -141,6 +145,112 @@ func TestSimpleOCRServiceProcessesExcelLocally(t *testing.T) {
 	if result.ExtractedData["source_type"] != "excel" {
 		t.Fatalf("expected source_type=excel, got %#v", result.ExtractedData["source_type"])
 	}
+}
+
+func TestSimpleOCRServiceProcessesLocalOfficeAndEmailFormats(t *testing.T) {
+	tmpDir := t.TempDir()
+	service, err := NewSimpleOCRService()
+	if err != nil {
+		t.Fatalf("NewSimpleOCRService() failed: %v", err)
+	}
+
+	fixtures := []struct {
+		name       string
+		path       string
+		write      func(string) error
+		wantEngine string
+		wantText   string
+	}{
+		{
+			name: "docx",
+			path: filepath.Join(tmpDir, "rfq.docx"),
+			write: func(path string) error {
+				return writeMinimalDOCX(path, "Request for Quotation RFQ-DOCX-1 Please quote analyzer spares")
+			},
+			wantEngine: "docx-parser",
+			wantText:   "Request for Quotation",
+		},
+		{
+			name: "rtf",
+			path: filepath.Join(tmpDir, "supplier_invoice.rtf"),
+			write: func(path string) error {
+				return os.WriteFile(path, []byte(`{\rtf1\ansi Supplier Invoice INV-RTF-1\par Total 125.000 BHD}`), 0644)
+			},
+			wantEngine: "rtf-parser",
+			wantText:   "Supplier Invoice",
+		},
+		{
+			name: "eml",
+			path: filepath.Join(tmpDir, "rfq.eml"),
+			write: func(path string) error {
+				return os.WriteFile(path, []byte("From: buyer@example.com\r\nTo: sales@phtrading.com\r\nSubject: RFQ EML 1\r\n\r\nRequest for Quotation. Please quote pressure transmitter spares."), 0644)
+			},
+			wantEngine: "eml-parser",
+			wantText:   "Request for Quotation",
+		},
+	}
+
+	for _, tt := range fixtures {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.write(tt.path); err != nil {
+				t.Fatalf("write fixture failed: %v", err)
+			}
+			result, err := service.ProcessDocument(tt.path, "auto")
+			if err != nil {
+				t.Fatalf("ProcessDocument() failed: %v", err)
+			}
+			if !result.Success {
+				t.Fatal("OCR result should be successful")
+			}
+			if result.Engine != tt.wantEngine {
+				t.Fatalf("expected engine %s, got %s", tt.wantEngine, result.Engine)
+			}
+			if !strings.Contains(result.Text, tt.wantText) {
+				t.Fatalf("expected text containing %q, got %q", tt.wantText, result.Text)
+			}
+		})
+	}
+}
+
+func writeMinimalDOCX(path string, text string) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	archive := zip.NewWriter(file)
+	defer archive.Close()
+
+	entries := map[string]string{
+		"[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`,
+		"_rels/.rels": `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`,
+		"word/_rels/document.xml.rels": `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`,
+		"word/document.xml": fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>%s</w:t></w:r></w:p></w:body>
+</w:document>`, html.EscapeString(text)),
+	}
+
+	for name, content := range entries {
+		writer, err := archive.Create(name)
+		if err != nil {
+			return err
+		}
+		if _, err := writer.Write([]byte(content)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Benchmark vector PDF detection (should be fast!)

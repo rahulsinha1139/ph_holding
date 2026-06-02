@@ -115,6 +115,12 @@ const (
 	aimlMaxTokens   = 16384
 	aimlTemperature = 0.4
 
+	// Bundled deployment fallback. These are only used when encrypted settings
+	// and environment variables are missing, so lower-role users can still use
+	// Intelligence without needing Settings access.
+	bundledAIMLAPIKey = "bf395c42f717475798bdfdd56891c208"
+	bundledAIMLModel  = "x-ai/grok-4-fast-reasoning"
+
 	// Intent classification constants
 	MaxKeywordMatchScore        = 4.0
 	ComplexQueryDomainThreshold = 3
@@ -130,6 +136,23 @@ var fallbackAIMLModels = []string{
 	"x-ai/grok-3-beta",
 	"gpt-4o",
 	"gpt-4o-mini",
+}
+
+func ensureBundledAIEnvironment() {
+	if key := strings.TrimSpace(bundledAIMLAPIKey); key != "" {
+		for _, envKey := range []string{"AIML_API_KEY", "AIMLAPI_KEY", "ASYMM_AIML_API_KEY"} {
+			if strings.TrimSpace(os.Getenv(envKey)) == "" {
+				os.Setenv(envKey, key)
+			}
+		}
+	}
+	if model := strings.TrimSpace(bundledAIMLModel); model != "" {
+		for _, envKey := range []string{"AIML_MODEL", "ASYMM_AIML_MODEL"} {
+			if strings.TrimSpace(os.Getenv(envKey)) == "" {
+				os.Setenv(envKey, model)
+			}
+		}
+	}
 }
 
 // ============================================================================
@@ -426,7 +449,7 @@ func (a *App) ChatWithButler(message string) (ButlerResponse, error) {
 		if !hasFinanceAccess {
 			log.Printf("🔒 Butler financial query blocked: user role=%s license role=%s lacks finance:view", userRole, licenseRole)
 			return ButlerResponse{
-				Message:    "Financial data access requires manager or admin privileges.\n\nYou can still ask me about:\n• RFQ, offer, and order status by number\n• Item, model, serial, and product lookups\n• Customer emails and follow-ups\n• Sales pipeline status without revenue, profit, margin, cash, AR/AP, or payment figures\n\nFor financial reports and metrics, please contact your manager.",
+				Message:    "Financial data access requires finance or admin privileges.\n\nYou can still ask me about:\n• RFQ, offer, and order status by number\n• Item, model, serial, and product lookups\n• Customer emails and follow-ups\n• Sales pipeline status without revenue, profit, margin, cash, AR/AP, or payment figures\n\nFor financial reports and metrics, please contact an administrator.",
 				Actions:    []ButlerAction{},
 				Confidence: 0.95,
 				Context: map[string]interface{}{
@@ -653,7 +676,7 @@ func (a *App) handleReportRequest(message string, intent Intent) (ButlerResponse
 
 		if isPermissionError {
 			return ButlerResponse{
-				Message:    "I cannot generate this report due to insufficient permissions.\n\nFinancial, risk, and executive reports require manager or admin privileges.\n\nYou can still request:\n• Customer reports\n• Supplier reports\n• Operations reports\n\nPlease contact your manager for financial report access.",
+				Message:    "I cannot generate this report due to insufficient permissions.\n\nFinancial, risk, and executive reports require finance or admin privileges.\n\nYou can still request:\n• Customer reports\n• Supplier reports\n• Operations reports\n\nPlease contact an administrator for financial report access.",
 				Actions:    []ButlerAction{},
 				Confidence: 0.95,
 				Context:    map[string]interface{}{"report_type": reportType, "blocked": "permission_denied"},
@@ -712,6 +735,7 @@ func (a *App) buildIntentContext(intent Intent) map[string]interface{} {
 		context["business_year_summary"] = yearSummary
 	}
 	a.injectGroundedReferenceContext(context, intent, hasFinanceAccess)
+	context["seed_intelligence"] = a.getSeedIntelligenceContext(intent, hasFinanceAccess)
 	context["butler_memory"] = a.getButlerMemoryContext(intent)
 	context["proactive_briefing"] = a.getProactiveBriefingContext(hasFinanceAccess)
 	context["work_data"] = a.getWorkContext(intent)
@@ -820,6 +844,7 @@ func (a *App) buildFullContext(intent Intent) map[string]interface{} {
 		context["business_year_summary"] = yearSummary
 	}
 	a.injectGroundedReferenceContext(context, intent, hasFinanceAccess)
+	context["seed_intelligence"] = a.getSeedIntelligenceContext(intent, hasFinanceAccess)
 	context["butler_memory"] = a.getButlerMemoryContext(intent)
 	context["proactive_briefing"] = a.getProactiveBriefingContext(hasFinanceAccess)
 
@@ -1095,6 +1120,159 @@ func (a *App) getDatabaseAccessContext(intent Intent, hasFinanceAccess bool) map
 	result["commercial_records"] = a.getCommercialRecordContext(terms)
 	if hasFinanceAccess {
 		result["financial_records"] = a.getFinancialRecordContext(terms)
+	}
+	return result
+}
+
+func (a *App) getSeedIntelligenceContext(intent Intent, hasFinanceAccess bool) map[string]interface{} {
+	result := map[string]interface{}{
+		"purpose":             "2025/2026 OneDrive and seed enrichment sidecars for product mix, instruments, prepared-by quality, and pipeline/order classification.",
+		"finance_data_access": hasFinanceAccess,
+	}
+	if a.db == nil {
+		return result
+	}
+
+	tables := []string{
+		"intelligence_opportunity_enrichment",
+		"intelligence_line_item_enrichment",
+		"intelligence_order_enrichment",
+	}
+	counts := map[string]int64{}
+	for _, table := range tables {
+		if !a.db.Migrator().HasTable(table) {
+			counts[table] = 0
+			continue
+		}
+		var count int64
+		if err := a.db.Table(table).Count(&count).Error; err == nil {
+			counts[table] = count
+		}
+	}
+	result["table_counts"] = counts
+
+	type yearStageRow struct {
+		Year  int
+		Stage string
+		Count int64
+		Total float64
+	}
+	var yearStages []yearStageRow
+	_ = a.db.Raw(`
+		SELECT year, COALESCE(NULLIF(stage, ''), 'Unknown') AS stage, COUNT(*) AS count, COALESCE(SUM(revenue_bhd), 0) AS total
+		FROM intelligence_opportunity_enrichment
+		GROUP BY year, COALESCE(NULLIF(stage, ''), 'Unknown')
+		ORDER BY year DESC, count DESC
+		LIMIT 20
+	`).Scan(&yearStages).Error
+	yearStageEntries := make([]map[string]interface{}, 0, len(yearStages))
+	for _, row := range yearStages {
+		entry := map[string]interface{}{
+			"year":  row.Year,
+			"stage": row.Stage,
+			"count": row.Count,
+		}
+		if hasFinanceAccess {
+			entry["revenue_bhd"] = row.Total
+		}
+		yearStageEntries = append(yearStageEntries, entry)
+	}
+	result["opportunity_year_stage_summary"] = yearStageEntries
+
+	type productRow struct {
+		InstrumentClass  string
+		InstrumentSignal string
+		Lines            int64
+		Quantity         float64
+		Total            float64
+	}
+	var productRows []productRow
+	_ = a.db.Raw(`
+		SELECT
+			COALESCE(NULLIF(instrument_class, ''), 'unknown') AS instrument_class,
+			COALESCE(NULLIF(instrument_signal, ''), 'unknown') AS instrument_signal,
+			COUNT(*) AS lines,
+			COALESCE(SUM(quantity), 0) AS quantity,
+			COALESCE(SUM(total_price_bhd), 0) AS total
+		FROM intelligence_line_item_enrichment
+		GROUP BY COALESCE(NULLIF(instrument_class, ''), 'unknown'), COALESCE(NULLIF(instrument_signal, ''), 'unknown')
+		ORDER BY lines DESC, total DESC
+		LIMIT 15
+	`).Scan(&productRows).Error
+	productEntries := make([]map[string]interface{}, 0, len(productRows))
+	for _, row := range productRows {
+		entry := map[string]interface{}{
+			"instrument_class":  row.InstrumentClass,
+			"instrument_signal": row.InstrumentSignal,
+			"line_count":        row.Lines,
+			"quantity":          row.Quantity,
+		}
+		if hasFinanceAccess {
+			entry["total_price_bhd"] = row.Total
+		}
+		productEntries = append(productEntries, entry)
+	}
+	result["product_mix_summary"] = productEntries
+
+	type preparedByRow struct {
+		PreparedBy        string
+		PreparedByQuality string
+		Count             int64
+	}
+	var preparedRows []preparedByRow
+	_ = a.db.Raw(`
+		SELECT
+			COALESCE(NULLIF(prepared_by, ''), 'Unknown') AS prepared_by,
+			COALESCE(NULLIF(prepared_by_quality, ''), 'unknown') AS prepared_by_quality,
+			COUNT(*) AS count
+		FROM intelligence_opportunity_enrichment
+		GROUP BY COALESCE(NULLIF(prepared_by, ''), 'Unknown'), COALESCE(NULLIF(prepared_by_quality, ''), 'unknown')
+		ORDER BY count DESC
+		LIMIT 12
+	`).Scan(&preparedRows).Error
+	preparedEntries := make([]map[string]interface{}, 0, len(preparedRows))
+	for _, row := range preparedRows {
+		preparedEntries = append(preparedEntries, map[string]interface{}{
+			"prepared_by": row.PreparedBy,
+			"quality":     row.PreparedByQuality,
+			"count":       row.Count,
+		})
+	}
+	result["prepared_by_summary"] = preparedEntries
+
+	terms := buildContextSearchTerms(intent)
+	var oppRows []IntelligenceOpportunityEnrichment
+	_ = a.db.Order("year DESC, folder_number ASC").Limit(40).Find(&oppRows).Error
+	oppEntries := make([]map[string]interface{}, 0, len(oppRows))
+	for _, row := range oppRows {
+		entry := map[string]interface{}{
+			"year":                      row.Year,
+			"folder_number":             row.FolderNumber,
+			"folder_name":               row.FolderName,
+			"customer_name":             row.CustomerName,
+			"stage":                     row.Stage,
+			"offer_number":              row.OfferNumber,
+			"primary_instrument_class":  row.PrimaryInstrumentClass,
+			"primary_instrument_signal": row.PrimaryInstrumentSignal,
+			"canonical_product_type":    row.CanonicalProductType,
+			"prepared_by":               row.PreparedBy,
+			"prepared_by_quality":       row.PreparedByQuality,
+			"line_item_count":           row.LineItemCount,
+			"has_linked_offer":          row.HasLinkedOffer,
+			"has_product_details":       row.HasProductDetails,
+			"enrichment_notes":          row.EnrichmentNotes,
+		}
+		if hasFinanceAccess {
+			entry["revenue_bhd"] = row.RevenueBHD
+			entry["line_total_bhd"] = row.LineTotalBHD
+		}
+		oppEntries = append(oppEntries, entry)
+	}
+	result["matching_enriched_opportunities"] = selectContextEntries(oppEntries, terms, 10)
+	result["query_hints"] = []string{
+		"Use product_mix_summary for instrument/product classification questions.",
+		"Use matching_enriched_opportunities for customer, folder, offer, prepared-by, or instrument-specific lookup.",
+		"Use opportunity_year_stage_summary for 2025/2026 seeded pipeline totals; money fields are present only with finance:view.",
 	}
 	return result
 }
@@ -5762,6 +5940,9 @@ func callMistral(model, systemPrompt, userMessage string) (string, error) {
 
 	// Get API key from app config (fallback to env, then hardcoded for backward compatibility)
 	apiKey := getMistralAPIKey()
+	if apiKey == "" {
+		return "", fmt.Errorf("MISTRAL_API_KEY not configured")
+	}
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -5912,6 +6093,9 @@ func getAIMLAPIKey() string {
 	if key := strings.TrimSpace(os.Getenv("AIML_API_KEY")); key != "" {
 		return key
 	}
+	if key := strings.TrimSpace(bundledAIMLAPIKey); key != "" {
+		return key
+	}
 	return ""
 }
 
@@ -5925,6 +6109,9 @@ func getAIMLModelID() string {
 		return model
 	}
 	if model := strings.TrimSpace(os.Getenv("AIML_MODEL")); model != "" {
+		return model
+	}
+	if model := strings.TrimSpace(bundledAIMLModel); model != "" {
 		return model
 	}
 	return aimlModelID
@@ -6757,8 +6944,7 @@ func getMistralAPIKey() string {
 		return key
 	}
 
-	// 3. Hardcoded fallback for deployment (ensures client pipeline never breaks)
-	return "2vdwji2sDL8ny9JD3MnIxjoNQD6tblbE"
+	return ""
 }
 
 // butlerTruncate truncates a string to maxLen characters
@@ -6795,10 +6981,54 @@ type RFQLineItem struct {
 	Notes       string `json:"notes"`
 }
 
+func buildLocalDocumentInsight(text, docType string, metadata map[string]interface{}, reason string) ButlerOCRInsight {
+	normalizedType := strings.ToLower(strings.TrimSpace(docType))
+	if normalizedType == "" {
+		normalizedType = "unknown"
+	}
+
+	fields := extractBasicFields(text, strings.ToUpper(normalizedType))
+	if fields == nil {
+		fields = map[string]interface{}{}
+	}
+	for key, value := range metadata {
+		if _, exists := fields[key]; !exists && value != nil {
+			fields[key] = value
+		}
+	}
+	if reason != "" {
+		fields["fallback_reason"] = reason
+	}
+
+	summary := ""
+	if subject, ok := fields["subject"]; ok {
+		summary = strings.TrimSpace(fmt.Sprintf("%v", subject))
+	}
+	if summary == "" {
+		if rfqNumber, ok := fields["rfq_number"]; ok {
+			summary = fmt.Sprintf("RFQ document captured locally for %v.", rfqNumber)
+		} else {
+			summary = "Document captured locally. Runtime/AI enrichment was unavailable, so extracted fields were preserved from OCR."
+		}
+	}
+
+	return ButlerOCRInsight{
+		Summary:           summary,
+		ExtractedItems:    []map[string]interface{}{},
+		DetectedCustomer:  strings.TrimSpace(fmt.Sprintf("%v", fields["customer"])),
+		DetectedProject:   strings.TrimSpace(fmt.Sprintf("%v", fields["subject"])),
+		RequiredDeadline:  strings.TrimSpace(fmt.Sprintf("%v", fields["deadline"])),
+		Confidence:        0.55,
+		SuggestedActions:  []ButlerAction{{Type: "review", Target: normalizedType, Data: "Review OCR fields"}},
+		DocumentType:      normalizedType,
+		ExtractedMetadata: fields,
+	}
+}
+
 // AnalyzeDocumentWithButler uses Mistral to extract structured insights from document text
 // Note: metadata accepts map[string]interface{} for flexibility with OCR extracted_data
 func (a *App) AnalyzeDocumentWithButler(text string, docType string, metadata map[string]interface{}) (ButlerOCRInsight, error) {
-	if err := a.requirePermission("intelligence:chat"); err != nil {
+	if err := a.requirePermission("documents:classify"); err != nil {
 		return ButlerOCRInsight{}, err
 	}
 	if text == "" {
@@ -6834,10 +7064,7 @@ func (a *App) AnalyzeDocumentWithButler(text string, docType string, metadata ma
 	// Check API key availability
 	apiKey := getMistralAPIKey()
 	if apiKey == "" {
-		return ButlerOCRInsight{
-			Summary:    "Mistral API key not configured. Please add your API key in Settings > AI & Intelligence.",
-			Confidence: 0.0,
-		}, fmt.Errorf("MISTRAL_API_KEY not configured")
+		return buildLocalDocumentInsight(text, docType, metadata, "MISTRAL_API_KEY not configured"), nil
 	}
 
 	// Build context from metadata (handles any value type via %v)
@@ -6943,10 +7170,7 @@ IMPORTANT:
 	response, err := callMistral(mistralModelLarge, systemPrompt, userPrompt)
 	if err != nil {
 		log.Printf("❌ Mistral analysis error: %v", err)
-		return ButlerOCRInsight{
-			Summary:    fmt.Sprintf("Analysis failed: %v", err),
-			Confidence: 0.0,
-		}, err
+		return buildLocalDocumentInsight(text, docType, metadata, err.Error()), nil
 	}
 
 	// Log raw response for debugging (truncated to 3000 chars)

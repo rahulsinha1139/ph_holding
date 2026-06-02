@@ -1591,7 +1591,7 @@ func (a *App) ChatWithButlerPersistent(conversationID, message string) (ChatResp
 	if requiresFinancePrivilege(intent, message) {
 		if !hasFinanceAccess {
 			log.Printf("🔒 Butler financial query blocked (persistent): user role=%s license role=%s lacks finance:view", currentUserRole, licenseRole)
-			errMsg := "Financial data access requires manager or admin privileges.\n\nYou can still ask me about:\n• RFQ, offer, and order status by number\n• Item, model, serial, and product lookups\n• Customer emails and follow-ups\n• Sales pipeline status without revenue, profit, margin, cash, AR/AP, or payment figures\n\nFor financial reports and metrics, please contact your manager."
+			errMsg := "Financial data access requires finance or admin privileges.\n\nYou can still ask me about:\n• RFQ, offer, and order status by number\n• Item, model, serial, and product lookups\n• Customer emails and follow-ups\n• Sales pipeline status without revenue, profit, margin, cash, AR/AP, or payment figures\n\nFor financial reports and metrics, please contact an administrator."
 			blockedMetadata := buildButlerMetadata(intent, map[string]interface{}{
 				"blocked_domain": intent.Domain,
 				"user_role":      currentUserRole,

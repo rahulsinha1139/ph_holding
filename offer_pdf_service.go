@@ -71,6 +71,14 @@ func (a *App) GenerateOfferPDF(offerID string) (string, error) {
 	}
 
 	exportData := buildCostingExportDataFromOffer(offer, customer, customerContact)
+	if scope := normaliseCostingAttachmentScope(offer.AttachmentScopeID); scope != "" {
+		attachments, err := a.listCostingSheetAttachmentsByScope(scope)
+		if err != nil {
+			return "", err
+		}
+		exportData.AttachmentScopeID = scope
+		exportData.Attachments = attachments
+	}
 	filePath, err := a.exportCostingToPDF(exportData, "Quotation")
 	if err != nil {
 		return "", err

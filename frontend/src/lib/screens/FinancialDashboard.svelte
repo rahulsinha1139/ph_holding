@@ -380,15 +380,15 @@
                 </div>
             </div>
 
-            <!-- AR Aging Card -->
+            <!-- Receivables aging card -->
             <div class="card">
                 <div class="card-header">
                     <h3>Receivables Aging</h3>
-                    <span class="card-badge warning">{fmtPct(data.ar_overdue_pct)} overdue</span>
+                    <span class="card-badge warning">{fmtPct(data.ar_overdue_pct)} overdue receivables</span>
                 </div>
                 <div class="card-body">
                     <div class="ar-total">
-                        <span>Total AR</span>
+                        <span>Open Receivables</span>
                         <span class="ar-total-val">{fmtCurrency(totalAR)}</span>
                     </div>
                     <div class="ar-buckets">

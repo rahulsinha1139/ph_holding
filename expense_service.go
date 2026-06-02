@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,6 +55,9 @@ type ExpenseEntry struct {
 	CustomerID         *string    `gorm:"index;size:36" json:"customer_id"`
 	OpportunityID      *string    `gorm:"index;size:36" json:"opportunity_id"`
 	OrderID            *string    `gorm:"index;size:36" json:"order_id"`
+	InventoryLinked    bool       `gorm:"default:false" json:"inventory_linked"`
+	InventoryItemID    *string    `gorm:"index;size:36" json:"inventory_item_id"`
+	InventoryReference string     `gorm:"size:255" json:"inventory_reference"`
 	CostCenter         string     `gorm:"size:100" json:"cost_center"`
 	Currency           string     `gorm:"size:3;default:'BHD'" json:"currency"`
 	Amount             float64    `gorm:"type:decimal(15,3)" json:"amount"`
@@ -160,6 +164,7 @@ func (a *App) EnsureExpenseFoundation() error {
 
 	models := []interface{}{
 		&CompanyBankAccount{},
+		&ChartOfAccount{},
 		&ExpenseCategory{},
 		&ExpenseVendor{},
 		&ExpenseEntry{},
@@ -175,6 +180,9 @@ func (a *App) EnsureExpenseFoundation() error {
 	}
 	a.addColumnIfNotExists("expense_entries", "payment_method", "TEXT")
 	a.addColumnIfNotExists("expense_entries", "division", "TEXT DEFAULT 'PH Trading'")
+	a.addColumnIfNotExists("expense_entries", "inventory_linked", "BOOLEAN DEFAULT FALSE")
+	a.addColumnIfNotExists("expense_entries", "inventory_item_id", "TEXT")
+	a.addColumnIfNotExists("expense_entries", "inventory_reference", "TEXT")
 	a.addColumnIfNotExists("recurring_expenses", "division", "TEXT DEFAULT 'PH Trading'")
 	a.addColumnIfNotExists("bank_expense_entries", "division", "TEXT DEFAULT 'PH Trading'")
 	if err := a.SeedCompanyBankAccounts(); err != nil {
@@ -425,10 +433,10 @@ func (a *App) CreateExpenseEntry(entry ExpenseEntry) (ExpenseEntry, error) {
 		return ExpenseEntry{}, err
 	}
 
-	if err := a.db.Create(&prepared).Error; err != nil {
+	prepared, err = a.createExpenseEntryRecordWithRetry(prepared, "created", "")
+	if err != nil {
 		return ExpenseEntry{}, fmt.Errorf("failed to create expense entry: %w", err)
 	}
-	a.recordExpenseApproval(prepared.ID, "created", "")
 	a.emitExpenseEvent("expenses:updated", map[string]interface{}{"entity": "entry", "action": "create", "id": prepared.ID})
 	return a.decorateExpenseEntry(prepared), nil
 }
@@ -454,7 +462,9 @@ func (a *App) DeleteExpenseEntry(entryID string) error {
 		return fmt.Errorf("expense entry not found: %w", err)
 	}
 
-	if entry.Status == "posted" || entry.Status == "paid" || entry.PaymentStatus == "paid" {
+	status := strings.ToLower(strings.TrimSpace(entry.Status))
+	paymentStatus := strings.ToLower(strings.TrimSpace(entry.PaymentStatus))
+	if status == "posted" || status == "paid" || paymentStatus == "paid" {
 		return fmt.Errorf("posted or paid expenses cannot be deleted")
 	}
 	if entry.JournalEntryID != nil && strings.TrimSpace(*entry.JournalEntryID) != "" {
@@ -936,12 +946,17 @@ func (a *App) prepareExpenseEntry(entry ExpenseEntry, preserveIdentity bool) (Ex
 		entry.PaymentStatus = "unpaid"
 	}
 	entry.TotalAmount = entry.Amount + entry.VATAmount
-	if !preserveIdentity && entry.EntryNumber == "" {
-		number, err := a.generateExpenseEntryNumber()
-		if err != nil {
-			return ExpenseEntry{}, err
+	entry.EntryNumber = strings.TrimSpace(entry.EntryNumber)
+	entry.PaymentMethod = strings.TrimSpace(entry.PaymentMethod)
+	entry.InventoryReference = strings.TrimSpace(entry.InventoryReference)
+	if entry.InventoryItemID != nil {
+		trimmed := strings.TrimSpace(*entry.InventoryItemID)
+		if trimmed == "" {
+			entry.InventoryItemID = nil
+		} else {
+			entry.InventoryItemID = &trimmed
+			entry.InventoryLinked = true
 		}
-		entry.EntryNumber = number
 	}
 	if !preserveIdentity {
 		entry.CreatedBy = a.getCurrentUserID()
@@ -1041,10 +1056,10 @@ func (a *App) createExpenseEntryFromRecurring(item RecurringExpense, runAt time.
 		entry.SubmittedBy = a.getExpenseActorID()
 	}
 
-	if err := a.db.Create(&entry).Error; err != nil {
+	entry, err = a.createExpenseEntryRecordWithRetry(entry, "generated", item.Name)
+	if err != nil {
 		return ExpenseEntry{}, fmt.Errorf("failed to generate recurring expense entry: %w", err)
 	}
-	a.recordExpenseApproval(entry.ID, "generated", item.Name)
 	return a.decorateExpenseEntry(entry), nil
 }
 
@@ -1174,12 +1189,97 @@ func (a *App) ensureSupportingAccount(code, name, accountType string) (ChartOfAc
 	return account, nil
 }
 
+func (a *App) createExpenseEntryRecordWithRetry(prepared ExpenseEntry, approvalAction, approvalNotes string) (ExpenseEntry, error) {
+	if a.db == nil {
+		return ExpenseEntry{}, fmt.Errorf("database not initialized")
+	}
+
+	userProvidedNumber := strings.TrimSpace(prepared.EntryNumber) != ""
+	var lastErr error
+	for attempt := 0; attempt < 8; attempt++ {
+		working := prepared
+		if !userProvidedNumber {
+			working.EntryNumber = ""
+		}
+
+		err := a.db.Transaction(func(tx *gorm.DB) error {
+			if strings.TrimSpace(working.EntryNumber) == "" {
+				number, err := a.generateExpenseEntryNumberTx(tx)
+				if err != nil {
+					return err
+				}
+				working.EntryNumber = number
+			}
+			if err := tx.Create(&working).Error; err != nil {
+				return err
+			}
+			if strings.TrimSpace(approvalAction) != "" {
+				record := ExpenseApproval{
+					Base:           Base{CreatedBy: a.getCurrentUserID()},
+					ExpenseEntryID: working.ID,
+					Action:         approvalAction,
+					ActorID:        a.getExpenseActorID(),
+					Notes:          strings.TrimSpace(approvalNotes),
+					ActionAt:       time.Now(),
+				}
+				if err := tx.Create(&record).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err == nil {
+			return working, nil
+		}
+		lastErr = err
+		if userProvidedNumber || !isExpenseEntryNumberConflict(err) {
+			break
+		}
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("unable to create expense entry")
+	}
+	return ExpenseEntry{}, lastErr
+}
+
+func isExpenseEntryNumberConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "expense_entries.entry_number") ||
+		strings.Contains(text, "unique constraint") ||
+		strings.Contains(text, "duplicate key")
+}
+
 func (a *App) generateExpenseEntryNumber() (string, error) {
-	var count int64
-	if err := a.db.Model(&ExpenseEntry{}).Count(&count).Error; err != nil {
+	return a.generateExpenseEntryNumberTx(a.db)
+}
+
+func (a *App) generateExpenseEntryNumberTx(tx *gorm.DB) (string, error) {
+	if tx == nil {
+		return "", fmt.Errorf("database not initialized")
+	}
+	year := time.Now().Year()
+	prefix := fmt.Sprintf("EXP-%d-", year)
+	var existing []string
+	if err := tx.Model(&ExpenseEntry{}).
+		Where("entry_number LIKE ?", prefix+"%").
+		Pluck("entry_number", &existing).Error; err != nil {
 		return "", fmt.Errorf("failed to generate expense entry number: %w", err)
 	}
-	return fmt.Sprintf("EXP-%d-%04d", time.Now().Year(), count+1), nil
+
+	maxSequence := 0
+	for _, number := range existing {
+		suffix := strings.TrimPrefix(strings.TrimSpace(number), prefix)
+		sequence, err := strconv.Atoi(suffix)
+		if err == nil && sequence > maxSequence {
+			maxSequence = sequence
+		}
+	}
+	return fmt.Sprintf("%s%04d", prefix, maxSequence+1), nil
 }
 
 func (a *App) seedDefaultExpenseCategories() error {

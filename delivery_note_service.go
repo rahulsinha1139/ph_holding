@@ -278,9 +278,9 @@ func (a *App) GenerateDeliveryNotePDF(id string) (string, error) {
 	tableY := y + 16
 	tableEndY := a.drawDeliveryNoteTable(pdf, tableY, dn.Items, profile.Division)
 
-	const signatureBlockHeight = 22.0
+	const signatureBlockHeight = 34.0
 	const signatureDefaultY = 222.0
-	const deliveryNoteFooterSafeY = 268.0
+	const deliveryNoteFooterSafeY = 286.0
 	signatureY := mathMax(tableEndY+10, signatureDefaultY)
 	if signatureY+signatureBlockHeight > deliveryNoteFooterSafeY {
 		pdf.AddPage()
@@ -293,9 +293,11 @@ func (a *App) GenerateDeliveryNotePDF(id string) (string, error) {
 	pdf.SetXY(112, signatureY)
 	pdf.Cell(78, 5, "Received in Good order and condition")
 
+	signerName := a.resolveDocumentSignerName(firstNonEmptyString(dn.UpdatedBy, dn.CreatedBy, a.getCurrentUserDisplayName()))
+	signatureBlock := a.resolvePreparedBySignatureBlock(signerName)
+	drawPHSignaturePDFLines(pdf, 35, signatureY+10, 70, 2.45, 5.1, signatureBlock, false)
+
 	pdf.SetFont("Times", "", 10)
-	pdf.SetXY(35, signatureY+12)
-	pdf.Cell(70, 5, "For "+sanitizeForPDF(profile.LegalName))
 	pdf.SetXY(112, signatureY+12)
 	pdf.Cell(78, 5, "For "+sanitizeForPDF(customerName))
 
@@ -1359,6 +1361,9 @@ func (a *App) CreateDeliveryNoteWithItems(orderID string, items []DeliveryNoteIt
 			return DeliveryNote{}, newError("QUANTITY_EXCEEDED",
 				fmt.Sprintf("Cannot ship %.2f units for %s - only %.2f remaining",
 					input.ShipQty, orderItem.ProductCode, remaining), "")
+		}
+		if err := a.validateProductSerialHandling(orderItem.ProductID, input.ShipQty, nil, "delivery"); err != nil {
+			return DeliveryNote{}, err
 		}
 
 		afterDelivery := remaining - input.ShipQty

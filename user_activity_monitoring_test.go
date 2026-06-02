@@ -24,6 +24,7 @@ func newActivityMonitoringTestApp(t *testing.T) *App {
 		&UserActivitySession{},
 		&UserActivityEvent{},
 		&UserActivityWeeklySummary{},
+		&SyncRecord{},
 	))
 	return app
 }
@@ -192,6 +193,97 @@ func TestUserActivityMonitoringFullDownloadSkipsRestrictedTables(t *testing.T) {
 	require.Equal(t, 1, downloaded)
 	require.NoError(t, local.Model(&UserActivitySession{}).Count(&localCount).Error)
 	require.EqualValues(t, 1, localCount)
+}
+
+func TestDBSyncReportsMissingRemoteActivityTables(t *testing.T) {
+	app := newActivityMonitoringTestApp(t)
+	app.currentUser = &User{DisplayName: "Rahul"}
+
+	remote, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	app.dbManager = &DBManager{
+		local:                     app.db,
+		remote:                    remote,
+		canPullActivityMonitoring: app.currentSessionCanAccessActivityMonitoring,
+	}
+
+	require.NoError(t, app.db.Create(&UserActivitySession{
+		Base:              Base{ID: "local-activity-session"},
+		SessionID:         "local-session",
+		EmployeeName:      "Rahul",
+		LicenseRole:       "admin",
+		StartedAt:         time.Now().Add(-time.Hour),
+		LastSeenAt:        time.Now(),
+		ActiveSeconds:     120,
+		MeaningfulSeconds: 90,
+		EventCount:        2,
+	}).Error)
+
+	pushed, err := app.syncTablePush(userActivityTableSessions, time.Time{})
+	require.Equal(t, 0, pushed)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `remote table "user_activity_sessions" is missing`)
+
+	pulled, err := app.syncTablePull(userActivityTableSessions, time.Time{})
+	require.Equal(t, 0, pulled)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `remote table "user_activity_sessions" is missing`)
+}
+
+func TestDBSyncPushUserActivityEventIsIdempotentWhenRemoteAlreadyHasSameID(t *testing.T) {
+	app := newActivityMonitoringTestApp(t)
+
+	remote, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, remote.AutoMigrate(&UserActivityEvent{}))
+	app.dbManager = &DBManager{
+		local:  app.db,
+		remote: remote,
+	}
+
+	now := time.Now()
+	event := UserActivityEvent{
+		Base: Base{
+			ID:        "activity-event-duplicate",
+			CreatedAt: now,
+			UpdatedAt: now,
+			Version:   1,
+			CreatedBy: "test",
+		},
+		EventTime:    now,
+		EventType:    "click",
+		Category:     "navigation",
+		Screen:       "dashboard",
+		ActionLabel:  "Open dashboard",
+		EmployeeName: "Rahul",
+		LicenseRole:  "admin",
+		SessionID:    "session-duplicate",
+	}
+	require.NoError(t, app.db.Create(&event).Error)
+	require.NoError(t, remote.Create(&event).Error)
+
+	pushed, err := app.syncTablePush(userActivityTableEvents, time.Time{})
+	require.NoError(t, err)
+	require.Equal(t, 1, pushed)
+
+	var remoteCount int64
+	require.NoError(t, remote.Model(&UserActivityEvent{}).Where("id = ?", event.ID).Count(&remoteCount).Error)
+	require.EqualValues(t, 1, remoteCount)
+}
+
+func TestDBSyncErrorsForMissingRemoteBusinessTables(t *testing.T) {
+	app := newActivityMonitoringTestApp(t)
+
+	remote, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	app.dbManager = &DBManager{
+		local:  app.db,
+		remote: remote,
+	}
+
+	_, err = app.syncTablePush("notifications", time.Time{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `remote table "notifications" is missing`)
 }
 
 func TestUserActivityMonitoringRoleOutputsAreRahulOnlyReadable(t *testing.T) {

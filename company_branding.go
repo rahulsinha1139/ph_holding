@@ -91,7 +91,10 @@ func (a *App) letterheadImagePathForDivision(division string) string {
 	candidatePaths := []string{}
 	paths := a.getAppPaths()
 	if paths != nil {
-		candidatePaths = append(candidatePaths, filepath.Join(paths.ProjectRoot, "CRITICAL_PH_CONTEXT_SSOT", profile.LetterheadFile))
+		candidatePaths = append(candidatePaths,
+			filepath.Join(paths.ProjectRoot, "CRITICAL_PH_CONTEXT_SSOT", profile.LetterheadFile),
+			filepath.Join(paths.ProjectRoot, "deploy_package", "data", profile.LetterheadFile),
+		)
 	}
 
 	if exePath, err := os.Executable(); err == nil {
@@ -104,7 +107,10 @@ func (a *App) letterheadImagePathForDivision(division string) string {
 	}
 
 	if cwd, err := os.Getwd(); err == nil {
-		candidatePaths = append(candidatePaths, filepath.Join(cwd, "CRITICAL_PH_CONTEXT_SSOT", profile.LetterheadFile))
+		candidatePaths = append(candidatePaths,
+			filepath.Join(cwd, "CRITICAL_PH_CONTEXT_SSOT", profile.LetterheadFile),
+			filepath.Join(cwd, "deploy_package", "data", profile.LetterheadFile),
+		)
 	}
 
 	for _, path := range candidatePaths {

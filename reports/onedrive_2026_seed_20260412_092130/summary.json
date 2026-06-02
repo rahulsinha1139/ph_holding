@@ -1,0 +1,15 @@
+{
+  "generated_at": "2026-04-12T09:21:30.5718268+05:30",
+  "root_path": "/Users/rahulsinha/Downloads/OneDrive_2026-03-31/Offers 2026",
+  "database_path": "ph_holdings.db",
+  "deals_scanned": 0,
+  "deals_with_costings": 0,
+  "costing_files_parsed": 0,
+  "line_items_extracted": 0,
+  "unresolved_customer_matches": 0,
+  "current_db_2026_opportunity_rows": 138,
+  "current_db_2026_onedrive_rows": 135,
+  "missing_in_db": 0,
+  "multiple_db_matches": 0,
+  "output_dir": "reports\\onedrive_2026_seed_20260412_092130"
+}

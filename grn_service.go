@@ -43,8 +43,14 @@ func (a *App) CreateGRN(grn GoodsReceivedNote) (GoodsReceivedNote, error) {
 		return GoodsReceivedNote{}, newError("PO_NOT_FOUND", "Purchase Order not found", err.Error())
 	}
 
-	// Validate PO status - cannot create GRN against Draft or Cancelled POs
-	if po.Status == "Cancelled" || po.Status == "Draft" {
+	// Validate PO status - receiving starts only after the supplier PO has been sent.
+	po.Status = canonicalizePurchaseOrderStatus(po.Status)
+	receivableStatuses := map[string]bool{
+		"Sent":               true,
+		"Acknowledged":       true,
+		"Partially Received": true,
+	}
+	if !receivableStatuses[po.Status] {
 		return GoodsReceivedNote{}, newError("INVALID_PO_STATUS", fmt.Sprintf("cannot create GRN against %s purchase order", po.Status), "")
 	}
 
@@ -338,6 +344,9 @@ func (a *App) DeleteGRN(id string) error {
 
 // GenerateGRNNumber generates a unique GRN number in format GRN-2026-0001
 func (a *App) GenerateGRNNumber() (string, error) {
+	if err := a.requirePermission("grn:create"); err != nil {
+		return "", err
+	}
 	if a.db == nil {
 		return "", newError("DB_NOT_INITIALIZED", "Database connection not available", "")
 	}
@@ -441,6 +450,12 @@ func (a *App) CompleteGRN(id string) error {
 		if err := tx.Model(&poItem).Update("quantity_received", newQuantityReceived).Error; err != nil {
 			tx.Rollback()
 			return newError("DB_UPDATE_FAILED", "Failed to update PO item quantity", err.Error())
+		}
+		poItem.QuantityReceived = newQuantityReceived
+
+		if err := a.reconcileInventoryReceipt(tx, grn, poItem, item); err != nil {
+			tx.Rollback()
+			return newError("DB_UPDATE_FAILED", "Failed to reconcile inventory receipt", err.Error())
 		}
 
 		log.Printf("Updated PO item %s: received %.2f (total now: %.2f/%.2f)",
@@ -569,6 +584,15 @@ func (a *App) ReceiveAgainstPO(poID string, items []GRNItem) (GoodsReceivedNote,
 	if err := a.db.Preload("Items").First(&po, "id = ?", poID).Error; err != nil {
 		return GoodsReceivedNote{}, newError("PO_NOT_FOUND", "Purchase Order not found", err.Error())
 	}
+	po.Status = canonicalizePurchaseOrderStatus(po.Status)
+	receivableStatuses := map[string]bool{
+		"Sent":               true,
+		"Acknowledged":       true,
+		"Partially Received": true,
+	}
+	if !receivableStatuses[po.Status] {
+		return GoodsReceivedNote{}, newError("INVALID_PO_STATUS", fmt.Sprintf("cannot receive goods against %s purchase order", po.Status), "")
+	}
 
 	// Generate GRN number
 	grnNumber, err := a.GenerateGRNNumber()
@@ -596,6 +620,10 @@ func (a *App) ReceiveAgainstPO(poID string, items []GRNItem) (GoodsReceivedNote,
 		poItem, exists := poItemMap[item.POItemID]
 		if !exists {
 			return GoodsReceivedNote{}, newError("INVALID_PO_ITEM", fmt.Sprintf("PO item %s not found", item.POItemID), "")
+		}
+
+		if err := a.validateProductSerialHandling(poItem.ProductID, item.QuantityReceived, nil, "goods receipt"); err != nil {
+			return GoodsReceivedNote{}, err
 		}
 
 		// Set quantity ordered from PO
@@ -657,21 +685,18 @@ func (a *App) ReceiveAgainstPOWithSerials(poID string, items []GRNItemWithSerial
 
 	// Pre-validate serial numbers
 	for _, item := range items {
-		if len(item.SerialNumbers) > 0 {
-			// Validate serial count matches received quantity
-			if float64(len(item.SerialNumbers)) != item.QuantityReceived {
-				poItem := poItemMap[item.POItemID]
-				return GoodsReceivedNote{}, newError("SERIAL_COUNT_MISMATCH",
-					fmt.Sprintf("Serial count (%d) must match received quantity (%.0f) for %s",
-						len(item.SerialNumbers), item.QuantityReceived, poItem.ProductCode), "")
-			}
-			// Validate no duplicate serials in DB
-			for _, sn := range item.SerialNumbers {
-				var existing SerialNumber
-				if err := a.db.Where("serial_no = ?", sn).First(&existing).Error; err == nil {
-					return GoodsReceivedNote{}, newError("DUPLICATE_SERIAL",
-						fmt.Sprintf("Serial number %s already exists (product: %s)", sn, existing.ProductCode), "")
-				}
+		poItem, exists := poItemMap[item.POItemID]
+		if !exists {
+			return GoodsReceivedNote{}, newError("INVALID_PO_ITEM", fmt.Sprintf("PO item %s not found", item.POItemID), "")
+		}
+		if err := a.validateProductSerialHandling(poItem.ProductID, item.QuantityReceived, item.SerialNumbers, "goods receipt"); err != nil {
+			return GoodsReceivedNote{}, err
+		}
+		for _, sn := range item.SerialNumbers {
+			var existing SerialNumber
+			if err := a.db.Where("serial_no = ?", sn).First(&existing).Error; err == nil {
+				return GoodsReceivedNote{}, newError("DUPLICATE_SERIAL",
+					fmt.Sprintf("Serial number %s already exists (product: %s)", sn, existing.ProductCode), "")
 			}
 		}
 	}
@@ -765,20 +790,22 @@ func (a *App) RaiseGRNDiscrepancy(grnID string, itemID string, reason string, di
 		return newError("GRN_ITEM_NOT_FOUND", "GRN item not found", "")
 	}
 
-	// Get product code for logging
+	// Get product code and reference cost from linked PO item when available
 	var po PurchaseOrder
 	productCode := "Unknown"
+	unitCost := 0.0
 	if err := a.db.Preload("Items").First(&po, "id = ?", grn.PurchaseOrderID).Error; err == nil {
 		for _, poItem := range po.Items {
 			if poItem.ID == grnItem.POItemID {
 				productCode = poItem.ProductCode
+				unitCost = a.resolvePurchaseOrderItemReferenceCost(poItem).UnitCostBHD
 				break
 			}
 		}
 	}
 
-	// Calculate cost impact (estimated)
-	costImpact := rejectedQty * 100.0 // Placeholder - should get unit cost from PO
+	// Calculate cost impact from the linked PO/product contract instead of a placeholder
+	costImpact := rejectedQty * unitCost
 
 	// Create discrepancy record (store in dedicated table via raw SQL for now)
 	discrepancy := GRNDiscrepancy{

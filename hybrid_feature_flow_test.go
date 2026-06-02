@@ -22,12 +22,17 @@ func setupHybridFeatureTestApp(t *testing.T) *App {
 		&LicenseKey{},
 		&Device{},
 		&DeviceUser{},
+		&Offer{},
+		&OfferItem{},
+		&Order{},
+		&OrderItem{},
 		&Employee{},
 		&EmployeeAccessLink{},
 		&Project{},
 		&ProjectMember{},
 		&Notification{},
 		&NotificationReceipt{},
+		&EmployeeArchiveRequest{},
 		&TaskItem{},
 		&TaskComment{},
 		&TaskActivity{},
@@ -645,4 +650,227 @@ func TestPilotReadinessAndExports_CaptureDeploymentState(t *testing.T) {
 	require.Contains(t, text, "missing_access_link")
 
 	require.True(t, strings.HasSuffix(signoff.Path, ".md"))
+}
+
+func TestEmployeeArchiveAllowsSingleAdminAndPreservesWorkHistory(t *testing.T) {
+	app := setupHybridFeatureTestApp(t)
+	firstAdmin := seedCurrentAdminContext(t, app, "Rahul")
+
+	target := createEmployeeForTest(t, app, "Archive Candidate", "Archive", "Sales", "Sales Engineer")
+	seedLicenseRecord(t, app, "PH-STF-ARCH01", "staff", "Archive Candidate", false, "")
+	targetLink, err := app.CreateEmployeeAccessLink(EmployeeAccessLink{
+		EmployeeID:   target.ID,
+		LicenseKey:   "PH-STF-ARCH01",
+		UserID:       "archive-candidate",
+		AccessStatus: "active",
+	})
+	require.NoError(t, err)
+
+	project, err := app.CreateCollaborativeProject(Project{Name: "Archive continuity project"})
+	require.NoError(t, err)
+	member, err := app.AddCollaborativeProjectMember(project.ID, target.ID, "Owner")
+	require.NoError(t, err)
+	task, err := app.CreateCollaborativeTask(TaskItem{
+		Title:              "Preserve archived assignee",
+		Description:        "This assignment must keep the employee id after archive.",
+		TaskType:           "internal",
+		Priority:           "high",
+		AssigneeEmployeeID: &target.ID,
+	})
+	require.NoError(t, err)
+	offer := Offer{
+		Base:          Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now(), CreatedBy: target.ID},
+		OfferNumber:   "ARCHIVE-HISTORY-01",
+		CustomerName:  "Archive History Customer",
+		QuotationDate: time.Now(),
+		ValidityDate:  time.Now().AddDate(0, 0, 30),
+		Stage:         "Quoted",
+		TotalValueBHD: 1250,
+	}
+	require.NoError(t, app.db.Create(&offer).Error)
+	order := Order{
+		Base:          Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now(), CreatedBy: target.ID},
+		OrderNumber:   "ORD-ARCHIVE-HISTORY-01",
+		CustomerName:  offer.CustomerName,
+		OrderDate:     time.Now(),
+		Status:        "Confirmed",
+		OfferID:       offer.ID,
+		OfferNumber:   offer.OfferNumber,
+		TotalValueBHD: offer.TotalValueBHD,
+		GrandTotalBHD: offer.TotalValueBHD,
+	}
+	require.NoError(t, app.db.Create(&order).Error)
+	invoice := Invoice{
+		Base:           Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now(), CreatedBy: target.ID},
+		InvoiceNumber:  "INV-ARCHIVE-HISTORY-01",
+		CustomerName:   offer.CustomerName,
+		InvoiceDate:    time.Now(),
+		DueDate:        time.Now().AddDate(0, 0, 30),
+		Status:         "Sent",
+		OrderID:        order.ID,
+		OfferID:        offer.ID,
+		OfferNumber:    offer.OfferNumber,
+		GrandTotalBHD:  offer.TotalValueBHD,
+		OutstandingBHD: offer.TotalValueBHD,
+	}
+	require.NoError(t, app.db.Create(&invoice).Error)
+
+	request, err := app.RequestEmployeeArchive(target.ID, "Employee left the company after handover")
+	require.NoError(t, err)
+	require.Equal(t, "approved", request.Status)
+	require.Equal(t, firstAdmin.EmployeeID, request.FirstApprovedBy)
+	require.Equal(t, 1, request.RequiredApprovals)
+
+	var archived Employee
+	require.NoError(t, app.db.First(&archived, "id = ?", target.ID).Error)
+	require.False(t, archived.IsActive)
+	require.Equal(t, "archived", archived.EmploymentStatus)
+	require.Equal(t, request.ID, archived.ArchiveRequestID)
+	require.Equal(t, "Employee left the company after handover", archived.ArchiveReason)
+	require.NotNil(t, archived.ArchivedAt)
+
+	var archivedLink EmployeeAccessLink
+	require.NoError(t, app.db.First(&archivedLink, "id = ?", targetLink.ID).Error)
+	require.Equal(t, "archived", archivedLink.AccessStatus)
+	require.False(t, archivedLink.IsPrimary)
+
+	var archivedMember ProjectMember
+	require.NoError(t, app.db.First(&archivedMember, "id = ?", member.ID).Error)
+	require.Equal(t, target.ID, archivedMember.EmployeeID)
+	require.False(t, archivedMember.IsActive)
+	require.NotNil(t, archivedMember.LeftAt)
+
+	var preservedTask TaskItem
+	require.NoError(t, app.db.First(&preservedTask, "id = ?", task.ID).Error)
+	require.NotNil(t, preservedTask.AssigneeEmployeeID)
+	require.Equal(t, target.ID, *preservedTask.AssigneeEmployeeID)
+
+	var preservedOffer Offer
+	require.NoError(t, app.db.First(&preservedOffer, "id = ?", offer.ID).Error)
+	require.Equal(t, target.ID, preservedOffer.CreatedBy)
+
+	var preservedOrder Order
+	require.NoError(t, app.db.First(&preservedOrder, "id = ?", order.ID).Error)
+	require.Equal(t, target.ID, preservedOrder.CreatedBy)
+	require.Equal(t, offer.ID, preservedOrder.OfferID)
+
+	var preservedInvoice Invoice
+	require.NoError(t, app.db.First(&preservedInvoice, "id = ?", invoice.ID).Error)
+	require.Equal(t, target.ID, preservedInvoice.CreatedBy)
+	require.Equal(t, offer.ID, preservedInvoice.OfferID)
+
+	var approvalNoticeCount int64
+	require.NoError(t, app.db.Model(&Notification{}).
+		Where("source_type = ? AND source_id = ?", "employee_archive_approval", request.ID).
+		Count(&approvalNoticeCount).Error)
+	require.Zero(t, approvalNoticeCount)
+}
+
+func TestEmployeeArchiveDoesNotRequireSecondAdmin(t *testing.T) {
+	app := setupHybridFeatureTestApp(t)
+	seedCurrentAdminContext(t, app, "Rahul")
+	target := createEmployeeForTest(t, app, "Solo Approval Candidate", "Solo", "Sales", "Sales Engineer")
+
+	request, err := app.RequestEmployeeArchive(target.ID, "Testing solo admin archive")
+	require.NoError(t, err)
+	require.Equal(t, "approved", request.Status)
+	require.Equal(t, 1, request.RequiredApprovals)
+
+	var archived Employee
+	require.NoError(t, app.db.First(&archived, "id = ?", target.ID).Error)
+	require.False(t, archived.IsActive)
+	require.Equal(t, "archived", archived.EmploymentStatus)
+}
+
+func TestEmployeeArchiveRBACDeniesNonAdminWithHRUpdate(t *testing.T) {
+	app := setupHybridFeatureTestApp(t)
+	target := Employee{
+		Base:             Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		FullName:         "Manager Archive Target",
+		PreferredName:    "Target",
+		Department:       "Sales",
+		JobTitle:         "Engineer",
+		EmploymentStatus: "active",
+		IsActive:         true,
+	}
+	require.NoError(t, app.db.Create(&target).Error)
+	app.currentUserID = "manager-user"
+	app.currentUser = &User{
+		Base:     Base{ID: "manager-user"},
+		Username: "manager-user",
+		RoleName: "manager",
+		Role: Role{
+			Name:        "manager",
+			DisplayName: "Manager",
+			Permissions: `["hr:update"]`,
+		},
+	}
+
+	_, err := app.RequestEmployeeArchive(target.ID, "Managers cannot archive employees")
+	require.ErrorContains(t, err, "only admin")
+
+	request := EmployeeArchiveRequest{
+		Base:            Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		EmployeeID:      target.ID,
+		EmployeeName:    target.FullName,
+		RequestedBy:     "admin-employee",
+		RequestedByName: "Admin",
+		Reason:          "Existing pending request",
+		Status:          "pending",
+		FirstApprovedBy: "admin-employee",
+	}
+	require.NoError(t, app.db.Create(&request).Error)
+	_, err = app.ReviewEmployeeArchiveRequest(request.ID, "approve", "")
+	require.ErrorContains(t, err, "only admin")
+}
+
+func TestEmployeeArchiveRejectPreservesActiveEmployee(t *testing.T) {
+	app := setupHybridFeatureTestApp(t)
+	firstAdmin := seedCurrentAdminContext(t, app, "Rahul")
+	target := createEmployeeForTest(t, app, "Reject Archive Candidate", "Reject", "Operations", "Coordinator")
+	secondAdmin := createEmployeeForTest(t, app, "Archive Reviewer", "Reviewer", "Management", "Director")
+	seedLicenseRecord(t, app, "PH-ADM-REVIEW", "admin", "Archive Reviewer", false, "")
+	_, err := app.CreateEmployeeAccessLink(EmployeeAccessLink{
+		EmployeeID:   secondAdmin.ID,
+		LicenseKey:   "PH-ADM-REVIEW",
+		UserID:       "archive-reviewer",
+		AccessStatus: "active",
+	})
+	require.NoError(t, err)
+
+	now := time.Now()
+	request := EmployeeArchiveRequest{
+		Base:                Base{ID: uuid.New().String(), CreatedAt: now, UpdatedAt: now, CreatedBy: firstAdmin.EmployeeID},
+		EmployeeID:          target.ID,
+		EmployeeName:        target.FullName,
+		RequestedBy:         firstAdmin.EmployeeID,
+		RequestedByName:     firstAdmin.EmployeeName,
+		Reason:              "Testing rejection path",
+		Status:              "pending",
+		RequiredApprovals:   1,
+		FirstApprovedBy:     firstAdmin.EmployeeID,
+		FirstApprovedByName: firstAdmin.EmployeeName,
+		FirstApprovedAt:     &now,
+	}
+	require.NoError(t, app.db.Create(&request).Error)
+	app.currentUserID = "archive-reviewer"
+	rejected, err := app.ReviewEmployeeArchiveRequest(request.ID, "reject", "Keep active")
+	require.NoError(t, err)
+	require.Equal(t, "rejected", rejected.Status)
+	require.Equal(t, secondAdmin.ID, rejected.RejectedBy)
+
+	var employee Employee
+	require.NoError(t, app.db.First(&employee, "id = ?", target.ID).Error)
+	require.True(t, employee.IsActive)
+	require.NotEqual(t, "archived", employee.EmploymentStatus)
+
+	var requesterNotice Notification
+	require.NoError(t, app.db.Where(
+		"employee_id = ? AND source_type = ? AND source_id = ? AND title = ?",
+		firstAdmin.EmployeeID,
+		"employee_archive_approval",
+		request.ID,
+		"Employee archive rejected",
+	).First(&requesterNotice).Error)
+	require.Equal(t, "unread", requesterNotice.Status)
 }

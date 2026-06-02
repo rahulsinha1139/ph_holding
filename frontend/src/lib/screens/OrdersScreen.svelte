@@ -12,9 +12,12 @@
     GetOrderFulfillmentStatus,
     CreateInvoiceFromOrder,
     CreateProformaInvoice,
-    CreatePOFromOrder,
+    CreatePOsFromOrder,
     QuickMarkOrderDelivered,
-    GetOrdersWithNoItems
+    PreviewOrderDeleteCascade,
+    GetOrdersWithNoItems,
+    ExportReport,
+    OpenExportedFile
   } from '../../../wailsjs/go/main/App';
   import { toast } from '$lib/stores/toasts';
   import { pendingDNCreate } from '$lib/stores/navigation';
@@ -64,6 +67,7 @@
   let availableYears: string[] = [];
   let availableCustomers: string[] = [];
   let ordersWithNoItems: any[] = [];
+  let exportingExtract = false;
 
   // Create/Edit modal
   let showModal = false;
@@ -462,6 +466,19 @@
     filteredOrders = result;
   }
 
+  async function exportOrdersExtract() {
+    exportingExtract = true;
+    try {
+      const path = await ExportReport('customer_order_extract', 'excel', JSON.stringify(filteredOrders));
+      await OpenExportedFile(path).catch(() => {});
+      toast.success(`Customer order extract exported: ${path}`);
+    } catch (err) {
+      toast.danger(`Failed to export orders: ${errorMessage(err)}`);
+    } finally {
+      exportingExtract = false;
+    }
+  }
+
   $: {
     searchQuery;
     activeFilter;
@@ -612,7 +629,7 @@
           required_date: formData.requiredDate,
           total_value_bhd: computedTotalValue,
           grand_total_bhd: computedTotalValue,
-      status: formData.status,
+          status: formData.status,
           payment_terms: formData.paymentTerms,
           delivery_terms: formData.deliveryTerms,
           items: normalizedItems.map((item, index) => ({
@@ -691,6 +708,13 @@
     showDetailModal = true;
   }
 
+  function handleOrderItemKeydown(event: KeyboardEvent, row: main.Order) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      void handleRowClick(row);
+    }
+  }
+
   // Quick actions
   async function handleCreateDeliveryNote(order: main.Order) {
     if (isProcessingAction) return;
@@ -735,7 +759,7 @@
       }));
       await loadOrders();
     } catch (err) {
-      toast.danger('Failed to create invoice: ' + (err as Error).message);
+      toast.danger('Failed to create invoice: ' + errorMessage(err));
     } finally {
       isProcessingAction = false;
     }
@@ -806,6 +830,46 @@
     }
   }
 
+  async function handleCreatePO(order: main.Order) {
+    if (isProcessingAction) return;
+
+    if (!orderItems || orderItems.length === 0) {
+      toast.warning('This order has no saved line items. Supplier orders need item detail; edit or re-import the order before creating a PO.');
+      return;
+    }
+
+    const confirmed = await askActionConfirmation({
+      title: 'Create Supplier Order',
+      message: `Create draft supplier order(s) from ${order.order_number}? Items will be split by supplier when the order contains multiple suppliers.`,
+      confirmLabel: 'Create Supplier Order',
+      variant: 'secondary'
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    isProcessingAction = true;
+    try {
+      const selectedItemIDs = orderItems
+        .map((item) => item.id)
+        .filter((id): id is string => Boolean(id));
+      const pos = await CreatePOsFromOrder(order.id, selectedItemIDs);
+      if (pos.length === 1) {
+        toast.success(`Supplier order ${pos[0].po_number} created`);
+      } else {
+        toast.success(`${pos.length} supplier orders created`);
+      }
+      showDetailModal = false;
+      window.dispatchEvent(new CustomEvent('navigateToScreen', {
+        detail: { screen: 'operations', tab: 'pos' }
+      }));
+    } catch (err) {
+      toast.danger('Failed to create supplier order: ' + errorMessage(err));
+    } finally {
+      isProcessingAction = false;
+    }
+  }
+
   async function handleQuickMarkDelivered() {
     if (isProcessingAction) return;
     if (!selectedOrder) return;
@@ -827,7 +891,7 @@
       showDetailModal = false;
       await loadOrders();
     } catch (err) {
-      toast.danger('Failed to mark as delivered: ' + (err as Error).message);
+      toast.danger('Failed to mark as delivered: ' + errorMessage(err));
     } finally {
       isProcessingAction = false;
     }
@@ -836,9 +900,26 @@
   async function handleDeleteOrder(order: main.Order) {
     if (isDeleting) return;
 
+    let deletePreview: any = null;
+    try {
+      deletePreview = await PreviewOrderDeleteCascade(order.id);
+    } catch (err) {
+      toast.danger('Could not inspect linked records: ' + errorMessage(err));
+      return;
+    }
+
+    if (deletePreview?.blocked) {
+      toast.danger(deletePreview.block_reason || 'This order has protected linked records and cannot be deleted.');
+      return;
+    }
+
+    const summary = Array.isArray(deletePreview?.summary) && deletePreview.summary.length > 0
+      ? deletePreview.summary.map((item: string) => `- ${item}`).join('\n')
+      : '- order record';
+
     const confirmed = await askActionConfirmation({
       title: 'Delete Order',
-      message: `Delete order ${order.order_number}? This cannot be undone.`,
+      message: `Delete order ${order.order_number}? This cannot be undone.\n\nThis will also delete:\n${summary}`,
       confirmLabel: 'Delete Order',
       variant: 'danger'
     });
@@ -854,7 +935,7 @@
       selectedOrder = null;
       await loadOrders();
     } catch (err) {
-      toast.danger('Delete failed: ' + (err as Error).message);
+      toast.danger('Delete failed: ' + errorMessage(err));
     } finally {
       isDeleting = false;
     }
@@ -936,6 +1017,9 @@
           <option value={status.key}>{status.label}</option>
         {/each}
       </select>
+      <Button variant="secondary" on:click={exportOrdersExtract} disabled={exportingExtract || loading}>
+        {exportingExtract ? 'Exporting...' : 'Extract'}
+      </Button>
     </div>
 
     {#if loading}
@@ -960,7 +1044,14 @@
             </div>
             <div class="orders-list">
               {#each yearOrders as order}
-                <div class="order-item" role="button" tabindex="0" on:click={() => handleRowClick(order)} on:keydown={(event) => (event.key === "Enter" || event.key === " ") && handleRowClick(order)}>
+                <div
+                  class="order-item"
+                  role="button"
+                  tabindex="0"
+                  aria-label={`Open order ${order.order_number}${order.customer_name ? ` for ${order.customer_name}` : ''}`}
+                  on:click={() => handleRowClick(order)}
+                  on:keydown={(event) => handleOrderItemKeydown(event, order)}
+                >
                   <div class="order-left">
                     <span class="order-number">{order.order_number}</span>
                     <span class="order-customer">{order.customer_name}</span>
@@ -990,7 +1081,14 @@
           </div>
           <div class="orders-list">
             {#each undatedOrders as order}
-              <div class="order-item" role="button" tabindex="0" on:click={() => handleRowClick(order)} on:keydown={(event) => (event.key === "Enter" || event.key === " ") && handleRowClick(order)}>
+              <div
+                class="order-item"
+                role="button"
+                tabindex="0"
+                aria-label={`Open order ${order.order_number}${order.customer_name ? ` for ${order.customer_name}` : ''}`}
+                on:click={() => handleRowClick(order)}
+                on:keydown={(event) => handleOrderItemKeydown(event, order)}
+              >
                 <div class="order-left">
                   <span class="order-number">{order.order_number}</span>
                   <span class="order-customer">{order.customer_name}</span>
@@ -1101,6 +1199,9 @@
           class="search-input"
         />
       </div>
+      <Button variant="secondary" on:click={exportOrdersExtract} disabled={exportingExtract || loading}>
+        {exportingExtract ? 'Exporting...' : 'Extract Orders'}
+      </Button>
     </div>
 
     <!-- DataTable -->
@@ -1234,10 +1335,14 @@
       </div>
 
       <div class="line-items-panel">
-        <div class="line-items-panel-header">
-          <div>
-            <h4>Order Line Items</h4>
-            <p>Capture each line separately so delivery notes, invoices, and purchase orders stay accurate.</p>
+          <div class="line-items-panel-header">
+            <div>
+              <h4>Order Line Items</h4>
+              <p>{modalMode === 'edit' ? 'Update each line separately so order totals, delivery notes, and invoices stay accurate.' : 'Capture each line separately so delivery notes, invoices, and purchase orders stay accurate.'}</p>
+            </div>
+            <Button variant="ghost" type="button" on:click={addFormItem}>
+              + Add Line
+            </Button>
           </div>
           <Button variant="ghost" type="button" on:click={addFormItem}>
             + Add Line
@@ -1322,7 +1427,6 @@
             </div>
           {/each}
         </div>
-      </div>
 
       <div class="modal-actions">
         <Button variant="ghost" on:click={() => showModal = false} disabled={saving}>
@@ -1645,6 +1749,11 @@
   .order-item:hover {
     background: var(--bg-hover, #f0f0f0);
     border-color: var(--text-muted, #999);
+  }
+
+  .order-item:focus-visible {
+    outline: 2px solid var(--primary, #4f46e5);
+    outline-offset: 2px;
   }
 
   .order-left {
@@ -2208,6 +2317,7 @@
     color: var(--text-primary);
     font-size: 14px;
     line-height: 1.5;
+    white-space: pre-line;
   }
 
   .confirm-actions {

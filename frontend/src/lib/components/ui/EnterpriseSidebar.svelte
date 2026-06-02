@@ -55,7 +55,7 @@
 
     // Manual sync trigger with progress UI
     async function triggerSync() {
-        if (syncLoading || !syncStatus.configured || !canManualSync) return;
+        if (syncLoading || !syncStatus.configured || !syncStatus.sync_enabled || !canManualSync) return;
         syncLoading = true;
         showSyncProgress = true;
 
@@ -107,6 +107,7 @@
 
     // Props
     export let currentScreen = "dashboard";
+    export let onNavigate: ((screenId: string) => void) | undefined = undefined;
 
     // Navigation Items with required permissions
     // Items without a permission are always visible
@@ -124,11 +125,11 @@
         { id: "intelligence", label: "Intelligence", icon: "zap", permission: "intelligence:chat" },
         // OneDrive import disabled — manual folder download + extraction in next session
         // { id: "onedrive_import", label: "OneDrive Import", icon: "folder", permission: "settings:view" },
-        { id: "settings", label: "Settings", icon: "settings", permission: "settings:view" },
+        { id: "settings", label: "Settings", icon: "settings", permission: ["settings:view", "settings:api_keys"] },
     ];
 
     // Check if user has a specific permission
-    function hasPermission(perm: string | null): boolean {
+    function hasPermission(perm: string | string[] | null): boolean {
         if (!perm) return true; // No permission required
         const permissionList = Array.isArray($permissions) ? $permissions : [];
         if (permissionList.length === 0) return false;
@@ -136,12 +137,15 @@
         // Wildcard access (admin)
         if (permissionList.includes('*')) return true;
 
-        // Direct match
-        if (permissionList.includes(perm)) return true;
+        const perms = Array.isArray(perm) ? perm : [perm];
+        for (const requiredPerm of perms) {
+            // Direct match
+            if ($permissions.includes(requiredPerm)) return true;
 
-        // Resource wildcard (e.g., "finance:*" matches "finance:view")
-        const [resource] = perm.split(':');
-        if (permissionList.includes(`${resource}:*`)) return true;
+            // Resource wildcard (e.g., "finance:*" matches "finance:view")
+            const [resource] = requiredPerm.split(':');
+            if ($permissions.includes(`${resource}:*`)) return true;
+        }
 
         return false;
     }
@@ -151,6 +155,10 @@
     $: visibleNavItems = navItems.filter(item => hasPermission(item.permission));
 
     function navigate(screenId: string) {
+        if (onNavigate) {
+            onNavigate(screenId);
+            return;
+        }
         dispatch("navigate", { screen: screenId });
     }
 
@@ -190,7 +198,14 @@
     </nav>
     
     <!-- SYNC STATUS -->
-    <button class="sync-status" on:click={triggerSync} title={syncTitle} type="button" disabled={!canManualSync || syncLoading || !syncStatus.configured || !syncStatus.sync_enabled}>
+    <button
+        type="button"
+        class="sync-status"
+        on:click={triggerSync}
+        title={syncTitle}
+        aria-label={syncTitle}
+        disabled={!canManualSync || syncLoading || !syncStatus.configured || !syncStatus.sync_enabled}
+    >
         <div class="sync-indicator" style="background-color: {statusColor}"></div>
         <span class="sync-label">{statusLabel}</span>
         {#if syncLoading}
@@ -365,14 +380,16 @@
         padding: 10px 16px;
         width: 100%;
         border-top: 1px solid var(--border);
-        border-left: 0;
-        border-right: 0;
-        border-bottom: 0;
+        border-left: none;
+        border-right: none;
+        border-bottom: none;
         background: transparent;
-        cursor: pointer;
-        transition: background-color var(--transition-fast);
+        width: 100%;
         text-align: left;
         font: inherit;
+        cursor: pointer;
+        transition: background-color var(--transition-fast);
+        appearance: none;
     }
 
     .sync-status:hover {
@@ -419,53 +436,46 @@
         to { transform: rotate(360deg); }
     }
 
+    /* Mobile Top Navigation */
     @media (max-width: 1024px) {
         .sidebar {
-            right: 0;
-            bottom: auto;
+            position: static;
             width: 100%;
-            height: 72px;
-            flex-direction: row;
-            align-items: center;
-            border-right: 0;
+            min-height: auto;
+            height: auto;
+            border-right: none;
             border-bottom: 1px solid var(--border);
-            overflow-x: auto;
-            overflow-y: hidden;
+            flex-shrink: 0;
         }
 
         .sidebar-header {
-            height: 72px;
-            flex: 0 0 auto;
-            padding: 0 12px;
-            border-bottom: 0;
-            border-right: 1px solid var(--border);
-        }
-
-        .brand-name,
-        .sync-status,
-        .sidebar-footer {
-            display: none;
+            height: 48px;
+            padding: 0 16px;
         }
 
         .nav-list {
-            min-width: 0;
-            flex: 1;
+            flex: 0 0 auto;
             flex-direction: row;
-            align-items: center;
-            padding: 0 8px;
-            gap: 4px;
-            overflow-x: auto;
-            overflow-y: hidden;
+            flex-wrap: wrap;
+            gap: 6px;
+            max-height: 150px;
+            overflow-y: auto;
+            padding: 10px 12px;
         }
 
         .nav-link {
-            flex: 0 0 auto;
-            min-height: 42px;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            font-size: 13px;
             padding: 8px 10px;
-            white-space: nowrap;
         }
 
-        .active-indicator {
+        .nav-link.active {
+            border-color: var(--border);
+        }
+
+        .sync-status,
+        .sidebar-footer {
             display: none;
         }
     }

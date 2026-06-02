@@ -61,7 +61,7 @@
     dispatch('select', { id: customerId });
   }
 
-  function activateCustomer(customerId: string, event: KeyboardEvent) {
+  function handleCustomerItemKeydown(event: KeyboardEvent, customerId: string) {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       selectCustomer(customerId);
@@ -90,7 +90,13 @@
   }
 
   function formatCurrency(value: number): string {
-    return formatNumber(value || 0, 0);
+    return Number(value || 0).toLocaleString('en-US', {
+      maximumFractionDigits: 0
+    });
+  }
+
+  function formatPercent(value: number): string {
+    return `${value?.toFixed(1) || 0}%`;
   }
 
   $: filteredCustomers = dashboard?.customers?.filter((c: any) => {
@@ -112,8 +118,8 @@
     <!-- Year Selector -->
     <div class="year-selector-row">
       <div class="year-selector">
-        <label class="year-label" for="customer-dashboard-year">FINANCIAL YEAR</label>
-        <select id="customer-dashboard-year" bind:value={selectedYear} on:change={handleYearChange} class="year-select">
+        <label class="year-label" for="financial-year-select">FINANCIAL YEAR</label>
+        <select id="financial-year-select" bind:value={selectedYear} on:change={handleYearChange} class="year-select">
           {#each availableYears as yr}
             <option value={yr}>{yr === 0 ? 'All Years' : yr}</option>
           {/each}
@@ -132,26 +138,26 @@
       </Card>
       <Card padding="md">
         <div class="kpi">
-          <div class="kpi-label">YTD BUSINESS</div>
+          <div class="kpi-label">INVOICED REVENUE (YTD)</div>
           <div class="kpi-value">{formatCurrency(dashboard.total_revenue)} BHD</div>
           <div class="kpi-subtext" class:negative={dashboard.revenue_yoy < 0}>
-            {dashboard.revenue_yoy > 0 ? '+' : ''}{dashboard.revenue_yoy?.toFixed(1) || 0}% YoY
+            {dashboard.revenue_yoy > 0 ? '+' : ''}{formatPercent(dashboard.revenue_yoy)} YoY
           </div>
         </div>
       </Card>
       <Card padding="md">
         <div class="kpi">
-          <div class="kpi-label">OPEN EXPOSURE</div>
+          <div class="kpi-label">OPEN RECEIVABLES</div>
           <div class="kpi-value">{formatCurrency(dashboard.total_outstanding)} BHD</div>
-          <div class="kpi-subtext">AR + uninvoiced orders</div>
+          <div class="kpi-subtext">Collectible open balance</div>
         </div>
       </Card>
       <Card padding="md">
         <div class="kpi">
-          <div class="kpi-label">OVERDUE</div>
+          <div class="kpi-label">OVERDUE RECEIVABLES</div>
           <div class="kpi-value">{formatCurrency(dashboard.overdue_amount)} BHD</div>
           <div class="kpi-subtext" class:warning={dashboard.overdue_pct > 20}>
-            {dashboard.overdue_pct?.toFixed(1) || 0}%
+            {formatPercent(dashboard.overdue_pct)} of open receivables
           </div>
         </div>
       </Card>
@@ -164,7 +170,14 @@
         <h3 class="section-title">TOP 10 BY BUSINESS</h3>
         <div class="top-list">
           {#each dashboard.top_customers || [] as customer, i}
-            <div class="top-item" role="button" tabindex="0" on:click={() => selectCustomer(customer.id)} on:keydown={(event) => activateCustomer(customer.id, event)}>
+            <div
+              class="top-item"
+              role="button"
+              tabindex="0"
+              aria-label={`Open customer ${customer.business_name}`}
+              on:click={() => selectCustomer(customer.id)}
+              on:keydown={(event) => handleCustomerItemKeydown(event, customer.id)}
+            >
               <span class="rank">{i + 1}</span>
               <span class="name">{customer.business_name}</span>
               <div class="bar-container">
@@ -256,7 +269,14 @@
 
       <div class="customer-grid">
         {#each filteredCustomers as customer}
-          <div class="customer-card" role="button" tabindex="0" on:click={() => selectCustomer(customer.id)} on:keydown={(event) => activateCustomer(customer.id, event)}>
+          <div
+            class="customer-card"
+            role="button"
+            tabindex="0"
+            aria-label={`Open customer ${customer.business_name}`}
+            on:click={() => selectCustomer(customer.id)}
+            on:keydown={(event) => handleCustomerItemKeydown(event, customer.id)}
+          >
             <div class="card-header">
               <span class="customer-name">{customer.business_name}</span>
               <span class="grade-badge grade-{customer.payment_grade?.toLowerCase()}">{customer.payment_grade}</span>
@@ -265,11 +285,11 @@
             <div class="card-metrics">
               <div class="metric">
                 <span class="metric-value">{customer.active_invoices || 0}</span>
-                <span class="metric-label">invoices</span>
+                <span class="metric-label">open invoices</span>
               </div>
               <div class="metric">
                 <span class="metric-value">{formatCurrency(customer.outstanding_bhd || 0)}</span>
-                <span class="metric-label">exposure</span>
+                <span class="metric-label">open balance</span>
               </div>
             </div>
             {#if customer.city}
@@ -283,24 +303,27 @@
 </div>
 
 {#if showCreateModal}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
-  <div class="modal-backdrop" on:click={() => showCreateModal = false}>
-    <div class="modal" on:click|stopPropagation>
-      <h3>Create New Customer</h3>
+  <div class="modal-backdrop">
+    <button
+      type="button"
+      class="modal-backdrop-button"
+      aria-label="Close create customer dialog"
+      on:click={() => showCreateModal = false}
+    ></button>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-customer-title">
+      <h3 id="create-customer-title">Create New Customer</h3>
       <div class="form-grid">
         <div class="form-group">
-          <label for="crm-customer-business-name">Business Name <span class="required">*</span></label>
-          <input id="crm-customer-business-name" type="text" bind:value={newCustomer.business_name} placeholder="Company name" />
+          <label for="customer-business-name">Business Name <span class="required">*</span></label>
+          <input id="customer-business-name" type="text" bind:value={newCustomer.business_name} placeholder="Company name" />
         </div>
         <div class="form-group">
-          <label for="crm-customer-code">Customer Code</label>
-          <input id="crm-customer-code" type="text" bind:value={newCustomer.customer_code} placeholder="Auto-generated if empty" />
+          <label for="customer-code">Customer Code</label>
+          <input id="customer-code" type="text" bind:value={newCustomer.customer_code} placeholder="Auto-generated if empty" />
         </div>
         <div class="form-group">
-          <label for="crm-customer-type">Customer Type</label>
-          <select id="crm-customer-type" bind:value={newCustomer.customer_type}>
-            <option value="" disabled>Select type</option>
+          <label for="customer-type">Customer Type</label>
+          <select id="customer-type" bind:value={newCustomer.customer_type}>
             <option value="Corporate">Corporate</option>
             <option value="Government">Government</option>
             <option value="SME">SME</option>
@@ -308,9 +331,8 @@
           </select>
         </div>
         <div class="form-group">
-          <label for="crm-customer-grade">Payment Grade</label>
-          <select id="crm-customer-grade" bind:value={newCustomer.payment_grade}>
-            <option value="" disabled>Select grade</option>
+          <label for="customer-payment-grade">Payment Grade</label>
+          <select id="customer-payment-grade" bind:value={newCustomer.payment_grade}>
             <option value="A">Grade A</option>
             <option value="B">Grade B</option>
             <option value="C">Grade C</option>
@@ -318,24 +340,24 @@
           </select>
         </div>
         <div class="form-group full-width">
-          <label for="crm-customer-address">Address</label>
-          <input id="crm-customer-address" type="text" bind:value={newCustomer.address_line1} placeholder="Street address" />
+          <label for="customer-address">Address</label>
+          <input id="customer-address" type="text" bind:value={newCustomer.address_line1} placeholder="Street address" />
         </div>
         <div class="form-group">
-          <label for="crm-customer-city">City</label>
-          <input id="crm-customer-city" type="text" bind:value={newCustomer.city} placeholder="City" />
+          <label for="customer-city">City</label>
+          <input id="customer-city" type="text" bind:value={newCustomer.city} placeholder="City" />
         </div>
         <div class="form-group">
-          <label for="crm-customer-country">Country</label>
-          <input id="crm-customer-country" type="text" bind:value={newCustomer.country} placeholder="Country" />
+          <label for="customer-country">Country</label>
+          <input id="customer-country" type="text" bind:value={newCustomer.country} placeholder="Country" />
         </div>
         <div class="form-group">
-          <label for="crm-customer-trn">TRN</label>
-          <input id="crm-customer-trn" type="text" bind:value={newCustomer.trn} placeholder="Tax registration number" />
+          <label for="customer-trn">TRN</label>
+          <input id="customer-trn" type="text" bind:value={newCustomer.trn} placeholder="Tax registration number" />
         </div>
         <div class="form-group">
-          <label for="crm-customer-industry">Industry</label>
-          <input id="crm-customer-industry" type="text" bind:value={newCustomer.industry} placeholder="Industry sector" />
+          <label for="customer-industry">Industry</label>
+          <input id="customer-industry" type="text" bind:value={newCustomer.industry} placeholder="Industry sector" />
         </div>
       </div>
       <div class="modal-actions">
@@ -469,6 +491,12 @@
     padding: 4px 0;
     cursor: pointer;
     border-radius: 4px;
+  }
+
+  .top-item:focus-visible,
+  .customer-card:focus-visible {
+    outline: 2px solid var(--brand-indigo);
+    outline-offset: 2px;
   }
 
   .top-item:hover {
@@ -701,20 +729,31 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1000;
   }
 
+  .modal-backdrop-button {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    background: rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+  }
+
   .modal {
+    position: relative;
     background: var(--surface);
     padding: 24px;
     border-radius: 12px;
     width: 600px;
     max-height: 80vh;
     overflow-y: auto;
+    z-index: 1;
   }
 
   .modal h3 {

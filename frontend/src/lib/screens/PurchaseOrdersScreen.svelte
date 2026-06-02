@@ -6,7 +6,7 @@
    * - View all purchase orders with filtering by status
    * - Create new POs from orders or manually
    * - Multi-currency support (EUR, USD, BHD)
-   * - Status tracking: Draft → Sent → Acknowledged → PartiallyReceived → FullyReceived → Closed
+   * - Status tracking: Draft → Pending Approval → Approved → Sent → Acknowledged → Partially Received → Received → Closed
    * - Link to parent orders and suppliers
    * - GRN creation from received POs
    * - Payment tracking with due dates
@@ -24,6 +24,8 @@
     CreatePurchaseOrder,
     UpdatePurchaseOrder,
     UpdatePOStatus,
+    ApprovePurchaseOrder,
+    SendPurchaseOrder,
     DeletePurchaseOrder,
     GeneratePurchaseOrderPDF,
     ListOrders,
@@ -40,6 +42,7 @@
   import Input from '$lib/components/ui/Input.svelte';
   import FormGroup from '$lib/components/ui/FormGroup.svelte';
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
+  import PurchaseOrderWorkspace from '$lib/components/operations/PurchaseOrderWorkspace.svelte';
   import { toast } from '$lib/stores/toasts';
   import { escapeHtml } from '$lib/utils/escapeHtml';
   import { formatBHD, formatNumber } from '$lib/utils/formatters';
@@ -52,7 +55,29 @@
   export let embedded = false;
 
   // Types
-  type POStatus = 'all' | 'Draft' | 'Sent' | 'Acknowledged' | 'PartiallyReceived' | 'FullyReceived' | 'Closed' | 'Cancelled';
+  type POStatus = 'all' | 'Draft' | 'Pending Approval' | 'Approved' | 'Sent' | 'Acknowledged' | 'Partially Received' | 'Received' | 'Closed' | 'Cancelled';
+
+  function canonicalizePOStatus(status: string | null | undefined): POStatus | string {
+    const raw = String(status || '').trim();
+    const key = raw.toLowerCase().replace(/[\s_-]/g, '');
+    switch (key) {
+      case 'pendingapproval':
+        return 'Pending Approval';
+      case 'partiallyreceived':
+      case 'partialreceived':
+        return 'Partially Received';
+      case 'fullyreceived':
+      case 'fullreceived':
+        return 'Received';
+      case 'completed':
+        return 'Closed';
+      case 'cancelled':
+      case 'canceled':
+        return 'Cancelled';
+      default:
+        return raw || 'Draft';
+    }
+  }
 
   function getErrorMessage(err: unknown): string {
     if (!err) return 'Unknown error';
@@ -207,6 +232,9 @@
   let formLoading = false;
   let statusLoading = false;
   let pdfLoading = false;
+  let poWorkspaceMode: 'create' | 'edit' | 'view' | null = null;
+
+  $: poWorkspaceMode = showCreateModal ? 'create' : showEditModal ? 'edit' : showViewModal ? 'view' : null;
 
   // Currency options
   const currencies = [
@@ -291,10 +319,10 @@
       key: 'actions',
       label: 'Actions',
       type: 'actions' as const,
-      width: '280px',
+      width: '220px',
       render: (row: PODisplay) => {
         return `
-          <div style="display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap;">
+          <div style="display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap;">
             <button
               class="action-btn action-btn-view"
               data-action="view"
@@ -319,7 +347,7 @@
             >
               PDF
             </button>
-            ${['Sent', 'Acknowledged', 'PartiallyReceived'].includes(row.status) ? `
+            ${['Sent', 'Acknowledged', 'Partially Received'].includes(row.status) ? `
               <button
                 class="action-btn action-btn-grn"
                 data-action="grn"
@@ -339,10 +367,12 @@
   const statusTabs: { value: POStatus; label: string; count: number }[] = [
     { value: 'all', label: 'All POs', count: 0 },
     { value: 'Draft', label: 'Draft', count: 0 },
+    { value: 'Pending Approval', label: 'Pending Approval', count: 0 },
+    { value: 'Approved', label: 'Approved', count: 0 },
     { value: 'Sent', label: 'Sent', count: 0 },
     { value: 'Acknowledged', label: 'Acknowledged', count: 0 },
-    { value: 'PartiallyReceived', label: 'Partially Received', count: 0 },
-    { value: 'FullyReceived', label: 'Fully Received', count: 0 },
+    { value: 'Partially Received', label: 'Partially Received', count: 0 },
+    { value: 'Received', label: 'Received', count: 0 },
     { value: 'Closed', label: 'Closed', count: 0 }
   ];
 
@@ -350,11 +380,13 @@
   $: {
     statusTabs[0].count = purchaseOrders.length;
     statusTabs[1].count = purchaseOrders.filter(p => p.status === 'Draft').length;
-    statusTabs[2].count = purchaseOrders.filter(p => p.status === 'Sent').length;
-    statusTabs[3].count = purchaseOrders.filter(p => p.status === 'Acknowledged').length;
-    statusTabs[4].count = purchaseOrders.filter(p => p.status === 'PartiallyReceived').length;
-    statusTabs[5].count = purchaseOrders.filter(p => p.status === 'FullyReceived').length;
-    statusTabs[6].count = purchaseOrders.filter(p => p.status === 'Closed').length;
+    statusTabs[2].count = purchaseOrders.filter(p => p.status === 'Pending Approval').length;
+    statusTabs[3].count = purchaseOrders.filter(p => p.status === 'Approved').length;
+    statusTabs[4].count = purchaseOrders.filter(p => p.status === 'Sent').length;
+    statusTabs[5].count = purchaseOrders.filter(p => p.status === 'Acknowledged').length;
+    statusTabs[6].count = purchaseOrders.filter(p => p.status === 'Partially Received').length;
+    statusTabs[7].count = purchaseOrders.filter(p => p.status === 'Received').length;
+    statusTabs[8].count = purchaseOrders.filter(p => p.status === 'Closed').length;
   }
 
   // Computed: Filter POs by selected status
@@ -400,11 +432,13 @@
       ? Number(po.total_foreign || 0)
       : subtotalForeign + vatAmount;
     const normalizedTotalBHD = Number(po.total_bhd || 0) || (normalizedTotalForeign * exchangeRate);
+    const status = canonicalizePOStatus(po.status);
 
     // If PO already has supplier_name from backend, use it
     if (po.supplier_name) {
       return {
         ...po,
+        status,
         exchange_rate: exchangeRate,
         subtotal_foreign: subtotalForeign,
         vat_amount: vatAmount,
@@ -417,6 +451,7 @@
     const supplier = suppliers.find(s => s.id === po.supplier_id);
     return {
       ...po,
+      status,
       exchange_rate: exchangeRate,
       subtotal_foreign: subtotalForeign,
       vat_amount: vatAmount,
@@ -429,6 +464,7 @@
   // Open create modal
   function openCreateModal() {
     const today = new Date();
+    closePOWorkspace();
     formData = {
       order_id: '',
       supplier_id: '',
@@ -442,11 +478,20 @@
     showCreateModal = true;
   }
 
+  function closePOWorkspace() {
+    showCreateModal = false;
+    showEditModal = false;
+    showViewModal = false;
+    editingPO = null;
+    viewingPO = null;
+  }
+
   // Open edit modal
   async function openEditModal(poId: string) {
     try {
       const po = await GetPurchaseOrderByID(poId);
       editingPO = enrichPO(po);
+      viewingPO = null;
 
       formData = {
         order_id: po.order_id || '',
@@ -464,6 +509,8 @@
         }))
       };
 
+      showCreateModal = false;
+      showViewModal = false;
       showEditModal = true;
     } catch (err) {
       console.error('Failed to load PO for editing:', err);
@@ -477,6 +524,9 @@
     try {
       const po = await GetPurchaseOrderByID(poId);
       viewingPO = enrichPO(po);
+      editingPO = null;
+      showCreateModal = false;
+      showEditModal = false;
       showViewModal = true;
     } catch (err) {
       console.error('Failed to load PO for viewing:', err);
@@ -571,7 +621,7 @@
 
       await CreatePurchaseOrder(poData);
       toast.success('Purchase order created successfully');
-      showCreateModal = false;
+      closePOWorkspace();
       await loadPurchaseOrders();
     } catch (err) {
       console.error('Failed to create PO:', err);
@@ -666,8 +716,7 @@
 
       await UpdatePurchaseOrder(poData);
       toast.success('Purchase order updated successfully');
-      showEditModal = false;
-      editingPO = null;
+      closePOWorkspace();
       await loadPurchaseOrders();
     } catch (err) {
       console.error('Failed to update PO:', err);
@@ -681,15 +730,26 @@
   async function handleStatusChange(poId: string, newStatus: string) {
     if (statusLoading) return;
 
+    const canonicalStatus = canonicalizePOStatus(newStatus);
+
     // Confirm destructive action
-    if (newStatus === 'Closed' && !confirm('Close this PO? This cannot be undone.')) {
+    if (canonicalStatus === 'Closed' && !confirm('Close this PO? This cannot be undone.')) {
       return;
     }
 
     statusLoading = true;
     try {
-      await UpdatePOStatus(poId, newStatus);
-      toast.success(`PO status updated to ${newStatus}`);
+      if (canonicalStatus === 'Approved') {
+        await ApprovePurchaseOrder(poId, '');
+      } else if (canonicalStatus === 'Sent') {
+        await SendPurchaseOrder(poId);
+      } else {
+        await UpdatePOStatus(poId, canonicalStatus);
+      }
+      toast.success(`PO status updated to ${canonicalStatus}`);
+      if (viewingPO?.id === poId) {
+        viewingPO = { ...viewingPO, status: String(canonicalStatus) };
+      }
       await loadPurchaseOrders();
     } catch (err) {
       console.error('Failed to update PO status:', err);
@@ -768,9 +828,9 @@
   }
 
   // Currency change handler - update exchange rate
-  function handleCurrencyChange(e: Event) {
-    const select = e.target as HTMLSelectElement;
-    formData.currency = select.value;
+  function handleCurrencyChange(e: Event | string) {
+    const nextCurrency = typeof e === 'string' ? e : (e.target as HTMLSelectElement).value;
+    formData.currency = nextCurrency;
 
     // BHD per 1 unit of foreign currency.
     const rates: Record<string, number> = {
@@ -846,12 +906,41 @@
 
 <PageLayout title="Purchase Orders" subtitle="Procurement Management" {embedded}>
   <svelte:fragment slot="header-actions">
-    <Button variant="primary" on:click={openCreateModal}>
-      + New PO
-    </Button>
+    {#if poWorkspaceMode}
+      <Button variant="secondary" on:click={closePOWorkspace}>
+        Back to Supplier POs
+      </Button>
+    {:else}
+      <Button variant="primary" on:click={openCreateModal}>
+        + New PO
+      </Button>
+    {/if}
   </svelte:fragment>
 
-  <div class="po-container">
+  {#if poWorkspaceMode}
+    <PurchaseOrderWorkspace
+      mode={poWorkspaceMode}
+      {formData}
+      {suppliers}
+      {orders}
+      {currencies}
+      {paymentTerms}
+      {formLoading}
+      {statusLoading}
+      {viewingPO}
+      todayDate={formatDateInput(new Date())}
+      on:cancel={closePOWorkspace}
+      on:create={handleCreatePO}
+      on:update={handleEditPO}
+      on:addItem={addLineItem}
+      on:removeItem={(event) => removeLineItem(event.detail)}
+      on:currencyChange={(event) => handleCurrencyChange(event.detail)}
+      on:statusChange={(event) => viewingPO && handleStatusChange(viewingPO.id, event.detail)}
+      on:edit={(event) => openEditModal(event.detail)}
+      on:pdf={(event) => handleGeneratePDF(event.detail)}
+    />
+  {:else}
+    <div class="po-container">
     <!-- Status Filter Tabs -->
     <Card padding="sm">
       <div class="status-tabs" role="tablist" aria-label="Filter POs by status">
@@ -882,19 +971,20 @@
         stickyHeader={true}
         maxHeight="calc(100vh - 300px)"
         showBorder={false}
+        compact={true}
       />
     </Card>
 
     <!-- Summary Stats -->
     <div class="stats-grid">
-      <Card padding="md">
+      <Card padding="sm">
         <div class="stat">
           <div class="stat-label">Total POs</div>
           <div class="stat-value">{purchaseOrders.length}</div>
         </div>
       </Card>
 
-      <Card padding="md">
+      <Card padding="sm">
         <div class="stat">
           <div class="stat-label">Total Value (BHD)</div>
           <div class="stat-value">
@@ -903,27 +993,30 @@
         </div>
       </Card>
 
-      <Card padding="md">
+      <Card padding="sm">
         <div class="stat">
           <div class="stat-label">Pending Receipts</div>
           <div class="stat-value stat-warning">
-            {purchaseOrders.filter(p => ['Sent', 'Acknowledged', 'PartiallyReceived'].includes(p.status)).length}
+            {purchaseOrders.filter(p => ['Sent', 'Acknowledged', 'Partially Received'].includes(p.status)).length}
           </div>
         </div>
       </Card>
 
-      <Card padding="md">
+      <Card padding="sm">
         <div class="stat">
-          <div class="stat-label">Fully Received</div>
+          <div class="stat-label">Received</div>
           <div class="stat-value stat-success">
-            {purchaseOrders.filter(p => p.status === 'FullyReceived').length}
+            {purchaseOrders.filter(p => p.status === 'Received').length}
           </div>
         </div>
       </Card>
     </div>
-  </div>
+    </div>
+  {/if}
 </PageLayout>
 
+{#if false}
+<!-- Legacy modal markup retained as reference; PO create/edit/view now render in the page workspace above. -->
 <!-- Create PO Modal -->
 <WabiModal bind:open={showCreateModal} title="Create Purchase Order" size="xl">
   <form on:submit|preventDefault={handleCreatePO} class="po-form">
@@ -1377,7 +1470,7 @@
       <div class="status-actions">
         <h4>Update Status</h4>
         <div class="status-buttons">
-          {#each ['Draft', 'Sent', 'Acknowledged', 'PartiallyReceived', 'FullyReceived', 'Closed'] as status}
+          {#each ['Draft', 'Pending Approval', 'Approved', 'Sent', 'Acknowledged', 'Partially Received', 'Received', 'Closed'] as status}
             <Button
               variant={viewingPO.status === status ? 'primary' : 'secondary'}
               size="sm"
@@ -1409,29 +1502,31 @@
   </WabiModal>
 {/if}
 
+{/if}
+
 <style>
   .po-container {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 10px;
   }
 
   /* Status Tabs */
   .status-tabs {
     display: flex;
-    gap: 8px;
+    gap: 6px;
     overflow-x: auto;
   }
 
   .status-tab {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
+    gap: 6px;
+    padding: 6px 10px;
     background: transparent;
     border: none;
     border-radius: var(--border-radius-sm);
-    font-size: 14px;
+    font-size: 12.5px;
     font-weight: 500;
     color: var(--text-secondary);
     cursor: pointer;
@@ -1453,9 +1548,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 24px;
-    height: 20px;
-    padding: 0 6px;
+    min-width: 20px;
+    height: 18px;
+    padding: 0 5px;
     background: rgba(0, 0, 0, 0.1);
     border-radius: 10px;
     font-size: 12px;
@@ -1469,8 +1564,8 @@
   /* Stats Grid */
   .stats-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
   }
 
   .stat {
@@ -1487,7 +1582,7 @@
   }
 
   .stat-value {
-    font-size: 24px;
+    font-size: 18px;
     font-weight: 600;
     color: var(--text-primary);
   }
@@ -1502,13 +1597,22 @@
 
   /* Action Buttons in Table */
   :global(.action-btn) {
-    padding: 4px 10px;
-    font-size: 12px;
+    padding: 3px 7px;
+    font-size: 11.5px;
     font-weight: 500;
     border: none;
     border-radius: var(--border-radius-sm);
     cursor: pointer;
     transition: all var(--transition-fast);
+  }
+
+  :global(.po-container .data-table th),
+  :global(.po-container .data-table td) {
+    padding: 6px 8px;
+  }
+
+  :global(.po-container .table-row) {
+    height: 34px;
   }
 
   :global(.action-btn-view) {

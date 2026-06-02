@@ -28,6 +28,10 @@
     let isComplete = false;
     let hasError = false;
 
+    function close() {
+        show = false;
+    }
+
     function handleSyncProgress(data: any) {
         progress = { ...progress, ...data };
 
@@ -85,8 +89,13 @@
     <div class="sync-overlay">
         <div class="sync-modal">
             <div class="sync-header">
-                <span class="phase-icon">{phaseIcon}</span>
-                <h2>{title}</h2>
+                <div class="sync-title">
+                    <span class="phase-icon">{phaseIcon}</span>
+                    <h2>{title}</h2>
+                </div>
+                {#if isComplete || hasError}
+                    <button type="button" class="sync-close" aria-label="Close sync status" on:click={close}>×</button>
+                {/if}
             </div>
 
             <div class="sync-content">
@@ -161,14 +170,24 @@
         padding: 32px;
         min-width: 400px;
         max-width: 500px;
+        max-height: calc(100vh - 96px);
+        overflow-y: auto;
         box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
     }
 
     .sync-header {
         display: flex;
         align-items: center;
+        justify-content: space-between;
         gap: 12px;
         margin-bottom: 24px;
+    }
+
+    .sync-title {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
     }
 
     .phase-icon {
@@ -180,6 +199,26 @@
         font-size: 20px;
         font-weight: 600;
         color: var(--onyx, #1D1D1F);
+    }
+
+    .sync-close {
+        width: 32px;
+        height: 32px;
+        border: none;
+        border-radius: 50%;
+        background: transparent;
+        color: var(--steel, #86868B);
+        cursor: pointer;
+        font-size: 24px;
+        line-height: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .sync-close:hover {
+        color: var(--onyx, #1D1D1F);
+        background: var(--ether, #F5F5F7);
     }
 
     .sync-content {

@@ -103,13 +103,17 @@ func (CustomerMaster) TableName() string { return "customers" }
 // CustomerContact stores multiple contact persons for a customer account.
 type CustomerContact struct {
 	Base
-	CustomerID       string `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:CustomerID;references:ID" json:"customer_id"`
-	ContactName      string `gorm:"size:255" json:"contact_name"`
-	JobTitle         string `gorm:"size:100" json:"job_title"`
-	Email            string `gorm:"size:255" json:"email"`
-	Phone            string `gorm:"size:50" json:"phone"`
-	Address          string `gorm:"type:varchar(1000)" json:"address"`
-	IsPrimaryContact bool   `json:"is_primary_contact"`
+	CustomerID         string `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:CustomerID;references:ID" json:"customer_id"`
+	ContactName        string `gorm:"size:255" json:"contact_name"`
+	JobTitle           string `gorm:"size:100" json:"job_title"`
+	Email              string `gorm:"size:255" json:"email"`
+	Phone              string `gorm:"size:50" json:"phone"`
+	Address            string `gorm:"type:varchar(1000)" json:"address"`
+	IsPrimaryContact   bool   `json:"is_primary_contact"`
+	IsDecisionMaker    bool   `gorm:"default:false" json:"is_decision_maker"`
+	DecisionRole       string `gorm:"size:100" json:"decision_role"`
+	ReportsToContactID string `gorm:"size:36" json:"reports_to_contact_id"`
+	ReportsToName      string `gorm:"size:255" json:"reports_to_name"`
 }
 
 func (CustomerContact) TableName() string { return "customer_contacts" }
@@ -117,13 +121,17 @@ func (CustomerContact) TableName() string { return "customer_contacts" }
 // SupplierContact stores multiple contact persons for a supplier account.
 type SupplierContact struct {
 	Base
-	SupplierID       string `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:SupplierID;references:ID" json:"supplier_id"`
-	ContactName      string `gorm:"size:255" json:"contact_name"`
-	JobTitle         string `gorm:"size:100" json:"job_title"`
-	Email            string `gorm:"size:255" json:"email"`
-	Phone            string `gorm:"size:50" json:"phone"`
-	Address          string `gorm:"type:varchar(1000)" json:"address"`
-	IsPrimaryContact bool   `json:"is_primary_contact"`
+	SupplierID         string `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:SupplierID;references:ID" json:"supplier_id"`
+	ContactName        string `gorm:"size:255" json:"contact_name"`
+	JobTitle           string `gorm:"size:100" json:"job_title"`
+	Email              string `gorm:"size:255" json:"email"`
+	Phone              string `gorm:"size:50" json:"phone"`
+	Address            string `gorm:"type:varchar(1000)" json:"address"`
+	IsPrimaryContact   bool   `json:"is_primary_contact"`
+	IsDecisionMaker    bool   `gorm:"default:false" json:"is_decision_maker"`
+	DecisionRole       string `gorm:"size:100" json:"decision_role"`
+	ReportsToContactID string `gorm:"size:36" json:"reports_to_contact_id"`
+	ReportsToName      string `gorm:"size:255" json:"reports_to_name"`
 }
 
 func (SupplierContact) TableName() string { return "supplier_contacts" }
@@ -231,8 +239,12 @@ func (ProductMaster) TableName() string { return "products" }
 // Maps to RFQ opportunities and can be won/lost to create Orders.
 type Offer struct {
 	Base
-	OfferNumber    string `gorm:"uniqueIndex;size:50" json:"offer_number"`
-	RevisionNumber int    `gorm:"index" json:"revision_number"`
+	OfferNumber         string     `gorm:"uniqueIndex;size:50" json:"offer_number"`
+	RevisionNumber      int        `gorm:"index" json:"revision_number"`
+	RevisionOfOfferID   string     `gorm:"index;size:36" json:"revision_of_offer_id"`
+	RevisionRootOfferID string     `gorm:"index;size:36" json:"revision_root_offer_id"`
+	SupersededByOfferID string     `gorm:"index;size:36" json:"superseded_by_offer_id"`
+	SupersededAt        *time.Time `json:"superseded_at"`
 
 	// Relationships
 	RFQID        string `gorm:"index;size:36" json:"rfq_id"` // Fixed: was uint, now string for consistency with Order.RFQID
@@ -273,6 +285,7 @@ type Offer struct {
 	TermsAndConditions string  `gorm:"type:text" json:"terms_and_conditions"`
 	Subject            string  `gorm:"type:varchar(1000)" json:"subject"`
 	Body               string  `gorm:"type:text" json:"body"`
+	AttachmentScopeID  string  `gorm:"size:160" json:"attachment_scope_id"`
 
 	// Additional costing header fields
 	CocCoo          string `gorm:"size:50" json:"coc_coo"`                    // Certificate of Conformity/Country of Origin
@@ -1007,16 +1020,53 @@ type Payment struct {
 	IdempotencyKey string `gorm:"uniqueIndex;size:64" json:"idempotency_key"`
 
 	// Accounting Integration (Tally Killer feature)
-	JournalEntryID string `gorm:"index;size:36" json:"journal_entry_id"` // Link to auto-generated GL entry
-	BankAccountID  string `gorm:"index;size:36" json:"bank_account_id"`  // Bank account for reconciliation
-	Reference      string `gorm:"size:100" json:"reference"`             // Payment reference (cheque no, transfer ref)
-	Division       string `gorm:"size:100;default:'PH Trading'" json:"division"`
+	JournalEntryID string  `gorm:"index;size:36" json:"journal_entry_id"`     // Link to auto-generated GL entry
+	BankAccountID  string  `gorm:"index;size:36" json:"bank_account_id"`      // Bank account for reconciliation
+	ReceiptID      *string `gorm:"index;size:36" json:"receipt_id,omitempty"` // Customer receipt header, including on-account receipts
+	Reference      string  `gorm:"size:100" json:"reference"`                 // Payment reference (cheque no, transfer ref)
+	Division       string  `gorm:"size:100;default:'PH Trading'" json:"division"`
 
 	// P1 Fix: Audit fields
 	UpdatedBy string `json:"updated_by"`
 }
 
 func (Payment) TableName() string { return "payments" }
+
+// CustomerReceipt is the receipt header used for both invoice-applied receipts
+// and on-account customer advances/deposits that can be allocated later.
+type CustomerReceipt struct {
+	Base
+	ReceiptNumber      string    `gorm:"uniqueIndex;size:50" json:"receipt_number"`
+	CustomerID         string    `gorm:"index;size:36" json:"customer_id"`
+	CustomerName       string    `gorm:"index;size:255" json:"customer_name"`
+	Division           string    `gorm:"size:100;default:'PH Trading'" json:"division"`
+	ReceiptDate        time.Time `gorm:"index;autoCreateTime:false" json:"receipt_date"`
+	AmountBHD          float64   `gorm:"type:decimal(15,3);not null;default:0;check:amount_bhd >= 0" json:"amount_bhd"`
+	AppliedAmountBHD   float64   `gorm:"type:decimal(15,3);not null;default:0;check:applied_amount_bhd >= 0" json:"applied_amount_bhd"`
+	UnappliedAmountBHD float64   `gorm:"type:decimal(15,3);not null;default:0;check:unapplied_amount_bhd >= 0" json:"unapplied_amount_bhd"`
+	PaymentMethod      string    `gorm:"size:50" json:"payment_method"`
+	Reference          string    `gorm:"size:100" json:"reference"`
+	Status             string    `gorm:"index;size:30;default:'OnAccount'" json:"status"` // OnAccount, PartiallyApplied, Applied, Reversed
+	Notes              string    `gorm:"type:text" json:"notes"`
+	UpdatedBy          string    `json:"updated_by"`
+}
+
+func (CustomerReceipt) TableName() string { return "customer_receipts" }
+
+// CustomerReceiptAllocation links a receipt to the invoice payment row it funded.
+type CustomerReceiptAllocation struct {
+	Base
+	ReceiptID          string    `gorm:"index;size:36" json:"receipt_id"`
+	InvoiceID          string    `gorm:"index;size:36" json:"invoice_id"`
+	InvoiceNumber      string    `gorm:"index;size:50" json:"invoice_number"`
+	PaymentID          string    `gorm:"index;size:36" json:"payment_id"`
+	AllocatedAmountBHD float64   `gorm:"type:decimal(15,3);not null;default:0;check:allocated_amount_bhd >= 0" json:"allocated_amount_bhd"`
+	AllocationDate     time.Time `gorm:"index;autoCreateTime:false" json:"allocation_date"`
+	Status             string    `gorm:"index;size:20;default:'Applied'" json:"status"` // Applied, Reversed
+	UpdatedBy          string    `json:"updated_by"`
+}
+
+func (CustomerReceiptAllocation) TableName() string { return "customer_receipt_allocations" }
 
 // =============================================================================
 // MODULE: INVENTORY & WAREHOUSING
@@ -1050,14 +1100,20 @@ func (InventoryItem) TableName() string { return "inventory_items" }
 // quantity, and balance tracking for audit trails.
 type StockMovement struct {
 	Base
-	InventoryItemID string    `gorm:"index;size:36;constraint:OnDelete:CASCADE;" json:"inventory_item_id"`
-	MovementType    string    `json:"movement_type"`
-	MovementNumber  string    `json:"movement_number"`
-	Quantity        float64   `json:"quantity"`
-	Direction       string    `json:"direction"`
-	BalanceBefore   float64   `json:"balance_before"`
-	BalanceAfter    float64   `json:"balance_after"`
-	MovementDate    time.Time `json:"movement_date"`
+	InventoryItemID  string    `gorm:"index;size:36;constraint:OnDelete:CASCADE;" json:"inventory_item_id"`
+	MovementType     string    `json:"movement_type"`
+	MovementNumber   string    `json:"movement_number"`
+	ReferenceType    string    `gorm:"index;size:50" json:"reference_type"`
+	ReferenceID      string    `gorm:"index;size:36" json:"reference_id"`
+	ReferenceNumber  string    `gorm:"index;size:100" json:"reference_number"`
+	CounterpartyID   string    `gorm:"index;size:36" json:"counterparty_id"`
+	CounterpartyName string    `gorm:"size:255" json:"counterparty_name"`
+	Quantity         float64   `json:"quantity"`
+	Direction        string    `json:"direction"`
+	BalanceBefore    float64   `json:"balance_before"`
+	BalanceAfter     float64   `json:"balance_after"`
+	MovementDate     time.Time `json:"movement_date"`
+	Notes            string    `gorm:"type:text" json:"notes"`
 
 	UnitCost   float64 `json:"unit_cost"`
 	TotalValue float64 `json:"total_value"`
@@ -1350,7 +1406,7 @@ type FollowUpTask struct {
 	// Used by: Overdue task alerts, calendar view, predictive Butler task scheduling
 	DueDate     time.Time  `gorm:"index;autoCreateTime:false" json:"due_date"`
 	Status      string     `gorm:"index;size:50;check:status IN ('pending','in_progress','completed','cancelled','overdue')" json:"status"`
-	Priority    string     `gorm:"index;size:50;check:priority IN ('low','medium','high','urgent')" json:"priority"`
+	Priority    string     `gorm:"index;size:50;check:priority IN ('','low','medium','high','urgent','normal','Low','Medium','High','Urgent','Normal')" json:"priority"`
 	Type        string     `gorm:"index;size:50" json:"type"`
 	Amount      float64    `gorm:"check:amount >= 0" json:"amount"`
 	Contact     string     `gorm:"size:255" json:"contact"`
@@ -1444,8 +1500,8 @@ type PurchaseOrder struct {
 	PaymentTerms   string    `gorm:"type:varchar(500)" json:"payment_terms"`
 	PaymentDueDate time.Time `json:"payment_due_date"`
 
-	// Status Flow: Draft → Pending Approval → Approved → Sent → Acknowledged → Partially Received → Received → Closed
-	Status string `gorm:"index;size:50;default:'Draft';check:status IN ('Draft','Pending Approval','Approved','Sent','Acknowledged','Partially Received','Received','Cancelled','Closed')" json:"status"` // P1 Fix: default status
+	// Status Flow: Draft → Pending Approval → Approved → Sent → Acknowledged → Partially Received → Received → Completed/Closed
+	Status string `gorm:"index;size:50;default:'Draft';check:status IN ('Draft','Pending Approval','Approved','Sent','Acknowledged','Partially Received','Received','Completed','Cancelled','Closed')" json:"status"` // P1 Fix: default status
 
 	// P1 Fix: Approval workflow fields
 	ApprovedBy string     `json:"approved_by"` // User who approved the PO
@@ -1583,10 +1639,11 @@ type SupplierInvoice struct {
 	UpdatedBy string `json:"updated_by"`
 
 	// Payment
-	PaymentStatus string     `json:"payment_status"` // Unpaid, Scheduled, Paid
-	PaymentDate   *time.Time `json:"payment_date"`
-	PaymentRef    string     `json:"payment_ref"`
-	PaymentMethod string     `json:"payment_method"` // Bank Transfer, Cheque, etc.
+	PaymentStatus  string     `json:"payment_status"` // Unpaid, Scheduled, Paid
+	PaymentDate    *time.Time `json:"payment_date"`
+	PaymentRef     string     `json:"payment_ref"`
+	PaymentMethod  string     `json:"payment_method"` // Bank Transfer, Cheque, etc.
+	OutstandingBHD float64    `gorm:"-" json:"outstanding_bhd"`
 
 	// OCR Metadata
 	OCRDocumentID string  `json:"ocr_document_id"` // Link to OCR scan
@@ -1700,6 +1757,7 @@ func (SupplierPayment) TableName() string { return "supplier_payments" }
 type OfferFollowUp struct {
 	Base
 	OfferID      string     `gorm:"index;size:36;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:OfferID;references:ID" json:"offer_id"`
+	TaskID       string     `gorm:"index;size:36" json:"task_id"`
 	FollowUpDate time.Time  `gorm:"index;autoCreateTime:false" json:"follow_up_date"`
 	Notes        string     `gorm:"type:varchar(2000)" json:"notes"`
 	Status       string     `gorm:"index;size:20;default:'pending';check:status IN ('pending','completed','cancelled','overdue')" json:"status"` // pending, completed, cancelled
@@ -1737,6 +1795,150 @@ type SyncRecord struct {
 }
 
 func (SyncRecord) TableName() string { return "sync_records" }
+
+// DataUpdateManifest describes an admin-published additive data update that can
+// be applied to a user's local database with a backup and receipt.
+type DataUpdateManifest struct {
+	Base
+	VersionLabel  string     `gorm:"column:version_label;uniqueIndex;size:100" json:"version_label"`
+	Title         string     `gorm:"size:255" json:"title"`
+	Description   string     `gorm:"type:text" json:"description"`
+	Status        string     `gorm:"index;size:40;default:'draft'" json:"status"`
+	PublishedAt   *time.Time `gorm:"index" json:"published_at"`
+	MinAppVersion string     `gorm:"size:60" json:"min_app_version"`
+	ManifestHash  string     `gorm:"size:128" json:"manifest_hash"`
+	ApplyMode     string     `gorm:"size:40;default:'upsert_only'" json:"apply_mode"`
+	Source        string     `gorm:"size:120" json:"source"`
+}
+
+func (DataUpdateManifest) TableName() string { return "data_update_manifests" }
+
+// DataUpdateOperation stores one allowlisted operation for a published update.
+// v1 intentionally supports upsert-only operations; deletes are rejected.
+type DataUpdateOperation struct {
+	Base
+	ManifestID  string `gorm:"index;size:36" json:"manifest_id"`
+	Sequence    int    `gorm:"index" json:"sequence"`
+	TargetTable string `gorm:"column:table_name;index;size:100" json:"table_name"`
+	Operation   string `gorm:"size:40;default:'upsert'" json:"operation"`
+	PrimaryKey  string `gorm:"size:120" json:"primary_key"`
+	RowJSON     string `gorm:"type:text" json:"row_json"`
+	RowHash     string `gorm:"size:128" json:"row_hash"`
+}
+
+func (DataUpdateOperation) TableName() string { return "data_update_operations" }
+
+// DataUpdateReceipt records per-device apply status so published updates are
+// idempotent and auditable across local SQLite and Supabase.
+type DataUpdateReceipt struct {
+	Base
+	DeviceID       string     `gorm:"uniqueIndex:idx_data_update_receipt_device_manifest;size:100" json:"device_id"`
+	ManifestID     string     `gorm:"uniqueIndex:idx_data_update_receipt_device_manifest;index;size:36" json:"manifest_id"`
+	Status         string     `gorm:"index;size:40" json:"status"`
+	BackupPath     string     `gorm:"type:text" json:"backup_path"`
+	AppliedAt      *time.Time `gorm:"index" json:"applied_at"`
+	Error          string     `gorm:"type:text" json:"error"`
+	OperationCount int        `json:"operation_count"`
+	ManifestHash   string     `gorm:"size:128" json:"manifest_hash"`
+}
+
+func (DataUpdateReceipt) TableName() string { return "data_update_receipts" }
+
+// IntelligenceOpportunityEnrichment is an additive sidecar table populated from
+// OneDrive/seed enrichment passes. It keeps inferred intelligence queryable
+// without rewriting commercial source records.
+type IntelligenceOpportunityEnrichment struct {
+	Base
+	OpportunityID           string  `gorm:"index;size:36" json:"opportunity_id"`
+	Year                    int     `gorm:"index" json:"year"`
+	Source                  string  `gorm:"index;size:80" json:"source"`
+	FolderNumber            string  `gorm:"index;size:80" json:"folder_number"`
+	FolderName              string  `gorm:"size:255" json:"folder_name"`
+	CustomerID              string  `gorm:"index;size:36" json:"customer_id"`
+	CustomerName            string  `gorm:"index;size:255" json:"customer_name"`
+	Stage                   string  `gorm:"index;size:80" json:"stage"`
+	RevenueBHD              float64 `json:"revenue_bhd"`
+	OfferID                 string  `gorm:"index;size:36" json:"offer_id"`
+	OfferNumber             string  `gorm:"index;size:80" json:"offer_number"`
+	QuoteType               string  `gorm:"size:80" json:"quote_type"`
+	RevisionNumber          int     `json:"revision_number"`
+	PreparedBy              string  `gorm:"index;size:255" json:"prepared_by"`
+	PreparedByQuality       string  `gorm:"size:100" json:"prepared_by_quality"`
+	PrimaryInstrumentClass  string  `gorm:"index;size:100" json:"primary_instrument_class"`
+	PrimaryInstrumentSignal string  `gorm:"index;size:100" json:"primary_instrument_signal"`
+	CanonicalProductType    string  `gorm:"index;size:120" json:"canonical_product_type"`
+	ProductMixJSON          string  `gorm:"type:text" json:"product_mix_json"`
+	LineItemCount           int     `json:"line_item_count"`
+	LineTotalBHD            float64 `json:"line_total_bhd"`
+	LineSource              string  `gorm:"size:120" json:"line_source"`
+	HasLinkedOffer          bool    `gorm:"default:false" json:"has_linked_offer"`
+	HasProductDetails       bool    `gorm:"default:false" json:"has_product_details"`
+	EnrichmentNotes         string  `gorm:"type:text" json:"enrichment_notes"`
+	EnrichedAt              string  `gorm:"index;size:40" json:"enriched_at"`
+}
+
+func (IntelligenceOpportunityEnrichment) TableName() string {
+	return "intelligence_opportunity_enrichment"
+}
+
+// IntelligenceLineItemEnrichment stores classified line-level intelligence for
+// opportunities and orders.
+type IntelligenceLineItemEnrichment struct {
+	Base
+	EntityKind       string  `gorm:"index;size:40" json:"entity_kind"`
+	EntityID         string  `gorm:"index;size:36" json:"entity_id"`
+	SourceLineKind   string  `gorm:"size:80" json:"source_line_kind"`
+	SourceLineID     string  `gorm:"index;size:80" json:"source_line_id"`
+	OpportunityID    string  `gorm:"index;size:36" json:"opportunity_id"`
+	OfferID          string  `gorm:"index;size:36" json:"offer_id"`
+	OrderID          string  `gorm:"index;size:36" json:"order_id"`
+	LineNumber       int     `json:"line_number"`
+	FolderNumber     string  `gorm:"index;size:80" json:"folder_number"`
+	FolderName       string  `gorm:"size:255" json:"folder_name"`
+	CustomerName     string  `gorm:"index;size:255" json:"customer_name"`
+	DocumentNumber   string  `gorm:"index;size:100" json:"document_number"`
+	Description      string  `gorm:"type:text" json:"description"`
+	Equipment        string  `gorm:"size:255" json:"equipment"`
+	Model            string  `gorm:"size:255" json:"model"`
+	Specification    string  `gorm:"type:text" json:"specification"`
+	Quantity         float64 `json:"quantity"`
+	UnitPriceBHD     float64 `json:"unit_price_bhd"`
+	TotalPriceBHD    float64 `json:"total_price_bhd"`
+	PreparedBy       string  `gorm:"index;size:255" json:"prepared_by"`
+	InstrumentClass  string  `gorm:"index;size:100" json:"instrument_class"`
+	InstrumentSignal string  `gorm:"index;size:100" json:"instrument_signal"`
+	SourceConfidence string  `gorm:"size:80" json:"source_confidence"`
+	EnrichedAt       string  `gorm:"index;size:40" json:"enriched_at"`
+}
+
+func (IntelligenceLineItemEnrichment) TableName() string {
+	return "intelligence_line_item_enrichment"
+}
+
+// IntelligenceOrderEnrichment is the order-level counterpart to opportunity
+// enrichment, used by Butler/reporting without altering original orders.
+type IntelligenceOrderEnrichment struct {
+	Base
+	OrderID                 string  `gorm:"index;size:36" json:"order_id"`
+	Year                    int     `gorm:"index" json:"year"`
+	OrderNumber             string  `gorm:"index;size:100" json:"order_number"`
+	CustomerID              string  `gorm:"index;size:36" json:"customer_id"`
+	CustomerName            string  `gorm:"index;size:255" json:"customer_name"`
+	OrderDate               string  `gorm:"index;size:40" json:"order_date"`
+	Status                  string  `gorm:"index;size:80" json:"status"`
+	GrandTotalBHD           float64 `json:"grand_total_bhd"`
+	PrimaryInstrumentClass  string  `gorm:"index;size:100" json:"primary_instrument_class"`
+	PrimaryInstrumentSignal string  `gorm:"index;size:100" json:"primary_instrument_signal"`
+	CanonicalProductType    string  `gorm:"index;size:120" json:"canonical_product_type"`
+	ProductMixJSON          string  `gorm:"type:text" json:"product_mix_json"`
+	LineItemCount           int     `json:"line_item_count"`
+	LineTotalBHD            float64 `json:"line_total_bhd"`
+	EnrichedAt              string  `gorm:"index;size:40" json:"enriched_at"`
+}
+
+func (IntelligenceOrderEnrichment) TableName() string {
+	return "intelligence_order_enrichment"
+}
 
 // =============================================================================
 // MODULE: TALLY DATA IMPORTS
@@ -1915,8 +2117,10 @@ func (BankStatementLine) TableName() string { return "bank_statement_lines" }
 type BankLinePaymentAllocation struct {
 	Base
 	BankStatementLineID string  `gorm:"index;size:36" json:"bank_statement_line_id"`
-	AllocationType      string  `gorm:"size:30" json:"allocation_type"` // CUSTOMER_INVOICE, SUPPLIER_INVOICE, EXPENSE
+	AllocationType      string  `gorm:"size:30" json:"allocation_type"` // CUSTOMER_INVOICE, CUSTOMER_PAYMENT, CUSTOMER_RECEIPT, SUPPLIER_INVOICE, EXPENSE
 	CustomerInvoiceID   *string `gorm:"size:36" json:"customer_invoice_id"`
+	CustomerPaymentID   *string `gorm:"size:36" json:"customer_payment_id"`
+	CustomerReceiptID   *string `gorm:"size:36" json:"customer_receipt_id"`
 	SupplierInvoiceID   *string `gorm:"size:36" json:"supplier_invoice_id"`
 	ExpenseEntryID      *string `gorm:"size:36" json:"expense_entry_id"`
 	AllocatedAmount     float64 `gorm:"type:decimal(15,3)" json:"allocated_amount"`

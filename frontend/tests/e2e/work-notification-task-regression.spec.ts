@@ -9,12 +9,12 @@ test.describe('Work notification task handoff', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Notifications' }).click();
-    await expect(page.getByRole('heading', { name: 'Notifications.' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Notifications' })).toBeVisible();
     await expect(page.getByText('Review salary expense forecast has been assigned to you.')).toBeVisible();
 
     await page.getByRole('button', { name: 'Open task' }).click();
 
-    await expect(page.getByRole('heading', { name: 'Work.' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Work' })).toBeVisible();
     await expect(page.locator('#modal-title')).toHaveText('Review salary expense forecast');
     await expect(page.getByText('Task Details')).toBeVisible();
     await expect(page.getByText(/task not found/i)).toHaveCount(0);
@@ -25,12 +25,12 @@ test.describe('Work notification task handoff', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Notifications' }).click();
-    await expect(page.getByRole('heading', { name: 'Notifications.' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Notifications' })).toBeVisible();
 
     await page.getByRole('button', { name: 'Open task' }).click();
 
-    await expect(page.getByRole('heading', { name: 'Work.' })).toBeVisible({ timeout: 1000 });
-    await expect(page.getByRole('heading', { name: 'Notifications.' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Work' })).toBeVisible({ timeout: 1000 });
+    await expect(page.getByRole('heading', { name: 'Notifications' })).toHaveCount(0);
     await expect(page.locator('#modal-title')).toHaveText('Review salary expense forecast');
     await expect(page.getByText(/task not found/i)).toHaveCount(0);
   });
@@ -43,12 +43,13 @@ test.describe('Work notification task handoff', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Work' }).click();
-    await expect(page.getByRole('heading', { name: 'Work.' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Work' })).toBeVisible();
     await page.getByRole('button', { name: 'Team Board' }).click();
     await expect(page.getByRole('heading', { name: 'Team Board' })).toBeVisible();
-    await expect(page.getByText(/Review salary expense forecast/i)).toBeVisible({ timeout: 10000 });
+    const taskCard = page.getByRole('button', { name: /Review salary expense forecast/i }).first();
+    await expect(taskCard).toBeVisible({ timeout: 10000 });
 
-    await page.getByText(/Review salary expense forecast/i).click();
+    await taskCard.click();
 
     await expect(page.locator('#modal-title')).toHaveText('Review salary expense forecast');
     await expect(page.getByText(/task not found/i)).toHaveCount(0);
@@ -62,7 +63,7 @@ test.describe('Work notification task handoff', () => {
     await page.goto(BASE_URL);
 
     await page.getByRole('link', { name: 'Work' }).click();
-    await expect(page.getByRole('heading', { name: 'Work.' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Work' })).toBeVisible();
     await page.getByRole('button', { name: 'Projects' }).click();
 
     await page.getByPlaceholder('Project name').fill('Empty Sync Project');

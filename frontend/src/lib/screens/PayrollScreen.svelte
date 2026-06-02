@@ -82,37 +82,10 @@
     account_name: string;
     account_number: string;
     currency?: string;
+    division?: string;
   };
 
-  function matchesCompany(division?: string) {
-    return (division || "PH Trading") === company;
-  }
-
-  function buildPayrollSummary(
-    scopedProfiles: EmployeeCompensationProfile[],
-    scopedPeriods: PayrollPeriod[],
-    scopedRuns: PayrollRun[],
-  ): PayrollDashboardSummary {
-    const currentMonth = new Date().getMonth();
-    const currentYear = new Date().getFullYear();
-
-    return {
-      active_profiles: scopedProfiles.filter((profile) => profile.is_active !== false).length,
-      open_periods: scopedPeriods.filter((period) => (period.status || "open") === "open").length,
-      draft_runs: scopedRuns.filter((run) => run.status === "draft").length,
-      approved_unpaid_runs: scopedRuns.filter((run) => ["approved", "posted"].includes(run.status)).length,
-      month_to_date_net_payroll: scopedRuns
-        .filter((run) => {
-          if (run.status !== "paid" || !run.paid_at) return false;
-          const paidAt = new Date(run.paid_at);
-          return paidAt.getMonth() === currentMonth && paidAt.getFullYear() === currentYear;
-        })
-        .reduce((sum, run) => sum + (Number(run.net_total) || 0), 0),
-      upcoming_payroll_liability: scopedRuns
-        .filter((run) => ["approved", "posted"].includes(run.status))
-        .reduce((sum, run) => sum + (Number(run.net_total) || 0) + (Number(run.deductions_total) || 0) + (Number(run.employer_cost_total) || 0), 0),
-    };
-  }
+  $: visibleBankAccounts = bankAccounts.filter((account) => (account.division || "PH Trading") === company);
 
   function toISODate(value: string) {
     return value ? `${value}T00:00:00Z` : undefined;
@@ -143,12 +116,13 @@
       ]);
 
       employees = employeeRows;
-      profiles = (profileRows || []).filter((profile) => matchesCompany(profile.division));
-      periods = (periodRows || []).filter((period) => matchesCompany(period.division));
-      runs = (runRows || []).filter((run) => matchesCompany(run.division));
-      payouts = (payoutRows || []).filter((payout) => matchesCompany(payout.division));
-      summary = buildPayrollSummary(profiles, periods, runs);
-      bankAccounts = ((bankAccountRows || []) as CompanyBankAccount[]).filter((account) => matchesCompany(account.division));
+      profiles = profileRows;
+      periods = periodRows;
+      runs = runRows;
+      payouts = payoutRows;
+      summary = summaryRow;
+      bankAccounts = (bankAccountRows || []) as CompanyBankAccount[];
+      const scopedBankAccounts = bankAccounts.filter((account) => (account.division || "PH Trading") === company);
 
       if (!selectedPeriodID && periods.length > 0) {
         selectedPeriodID = periods[0].id;
@@ -171,8 +145,8 @@
           selectedRun = null;
         }
       }
-      if (!payrollBankAccountID && bankAccounts.length > 0) {
-        payrollBankAccountID = bankAccounts[0].id;
+      if (!payrollBankAccountID && scopedBankAccounts.length > 0) {
+        payrollBankAccountID = scopedBankAccounts[0].id;
       }
     } catch (err) {
       toast.danger(`Failed to load payroll workspace: ${String(err)}`);
@@ -311,7 +285,7 @@
       }
       paymentReference = selectedRun.payment_reference || "";
       payrollPaidAt = selectedRun.paid_at?.slice(0, 10) || new Date().toISOString().slice(0, 10);
-      payrollBankAccountID = selectedRun.bank_account_id || bankAccounts[0]?.id || "";
+      payrollBankAccountID = selectedRun.bank_account_id || visibleBankAccounts[0]?.id || "";
     } catch (err) {
       toast.danger(`Failed to load payroll run: ${String(err)}`);
     }
@@ -660,7 +634,7 @@
                 <span>Bank Account</span>
                 <select bind:value={payrollBankAccountID}>
                   <option value="">Select bank account</option>
-                  {#each bankAccounts as account}
+                  {#each visibleBankAccounts as account}
                     <option value={account.id}>
                       {account.bank_name} - {account.account_name} ({account.account_number})
                     </option>

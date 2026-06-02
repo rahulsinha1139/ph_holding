@@ -18,14 +18,18 @@
     GetAllOffers,
     SaveCostingAsOffer,
     UpdateOfferFull,
+    CreateOfferRevision,
     MarkOfferWon,
     MarkOfferLost,
     ListCustomers,
     GenerateOfferPDF,
     OpenExportedFile,
+    ExportReport,
     AddOfferNote,
     GetOfferNotes,
+    GetUnifiedOfferThread,
     DeleteOfferNote,
+    DeleteOffer,
     GetOffersWithNoItems
   } from '../../../wailsjs/go/main/App';
   import PageLayout from '$lib/components/layout/PageLayout.svelte';
@@ -37,12 +41,12 @@
   import Input from '$lib/components/ui/Input.svelte';
   import FormGroup from '$lib/components/ui/FormGroup.svelte';
   import { toast } from '$lib/stores/toasts';
+  import { permissions } from '$lib/stores/authContext';
   import { escapeHtml } from '$lib/utils/escapeHtml';
   import { formatBHD, formatBHDValue } from '$lib/utils/formatters';
 
   // Props
   export let embedded = false;
-  $: embedded;
   const dispatch = createEventDispatcher();
 
   type OfferStage = 'all' | 'RFQ' | 'Quoted' | 'Won' | 'Lost';
@@ -57,6 +61,7 @@
     status: string;
     stage?: string;
     offer_number?: string;
+    offer_sort_key?: string;
     revision_number?: number;
     quotation_date?: string;
     validity_date?: string;
@@ -65,6 +70,7 @@
     sent_at?: any;
     created_at?: any;
     updated_at?: any;
+    division?: string;
     estimated_margin?: number;
     items?: any[];
     division?: string;
@@ -87,9 +93,10 @@
     discount_percent?: number;
     quote_type?: string;
     vat_rate?: number;
-    terms_and_conditions?: string;
     subject?: string;
     body?: string;
+    terms_and_conditions?: string;
+    attachment_scope_id?: string;
     coc_coo?: string;
     test_certificate?: string;
     installation?: string;
@@ -105,8 +112,12 @@
   let loading = true;
   let selectedCompany: 'PH Trading' | 'AHS Trading' = 'PH Trading';
   let selectedStage: OfferStage = 'all';
+  let searchQuery = '';
+  let extractingOffers = false;
   let offersWithNoItems: any[] = [];
   let legacyOfferShells: any[] = [];
+  $: permissionList = Array.isArray($permissions) ? $permissions : [];
+  $: canDeleteOffers = permissionList.includes('*') || permissionList.includes('offers:delete') || permissionList.includes('offers:*');
 
   // Modal state
   let showCreateModal = false;
@@ -116,7 +127,9 @@
   // Won/Lost modal state
   let showWonModal = false;
   let showLostModal = false;
+  let showDeleteOfferModal = false;
   let actionOffer: OfferDisplay | null = null;
+  let deleteOfferTarget: OfferDisplay | null = null;
   let customerPONumber = '';
   let lostReason = '';
   let actionLoading = false;
@@ -132,6 +145,68 @@
   let notesLoading = false;
 
   let pdfLoading = false;
+
+  async function openFollowUpModal(offer: OfferDisplay) {
+    followUpOffer = offer;
+    followUpDate = '';
+    followUpNotes = '';
+    showFollowUpModal = true;
+  }
+
+  async function scheduleFollowUp() {
+    if (!followUpOffer || !followUpDate) return;
+
+    // Validate date is in the future
+    const selectedDate = new Date(followUpDate);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (selectedDate < today) {
+      toast.danger('Follow-up date must be in the future');
+      return;
+    }
+
+    followUpLoading = true;
+    try {
+      await AddOfferFollowUp(followUpOffer.id, followUpDate, followUpNotes);
+      showFollowUpModal = false;
+      toast.success('Follow-up scheduled');
+      await loadPendingFollowUps();
+    } catch (e) {
+      const errorMsg = e?.message || String(e);
+      toast.danger(`Failed to schedule follow-up: ${errorMsg}`);
+    } finally {
+      followUpLoading = false;
+    }
+  }
+
+  async function completeFollowUp(id: string) {
+    followUpLoading = true;
+    try {
+      await CompleteOfferFollowUp(id);
+      toast.success('Follow-up completed');
+      await loadPendingFollowUps();
+    } catch (e) {
+      const errorMsg = e?.message || String(e);
+      toast.danger(`Failed to complete follow-up: ${errorMsg}`);
+    } finally {
+      followUpLoading = false;
+    }
+  }
+
+  function handleGlobalKeydown(event: KeyboardEvent) {
+    if (event.key !== "Escape") return;
+    if (showFollowUpModal) {
+      showFollowUpModal = false;
+    }
+  }
+
+  async function loadPendingFollowUps() {
+    try {
+      pendingFollowUps = await GetPendingFollowUps() || [];
+    } catch {
+      pendingFollowUps = [];
+    }
+  }
 
   // Form state
   let customers: main.CustomerMaster[] = [];
@@ -154,11 +229,11 @@
   }
 
   let formData = {
-    division: 'PH Trading',
     offer_number: '',
     customer_id: '',
     customer_name: '',
     project_name: '',
+    division: selectedCompany as 'PH Trading' | 'AHS Trading',
     folder_number: '',
     quotation_date: todayDateInput(),
     validity_date: '',
@@ -173,18 +248,13 @@
     attention_phone: '',
     attention_address: '',
     issued_by: '',
+    vat_rate: 10,
     items: [] as EditableItem[]
   };
   let formLoading = false;
 
   function todayDateInput(): string {
     return dateInputFromDate(new Date());
-  }
-
-  function dateInputAfterDays(days: number): string {
-    const date = new Date();
-    date.setDate(date.getDate() + days);
-    return dateInputFromDate(date);
   }
 
   function dateInputFromDate(date: Date): string {
@@ -208,10 +278,11 @@
   // DataTable columns configuration
   const columns = [
     {
-      key: 'offer_number',
+      key: 'offer_sort_key',
       label: 'Offer #',
       sortable: true,
-      width: '120px'
+      width: '120px',
+      render: (row: OfferDisplay) => escapeHtml(row.offer_number || row.id)
     },
     {
       key: 'customer_name',
@@ -266,10 +337,12 @@
       key: 'actions',
       label: 'Actions',
       type: 'actions' as const,
-      width: '220px',
+      width: '280px',
       render: (row: OfferDisplay) => {
         const isQuoted = row.stage === 'Quoted';
         const isLost = row.stage === 'Lost';
+        const isWon = row.stage === 'Won';
+        const canEditOffer = !isWon && !isLost;
         const hasItems = (row.items?.length || 0) > 0;
         return `
           <div style="display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap;">
@@ -283,14 +356,16 @@
                 View
               </button>
             ` : ''}
-            <button
-              class="action-btn action-btn-edit"
-              data-action="edit"
-              data-id="${row.id}"
-              aria-label="Edit offer"
-            >
-              Edit
-            </button>
+            ${canEditOffer ? `
+              <button
+                class="action-btn action-btn-edit"
+                data-action="edit"
+                data-id="${row.id}"
+                aria-label="Edit offer"
+              >
+                Edit
+              </button>
+            ` : ''}
             <button
               class="action-btn action-btn-pdf"
               data-action="pdf"
@@ -328,6 +403,26 @@
                 Re-quote
               </button>
             ` : ''}
+            ${!isLost ? `
+              <button
+                class="action-btn action-btn-followup"
+                data-action="followup"
+                data-id="${row.id}"
+                aria-label="Schedule follow-up"
+              >
+                Follow-Up
+              </button>
+            ` : ''}
+            ${canDeleteOffers && !isWon ? `
+              <button
+                class="action-btn action-btn-delete"
+                data-action="delete"
+                data-id="${row.id}"
+                aria-label="Delete offer"
+              >
+                Delete
+              </button>
+            ` : ''}
           </div>
         `;
       }
@@ -346,6 +441,8 @@
   $: companyScopedOffers = offers.filter((offer) => (offer.division || 'PH Trading') === selectedCompany);
 
   // Computed: Update tab counts
+  $: companyScopedOffers = offers.filter((offer) => (offer.division || 'PH Trading') === selectedCompany);
+
   $: {
     stageTabs[0].count = companyScopedOffers.length;
     stageTabs[1].count = companyScopedOffers.filter(o => o.stage === 'RFQ').length;
@@ -357,13 +454,59 @@
   $: legacyOfferShells = offersWithNoItems.filter((item) => item?.is_legacy_shell);
   $: actionableOffersWithNoItems = offersWithNoItems.filter((item) => !item?.is_legacy_shell);
 
-  // Computed: Filter offers by selected stage
+  function offerMatchesSearch(offer: OfferDisplay, query: string): boolean {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return true;
+    const row = offer as Record<string, any>;
+    return [
+      offer.offer_number,
+      offer.customer_name,
+      row.rfq_reference,
+      row.customer_reference,
+      row.contact_person,
+      offer.issued_by,
+      row.prepared_by,
+      offer.stage,
+      offer.division
+    ].some((value) => String(value || '').toLowerCase().includes(normalizedQuery));
+  }
+
+  // Computed: Filter offers by selected stage and search query
   $: {
-    if (selectedStage === 'all') {
-      filteredOffers = companyScopedOffers;
-    } else {
-      filteredOffers = companyScopedOffers.filter(o => o.stage === selectedStage);
+    const stageScopedOffers = selectedStage === 'all'
+      ? companyScopedOffers
+      : companyScopedOffers.filter(o => o.stage === selectedStage);
+    filteredOffers = sortOffersByCommercialNumber(stageScopedOffers.filter((offer) => offerMatchesSearch(offer, searchQuery)));
+  }
+
+  function commercialOfferSortKey(value?: string): string {
+    const raw = String(value || '').trim().toUpperCase();
+    const match = raw.match(/^([A-Z]+-)?(\d+)-(\d+)$/);
+    if (!match) {
+      return `ZZZZ|9999|${raw}`;
     }
+    const prefix = (match[1] || 'PH-').replace(/-$/, '');
+    const sequence = Number(match[2]) || 0;
+    const year = Number(match[3]) || 0;
+    return `${prefix.padStart(4, '0')}|${String(year).padStart(4, '0')}|${String(sequence).padStart(8, '0')}`;
+  }
+
+  function compareCommercialOfferNumber(a: OfferDisplay, b: OfferDisplay): number {
+    const keyA = a.offer_sort_key || commercialOfferSortKey(a.offer_number);
+    const keyB = b.offer_sort_key || commercialOfferSortKey(b.offer_number);
+    if (keyA !== keyB) {
+      return keyB.localeCompare(keyA, undefined, { numeric: true, sensitivity: 'base' });
+    }
+    return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+  }
+
+  function sortOffersByCommercialNumber(rows: OfferDisplay[]): OfferDisplay[] {
+    return [...rows].sort(compareCommercialOfferNumber);
+  }
+
+  function handleCompanySelect(company: string) {
+    selectedCompany = company === 'AHS Trading' ? 'AHS Trading' : 'PH Trading';
+    formData.division = selectedCompany;
   }
 
   async function loadOffers() {
@@ -385,6 +528,19 @@
     }
   }
 
+  async function exportOffersExtract() {
+    extractingOffers = true;
+    try {
+      const path = await ExportReport('offer_extract', 'excel', JSON.stringify(filteredOffers));
+      await OpenExportedFile(path).catch(() => {});
+      toast.success(`Offer extract exported: ${path}`);
+    } catch (err) {
+      toast.danger(`Failed to export offers: ${String(err)}`);
+    } finally {
+      extractingOffers = false;
+    }
+  }
+
   function enrichOfferWithExpiry(offer: any): OfferDisplay {
     const now = new Date();
     const validityDate = offer.validity_date ? new Date(offer.validity_date) : new Date(offer.created_at || now);
@@ -400,6 +556,7 @@
       status: offer.stage || 'Quoted',
       stage: offer.stage || 'Quoted',
       offer_number: offer.offer_number || `OFR-${(offer.id || '').toString().slice(0, 8)}`,
+      offer_sort_key: commercialOfferSortKey(offer.offer_number || `OFR-${(offer.id || '').toString().slice(0, 8)}`),
       revision_number: Number(offer.revision_number ?? 0),
       quotation_date: offer.quotation_date || offer.created_at,
       validity_date: offer.validity_date,
@@ -409,6 +566,7 @@
       sent_at: offer.sent_at,
       created_at: offer.created_at,
       updated_at: offer.updated_at,
+      division: offer.division || 'PH Trading',
       items: offer.items || [],
       division: offer.division || 'PH Trading',
       days_until_expiry: daysUntilExpiry,
@@ -430,6 +588,8 @@
       discount_percent: offer.discount_percent,
       quote_type: offer.quote_type || 'Quotation',
       vat_rate: Number(offer.vat_rate ?? 10),
+      subject: offer.subject || '',
+      body: offer.body || '',
       terms_and_conditions: offer.terms_and_conditions || '',
       coc_coo: offer.coc_coo || '',
       test_certificate: offer.test_certificate || '',
@@ -563,7 +723,7 @@
       source: 'offer',
       offerId: offer.id,
       offerNumber: offer.offer_number || '',
-      division: offer.division || selectedCompany,
+      division: offer.division || 'PH Trading',
       date: quotationDate,
       preparedBy: offer.issued_by || '',
       customerId: resolvedCustomer.customer_id || '',
@@ -592,6 +752,8 @@
       grandTotal: Math.max(subtotal - discount, 0) * (1 + vatRate / 100),
       body: offer.body || '',
       termsAndConditions: offer.terms_and_conditions || '',
+      attachmentScopeId: offer.attachment_scope_id || '',
+      attachment_scope_id: offer.attachment_scope_id || '',
       quoteType: offer.quote_type || 'Quotation',
     };
   }
@@ -747,7 +909,7 @@
     formLoading = true;
     try {
       await UpdateOfferFull(editingOffer.id, {
-        offer_number: formData.offer_number || editingOffer.offer_number || '',
+        offer_number: formData.offer_number,
         customer_id: formData.customer_id,
         customer_name: formData.customer_name,
         project_name: formData.project_name,
@@ -767,8 +929,7 @@
         subject: editingOffer.subject || '',
         body: editingOffer.body || '',
         issued_by: formData.issued_by,
-        quote_type: editingOffer.quote_type || 'Quotation',
-        vat_rate: Number(editingOffer.vat_rate ?? 10),
+        vat_rate: Number(formData.vat_rate ?? editingOffer.vat_rate ?? 10),
         discount: 0,
         items: formData.items.map(item => ({
           description: item.description,
@@ -806,13 +967,15 @@
     if (actionLoading) return;
     if (!actionOffer) return;
 
-    if (!confirm(`Confirm marking offer ${actionOffer.offer_number} as WON?\n\nThis will create an order and cannot be undone.`)) {
+    const trimmedPO = customerPONumber.trim();
+    if (!trimmedPO) {
+      toast.warning('Please enter the customer PO number before confirming.');
       return;
     }
 
     actionLoading = true;
     try {
-      await MarkOfferWon(actionOffer.id, customerPONumber);
+      await MarkOfferWon(actionOffer.id, trimmedPO);
       toast.success(`Offer ${actionOffer.offer_number} WON! Order created in pipeline.`);
       showWonModal = false;
       actionOffer = null;
@@ -829,10 +992,6 @@
     if (actionLoading) return;
     if (!actionOffer || !lostReason) {
       toast.warning('Please provide a reason');
-      return;
-    }
-
-    if (!confirm(`Confirm marking offer ${actionOffer.offer_number} as LOST?\n\nReason: ${lostReason}\n\nThis action cannot be undone.`)) {
       return;
     }
 
@@ -856,49 +1015,13 @@
     if (!confirm(`Create a new revision of ${offer.offer_number} for ${offer.customer_name}?`)) return;
 
     try {
-      // Open edit modal pre-filled with the lost offer's data for a new quote
-      const resolvedCustomer = resolveCustomerFromOffer((offer as any).customer_id || '', offer.customer_name || '');
-      formData = {
-        division: offer.division || selectedCompany,
-        offer_number: '',
-        customer_id: resolvedCustomer.customer_id,
-        customer_name: resolvedCustomer.customer_name,
-        project_name: offer.project_name || '',
-        folder_number: offer.folder_number || '',
-        quotation_date: todayDateInput(),
-        validity_date: dateInputAfterDays(30),
-        payment_terms: offer.payment_terms || '',
-        delivery_terms: offer.delivery_terms || '',
-        delivery_weeks: offer.delivery_weeks || '',
-        country_of_origin: offer.country_of_origin || '',
-        contact_phone: offer.contact_phone || '',
-        customer_reference: offer.customer_reference || '',
-        attention_person: offer.attention_person || '',
-        attention_company: offer.attention_company || '',
-        attention_phone: offer.attention_phone || '',
-        attention_address: offer.attention_address || '',
-        issued_by: offer.issued_by || '',
-        items: (offer.items || []).map((item: any) => ({
-          product_id: item.product_code || '',
-          description: item.description || '',
-          equipment: item.equipment || item.description || '',
-          model: item.model || item.product_code || '',
-          specification: item.specification || '',
-          detailed_description: item.detailed_description || '',
-          currency: item.currency || 'BHD',
-          quantity: item.quantity || 0,
-          fob: item.fob || 0,
-          freight: item.freight || 0,
-          total_cost: item.total_cost || 0,
-          margin_percent: item.margin_percent || 0,
-          unit_price: item.unit_price_bhd || item.unit_price || 0,
-          total_price: item.total_price || 0
-        })),
-      };
-      showCreateModal = true;
-      toast.info(`Re-quoting ${offer.offer_number} - adjust pricing and save as new offer`);
+      const revised = await CreateOfferRevision(offer.id);
+      const revisedOffer = enrichOfferWithExpiry(revised as any);
+      toast.success(`Revision ${revisedOffer.offer_number} created`);
+      await loadOffers();
+      openEditModal(revisedOffer);
     } catch (err) {
-      toast.danger('Failed to prepare re-quote');
+      toast.danger('Failed to create revision: ' + (err as Error).message);
     }
   }
 
@@ -923,6 +1046,10 @@
         loadOfferNotes(offer.id);
         break;
       case 'edit':
+        if (offer.stage === 'Won' || offer.stage === 'Lost') {
+          toast.warning('Won/Lost offers are locked. Create a revision for further commercial changes.');
+          return;
+        }
         openEditModal(offer);
         break;
       case 'pdf':
@@ -941,6 +1068,37 @@
       case 'requote':
         handleRequote(offer);
         break;
+      case 'followup':
+        openFollowUpModal(offer);
+        break;
+      case 'delete':
+        deleteOfferTarget = offer;
+        showDeleteOfferModal = true;
+        break;
+    }
+  }
+
+  async function handleDeleteOffer(offer: OfferDisplay) {
+    if (!canDeleteOffers || actionLoading) return;
+    const label = offer.offer_number || offer.id;
+
+    actionLoading = true;
+    try {
+      await DeleteOffer(offer.id);
+      toast.success(`Offer ${label} deleted`);
+      if (viewOffer?.id === offer.id) {
+        showViewModal = false;
+        viewOffer = null;
+      }
+      showDeleteOfferModal = false;
+      deleteOfferTarget = null;
+      await loadOffers();
+      await loadOffersWithNoItems();
+    } catch (err) {
+      const errorMsg = (err instanceof Error ? err.message : String(err));
+      toast.danger(`Failed to delete offer: ${errorMsg}`);
+    } finally {
+      actionLoading = false;
     }
   }
 
@@ -965,6 +1123,10 @@
   // Save editable header fields from view modal
   async function handleSaveViewOffer() {
     if (!viewOffer || viewSaving) return;
+    if (viewOffer.stage === 'Won' || viewOffer.stage === 'Lost') {
+      toast.warning('Won/Lost offers are locked. Create a revision for further commercial changes.');
+      return;
+    }
     viewSaving = true;
     try {
       await UpdateOfferFull(viewOffer.id, {
@@ -987,6 +1149,7 @@
         attention_phone: viewOffer.attention_phone || '',
         attention_address: viewOffer.attention_address || '',
         issued_by: viewOffer.issued_by || '',
+        vat_rate: Number(viewOffer.vat_rate ?? 10),
         discount: 0,
         stage: '',
         items: [],
@@ -1007,9 +1170,27 @@
   async function loadOfferNotes(offerId: string) {
     notesLoading = true;
     try {
-      offerNotes = await GetOfferNotes(offerId) || [];
+      const thread = await GetUnifiedOfferThread(offerId).catch(() => null);
+      if (Array.isArray(thread) && thread.length > 0) {
+        offerNotes = thread.map((entry: any) => ({
+          id: entry.id,
+          content: entry.comment || entry.content || '',
+          created_by: entry.created_by || entry.source_screen || 'System',
+          created_at: entry.created_at,
+          note_date: entry.created_at,
+          source_type: entry.source_type || 'offer',
+          source_screen: entry.source_screen || 'Offer',
+          can_delete: (entry.source_type || 'offer') === 'offer' && !String(entry.id || '').includes(':')
+        }));
+      } else {
+        offerNotes = await GetOfferNotes(offerId) || [];
+      }
     } catch {
-      offerNotes = [];
+      try {
+        offerNotes = await GetOfferNotes(offerId) || [];
+      } catch {
+        offerNotes = [];
+      }
     } finally {
       notesLoading = false;
     }
@@ -1033,6 +1214,11 @@
 
   async function handleDeleteNote(noteId: string) {
     if (!viewOffer) return;
+    const note = offerNotes.find((item) => item.id === noteId);
+    if (note?.source_type && note.source_type !== 'offer') {
+      toast.warning('This note belongs to the linked RFQ or opportunity thread and is kept for audit history.');
+      return;
+    }
     notesLoading = true;
     try {
       await DeleteOfferNote(noteId);
@@ -1114,7 +1300,7 @@
     </Button>
   </svelte:fragment>
 
-  <div class="offers-container">
+  <div class="offers-container" data-embedded={embedded}>
     <!-- Warning: Offers with no line items -->
     {#if actionableOffersWithNoItems.length > 0}
       <div class="no-items-warning">
@@ -1169,6 +1355,17 @@
             <span class="tab-count">{tab.count}</span>
           </button>
         {/each}
+      </div>
+      <div class="offers-toolbar">
+        <Input
+          type="search"
+          placeholder="Search offer #, customer, RFQ, issuer..."
+          bind:value={searchQuery}
+          class="offers-search"
+        />
+        <Button variant="secondary" on:click={exportOffersExtract} disabled={extractingOffers || loading}>
+          {extractingOffers ? 'Exporting...' : 'Extract Offers'}
+        </Button>
       </div>
     </Card>
 
@@ -1419,16 +1616,16 @@
               <!-- Row 1: Equipment & Model -->
               <div class="form-row-3">
                 <div class="form-field">
-                  <span class="field-label">Equipment</span>
-                  <input type="text" bind:value={item.equipment} placeholder="Product/Equipment name" class="input-field" />
+                  <label for={`item-${index}-equipment`}>Equipment</label>
+                  <input id={`item-${index}-equipment`} type="text" bind:value={item.equipment} placeholder="Product/Equipment name" class="input-field" />
                 </div>
                 <div class="form-field">
-                  <span class="field-label">Model</span>
-                  <input type="text" bind:value={item.model} placeholder="Model number" class="input-field" />
+                  <label for={`item-${index}-model`}>Model</label>
+                  <input id={`item-${index}-model`} type="text" bind:value={item.model} placeholder="Model number" class="input-field" />
                 </div>
                 <div class="form-field">
-                  <span class="field-label">Currency</span>
-                  <select bind:value={item.currency} class="input-field">
+                  <label for={`item-${index}-currency`}>Currency</label>
+                  <select id={`item-${index}-currency`} bind:value={item.currency} class="input-field">
                     <option value="BHD">BHD</option>
                     <option value="EUR">EUR</option>
                     <option value="USD">USD</option>
@@ -1439,48 +1636,48 @@
 
               <!-- Row 2: Specification -->
               <div class="form-field full-width">
-                <span class="field-label">Specification</span>
-                <input type="text" bind:value={item.specification} placeholder="Technical specification" class="input-field" />
+                <label for={`item-${index}-specification`}>Specification</label>
+                <input id={`item-${index}-specification`} type="text" bind:value={item.specification} placeholder="Technical specification" class="input-field" />
               </div>
 
               <!-- Row 3: Detailed Description -->
               <div class="form-field full-width">
-                <span class="field-label">Detailed Description</span>
-                <textarea bind:value={item.detailed_description} rows="2" placeholder="Extended specifications, codes, approvals..." class="input-field textarea"></textarea>
+                <label for={`item-${index}-detailed-description`}>Detailed Description</label>
+                <textarea id={`item-${index}-detailed-description`} bind:value={item.detailed_description} rows="2" placeholder="Extended specifications, codes, approvals..." class="input-field textarea"></textarea>
               </div>
 
               <!-- Row 4: Cost Fields -->
               <div class="form-row-4">
                 <div class="form-field">
-                  <span class="field-label">Quantity</span>
-                  <input type="number" bind:value={item.quantity} min="1" step="1" class="input-field" />
+                  <label for={`item-${index}-quantity`}>Quantity</label>
+                  <input id={`item-${index}-quantity`} type="number" bind:value={item.quantity} min="1" step="1" class="input-field" />
                 </div>
                 <div class="form-field">
-                  <span class="field-label">FOB</span>
-                  <input type="number" bind:value={item.fob} min="0" step="0.001" class="input-field" />
+                  <label for={`item-${index}-fob`}>FOB</label>
+                  <input id={`item-${index}-fob`} type="number" bind:value={item.fob} min="0" step="0.001" class="input-field" />
                 </div>
                 <div class="form-field">
-                  <span class="field-label">Freight</span>
-                  <input type="number" bind:value={item.freight} min="0" step="0.001" class="input-field" />
+                  <label for={`item-${index}-freight`}>Freight</label>
+                  <input id={`item-${index}-freight`} type="number" bind:value={item.freight} min="0" step="0.001" class="input-field" />
                 </div>
                 <div class="form-field">
-                  <span class="field-label">Total Cost</span>
-                  <input type="number" bind:value={item.total_cost} min="0" step="0.001" class="input-field" readonly />
+                  <label for={`item-${index}-total-cost`}>Total Cost</label>
+                  <input id={`item-${index}-total-cost`} type="number" bind:value={item.total_cost} min="0" step="0.001" class="input-field" readonly />
                 </div>
               </div>
 
               <!-- Row 5: Pricing -->
               <div class="form-row-4">
                 <div class="form-field">
-                  <span class="field-label">Margin %</span>
-                  <input type="number" bind:value={item.margin_percent} min="0" max="99" step="1" class="input-field" />
+                  <label for={`item-${index}-margin`}>Margin %</label>
+                  <input id={`item-${index}-margin`} type="number" bind:value={item.margin_percent} min="0" max="99" step="1" class="input-field" />
                 </div>
                 <div class="form-field">
-                  <span class="field-label">Unit Price (BHD)</span>
-                  <input type="number" bind:value={item.unit_price} min="0" step="0.001" class="input-field highlight-field" />
+                  <label for={`item-${index}-unit-price`}>Unit Price (BHD)</label>
+                  <input id={`item-${index}-unit-price`} type="number" bind:value={item.unit_price} min="0" step="0.001" class="input-field highlight-field" />
                 </div>
                 <div class="form-field">
-                  <span class="field-label">Line Total</span>
+                  <div class="label">Line Total</div>
                   <div class="calculated-value">{formatBHD(item.quantity * item.unit_price)}</div>
                 </div>
                 <div></div>
@@ -1531,6 +1728,7 @@
     <Button
       variant="primary"
       loading={actionLoading}
+      disabled={!customerPONumber.trim()}
       on:click={handleMarkWon}
     >
       Confirm Won
@@ -1592,6 +1790,85 @@
   </svelte:fragment>
 </WabiModal>
 
+<!-- Delete Offer Modal -->
+<WabiModal bind:open={showDeleteOfferModal} title="Delete Offer" size="sm">
+  <div class="lost-form">
+    <p class="modal-desc">
+      Delete offer <strong>{deleteOfferTarget?.offer_number || deleteOfferTarget?.id}</strong>
+      for <strong>{deleteOfferTarget?.customer_name}</strong>?
+    </p>
+    <div class="modal-value lost">
+      <span class="label">This will remove:</span>
+      <span class="value">Offer, line items, notes, and follow-ups</span>
+    </div>
+    <p class="modal-desc">
+      Converted or won offers remain protected by the backend workflow.
+    </p>
+  </div>
+
+  <svelte:fragment slot="footer">
+    <Button
+      variant="ghost"
+      on:click={() => { showDeleteOfferModal = false; deleteOfferTarget = null; }}
+    >
+      Cancel
+    </Button>
+    <Button
+      variant="danger"
+      loading={actionLoading}
+      disabled={!deleteOfferTarget}
+      on:click={() => deleteOfferTarget && handleDeleteOffer(deleteOfferTarget)}
+    >
+      Delete Offer
+    </Button>
+  </svelte:fragment>
+</WabiModal>
+
+<svelte:window on:keydown={handleGlobalKeydown} />
+
+<!-- Follow-Up Modal -->
+{#if showFollowUpModal}
+  <div class="followup-overlay">
+    <button type="button" class="followup-dismiss" aria-label="Close follow-up modal" on:click={() => showFollowUpModal = false}></button>
+    <div class="followup-modal" in:fade={{ duration: 150 }}>
+      <h3>Schedule Follow-Up</h3>
+      <p class="followup-offer">Offer: {followUpOffer?.offer_number || followUpOffer?.id?.slice(0,8)}</p>
+      <div class="followup-form">
+        <div class="form-group">
+          <label for="followup-date">Follow-Up Date</label>
+          <input id="followup-date" type="date" bind:value={followUpDate} min={new Date().toISOString().split('T')[0]} />
+        </div>
+        <div class="form-group">
+          <label for="followup-notes">Notes</label>
+          <textarea id="followup-notes" bind:value={followUpNotes} placeholder="What to follow up on..." rows="3"></textarea>
+        </div>
+        <div class="followup-actions">
+          <button class="btn-cancel" on:click={() => showFollowUpModal = false}>Cancel</button>
+          <button class="btn-confirm" on:click={scheduleFollowUp} disabled={!followUpDate || followUpLoading}>
+            {followUpLoading ? 'Processing...' : 'Schedule'}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Pending Follow-Ups Panel -->
+{#if pendingFollowUps.length > 0}
+  <div class="pending-followups">
+    <h4>Pending Follow-Ups ({pendingFollowUps.length})</h4>
+    {#each pendingFollowUps.slice(0, 5) as fu}
+      <div class="followup-item">
+        <span class="followup-date">{new Date(fu.follow_up_date).toLocaleDateString()}</span>
+        <span class="followup-notes">{fu.notes || 'No notes'}</span>
+        <button class="followup-complete" on:click={() => completeFollowUp(fu.id)} disabled={followUpLoading}>
+          {followUpLoading ? 'Processing...' : 'Done'}
+        </button>
+      </div>
+    {/each}
+  </div>
+{/if}
+
 <!-- View Full Offer Details Modal (Fix #5 - Show ALL costing data) -->
 <WabiModal bind:open={showViewModal} title="Offer Details" size="xl">
   {#if viewOffer}
@@ -1600,8 +1877,8 @@
       <div class="view-header">
         <div class="view-header-main">
           <div class="editable-offer-number">
-            <span class="meta-label">Offer #</span>
-            <input type="text" bind:value={viewOffer.offer_number} class="input-inline input-inline-lg" placeholder="Offer number" />
+            <label class="meta-label" for="view-offer-number">Offer #</label>
+            <input id="view-offer-number" type="text" bind:value={viewOffer.offer_number} class="input-inline input-inline-lg" placeholder="Offer number" />
           </div>
           <StatusBadge status={viewOffer.stage || 'Quoted'} />
         </div>
@@ -1628,37 +1905,37 @@
           </div>
           <!-- Row 2: Editable Reference & Terms -->
           <div class="meta-item">
-            <span class="meta-label">Folder Number</span>
-            <input type="text" bind:value={viewOffer.folder_number} class="input-inline" placeholder="Folder #" />
+            <label class="meta-label" for="view-folder-number">Folder Number</label>
+            <input id="view-folder-number" type="text" bind:value={viewOffer.folder_number} class="input-inline" placeholder="Folder #" />
           </div>
           <div class="meta-item">
-            <span class="meta-label">Customer Reference</span>
-            <input type="text" bind:value={viewOffer.customer_reference} class="input-inline" placeholder="RFQ / enquiry ref" />
+            <label class="meta-label" for="view-customer-reference">Customer Reference</label>
+            <input id="view-customer-reference" type="text" bind:value={viewOffer.customer_reference} class="input-inline" placeholder="RFQ / enquiry ref" />
           </div>
           <div class="meta-item">
-            <span class="meta-label">Payment Terms</span>
-            <input type="text" bind:value={viewOffer.payment_terms} class="input-inline" placeholder="e.g. Net 30" />
+            <label class="meta-label" for="view-payment-terms">Payment Terms</label>
+            <input id="view-payment-terms" type="text" bind:value={viewOffer.payment_terms} class="input-inline" placeholder="e.g. Net 30" />
           </div>
           <div class="meta-item">
-            <span class="meta-label">Delivery Terms</span>
-            <input type="text" bind:value={viewOffer.delivery_terms} class="input-inline" placeholder="e.g. DAP Bahrain" />
+            <label class="meta-label" for="view-delivery-terms">Delivery Terms</label>
+            <input id="view-delivery-terms" type="text" bind:value={viewOffer.delivery_terms} class="input-inline" placeholder="e.g. DAP Bahrain" />
           </div>
           <!-- Row 3: Attention Details (editable) -->
           <div class="meta-item">
-            <span class="meta-label">Attention Person</span>
-            <input type="text" bind:value={viewOffer.attention_person} class="input-inline" placeholder="Contact name" />
+            <label class="meta-label" for="view-attention-person">Attention Person</label>
+            <input id="view-attention-person" type="text" bind:value={viewOffer.attention_person} class="input-inline" placeholder="Contact name" />
           </div>
           <div class="meta-item">
-            <span class="meta-label">Company</span>
-            <input type="text" bind:value={viewOffer.attention_company} class="input-inline" placeholder="Company name" />
+            <label class="meta-label" for="view-company">Company</label>
+            <input id="view-company" type="text" bind:value={viewOffer.attention_company} class="input-inline" placeholder="Company name" />
           </div>
           <div class="meta-item">
-            <span class="meta-label">Attention Phone</span>
-            <input type="text" bind:value={viewOffer.attention_phone} class="input-inline" placeholder="Phone" />
+            <label class="meta-label" for="view-attention-phone">Attention Phone</label>
+            <input id="view-attention-phone" type="text" bind:value={viewOffer.attention_phone} class="input-inline" placeholder="Phone" />
           </div>
           <div class="meta-item">
-            <span class="meta-label">Issued By</span>
-            <input type="text" bind:value={viewOffer.issued_by} class="input-inline" placeholder="Name" />
+            <label class="meta-label" for="view-issued-by">Issued By</label>
+            <input id="view-issued-by" type="text" bind:value={viewOffer.issued_by} class="input-inline" placeholder="Name" />
           </div>
         </div>
       </div>
@@ -1752,7 +2029,12 @@
                 <div class="note-header">
                   <span class="note-date">{new Date(note.note_date || note.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                   <span class="note-author">{note.created_by || 'System'}</span>
-                  <button class="note-delete" on:click={() => handleDeleteNote(note.id)} title="Delete note" disabled={notesLoading}>&times;</button>
+                  {#if note.source_screen || note.source_type}
+                    <span class="note-source">{note.source_screen || note.source_type}</span>
+                  {/if}
+                  {#if note.can_delete !== false}
+                    <button class="note-delete" on:click={() => handleDeleteNote(note.id)} title="Delete note" disabled={notesLoading}>&times;</button>
+                  {/if}
                 </div>
                 <div class="note-content">{note.content}</div>
               </div>
@@ -1766,15 +2048,22 @@
   {/if}
 
   <svelte:fragment slot="footer">
+    {#if canDeleteOffers && viewOffer && viewOffer.stage !== 'Won'}
+      <Button variant="danger" loading={actionLoading} on:click={() => viewOffer && handleDeleteOffer(viewOffer)}>
+        Delete Offer
+      </Button>
+    {/if}
     <Button variant="ghost" on:click={() => { showViewModal = false; viewOffer = null; }}>
       Close
     </Button>
     <Button variant="secondary" on:click={() => viewOffer && handleDownloadPDF(viewOffer)}>
       Download PDF
     </Button>
-    <Button variant="primary" loading={viewSaving} on:click={handleSaveViewOffer}>
-      Save Changes
-    </Button>
+    {#if viewOffer && viewOffer.stage !== 'Won' && viewOffer.stage !== 'Lost'}
+      <Button variant="primary" loading={viewSaving} on:click={handleSaveViewOffer}>
+        Save Changes
+      </Button>
+    {/if}
   </svelte:fragment>
 </WabiModal>
 
@@ -1820,10 +2109,56 @@
   }
 
   /* Stage Tabs */
+  .company-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    margin-bottom: 12px;
+    background: var(--surface-muted, #f3f4f6);
+    border-radius: 12px;
+    width: fit-content;
+  }
+
+  .company-toggle-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .company-toggle-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.5);
+  }
+
+  .company-toggle-btn.active {
+    background: var(--carbon, #1f2937);
+    color: white;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+  }
+
   .stage-tabs {
     display: flex;
     gap: 8px;
     overflow-x: auto;
+  }
+
+  .offers-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .offers-toolbar :global(.input-wrapper) {
+    flex: 1;
+    min-width: 240px;
   }
 
   .stage-tab {
@@ -1961,6 +2296,180 @@
   :global(.action-btn-requote:hover) {
     background: var(--brand-indigo);
     color: white;
+  }
+
+  :global(.action-btn-followup) {
+    background: rgba(0, 0, 0, 0.05);
+    color: var(--onyx, #1D1D1F);
+  }
+
+  :global(.action-btn-followup:hover) {
+    background: var(--onyx, #1D1D1F);
+    color: white;
+  }
+
+  :global(.action-btn-delete) {
+    background: rgba(220, 38, 38, 0.08);
+    color: #B91C1C;
+  }
+
+  :global(.action-btn-delete:hover) {
+    background: #B91C1C;
+    color: white;
+  }
+
+  /* Follow-Up Modal */
+  .followup-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+
+  .followup-dismiss {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    appearance: none;
+    cursor: pointer;
+  }
+
+  .followup-modal {
+    background: var(--surface, #fff);
+    border-radius: 12px;
+    padding: 28px;
+    width: 400px;
+    max-width: 90vw;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+    position: relative;
+    z-index: 1;
+  }
+
+  .followup-modal h3 {
+    margin: 0 0 4px;
+    font-size: 18px;
+    font-weight: 600;
+  }
+
+  .followup-offer {
+    margin: 0 0 20px;
+    font-size: 13px;
+    color: var(--steel, #86868B);
+  }
+
+  .followup-form .form-group {
+    margin-bottom: 16px;
+  }
+
+  .followup-form label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--steel, #86868B);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+  }
+
+  .followup-form input,
+  .followup-form textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 8px;
+    font-size: 14px;
+  }
+
+  .followup-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 20px;
+  }
+
+  .btn-cancel {
+    padding: 8px 16px;
+    background: transparent;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+
+  .btn-confirm {
+    padding: 8px 16px;
+    background: var(--carbon, #000);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+
+  .btn-confirm:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* Pending Follow-Ups Panel */
+  .pending-followups {
+    margin-top: 24px;
+    padding: 16px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 8px;
+  }
+
+  .pending-followups h4 {
+    margin: 0 0 12px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--onyx, #1D1D1F);
+  }
+
+  .followup-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border, #E5E5E5);
+    font-size: 13px;
+  }
+
+  .followup-item:last-child {
+    border-bottom: none;
+  }
+
+  .followup-date {
+    font-weight: 500;
+    min-width: 90px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .followup-notes {
+    flex: 1;
+    color: var(--steel, #86868B);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .followup-complete {
+    padding: 4px 10px;
+    background: var(--ether, #F5F5F7);
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .followup-complete:hover {
+    background: var(--carbon, #000);
+    color: #fff;
   }
 
   /* Won/Lost Modal Styles */
@@ -2476,6 +2985,16 @@
     font-size: 11px;
     color: var(--brand-indigo, #4F46E5);
     font-weight: 500;
+  }
+
+  .note-source {
+    padding: 2px 6px;
+    border: 1px solid var(--border, #E5E5E5);
+    border-radius: 6px;
+    color: var(--text-muted, #6B7280);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
   }
 
   .note-delete {

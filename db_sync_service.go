@@ -52,34 +52,104 @@ type DBSyncSettings struct {
 
 // DBSyncResult represents the result of a sync operation
 type DBSyncResult struct {
-	Success         bool   `json:"success"`
-	RecordsPushed   int    `json:"records_pushed"`
-	RecordsPulled   int    `json:"records_pulled"`
-	TablesProcessed int    `json:"tables_processed"`
-	Duration        string `json:"duration"`
-	Error           string `json:"error,omitempty"`
+	Success            bool   `json:"success"`
+	RecordsPushed      int    `json:"records_pushed"`
+	RecordsPulled      int    `json:"records_pulled"`
+	TablesProcessed    int    `json:"tables_processed"`
+	DataUpdatesChecked int    `json:"data_updates_checked"`
+	DataUpdatesApplied int    `json:"data_updates_applied"`
+	DataUpdateFailures int    `json:"data_update_failures"`
+	Duration           string `json:"duration"`
+	Error              string `json:"error,omitempty"`
 }
 
 // Tables to sync (in dependency order)
 var dbSyncTables = []string{
+	// Access and master data
 	"roles",
+	"users",
+	"devices",
+	"device_users",
+	"data_update_manifests",
+	"data_update_operations",
+	"data_update_receipts",
 	"customers",
 	"suppliers",
 	"products",
 	"customer_contacts",
 	"supplier_contacts",
+	"customer_name_mappings",
+	"supplier_issues",
+	"entity_notes",
+
+	// Commercial pipeline
+	"opportunities",
+	"opportunity_comments",
+	"opportunity_edit_conflicts",
+	"rfq_data",
+	"rfq_comments",
+	"costing_sheet_data",
+	"costing_sheet_attachments",
+	"costing_line_items",
+	"costing_history",
 	"offers",
 	"offer_items",
+	"offer_data",
+	"offer_notes",
+	"offer_follow_ups",
 	"orders",
 	"order_items",
+	"shipments",
+	"post_sale_notes",
+
+	// Customer finance
 	"invoices",
 	"invoice_items",
+	"invoice_sequences",
 	"credit_notes",
 	"credit_note_items",
 	"payments",
+	"customer_receipts",
+	"customer_receipt_allocations",
+
+	// Supplier, procurement, and delivery
+	"purchase_orders",
+	"purchase_order_items",
 	"supplier_invoices",
 	"supplier_invoice_items",
 	"supplier_payments",
+	"goods_received_notes",
+	"grn_items",
+	"serial_numbers",
+	"delivery_notes",
+	"delivery_note_items",
+
+	// Operational accounting
+	"chart_of_accounts",
+	"account_mappings",
+	"fiscal_periods",
+	"journal_entries",
+	"journal_lines",
+	"vat_returns",
+	"currency_exchange_rates",
+	"company_bank_accounts",
+	"bank_accounts",
+	"bank_statements",
+	"bank_statement_lines",
+	"bank_line_payment_allocations",
+	"bank_cash_balances",
+	"bank_expense_entries",
+	"statement_hashes",
+	"book_bank_reconciliations",
+	"outstanding_cheques",
+	"deposits_in_transit",
+	"cheque_registers",
+	"fx_rates",
+	"fx_revaluations",
+	"bank_statement_files",
+	"bank_reconciliation_audit_logs",
+
+	// Expenses and payroll
 	"expense_categories",
 	"expense_vendors",
 	"expense_entries",
@@ -87,27 +157,22 @@ var dbSyncTables = []string{
 	"recurring_expenses",
 	"expense_attachments",
 	"expense_approvals",
-	"purchase_orders",
-	"purchase_order_items",
-	"goods_received_notes",
-	"grn_items",
-	"serial_numbers",
-	"delivery_notes",
-	"delivery_note_items",
-	"entity_notes",
-	"invoice_sequences",
-	"license_keys",
-	"user_activity_sessions",
-	"user_activity_events",
-	"user_activity_weekly_summaries",
-	"employees",
-	"employee_access_links",
 	"employee_compensation_profiles",
 	"payroll_periods",
 	"payroll_runs",
 	"payroll_run_items",
 	"payroll_components",
 	"payroll_payouts",
+
+	// Inventory visibility
+	"warehouses",
+	"inventory_items",
+	"stock_movements",
+	"stock_adjustments",
+
+	// People, work, and collaboration
+	"employees",
+	"employee_access_links",
 	"projects",
 	"project_members",
 	"task_items",
@@ -116,18 +181,64 @@ var dbSyncTables = []string{
 	"notifications",
 	"notification_receipts",
 	"delete_approval_requests",
-	"bank_accounts",
-	"bank_statements",
-	"bank_statement_lines",
-	"bank_line_payment_allocations",
-	"bank_expense_entries",
-	"costing_sheet_data",
-	"costing_line_items",
-	"costing_history",
-	"opportunities",
-	"opportunity_edit_conflicts",
-	"rfq_data",
-	"offer_data",
+	"employee_archive_requests",
+	"user_activity_sessions",
+	"user_activity_events",
+	"user_activity_weekly_summaries",
+
+	// Intelligence, reporting, and imports
+	"conversations",
+	"chat_messages",
+	"prediction_records",
+	"win_probability_predictions",
+	"discount_recommendations",
+	"customer_snapshots",
+	"actual_outcomes",
+	"grade_changes",
+	"payment_prediction_accuracy",
+	"tally_invoice_imports",
+	"tally_purchase_imports",
+	"intelligence_opportunity_enrichment",
+	"intelligence_line_item_enrichment",
+	"intelligence_order_enrichment",
+	"data_quality_reviews",
+	"alerts",
+	"followup_tasks",
+	"assets",
+	"contract_templates",
+	"contract_clauses",
+	"contracts",
+}
+
+var localOnlyDBSyncTables = map[string]bool{
+	// License activations are device-local. Syncing this table can overwrite a
+	// valid client binding with an unactivated packaged seed row.
+	"license_keys": true,
+}
+
+func activeDBSyncTables() []string {
+	excluded := map[string]bool{}
+	for _, raw := range strings.Split(os.Getenv("ASYMMFLOW_SYNC_EXCLUDE_TABLES"), ",") {
+		table := strings.TrimSpace(raw)
+		if table != "" {
+			excluded[table] = true
+		}
+	}
+	if len(excluded) == 0 {
+		return append([]string(nil), dbSyncTables...)
+	}
+
+	tables := make([]string, 0, len(dbSyncTables))
+	for _, table := range dbSyncTables {
+		if localOnlyDBSyncTables[table] {
+			continue
+		}
+		if excluded[table] {
+			continue
+		}
+		tables = append(tables, table)
+	}
+	return tables
 }
 
 func activeDBSyncTables() []string {
@@ -368,6 +479,33 @@ func (a *App) SyncNowWithProgress() DBSyncResult {
 		return result
 	}
 
+	updateSummary, updateErr := a.applyPendingDataUpdatesInternal(false, "manual_sync")
+	result.DataUpdatesChecked = updateSummary.PendingCount
+	result.DataUpdatesApplied = updateSummary.AppliedCount
+	result.DataUpdateFailures = updateSummary.FailedCount
+	if updateErr != nil {
+		duration := time.Since(startTime)
+		result.Success = false
+		result.TablesProcessed = totalTables
+		result.Duration = duration.Round(time.Second).String()
+		result.Error = "sync succeeded, but a published data update failed: " + updateErr.Error()
+		a.saveSetting("db_sync_last_status", "failed")
+		a.emitDBSyncProgress(DBSyncProgress{
+			Phase:           "error",
+			TablesCompleted: totalTables,
+			TablesTotal:     totalTables,
+			RecordsSynced:   totalRecordsSynced,
+			Percentage:      100,
+			Message:         "Sync finished; data update failed",
+			Error:           result.Error,
+		})
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "sync:complete", result)
+		}
+		log.Printf("DB Sync data update failed after pushed=%d pulled=%d duration=%s: %v", pushedCount, pulledCount, result.Duration, updateErr)
+		return result
+	}
+
 	// Update last sync time
 	a.saveSetting("db_sync_last_at", time.Now().Format(time.RFC3339))
 	a.saveSetting("db_sync_last_status", "success")
@@ -454,7 +592,26 @@ func (a *App) validateRecordForSync(table string, record map[string]interface{})
 
 // syncTablePush pushes local changes to cloud (safe upsert with validation)
 func (a *App) syncTablePush(table string, since time.Time) (int, error) {
-	if a.dbManager.Remote() == nil {
+	if a.dbManager == nil {
+		return 0, nil
+	}
+	remoteDB := a.dbManager.Remote()
+	if remoteDB == nil {
+		return 0, nil
+	}
+	remoteAvailable, err := a.dbManager.remoteSyncTableAvailableForSync(table, "push")
+	if err != nil {
+		return 0, err
+	}
+	if !remoteAvailable {
+		return 0, nil
+	}
+	localColumnTypes, err := syncDBColumnTypes(a.db, table)
+	if err != nil {
+		return 0, fmt.Errorf("inspect local %s columns: %w", table, err)
+	}
+	if !syncColumnExists(localColumnTypes, "updated_at") {
+		log.Printf("Skipping push sync for %s: local table has no updated_at column for incremental sync", table)
 		return 0, nil
 	}
 	localColumnTypes, err := syncDBColumnTypes(a.db, table)
@@ -467,8 +624,12 @@ func (a *App) syncTablePush(table string, since time.Time) (int, error) {
 	}
 
 	// Count records to sync
+	baseQuery := a.db.Table(table).Where("updated_at > ?", since)
+	if table == "costing_sheet_attachments" && syncColumnExists(localColumnTypes, "storage_mode") {
+		baseQuery = baseQuery.Where("(storage_mode IS NULL OR storage_mode = '' OR storage_mode <> ?)", costingAttachmentStorageLocalFile)
+	}
 	var count int64
-	if err := a.db.Table(table).Where("updated_at > ?", since).Count(&count).Error; err != nil {
+	if err := baseQuery.Count(&count).Error; err != nil {
 		return 0, fmt.Errorf("count local %s records: %w", table, err)
 	}
 	if count == 0 {
@@ -476,13 +637,17 @@ func (a *App) syncTablePush(table string, since time.Time) (int, error) {
 	}
 
 	// Get records
-	rows, err := a.db.Table(table).Where("updated_at > ?", since).Rows()
+	rowsQuery := a.db.Table(table).Where("updated_at > ?", since)
+	if table == "costing_sheet_attachments" && syncColumnExists(localColumnTypes, "storage_mode") {
+		rowsQuery = rowsQuery.Where("(storage_mode IS NULL OR storage_mode = '' OR storage_mode <> ?)", costingAttachmentStorageLocalFile)
+	}
+	rows, err := rowsQuery.Rows()
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
 
-	remoteColumnTypes, err := syncDBColumnTypes(a.dbManager.Remote(), table)
+	remoteColumnTypes, err := syncDBColumnTypes(remoteDB, table)
 	if err != nil {
 		return 0, fmt.Errorf("inspect remote %s columns: %w", table, err)
 	}
@@ -507,7 +672,7 @@ func (a *App) syncTablePush(table string, since time.Time) (int, error) {
 
 		// SAFE UPSERT: Update if exists, create if not
 		id := remoteRecord["id"]
-		if err := syncUpsertRecordByIDOrNaturalKey(a.dbManager.Remote(), table, remoteRecord, remoteColumnTypes); err != nil {
+		if err := syncUpsertRecordByIDOrNaturalKey(remoteDB, table, remoteRecord, remoteColumnTypes); err != nil {
 			return synced, fmt.Errorf("upsert remote %s/%v: %w", table, id, err)
 		}
 		synced++
@@ -532,7 +697,30 @@ func (a *App) syncTablePush(table string, since time.Time) (int, error) {
 
 // syncTablePull pulls cloud changes to local (MERGE ONLY - never deletes!)
 func (a *App) syncTablePull(table string, since time.Time) (int, error) {
-	if a.dbManager.Remote() == nil {
+	if a.dbManager == nil {
+		return 0, nil
+	}
+	remoteDB := a.dbManager.Remote()
+	if remoteDB == nil {
+		return 0, nil
+	}
+	if isUserActivitySyncTable(table) && !a.currentSessionCanAccessActivityMonitoring() {
+		log.Printf("Skipping pull sync for %s: confidential activity monitoring is restricted to Rahul/Mentor", table)
+		return 0, nil
+	}
+	remoteAvailable, err := a.dbManager.remoteSyncTableAvailableForSync(table, "pull")
+	if err != nil {
+		return 0, err
+	}
+	if !remoteAvailable {
+		return 0, nil
+	}
+	remoteColumnTypes, err := syncDBColumnTypes(remoteDB, table)
+	if err != nil {
+		return 0, fmt.Errorf("inspect remote %s columns: %w", table, err)
+	}
+	if !syncColumnExists(remoteColumnTypes, "updated_at") {
+		log.Printf("Skipping pull sync for %s: remote table has no updated_at column for incremental sync", table)
 		return 0, nil
 	}
 	if isUserActivitySyncTable(table) && !a.currentSessionCanAccessActivityMonitoring() {
@@ -550,7 +738,7 @@ func (a *App) syncTablePull(table string, since time.Time) (int, error) {
 
 	// Count records to sync
 	var count int64
-	if err := a.dbManager.Remote().Table(table).Where("updated_at > ?", since).Count(&count).Error; err != nil {
+	if err := remoteDB.Table(table).Where("updated_at > ?", since).Count(&count).Error; err != nil {
 		return 0, fmt.Errorf("count remote %s records: %w", table, err)
 	}
 	if count == 0 {
@@ -562,7 +750,7 @@ func (a *App) syncTablePull(table string, since time.Time) (int, error) {
 	}
 
 	// Get records
-	rows, err := a.dbManager.Remote().Table(table).Where("updated_at > ?", since).Rows()
+	rows, err := remoteDB.Table(table).Where("updated_at > ?", since).Rows()
 	if err != nil {
 		return 0, err
 	}
@@ -571,7 +759,7 @@ func (a *App) syncTablePull(table string, since time.Time) (int, error) {
 	synced := 0
 	for rows.Next() {
 		var record map[string]interface{}
-		if err := a.dbManager.Remote().ScanRows(rows, &record); err != nil {
+		if err := remoteDB.ScanRows(rows, &record); err != nil {
 			continue
 		}
 
@@ -868,6 +1056,11 @@ func (a *App) StartBackgroundDBSync() {
 	a.bgSyncStop = make(chan struct{})
 	a.bgSyncWG.Add(1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.recordBackgroundPanic("Background DB sync", r)
+			}
+		}()
 		defer a.bgSyncWG.Done()
 
 		// Initial delay to let app fully start
@@ -899,6 +1092,14 @@ func (a *App) StartBackgroundDBSync() {
 
 					if pushed > 0 || pulled > 0 {
 						log.Printf("Background DB sync: pushed=%d, pulled=%d", pushed, pulled)
+						a.saveSetting("db_sync_last_at", time.Now().Format(time.RFC3339))
+						a.saveSetting("db_sync_last_status", "success")
+					}
+					if updateSummary, updateErr := a.applyPendingDataUpdatesInternal(false, "background_db_sync"); updateErr != nil {
+						log.Printf("Background DB sync published data update failed: %v", updateErr)
+						a.saveSetting("db_sync_last_status", "failed")
+					} else if updateSummary.AppliedCount > 0 {
+						log.Printf("Background DB sync applied %d published data update(s)", updateSummary.AppliedCount)
 						a.saveSetting("db_sync_last_at", time.Now().Format(time.RFC3339))
 						a.saveSetting("db_sync_last_status", "success")
 					}

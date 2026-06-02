@@ -18,7 +18,7 @@ import (
 //   - Complete CRUD for SupplierInvoice entity
 //   - Multi-currency support (EUR, USD, BHD, etc.)
 //   - 3-way matching (PO ↔ GRN ↔ Invoice)
-//   - Approval workflow (Pending → Verified → Approved → Paid)
+//   - Approval workflow (Pending → Matched → Approved → Paid)
 //   - Payment tracking with references
 //   - OCR document linking
 //   - Dispute management
@@ -183,6 +183,9 @@ func (a *App) GetSupplierInvoices() ([]SupplierInvoice, error) {
 	if err := a.db.Preload("Items").Order("invoice_date DESC").Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve supplier invoices: %w", err)
 	}
+	if err := a.hydrateSupplierInvoicesPaymentState(a.db, invoices); err != nil {
+		return nil, fmt.Errorf("failed to normalize supplier invoice payment state: %w", err)
+	}
 
 	log.Printf("📊 Retrieved %d supplier invoices", len(invoices))
 	return invoices, nil
@@ -200,6 +203,9 @@ func (a *App) GetSupplierInvoiceByID(id string) (SupplierInvoice, error) {
 	var invoice SupplierInvoice
 	if err := a.db.Preload("Items").Where("id = ?", id).First(&invoice).Error; err != nil {
 		return SupplierInvoice{}, fmt.Errorf("supplier invoice not found: %w", err)
+	}
+	if err := a.hydrateSupplierInvoicePaymentState(a.db, &invoice); err != nil {
+		return SupplierInvoice{}, fmt.Errorf("failed to normalize supplier invoice payment state: %w", err)
 	}
 
 	return invoice, nil
@@ -219,6 +225,9 @@ func (a *App) GetSupplierInvoicesBySupplier(supplierID string) ([]SupplierInvoic
 		Order("invoice_date DESC").
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve supplier invoices: %w", err)
+	}
+	if err := a.hydrateSupplierInvoicesPaymentState(a.db, invoices); err != nil {
+		return nil, fmt.Errorf("failed to normalize supplier invoices for supplier %s: %w", supplierID, err)
 	}
 
 	log.Printf("📊 Retrieved %d invoices for supplier %s", len(invoices), supplierID)
@@ -240,6 +249,9 @@ func (a *App) GetSupplierInvoicesByPO(poID string) ([]SupplierInvoice, error) {
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve invoices for PO: %w", err)
 	}
+	if err := a.hydrateSupplierInvoicesPaymentState(a.db, invoices); err != nil {
+		return nil, fmt.Errorf("failed to normalize supplier invoices for PO %s: %w", poID, err)
+	}
 
 	log.Printf("📊 Retrieved %d invoices for PO %s", len(invoices), poID)
 	return invoices, nil
@@ -254,22 +266,28 @@ func (a *App) UpdateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 		return SupplierInvoice{}, fmt.Errorf("database not initialized")
 	}
 
+	tx := a.db.Begin()
+	if tx.Error != nil {
+		return SupplierInvoice{}, fmt.Errorf("failed to begin transaction: %w", tx.Error)
+	}
+
 	// Verify invoice exists
 	var existing SupplierInvoice
-	if err := a.db.Where("id = ?", inv.ID).First(&existing).Error; err != nil {
+	if err := tx.Where("id = ?", inv.ID).First(&existing).Error; err != nil {
+		tx.Rollback()
 		return SupplierInvoice{}, fmt.Errorf("supplier invoice not found: %w", err)
 	}
 
 	// Re-enrich denormalized fields if IDs changed
 	if inv.SupplierID != "" && inv.SupplierID != existing.SupplierID {
 		var supplier SupplierMaster
-		if err := a.db.Where("id = ?", inv.SupplierID).First(&supplier).Error; err == nil {
+		if err := tx.Where("id = ?", inv.SupplierID).First(&supplier).Error; err == nil {
 			inv.SupplierName = supplier.SupplierName
 		}
 	}
 	if inv.PurchaseOrderID != "" && inv.PurchaseOrderID != existing.PurchaseOrderID {
 		var po PurchaseOrder
-		if err := a.db.Where("id = ?", inv.PurchaseOrderID).First(&po).Error; err == nil {
+		if err := tx.Where("id = ?", inv.PurchaseOrderID).First(&po).Error; err == nil {
 			inv.PONumber = po.PONumber
 			if strings.TrimSpace(inv.Division) == "" {
 				inv.Division = a.resolvePurchaseOrderDivision(po)
@@ -281,18 +299,22 @@ func (a *App) UpdateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 	} else {
 		inv.Division = normalizeDivisionName(inv.Division)
 	}
+	inv.Currency = strings.ToUpper(strings.TrimSpace(inv.Currency))
+	if inv.Currency == "" {
+		inv.Currency = "BHD"
+	}
+	inv.ExchangeRate = normalizeExchangeRateToBHD(inv.Currency, inv.ExchangeRate)
 
 	// Update timestamp
 	inv.UpdatedAt = time.Now()
 
-	if inv.PaymentStatus == "Paid" {
-		inv.Status = "Paid"
-		if inv.PaymentDate == nil {
-			now := time.Now()
-			inv.PaymentDate = &now
-		}
-	} else if inv.Status == "Paid" && inv.PaymentStatus != "Paid" {
-		inv.Status = "Approved"
+	if inv.Status == "Approved" && inv.MatchStatus != "Matched" {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("approved supplier invoices must have a Matched 3-way match")
+	}
+	if inv.Status == "Paid" {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("paid status is ledger-derived; use supplier payment workflows instead")
 	}
 
 	// Recalculate BHD amounts if currency changed
@@ -306,12 +328,21 @@ func (a *App) UpdateSupplierInvoice(inv SupplierInvoice) (SupplierInvoice, error
 		inv.TotalBHD = inv.TotalForeign
 	}
 
-	if err := a.db.Save(&inv).Error; err != nil {
+	if err := tx.Save(&inv).Error; err != nil {
+		tx.Rollback()
 		return SupplierInvoice{}, fmt.Errorf("failed to update supplier invoice: %w", err)
+	}
+	if _, err := a.applySupplierInvoicePaymentState(tx, inv.ID); err != nil {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("failed to normalize supplier invoice payment state: %w", err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("failed to commit supplier invoice update: %w", err)
 	}
 
 	log.Printf("✅ Updated Supplier Invoice: %s", inv.InvoiceNumber)
-	return inv, nil
+	return a.GetSupplierInvoiceByID(inv.ID)
 }
 
 // UpdateSupplierInvoiceWithPayment updates a supplier invoice and, when requested,
@@ -355,6 +386,11 @@ func (a *App) UpdateSupplierInvoiceWithPayment(inv SupplierInvoice, createPaymen
 	} else {
 		inv.Division = normalizeDivisionName(inv.Division)
 	}
+	inv.Currency = strings.ToUpper(strings.TrimSpace(inv.Currency))
+	if inv.Currency == "" {
+		inv.Currency = "BHD"
+	}
+	inv.ExchangeRate = normalizeExchangeRateToBHD(inv.Currency, inv.ExchangeRate)
 
 	inv.UpdatedAt = time.Now()
 
@@ -384,75 +420,28 @@ func (a *App) UpdateSupplierInvoiceWithPayment(inv SupplierInvoice, createPaymen
 	}
 
 	if createPaymentEntry && inv.PaymentStatus == "Paid" {
-		var totals struct {
-			AmountBHD     float64
-			AmountForeign float64
+		paymentDate := time.Now()
+		if inv.PaymentDate != nil {
+			paymentDate = *inv.PaymentDate
 		}
-		if err := tx.Model(&SupplierPayment{}).
-			Where("supplier_invoice_id = ?", inv.ID).
-			Select("COALESCE(SUM(amount_bhd), 0) AS amount_bhd, COALESCE(SUM(amount_foreign), 0) AS amount_foreign").
-			Scan(&totals).Error; err != nil {
+		if _, err := a.createRemainingSupplierInvoicePayment(tx, inv, paymentDate, inv.PaymentMethod, inv.PaymentRef, "Created from supplier invoice edit"); err != nil {
 			tx.Rollback()
-			return SupplierInvoice{}, fmt.Errorf("failed to calculate existing supplier payments: %w", err)
+			return SupplierInvoice{}, fmt.Errorf("failed to create supplier payment ledger entry: %w", err)
 		}
+	}
 
-		remainingBHD := inv.TotalBHD - totals.AmountBHD
-		if remainingBHD > FloatingPointTolerance {
-			currency := inv.Currency
-			if currency == "" {
-				currency = "BHD"
-			}
-
-			exchangeRate := inv.ExchangeRate
-			if exchangeRate <= 0 {
-				exchangeRate = 1
-			}
-
-			amountForeign := remainingBHD
-			if currency != "BHD" {
-				remainingForeign := inv.TotalForeign - totals.AmountForeign
-				if remainingForeign > FloatingPointTolerance {
-					amountForeign = remainingForeign
-				} else {
-					amountForeign = remainingBHD / exchangeRate
-				}
-			}
-
-			paymentMethod := inv.PaymentMethod
-			if paymentMethod == "" {
-				paymentMethod = "Other"
-			}
-
-			paymentDate := time.Now()
-			if inv.PaymentDate != nil {
-				paymentDate = *inv.PaymentDate
-			}
-
-			payment := SupplierPayment{
-				SupplierInvoiceID: inv.ID,
-				SupplierID:        inv.SupplierID,
-				AmountForeign:     amountForeign,
-				Currency:          currency,
-				ExchangeRate:      exchangeRate,
-				AmountBHD:         remainingBHD,
-				PaymentDate:       paymentDate,
-				PaymentMethod:     paymentMethod,
-				Reference:         inv.PaymentRef,
-				Notes:             "Created from supplier invoice edit",
-				SupplierName:      inv.SupplierName,
-				InvoiceNumber:     inv.InvoiceNumber,
-			}
-
-			if err := tx.Create(&payment).Error; err != nil {
-				tx.Rollback()
-				return SupplierInvoice{}, fmt.Errorf("failed to create supplier payment ledger entry: %w", err)
-			}
-		}
+	if _, err := a.applySupplierInvoicePaymentState(tx, inv.ID); err != nil {
+		tx.Rollback()
+		return SupplierInvoice{}, fmt.Errorf("failed to normalize supplier invoice payment state: %w", err)
 	}
 
 	if err := tx.Commit().Error; err != nil {
 		tx.Rollback()
 		return SupplierInvoice{}, fmt.Errorf("failed to commit supplier invoice update: %w", err)
+	}
+
+	if err := a.db.Where("id = ?", inv.ID).First(&inv).Error; err != nil {
+		return SupplierInvoice{}, fmt.Errorf("failed to reload supplier invoice: %w", err)
 	}
 
 	log.Printf("✅ Updated Supplier Invoice from editor: %s (create payment entry=%v)", inv.InvoiceNumber, createPaymentEntry)
@@ -528,8 +517,8 @@ func (a *App) ApproveSupplierInvoice(id string, approvedBy string) error {
 	}
 
 	// Verify 3-way match passed before approving
-	if invoice.MatchStatus == "Discrepancy" {
-		return fmt.Errorf("cannot approve invoice with discrepancies: %s", invoice.InvoiceNumber)
+	if invoice.MatchStatus != "Matched" {
+		return fmt.Errorf("cannot approve invoice until 3-way match is Matched: %s", invoice.InvoiceNumber)
 	}
 
 	now := time.Now()
@@ -560,7 +549,7 @@ func (a *App) DisputeSupplierInvoice(id string, reason string) error {
 		return fmt.Errorf("supplier invoice not found: %w", err)
 	}
 
-	invoice.Status = "Disputed"
+	invoice.Status = "Dispute"
 	invoice.DisputeReason = reason
 	invoice.UpdatedAt = time.Now()
 
@@ -591,20 +580,27 @@ func (a *App) MarkSupplierInvoicePaid(id string, paymentRef string, paymentMetho
 	}
 
 	// Verify invoice is approved before marking as paid
-	if invoice.Status != "Approved" {
+	if invoice.Status != "Approved" && invoice.Status != "Paid" {
 		return fmt.Errorf("invoice must be approved before payment: %s", invoice.InvoiceNumber)
 	}
 
-	now := time.Now()
-	invoice.PaymentStatus = "Paid"
-	invoice.Status = "Paid"
-	invoice.PaymentDate = &now
-	invoice.PaymentRef = paymentRef
-	invoice.PaymentMethod = paymentMethod
-	invoice.UpdatedAt = now
+	tx := a.db.Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("failed to start transaction: %w", tx.Error)
+	}
 
-	if err := a.db.Save(&invoice).Error; err != nil {
-		return fmt.Errorf("failed to mark invoice as paid: %w", err)
+	now := time.Now()
+	if _, err := a.createRemainingSupplierInvoicePayment(tx, invoice, now, paymentMethod, paymentRef, "Created from mark-as-paid action"); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to create supplier payment ledger entry: %w", err)
+	}
+	if _, err := a.applySupplierInvoicePaymentState(tx, invoice.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to update invoice payment state: %w", err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to commit mark-as-paid transaction: %w", err)
 	}
 
 	log.Printf("💰 Marked Supplier Invoice as Paid: %s (Ref: %s, Method: %s)",
@@ -622,14 +618,24 @@ func (a *App) GetUnpaidSupplierInvoices() ([]SupplierInvoice, error) {
 	}
 
 	var invoices []SupplierInvoice
-	if err := a.db.Preload("Items").Where("payment_status = ?", "Unpaid").
+	if err := a.db.Preload("Items").Where("status IS NULL OR status NOT IN ?", []string{"Rejected", "Dispute"}).
 		Order("due_date ASC").
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve unpaid invoices: %w", err)
 	}
+	if err := a.hydrateSupplierInvoicesPaymentState(a.db, invoices); err != nil {
+		return nil, fmt.Errorf("failed to normalize unpaid supplier invoices: %w", err)
+	}
 
-	log.Printf("📊 Retrieved %d unpaid supplier invoices", len(invoices))
-	return invoices, nil
+	openInvoices := make([]SupplierInvoice, 0, len(invoices))
+	for _, invoice := range invoices {
+		if invoice.OutstandingBHD > FloatingPointTolerance {
+			openInvoices = append(openInvoices, invoice)
+		}
+	}
+
+	log.Printf("📊 Retrieved %d unpaid supplier invoices", len(openInvoices))
+	return openInvoices, nil
 }
 
 // GetOverdueSupplierInvoices retrieves all overdue invoices
@@ -643,14 +649,24 @@ func (a *App) GetOverdueSupplierInvoices() ([]SupplierInvoice, error) {
 
 	now := time.Now()
 	var invoices []SupplierInvoice
-	if err := a.db.Preload("Items").Where("payment_status = ? AND due_date < ?", "Unpaid", now).
+	if err := a.db.Preload("Items").Where("due_date < ? AND (status IS NULL OR status NOT IN ?)", now, []string{"Rejected", "Dispute"}).
 		Order("due_date ASC").
 		Find(&invoices).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve overdue invoices: %w", err)
 	}
+	if err := a.hydrateSupplierInvoicesPaymentState(a.db, invoices); err != nil {
+		return nil, fmt.Errorf("failed to normalize overdue supplier invoices: %w", err)
+	}
 
-	log.Printf("⚠️ Retrieved %d overdue supplier invoices", len(invoices))
-	return invoices, nil
+	overdueInvoices := make([]SupplierInvoice, 0, len(invoices))
+	for _, invoice := range invoices {
+		if invoice.OutstandingBHD > FloatingPointTolerance {
+			overdueInvoices = append(overdueInvoices, invoice)
+		}
+	}
+
+	log.Printf("⚠️ Retrieved %d overdue supplier invoices", len(overdueInvoices))
+	return overdueInvoices, nil
 }
 
 // =============================================================================
@@ -715,16 +731,14 @@ func (a *App) PerformThreeWayMatch(invoiceID string) (ThreeWayMatchResult, error
 						poItem := po.Items[invItem.LineNumber-1]
 
 						// Convert invoice item price to BHD if needed
-						invUnitPriceBHD := invItem.UnitPrice
-						if invoice.Currency != "BHD" {
-							invUnitPriceBHD = invItem.UnitPrice * invoice.ExchangeRate
-						}
+						invUnitPriceBHD := a.resolveSupplierInvoiceItemUnitPriceBHD(invoice, invItem)
+						poReferenceCost := a.resolvePurchaseOrderItemReferenceCost(poItem)
 
 						// Calculate unit price variance
-						priceDiff := invUnitPriceBHD - poItem.UnitPriceBHD
+						priceDiff := invUnitPriceBHD - poReferenceCost.UnitCostBHD
 						priceVariance := 0.0
-						if poItem.UnitPriceBHD > 0 {
-							priceVariance = (priceDiff / poItem.UnitPriceBHD)
+						if poReferenceCost.UnitCostBHD > 0 {
+							priceVariance = (priceDiff / poReferenceCost.UnitCostBHD)
 						}
 
 						// P1 FIX: Flag if price variance exceeds 2% tolerance
@@ -732,7 +746,7 @@ func (a *App) PerformThreeWayMatch(invoiceID string) (ThreeWayMatchResult, error
 							priceVarianceFlag = true
 							discrepancies = append(discrepancies,
 								fmt.Sprintf("Line %d unit price variance: Invoice=%.3f BHD, PO=%.3f BHD (variance=%.1f%%, tolerance=±%.0f%%)",
-									invItem.LineNumber, invUnitPriceBHD, poItem.UnitPriceBHD, priceVariance*100, tolerance*100))
+									invItem.LineNumber, invUnitPriceBHD, poReferenceCost.UnitCostBHD, priceVariance*100, tolerance*100))
 						}
 					}
 				}
@@ -799,12 +813,12 @@ func (a *App) PerformThreeWayMatch(invoiceID string) (ThreeWayMatchResult, error
 		invoice.MatchStatus = "Matched"
 		invoice.POMatchOK = true
 		invoice.GRNMatchOK = true
-		invoice.Status = "Verified"
+		invoice.Status = "Pending"
 		log.Printf("✅ 3-Way Match PASSED: Invoice %s (all checks passed)", invoice.InvoiceNumber)
 	} else {
 		// P1 FIX: Distinguish between minor variances (within tolerance, manual review) and hard failures
 		if priceVarianceFlag {
-			invoice.MatchStatus = "Review Required"
+			invoice.MatchStatus = "Pending"
 			invoice.Status = "Pending"
 			log.Printf("⚠️ 3-Way Match NEEDS REVIEW: Invoice %s - Price variance exceeds tolerance", invoice.InvoiceNumber)
 		} else {
@@ -898,6 +912,9 @@ func (a *App) CreateSupplierInvoiceFromOCR(ocrDocID string, supplierID string, p
 		var po PurchaseOrder
 		if err := a.db.Where("id = ?", poID).First(&po).Error; err == nil {
 			invoice.PONumber = po.PONumber
+			if strings.TrimSpace(invoice.Division) == "" {
+				invoice.Division = a.resolvePurchaseOrderDivision(po)
+			}
 		}
 	}
 
@@ -979,10 +996,18 @@ func (a *App) CreateSupplierInvoiceFromOCR(ocrDocID string, supplierID string, p
 					invoice.SupplierID = po.SupplierID
 					invoice.SupplierName = po.SupplierName
 				}
+				if strings.TrimSpace(invoice.Division) == "" {
+					invoice.Division = a.resolvePurchaseOrderDivision(po)
+				}
 			} else {
 				invoice.PONumber = poNum
 			}
 		}
+	}
+	if strings.TrimSpace(invoice.Division) == "" {
+		invoice.Division = a.resolveSupplierInvoiceDivision(invoice)
+	} else {
+		invoice.Division = normalizeDivisionName(invoice.Division)
 	}
 
 	// Create the invoice

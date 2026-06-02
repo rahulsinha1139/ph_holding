@@ -32,6 +32,9 @@
     ManualMatchLine,
     UnmatchLine,
     FinalizeReconciliation,
+    ReopenReconciliation,
+    GetReconciliationStats,
+    GetReconciliationSummary,
     GetAuditTrail,
     DeleteBankStatement,
     UpdateBankStatement,
@@ -39,6 +42,8 @@
     UpdateBankStatementLine,
     DeleteBankStatementLine,
     ListCustomerInvoices,
+    GetAllPayments,
+    ListCustomerReceipts,
     GetSupplierInvoices,
     GetAllSupplierPayments,
     ListExpenseEntries,
@@ -118,6 +123,24 @@
     as_of: any;
   }
 
+  interface ReconciliationStats {
+    total_statements: number;
+    reconciled_statements: number;
+    in_progress_statements: number;
+    imported_statements: number;
+    latest_statement_date: any;
+  }
+
+  interface ReconciliationSummary {
+    status: string;
+    matched_count: number;
+    unmatched_count: number;
+    matched_percent: number;
+    matched_amount: number;
+    total_lines: number;
+    balance_verified: boolean;
+  }
+
   // State - using any types for Wails-generated compatibility
   let bankAccounts: any[] = [];
   let allBankAccounts: any[] = []; // All accounts including inactive for management
@@ -126,9 +149,12 @@
   let selectedStatement: any | null = null;
   let statementLines: any[] = [];
   let cashPosition: any = null;
+  let reconciliationStats: ReconciliationStats | null = null;
+  let reconciliationSummary: ReconciliationSummary | null = null;
   let loading = true;
   let statementsLoading = false;
   let linesLoading = false;
+  let lastLoadedCompany = company;
 
   // Modal state
   let showImportModal = false;
@@ -145,6 +171,8 @@
   let matchAllocations: MatchAllocationDraft[] = [];
   let matchLoading = false;
   let customerInvoiceCandidates: any[] = [];
+  let customerPaymentCandidates: any[] = [];
+  let customerReceiptCandidates: any[] = [];
   let supplierInvoiceCandidates: any[] = [];
   let supplierPaymentCandidates: any[] = [];
   let expenseCandidates: any[] = [];
@@ -207,20 +235,11 @@
   $: visibleCashAccounts = (cashPosition?.accounts || []).filter((account: any) => matchesCompany(account.division));
   $: totalVisibleCashPosition = visibleCashAccounts.reduce((sum: number, account: any) => sum + getAccountBalanceBHD(account), 0);
   $: cashPositionNotices = visibleCashAccounts.map((account: any) => account.notice).filter(Boolean);
-  $: if (company && visibleBankAccounts.length > 0 && !visibleBankAccounts.some((account: any) => account.id === selectedAccountId)) {
-    selectedAccountId = visibleBankAccounts[0].id;
-    loadStatements();
-  }
-  $: if (company && visibleBankAccounts.length === 0 && selectedAccountId) {
-    selectedAccountId = '';
-    selectedStatement = null;
-    statementLines = [];
-  }
 
   // KPI calculations
-  $: totalUnmatched = statementLines.filter(l => !l.is_matched).length;
+  $: totalUnmatched = reconciliationSummary?.unmatched_count ?? statementLines.filter(l => !l.is_matched).length;
+  $: openStatements = (reconciliationStats?.imported_statements || 0) + (reconciliationStats?.in_progress_statements || 0);
   $: totalMatched = statementLines.filter(l => l.is_matched).length;
-  $: unmatchedDebit = statementLines.filter(l => !l.is_matched && l.debit > 0).reduce((sum, l) => sum + l.debit, 0);
   $: unmatchedCredit = statementLines.filter(l => !l.is_matched && l.credit > 0).reduce((sum, l) => sum + l.credit, 0);
   $: matchLineAmount = matchingLine ? formatMatchAmount(matchingLine) : 0;
   $: matchAllocationTotal = roundAmount(matchAllocations.reduce((sum, allocation) => sum + (Number(allocation.allocated_amount) || 0), 0));
@@ -258,12 +277,12 @@
       render: (row: BankStatement) => {
         const statusColors: Record<string, string> = {
           'Imported': '#F59E0B',
-          'In Progress': '#3B82F6',
+          'InProgress': '#3B82F6',
           'Reconciled': '#10B981',
           'Verified': '#059669'
         };
         const color = statusColors[row.status] || '#6B7280';
-        return `<span style="color: ${color}; font-weight: 500; font-size: 12px;">${escapeHtml(row.status)}</span>`;
+        return `<span style="color: ${color}; font-weight: 500; font-size: 12px;">${escapeHtml(formatStatementStatus(row.status))}</span>`;
       }
     }
   ];
@@ -337,9 +356,10 @@
       render: (row: BankStatementLine) => {
         if (row.is_matched) {
           const confidence = Math.round(row.match_confidence * 100);
-          return `<span style="color: #10B981; font-size: 12px;">Matched (${confidence}%)</span>`;
+          const label = row.match_type ? `${row.match_type} Match` : 'Matched';
+          return `<span style="color: #10B981; font-size: 12px;">${escapeHtml(label)} (${confidence}%)</span>`;
         }
-        return `<span style="color: #EF4444; font-size: 12px;">Unmatched</span>`;
+        return `<span style="color: #EF4444; font-size: 12px;">Open</span>`;
       }
     }
   ];
@@ -362,6 +382,20 @@
     }
   }
 
+  function formatStatementStatus(status: string): string {
+    if (status === 'InProgress') return 'In Progress';
+    return status || 'Unknown';
+  }
+
+  function isStatementLocked(statement: BankStatement | null | undefined): boolean {
+    return Boolean(statement && ['Reconciled', 'Verified'].includes(statement.status));
+  }
+
+  function currentStatementLabel(): string {
+    if (!selectedStatement) return '-';
+    return formatStatementStatus(reconciliationSummary?.status || selectedStatement.status);
+  }
+
   function formatBankAccountOption(account: any): string {
     const bank = account?.bank_name || 'Bank Account';
     const accountName = account?.account_name ? ` ${account.account_name}` : '';
@@ -380,6 +414,29 @@
     ) || 0;
   }
 
+  async function loadReconciliationStats() {
+    if (!selectedAccountId) {
+      reconciliationStats = null;
+      return;
+    }
+
+    try {
+      reconciliationStats = await GetReconciliationStats(selectedAccountId) as ReconciliationStats;
+    } catch (err) {
+      console.error('Failed to load reconciliation stats:', err);
+      reconciliationStats = null;
+    }
+  }
+
+  async function loadStatementSummary(statementID: string) {
+    try {
+      reconciliationSummary = await GetReconciliationSummary(statementID) as ReconciliationSummary;
+    } catch (err) {
+      console.error('Failed to load reconciliation summary:', err);
+      reconciliationSummary = null;
+    }
+  }
+
   // escapeHtml now imported from centralized utility
 
   // Data loading - independent API calls to prevent one failure from blocking the other
@@ -391,10 +448,16 @@
     try {
       const accountsResult = await GetActiveBankAccounts();
       bankAccounts = accountsResult || [];
-      const scopedAccounts = (accountsResult || []).filter((account: any) => matchesCompany(account.division));
-      if (scopedAccounts.length > 0 && !selectedAccountId) {
+      const scopedAccounts = bankAccounts.filter((account: any) => matchesCompany(account.division));
+      if (scopedAccounts.length > 0 && (!selectedAccountId || !scopedAccounts.some((account: any) => account.id === selectedAccountId))) {
         selectedAccountId = scopedAccounts[0].id;
         await loadStatements();
+      } else if (selectedAccountId) {
+        await loadStatements();
+      } else {
+        statements = [];
+        statementLines = [];
+        selectedStatement = null;
       }
     } catch (err) {
       console.error('Failed to load bank accounts:', err);
@@ -423,6 +486,7 @@
     try {
       const result = await GetBankStatements(selectedAccountId);
       statements = result || [];
+      await loadReconciliationStats();
     } catch (err) {
       console.error('Failed to load statements:', err);
       toast.danger('Failed to load statements');
@@ -437,6 +501,7 @@
     try {
       const result = await GetBankStatementLines(statement.id);
       statementLines = result || [];
+      await loadStatementSummary(statement.id);
     } catch (err) {
       console.error('Failed to load statement lines:', err);
       toast.danger('Failed to load transactions');
@@ -452,6 +517,7 @@
       const result = await AutoMatchBankLines(selectedStatement.id);
       toast.success(`Auto-matched ${result?.matched_count || 0} transactions`);
       await loadStatementLines(selectedStatement);
+      await loadStatements();
     } catch (err) {
       console.error('Auto-match failed:', err);
       toast.danger('Auto-match failed');
@@ -468,9 +534,29 @@
       await FinalizeReconciliation(selectedStatement.id, 'admin');
       toast.success('Statement reconciled successfully');
       await loadStatements();
+      const refreshed = statements.find((statement) => statement.id === selectedStatement.id);
+      if (refreshed) {
+        await loadStatementLines(refreshed);
+      }
     } catch (err) {
       console.error('Finalize failed:', err);
       toast.danger('Finalization failed');
+    }
+  }
+
+  async function handleReopen() {
+    if (!selectedStatement) return;
+    try {
+      await ReopenReconciliation(selectedStatement.id, 'admin', 'Reopened from bank reconciliation workspace');
+      toast.success('Statement reopened for reconciliation');
+      await loadStatements();
+      const refreshed = statements.find((statement) => statement.id === selectedStatement.id);
+      if (refreshed) {
+        await loadStatementLines(refreshed);
+      }
+    } catch (err) {
+      console.error('Reopen failed:', err);
+      toast.danger(`Failed to reopen statement: ${err}`);
     }
   }
 
@@ -493,8 +579,10 @@
   async function loadMatchCandidates(line: BankStatementLine) {
     matchLoading = true;
     try {
-      const [allCustomerInvoices, allSupplierInvoices, supplierPayments, expenses] = await Promise.all([
+      const [allCustomerInvoices, customerPayments, customerReceipts, allSupplierInvoices, supplierPayments, expenses] = await Promise.all([
         ListCustomerInvoices(1000, 0).catch(() => []),
+        GetAllPayments(500, 0).catch(() => []),
+        ListCustomerReceipts(500, 0).catch(() => []),
         GetSupplierInvoices().catch(() => []),
         GetAllSupplierPayments().catch(() => []),
         ListExpenseEntries('', false).catch(() => [])
@@ -502,12 +590,12 @@
 
       customerInvoiceCandidates = (allCustomerInvoices || []).filter((invoice: any) => {
         const status = String(invoice?.status || '').toLowerCase();
-        return matchesCompany(invoice?.division) && Number(invoice?.outstanding_bhd || 0) > 0 && !['cancelled', 'void', 'draft'].includes(status);
+        return matchesCompany(invoice?.division) && Number(invoice?.outstanding_bhd || 0) > 0 && !['cancelled', 'void', 'draft', 'proforma'].includes(status);
       });
       supplierInvoiceCandidates = (allSupplierInvoices || []).filter((invoice: any) => {
         const status = String(invoice?.status || '').toLowerCase();
         const paymentStatus = String(invoice?.payment_status || '').toLowerCase();
-        return matchesCompany(invoice?.division) && paymentStatus !== 'paid' && !['cancelled', 'void', 'rejected'].includes(status);
+        return matchesCompany(invoice?.division) && paymentStatus !== 'paid' && !['cancelled', 'void', 'rejected', 'dispute'].includes(status);
       });
       supplierPaymentCandidates = (supplierPayments || []).filter((payment: any) => matchesCompany(payment?.division));
       expenseCandidates = (expenses || []).filter((expense: any) => {
@@ -518,7 +606,29 @@
           && !['cancelled', 'canceled', 'void', 'rejected'].includes(status)
           && getCandidateAmount(expense, 'EXPENSE') > 0;
       });
-      payrollPayoutCandidates = (await ListUnreconciledPayrollPayouts().catch(() => [])).filter((payout: any) => matchesCompany(payout?.division));
+      customerPaymentCandidates = (customerPayments || []).filter((payment: any) => matchesCompany(payment?.division) && Number(payment?.amount_bhd || 0) > 0);
+      customerReceiptCandidates = (customerReceipts || []).filter((receipt: any) => matchesCompany(receipt?.division) && String(receipt?.status || '').toLowerCase() !== 'reversed' && Number(receipt?.amount_bhd || 0) > 0);
+      payrollPayoutCandidates = ((await ListUnreconciledPayrollPayouts().catch(() => [])) || []).filter((payout: any) => matchesCompany(payout?.division));
+
+      if (line.credit > 0) {
+        if (customerInvoiceCandidates.length > 0) {
+          matchingType = 'CUSTOMER_INVOICE';
+        } else if (customerReceiptCandidates.length > 0) {
+          matchingType = 'CUSTOMER_RECEIPT';
+        } else if (customerPaymentCandidates.length > 0) {
+          matchingType = 'CUSTOMER_PAYMENT';
+        }
+      } else if (line.debit > 0) {
+        if (supplierInvoiceCandidates.length > 0) {
+          matchingType = 'SUPPLIER_INVOICE';
+        } else if (expenseCandidates.length > 0) {
+          matchingType = 'EXPENSE';
+        } else if (supplierPaymentCandidates.length > 0) {
+          matchingType = 'SUPPLIER_PAYMENT';
+        } else if (payrollPayoutCandidates.length > 0) {
+          matchingType = 'PAYROLL_PAYOUT';
+        }
+      }
     } finally {
       matchLoading = false;
     }
@@ -534,8 +644,14 @@
 
   function buildMatchCandidateLabel(candidate: any, type: string) {
     if (type === 'CUSTOMER_INVOICE') {
-      const outstanding = Number(candidate.outstanding_bhd || candidate.grand_total_bhd || 0);
-      return `${candidate.invoice_number || 'Invoice'} • ${candidate.customer_name || 'Customer'} • ${formatBHD(outstanding)} BHD`;
+      return `${candidate.invoice_number || 'Invoice'} • ${candidate.customer_name || 'Customer'} • ${formatBHD(candidate.outstanding_bhd || candidate.grand_total_bhd || 0)} BHD`;
+    }
+    if (type === 'CUSTOMER_PAYMENT') {
+      return `${candidate.reference || candidate.invoice_number || 'Payment'} • ${candidate.invoice_number || 'Invoice'} • ${formatBHD(candidate.amount_bhd || 0)} BHD`;
+    }
+    if (type === 'CUSTOMER_RECEIPT') {
+      const unapplied = Number(candidate.unapplied_amount_bhd || 0);
+      return `${candidate.receipt_number || 'Receipt'} • ${candidate.customer_name || 'Customer'} • ${formatBHD(candidate.amount_bhd || 0)} BHD${unapplied > 0 ? ` • ${formatBHD(unapplied)} unapplied` : ''}`;
     }
     if (type === 'SUPPLIER_PAYMENT') {
       return `${candidate.reference || candidate.invoice_number || 'Payment'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.amount_bhd || 0)} BHD`;
@@ -548,7 +664,65 @@
       const name = candidate.vendor_name || candidate.category_name || candidate.cost_center || 'Expense';
       return `${candidate.entry_number || 'Expense'} • ${name} • ${formatBHD(amount)} BHD`;
     }
-    return `${candidate.invoice_number || 'Invoice'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.total_bhd || 0)} BHD`;
+    return `${candidate.invoice_number || 'Invoice'} • ${candidate.supplier_name || 'Supplier'} • ${formatBHD(candidate.outstanding_bhd || candidate.total_bhd || 0)} BHD`;
+  }
+
+  function getCandidateAmount(candidate: any, type: string) {
+    if (type === 'CUSTOMER_INVOICE') return Number(candidate.outstanding_bhd || candidate.grand_total_bhd || 0);
+    if (type === 'CUSTOMER_PAYMENT') return Number(candidate.amount_bhd || 0);
+    if (type === 'CUSTOMER_RECEIPT') return Number(candidate.amount_bhd || 0);
+    if (type === 'SUPPLIER_PAYMENT') return Number(candidate.amount_bhd || 0);
+    if (type === 'PAYROLL_PAYOUT') return Number(candidate.amount || 0);
+    if (type === 'EXPENSE') return Number(candidate.total_amount || ((Number(candidate.amount) || 0) + (Number(candidate.vat_amount) || 0)) || candidate.amount || 0);
+    return Number(candidate.outstanding_bhd || candidate.total_bhd || 0);
+  }
+
+  function allocationKey(type: string, entityId: string) {
+    return `${type}:${entityId}`;
+  }
+
+  function isCandidateAllocated(candidate: any) {
+    return matchAllocations.some((allocation) => allocation.key === allocationKey(matchingType, candidate.id));
+  }
+
+  function addMatchAllocation(candidate: any) {
+    if (!matchingLine || !candidate?.id || isCandidateAllocated(candidate)) return;
+    if (matchingType === 'SUPPLIER_PAYMENT' || matchingType === 'PAYROLL_PAYOUT') {
+      toast.warning('Bulk allocation is available for invoices and expenses. Match payouts one at a time.');
+      return;
+    }
+
+    const candidateAmount = roundAmount(getCandidateAmount(candidate, matchingType));
+    const remaining = matchAllocations.length === 0 ? formatMatchAmount(matchingLine) : matchAllocationRemaining;
+    const defaultAmount = roundAmount(Math.max(0, Math.min(candidateAmount || remaining, remaining > 0 ? remaining : candidateAmount)));
+    matchAllocations = [
+      ...matchAllocations,
+      {
+        key: allocationKey(matchingType, candidate.id),
+        allocation_type: matchingType,
+        entity_id: candidate.id,
+        label: buildMatchCandidateLabel(candidate, matchingType),
+        allocated_amount: defaultAmount,
+        max_amount: candidateAmount
+      }
+    ];
+    matchingCandidateId = '';
+  }
+
+  function updateMatchAllocationAmount(key: string, event: Event) {
+    const target = event.currentTarget as HTMLInputElement;
+    const value = roundAmount(Number(target.value) || 0);
+    matchAllocations = matchAllocations.map((allocation) =>
+      allocation.key === key ? { ...allocation, allocated_amount: value } : allocation
+    );
+  }
+
+  function removeMatchAllocation(key: string) {
+    matchAllocations = matchAllocations.filter((allocation) => allocation.key !== key);
+  }
+
+  function normalizeCandidateText(value: any) {
+    return String(value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ').trim();
   }
 
   function getCandidateAmount(candidate: any, type: string) {
@@ -611,19 +785,24 @@
     const search = normalizeCandidateText(matchingSearch);
     const source = matchingType === 'CUSTOMER_INVOICE'
       ? customerInvoiceCandidates
-      : matchingType === 'SUPPLIER_PAYMENT'
-        ? supplierPaymentCandidates
-        : matchingType === 'PAYROLL_PAYOUT'
-          ? payrollPayoutCandidates
-          : matchingType === 'EXPENSE'
-            ? expenseCandidates
-            : supplierInvoiceCandidates;
+      : matchingType === 'CUSTOMER_PAYMENT'
+        ? customerPaymentCandidates
+        : matchingType === 'CUSTOMER_RECEIPT'
+          ? customerReceiptCandidates
+          : matchingType === 'SUPPLIER_PAYMENT'
+            ? supplierPaymentCandidates
+            : matchingType === 'PAYROLL_PAYOUT'
+              ? payrollPayoutCandidates
+              : matchingType === 'EXPENSE'
+                ? expenseCandidates
+                : supplierInvoiceCandidates;
 
     const lineAmount = matchingLine ? formatMatchAmount(matchingLine) : 0;
     return (source || []).filter((candidate) => {
       if (!search) return true;
       const haystack = [
         candidate.invoice_number,
+        candidate.receipt_number,
         candidate.po_number,
         candidate.customer_name,
         candidate.supplier_name,
@@ -753,6 +932,7 @@
   async function handleAccountChange() {
     selectedStatement = null;
     statementLines = [];
+    reconciliationSummary = null;
     await loadStatements();
   }
 
@@ -935,6 +1115,10 @@
 
   // Transaction line CRUD handlers
   function openEditLineModal(line: BankStatementLine) {
+    if (isStatementLocked(selectedStatement)) {
+      toast.info('Reopen the statement before editing transactions');
+      return;
+    }
     editingLine = line;
 
     // Format date for input
@@ -956,6 +1140,10 @@
 
   function openAddLineModal() {
     if (!selectedStatement) return;
+    if (isStatementLocked(selectedStatement)) {
+      toast.info('Reopen the statement before adding transactions');
+      return;
+    }
     editingLine = null;
     lineFormData = {
       transaction_date: '',
@@ -1066,10 +1254,14 @@
     loadData();
   });
 
-  $: if (company) {
+  $: if (company !== lastLoadedCompany) {
+    lastLoadedCompany = company;
     importAccountId = '';
+    selectedAccountId = '';
+    selectedStatement = null;
+    statementLines = [];
     resetAccountForm();
-    loadData();
+    void loadData();
   }
 </script>
 
@@ -1082,29 +1274,29 @@
     {:else}
       <!-- Cash Position KPIs -->
       <div class="kpi-grid">
-        <Card variant="elevated">
+        <Card variant="elevated" padding="sm">
           <div class="kpi">
-            <span class="kpi-label">Cash Balance</span>
-            <span class="kpi-value primary">{formatBHD(totalVisibleCashPosition)} BHD</span>
+            <span class="kpi-label">Total Cash Position</span>
+            <span class="kpi-value primary">{formatBHD(totalVisibleCashPosition || cashPosition?.total_bhd || 0)} BHD</span>
             <span class="kpi-note">Latest statement closings</span>
           </div>
         </Card>
-        <Card variant="elevated">
+        <Card variant="elevated" padding="sm">
           <div class="kpi">
-            <span class="kpi-label">Matched</span>
-            <span class="kpi-value success">{totalMatched}</span>
+            <span class="kpi-label">Statements Open</span>
+            <span class="kpi-value success">{openStatements}</span>
           </div>
         </Card>
-        <Card variant="elevated">
+        <Card variant="elevated" padding="sm">
           <div class="kpi">
-            <span class="kpi-label">Unmatched</span>
-            <span class="kpi-value warning">{totalUnmatched}</span>
+            <span class="kpi-label">Statements Reconciled</span>
+            <span class="kpi-value success">{reconciliationStats?.reconciled_statements || 0}</span>
           </div>
         </Card>
-        <Card variant="elevated">
+        <Card variant="elevated" padding="sm">
           <div class="kpi">
-            <span class="kpi-label">Unmatched Credits</span>
-            <span class="kpi-value">{formatBHD(unmatchedCredit)} BHD</span>
+            <span class="kpi-label">Current Statement</span>
+            <span class="kpi-value">{currentStatementLabel()}</span>
           </div>
         </Card>
       </div>
@@ -1141,18 +1333,24 @@
             Import Statement
           </Button>
           {#if selectedStatement}
-            <Button variant="secondary" on:click={openEditStatementModal}>
+            <Button variant="secondary" on:click={openEditStatementModal} disabled={isStatementLocked(selectedStatement)}>
               Edit Statement
             </Button>
-            <Button variant="danger" on:click={handleDeleteStatement}>
+            <Button variant="danger" on:click={handleDeleteStatement} disabled={isStatementLocked(selectedStatement)}>
               Delete Statement
             </Button>
-            <Button variant="primary" on:click={handleAutoMatch}>
+            <Button variant="primary" on:click={handleAutoMatch} disabled={isStatementLocked(selectedStatement)}>
               Auto-Match
             </Button>
-            <Button variant="success" on:click={handleFinalize} disabled={totalUnmatched > 0}>
-              Finalize
-            </Button>
+            {#if isStatementLocked(selectedStatement)}
+              <Button variant="secondary" on:click={handleReopen}>
+                Reopen
+              </Button>
+            {:else}
+              <Button variant="success" on:click={handleFinalize} disabled={totalUnmatched > 0}>
+                Finalize
+              </Button>
+            {/if}
           {/if}
         </div>
       </div>
@@ -1173,6 +1371,7 @@
               onRowClick={loadStatementLines}
               selectedId={selectedStatement?.id}
               emptyMessage="No statements imported"
+              compact={true}
             />
           {/if}
         </div>
@@ -1188,11 +1387,19 @@
               {/if}
             </h3>
             {#if selectedStatement}
-              <Button variant="secondary" size="sm" on:click={openAddLineModal}>
+              <Button variant="secondary" size="sm" on:click={openAddLineModal} disabled={isStatementLocked(selectedStatement)}>
                 Add Transaction
               </Button>
             {/if}
           </div>
+          {#if selectedStatement && reconciliationSummary}
+            <div class="statement-summary">
+              <span>Status: {formatStatementStatus(reconciliationSummary.status || selectedStatement.status)}</span>
+              <span>{reconciliationSummary.matched_count}/{reconciliationSummary.total_lines} matched</span>
+              <span>{reconciliationSummary.unmatched_count} open</span>
+              <span>{Math.round(reconciliationSummary.matched_percent || 0)}% complete</span>
+            </div>
+          {/if}
           {#if selectedStatement?.notes}
             <div class="statement-notes-card">
               <div class="statement-notes-head">
@@ -1213,6 +1420,7 @@
               onRowClick={openMatchModal}
               emptyMessage="No transactions"
               rowClass={(row) => row.is_matched ? '' : 'unmatched-row'}
+              compact={true}
             />
           {:else}
             <div class="empty-state">
@@ -1280,7 +1488,9 @@
       {/if}
     </div>
     <div class="match-actions">
-      {#if matchingLine.is_matched}
+      {#if selectedStatement && isStatementLocked(selectedStatement)}
+        <p class="match-hint">This statement is finalized. Reopen it to change matches.</p>
+      {:else if matchingLine.is_matched}
         <Button variant="secondary" on:click={() => matchingLine && handleUnmatch(matchingLine)}>
           Unmatch
         </Button>
@@ -1289,7 +1499,7 @@
           <div class="ocr-review-banner">
             <div>
               <strong>OCR review</strong>
-              <p>If the parser flipped the polarity, correct the line before matching.</p>
+              <p>If the parser flipped the amount side, correct the line before matching.</p>
             </div>
             <Button variant="secondary" size="sm" on:click={() => matchingLine && openOCRReviewModal(matchingLine)}>
               Fix Debit/Credit
@@ -1299,7 +1509,9 @@
             <FormGroup label="Match To">
               <select bind:value={matchingType} class="form-select" on:change={handleMatchingTypeChange}>
                 {#if matchingLine.credit > 0}
-                  <option value="CUSTOMER_INVOICE">Customer Invoice</option>
+                  <option value="CUSTOMER_INVOICE">Customer Open Invoice</option>
+                  <option value="CUSTOMER_RECEIPT">Customer Receipt</option>
+                  <option value="CUSTOMER_PAYMENT">Recorded Invoice Payment</option>
                 {:else}
                   <option value="SUPPLIER_INVOICE">Supplier Invoice</option>
                   <option value="EXPENSE">Expense</option>
@@ -1367,7 +1579,7 @@
                       <input type="radio" bind:group={matchingCandidateId} value={candidate.id} disabled={matchAllocations.length > 0} />
                       <span>{buildMatchCandidateLabel(candidate, matchingType)}</span>
                     </label>
-                    {#if matchingType === 'CUSTOMER_INVOICE' || matchingType === 'SUPPLIER_INVOICE' || matchingType === 'EXPENSE'}
+                    {#if matchingType === 'CUSTOMER_INVOICE' || matchingType === 'CUSTOMER_PAYMENT' || matchingType === 'CUSTOMER_RECEIPT' || matchingType === 'SUPPLIER_INVOICE' || matchingType === 'EXPENSE'}
                       <button
                         type="button"
                         class="candidate-add"
@@ -1389,7 +1601,7 @@
     </div>
   {/if}
   <svelte:fragment slot="footer">
-    {#if matchingLine && !matchingLine.is_matched}
+    {#if matchingLine && !matchingLine.is_matched && !(selectedStatement && isStatementLocked(selectedStatement))}
       <Button
         variant="primary"
         on:click={handleManualMatch}
@@ -1426,9 +1638,7 @@
       <FormGroup label="Status">
         <select bind:value={editStatementData.status} class="form-select">
           <option value="Imported">Imported</option>
-          <option value="In Progress">In Progress</option>
-          <option value="Reconciled">Reconciled</option>
-          <option value="Verified">Verified</option>
+          <option value="InProgress">In Progress</option>
         </select>
       </FormGroup>
     </div>
@@ -1437,6 +1647,7 @@
         <textarea bind:value={editStatementData.notes} class="form-input form-textarea" rows="4" placeholder="OCR summary, import context, or reconciliation notes"></textarea>
       </FormGroup>
     </div>
+    <p class="form-note">Use Finalize and Reopen for reconciled workflow states.</p>
   </div>
   <svelte:fragment slot="footer">
     <Button variant="secondary" on:click={() => showEditStatementModal = false}>Cancel</Button>
@@ -1675,7 +1886,7 @@
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 12px;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
   }
 
   .kpi {
@@ -1685,21 +1896,42 @@
   }
 
   .kpi-label {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
 
   .kpi-value {
-    font-size: 24px;
+    font-size: 18px;
     font-weight: 600;
     font-family: var(--font-mono);
   }
 
   .kpi-value.primary { color: var(--brand-indigo); }
   .kpi-value.success { color: #10B981; }
-  .kpi-value.warning { color: #F59E0B; }
+  .kpi-note {
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+
+  .cash-position-notice {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    margin: -4px 0 14px;
+    padding: 10px 12px;
+    border: 1px solid rgba(217, 149, 34, 0.24);
+    border-radius: var(--radius-md);
+    background: rgba(255, 248, 232, 0.88);
+    color: #7a4d0b;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .cash-position-notice strong {
+    white-space: nowrap;
+  }
 
   .kpi-note {
     color: var(--text-secondary);
@@ -1728,8 +1960,8 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
-    padding: 8px 12px;
+    margin-bottom: 10px;
+    padding: 8px;
     background: var(--surface-elevated);
     border-radius: var(--radius-md);
   }
@@ -1738,7 +1970,7 @@
   .toolbar .right {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
   }
 
   .account-select,
@@ -1747,8 +1979,8 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     background: var(--surface-default);
-    font-size: 14px;
-    min-width: 250px;
+    font-size: 13px;
+    min-width: 220px;
   }
 
   .form-input {
@@ -1761,22 +1993,23 @@
 
   .split-view {
     display: grid;
-    grid-template-columns: minmax(520px, 0.95fr) minmax(0, 1.45fr);
+    grid-template-columns: minmax(620px, 1.05fr) minmax(760px, 1.55fr);
     gap: 12px;
-    height: calc(100vh - 300px);
-    min-height: 400px;
+    height: calc(100vh - 270px);
+    min-height: 340px;
+    overflow-x: auto;
   }
 
   .panel {
     background: var(--surface-default);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    padding: 16px;
+    padding: 10px;
     overflow: auto;
   }
 
   .panel h3 {
-    margin: 0 0 12px 0;
+    margin: 0 0 8px 0;
     font-size: 14px;
     font-weight: 600;
     color: var(--text-primary);
@@ -1786,7 +2019,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: 8px;
   }
 
   .panel-header h3 {
@@ -1900,9 +2133,9 @@
 
   .candidate-list {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
-    max-height: 320px;
+    max-height: 420px;
     overflow-y: auto;
     padding-right: 4px;
   }
@@ -2047,6 +2280,11 @@
     .candidate-list,
     .allocation-row {
       grid-template-columns: 1fr;
+    }
+
+    .split-view {
+      grid-template-columns: 1fr;
+      height: auto;
     }
 
     .allocation-balance {
@@ -2212,6 +2450,53 @@
     margin-top: 12px;
   }
 
+  .statement-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .statement-notes-card {
+    margin-bottom: 12px;
+    padding: 12px 14px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(247,247,244,0.98) 100%);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .statement-notes-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+
+  .statement-notes-card p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+  }
+
+  .form-textarea {
+    min-height: 96px;
+    resize: vertical;
+  }
+
   .import-hint {
     margin-top: 16px;
     padding-top: 16px;
@@ -2280,6 +2565,22 @@
     background: var(--surface-elevated);
     border-left: 3px solid var(--brand-indigo);
     border-radius: var(--radius-sm);
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .line-fix-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .line-fix-hint {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
   }
 
   .line-fix-actions {

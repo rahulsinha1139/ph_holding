@@ -4,6 +4,7 @@
   export let title: string;
   export let tabs: { id: string; label: string; count?: number }[] = [];
   export let activeTab: string = '';
+  export let hideTitle = false;
 
   const dispatch = createEventDispatcher();
 
@@ -17,7 +18,11 @@
   <!-- Header -->
   <header class="module-header">
     <div class="header-content">
-      <h1 class="module-title">{title}</h1>
+      {#if !hideTitle}
+        <h1 class="module-title">{title}</h1>
+      {:else}
+        <span class="module-title-spacer" aria-hidden="true"></span>
+      {/if}
       <div class="header-actions">
         <slot name="header-actions" />
       </div>
@@ -80,6 +85,10 @@
     color: var(--text-primary);
     line-height: var(--line-height-tight);
     margin: 0;
+  }
+
+  .module-title-spacer {
+    min-width: 1px;
   }
 
   .header-actions {

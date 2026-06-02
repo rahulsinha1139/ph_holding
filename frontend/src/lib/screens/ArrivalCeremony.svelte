@@ -12,6 +12,7 @@
     let isConfiguring = false;
     let progress = 0;
     let currentTask = "";
+    let nameInput;
 
     const roles = [
         {
@@ -75,11 +76,8 @@
         }, 400);
     }
 
-    function focusOnMount(node) {
-        requestAnimationFrame(() => node.focus());
-        return {
-            destroy() {},
-        };
+    $: if (step === 1 && nameInput) {
+        nameInput.focus();
     }
 </script>
 
@@ -106,9 +104,9 @@
                     <input
                         type="text"
                         bind:value={userName}
+                        bind:this={nameInput}
                         placeholder="Enter your name"
                         on:keydown={(e) => e.key === "Enter" && nextStep()}
-                        use:focusOnMount
                     />
                     <button class="btn-circle" on:click={nextStep}>&gt;</button>
                 </div>

@@ -71,7 +71,7 @@
     });
 </script>
 
-<div class="ahs-dashboard">
+<div class="ahs-dashboard" data-embedded={embedded ? 'true' : undefined}>
     <!-- Year Selector -->
     <div class="controls">
         <div class="year-selector">
@@ -131,14 +131,14 @@
                 <div class="kpi-sub">{data.net_profit < 0 ? 'Net loss' : 'Net profit'}</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">Cash</div>
-                <div class="kpi-value">{fmtCompact(data.cash_equivalents)}</div>
-                <div class="kpi-sub">Cash and bank balances</div>
+                <div class="kpi-label">Open Receivables</div>
+                <div class="kpi-value">{fmtCompact(data.outstanding_ar)}</div>
+                <div class="kpi-sub">{data.overdue_count} overdue receivables</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">Total Assets</div>
-                <div class="kpi-value">{fmtCompact(data.total_assets)}</div>
-                <div class="kpi-sub">Equity: {fmtCompact(data.total_equity)}</div>
+                <div class="kpi-label">Receipts Collected</div>
+                <div class="kpi-value">{fmtCompact(data.paid_amount)}</div>
+                <div class="kpi-sub">Avg invoice: {fmtCurrency(data.avg_invoice_size)}</div>
             </div>
         </div>
 
@@ -154,7 +154,7 @@
                 </thead>
                 <tbody>
                     <tr>
-                        <td>Total Revenue</td>
+                        <td>Invoiced Revenue</td>
                         <td class="number-col">{fmtCurrency(data.revenue)}</td>
                     </tr>
                     <tr>
@@ -173,9 +173,9 @@
                         <td>Administrative Expenses</td>
                         <td class="number-col">{fmtCurrency(data.admin_expenses)}</td>
                     </tr>
-                    <tr class:overdue={data.net_profit < 0}>
-                        <td>Net Result</td>
-                        <td class="number-col">{fmtCurrency(data.net_profit)}</td>
+                    <tr class:overdue={data.overdue_amount > 0}>
+                        <td>Overdue Receivables</td>
+                        <td class="number-col">{fmtCurrency(data.overdue_amount)}</td>
                     </tr>
                     <tr>
                         <td>Trade Receivables</td>

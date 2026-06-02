@@ -277,9 +277,9 @@
       grns = grnsData || [];
       purchaseOrders = posData || [];
 
-      // Filter POs that can have GRNs created (Draft, Sent, Acknowledged, PartiallyReceived)
+      // Filter POs that can have GRNs created once the supplier PO has been sent.
       availablePOs = purchaseOrders.filter(po =>
-        ['Draft', 'Sent', 'Acknowledged', 'PartiallyReceived'].includes(po.status)
+        ['Sent', 'Acknowledged', 'Partially Received'].includes(po.status)
       );
 
       console.log(`Loaded ${grns.length} GRNs, ${availablePOs.length} available POs`);
@@ -668,7 +668,7 @@
       >
         <option value="">Select purchase order...</option>
         {#each availablePOs as po}
-          <option value={po.id}>{po.po_number} - {po.supplier_name || 'Unknown Supplier'}{po.status === 'PartiallyReceived' ? ' (Partial)' : ''}</option>
+          <option value={po.id}>{po.po_number} - {po.supplier_name || 'Unknown Supplier'}{po.status === 'Partially Received' ? ' (Partial)' : ''}</option>
         {/each}
       </select>
     </FormGroup>

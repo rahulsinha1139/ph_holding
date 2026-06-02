@@ -843,7 +843,14 @@ func (a *App) backfillLegacyFollowUpTasks() error {
 		return nil
 	}
 	if a.hasSettingValue(phase7FollowUpBackfillSetting) {
-		return nil
+		complete, err := a.legacyFollowUpBackfillSatisfied()
+		if err != nil {
+			return err
+		}
+		if complete {
+			return nil
+		}
+		log.Printf("⚠️ Phase 7 rollout: stale legacy follow-up backfill marker detected; repairing missing task_items")
 	}
 
 	fallbackEmployeeID := a.getPhase7FallbackEmployeeID()
@@ -955,6 +962,31 @@ func (a *App) backfillLegacyFollowUpTasks() error {
 	a.saveSetting(phase7FollowUpBackfillCount, fmt.Sprintf("%d", backfilled))
 	log.Printf("✅ Phase 7 rollout: backfilled %d legacy follow-up tasks", backfilled)
 	return nil
+}
+
+func (a *App) legacyFollowUpBackfillSatisfied() (bool, error) {
+	if a.db == nil {
+		return true, nil
+	}
+	if !a.db.Migrator().HasTable("followup_tasks") || !a.db.Migrator().HasTable("task_items") {
+		return true, nil
+	}
+
+	var missing int64
+	if err := a.db.Raw(`
+		SELECT COUNT(*)
+		FROM followup_tasks fu
+		WHERE fu.deleted_at IS NULL
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM task_items ti
+			WHERE ti.deleted_at IS NULL
+			  AND ti.legacy_follow_up_id = fu.id
+		  )
+	`).Scan(&missing).Error; err != nil {
+		return false, fmt.Errorf("failed to verify legacy follow-up backfill state: %w", err)
+	}
+	return missing == 0, nil
 }
 
 func (a *App) hasSettingValue(key string) bool {

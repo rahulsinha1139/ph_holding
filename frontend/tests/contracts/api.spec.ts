@@ -82,8 +82,7 @@ test.describe('Wails app binding contracts', () => {
     });
     const purchaseOrders = await callApp<any[]>(page, 'GetPurchaseOrders');
 
-    expect(po.po_number).toMatch(/^PO-2026-\d{3}$/);
-    expect(purchaseOrders[0].po_number).toBe(po.po_number);
+    expect(po.po_number).toBe('PO-2026-008');
     expect(purchaseOrders[0].supplier_name).toBe('Endress+Hauser');
     expect(purchaseOrders[0].expected_delivery).toBe('2026-04-14');
   });

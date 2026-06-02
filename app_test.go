@@ -117,6 +117,117 @@ func TestGetExportDirGroupsDocumentsByEntityWithoutYearDepth(t *testing.T) {
 	require.NotContains(t, supplierDir, string(filepath.Separator)+"2026"+string(filepath.Separator))
 }
 
+func resetLicenseAttemptLimiterForTest(t *testing.T) {
+	t.Helper()
+	licenseAttemptsMu.Lock()
+	defer licenseAttemptsMu.Unlock()
+	licenseAttempts = make(map[string][]time.Time)
+}
+
+func TestValidateLicenseRebindsRahulAdminKeyWhenMachineHashChanges(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&LicenseKey{}).Error)
+
+	staleActivatedAt := time.Now().Add(-time.Hour)
+	require.NoError(t, app.db.Create(&LicenseKey{
+		Key:         rahulMonitoringLicenseKey,
+		Role:        "admin",
+		DisplayName: "Rahul",
+		Activated:   true,
+		DeviceHash:  "stale-device-hash",
+		ActivatedAt: &staleActivatedAt,
+	}).Error)
+
+	currentHash := app.getDeviceHash()
+	result, err := app.ValidateLicense()
+	require.NoError(t, err)
+	require.True(t, result.Valid)
+	require.Equal(t, rahulMonitoringLicenseKey, result.Key)
+	require.Equal(t, "Rahul", result.DisplayName)
+
+	var persisted LicenseKey
+	require.NoError(t, app.db.Where("key = ?", rahulMonitoringLicenseKey).First(&persisted).Error)
+	require.Equal(t, currentHash, persisted.DeviceHash)
+}
+
+func TestActivateLicenseRebindsRahulAdminKeyWhenMachineHashChanges(t *testing.T) {
+	resetLicenseAttemptLimiterForTest(t)
+	app := setupTestApp(t)
+	require.NoError(t, app.db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&LicenseKey{}).Error)
+
+	staleActivatedAt := time.Now().Add(-time.Hour)
+	require.NoError(t, app.db.Create(&LicenseKey{
+		Key:         rahulMonitoringLicenseKey,
+		Role:        "admin",
+		DisplayName: "Rahul",
+		Activated:   true,
+		DeviceHash:  "stale-device-hash",
+		ActivatedAt: &staleActivatedAt,
+	}).Error)
+
+	result, err := app.ActivateLicense(rahulMonitoringLicenseKey)
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, "admin", result.Role)
+	require.Equal(t, "Rahul", result.DisplayName)
+
+	var persisted LicenseKey
+	require.NoError(t, app.db.Where("key = ?", rahulMonitoringLicenseKey).First(&persisted).Error)
+	require.Equal(t, result.DeviceHash, persisted.DeviceHash)
+}
+
+func TestValidateLicenseMigratesSingleActiveLicenseWhenMachineHashChanges(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&LicenseKey{}).Error)
+
+	staleActivatedAt := time.Now().Add(-time.Hour)
+	require.NoError(t, app.db.Create(&LicenseKey{
+		Key:         "PH-ADM-STABLE",
+		Role:        "admin",
+		DisplayName: "Admin Test",
+		Activated:   true,
+		DeviceHash:  "old-network-derived-hash",
+		ActivatedAt: &staleActivatedAt,
+	}).Error)
+
+	currentHash := app.getDeviceHash()
+	result, err := app.ValidateLicense()
+	require.NoError(t, err)
+	require.True(t, result.Valid)
+	require.Equal(t, "PH-ADM-STABLE", result.Key)
+	require.Equal(t, "Admin Test", result.DisplayName)
+
+	var persisted LicenseKey
+	require.NoError(t, app.db.Where("key = ?", "PH-ADM-STABLE").First(&persisted).Error)
+	require.Equal(t, currentHash, persisted.DeviceHash)
+}
+
+func TestActivateLicenseRebindsPresentedKeyWhenMachineHashChanges(t *testing.T) {
+	resetLicenseAttemptLimiterForTest(t)
+	app := setupTestApp(t)
+	require.NoError(t, app.db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&LicenseKey{}).Error)
+
+	staleActivatedAt := time.Now().Add(-time.Hour)
+	require.NoError(t, app.db.Create(&LicenseKey{
+		Key:         "PH-MGR-STABLE",
+		Role:        "manager",
+		DisplayName: "Manager Test",
+		Activated:   true,
+		DeviceHash:  "old-network-derived-hash",
+		ActivatedAt: &staleActivatedAt,
+	}).Error)
+
+	result, err := app.ActivateLicense("PH-MGR-STABLE")
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, "manager", result.Role)
+	require.Equal(t, "Manager Test", result.DisplayName)
+
+	var persisted LicenseKey
+	require.NoError(t, app.db.Where("key = ?", "PH-MGR-STABLE").First(&persisted).Error)
+	require.Equal(t, result.DeviceHash, persisted.DeviceHash)
+}
+
 func alignTestAppWithCurrentWorkflow(t *testing.T, app *App) {
 	t.Helper()
 
@@ -342,6 +453,24 @@ func TestApplyDeploymentLicenseActivationFlushIgnoresReseedFlagWithoutExplicitSt
 	require.NoError(t, app.db.Where("key = ?", license.Key).First(&persisted).Error)
 	require.True(t, persisted.Activated, "normal reseed/update packages must preserve activated licenses")
 	require.Equal(t, "device-a", persisted.DeviceHash)
+}
+
+func TestActiveDBSyncTablesKeepsLicenseKeysLocalOnly(t *testing.T) {
+	t.Setenv("ASYMMFLOW_SYNC_EXCLUDE_TABLES", "")
+
+	require.True(t, localOnlyDBSyncTables["license_keys"])
+	require.NotContains(t, activeDBSyncTables(), "license_keys")
+
+	t.Setenv("ASYMMFLOW_SYNC_EXCLUDE_TABLES", "customers")
+	tables := activeDBSyncTables()
+	require.NotContains(t, tables, "license_keys")
+	require.NotContains(t, tables, "customers")
+	require.Contains(t, tables, "suppliers")
+}
+
+func TestDeploymentVerificationHoldSyncTablesExcludesLicenseKeys(t *testing.T) {
+	excluded := strings.Split(deploymentVerificationHoldSyncTables(), ",")
+	require.Contains(t, excluded, "license_keys")
 }
 
 // seedTestCustomer creates a test customer and returns its ID

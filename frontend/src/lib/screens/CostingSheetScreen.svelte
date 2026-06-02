@@ -32,6 +32,11 @@
         SetActiveCostingRevision,
         CloneCostingAsNewRevision,
         GetSettings,
+        GetCurrentUserStub,
+        AttachCostingSheetFileWithDialog,
+        ListCostingSheetAttachments,
+        DeleteCostingSheetAttachment,
+        OpenCostingSheetAttachment,
     } from "../../../wailsjs/go/main/App";
 
     const dispatch = createEventDispatcher();
@@ -51,6 +56,7 @@
     let previewOpportunities: any[] = [];
     let selectedOpportunityId: string = '';
     let selectedOpportunity: any = null;
+    let linkOpportunityId: string = '';
     let sourceOfferId = '';
     let sourceOfferNumber = '';
     let showCostingForm = false;
@@ -73,6 +79,9 @@
     let lastPersistedDraftJSON = '';
     let hasStoredDraft = false;
     let showBackWarning = false;
+    let attachmentScopeId = '';
+    let costingAttachments: any[] = [];
+    let attachmentLoading = false;
 
     function parseYear(value: any): number {
         const numericYear = Number(value);
@@ -262,15 +271,11 @@ Please find our pricing and scope below. We trust the proposal meets your requir
     // Division options (sister companies)
     const divisionOptions = ['PH Trading', 'AHS Trading'];
     let lastAppliedDivision = header.division;
-    // Staff list for "Prepared By" dropdown
-    const staffList = [
-        { name: 'Stanley Vaz', title: 'COO', phone: '+973 3662 3662', email: 'stanley.vaz@platinumholdings.com.bh' },
-        { name: 'Abhie Kore', title: 'Business Head', phone: '+973 3677 1513', email: 'abhi.kore@platinumholdings.com.bh' },
-        { name: 'V.M. Sundar', title: 'Manager', phone: '+973 3826 0157', email: 'vm.sundar@platinumholdings.com.bh' },
-        { name: 'Ebin Chacko', title: 'Technical Sales Engineer', phone: '+973 3641 8072', email: 'ebin.chacko@platinumholdings.com.bh' },
-        { name: 'Periyasamy N', title: 'Technical Sales Engineer', phone: '', email: '' },
-        { name: 'Ramya Baskaran', title: 'Sales Support', phone: '+973 3889 0513', email: 'support@platinumholdings.com.bh' },
-    ];
+    let currentPreparedByName = '';
+
+    function resolveUserDisplayName(user: any): string {
+        return String(user?.display_name || user?.full_name || user?.username || user?.email || '').trim();
+    }
 
     // Dropdown options from Excel "Code" sheet
     const deliveryOptions = [
@@ -565,6 +570,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             selectedOpportunity,
             sourceOfferId,
             sourceOfferNumber,
+            attachmentScopeId,
             selectedRevisionId: selectedRevision?.id || null,
             currentCostingId,
             header: { ...header },
@@ -574,6 +580,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             vatRate,
             quotationBody,
             termsAndConditions,
+            attachments: serialiseCostingAttachments(true),
         };
     }
 
@@ -645,6 +652,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             selectedOpportunity = opportunities.find((opp: any) => String(opp.id) === selectedOpportunityId) || payload?.selectedOpportunity || null;
             sourceOfferId = String(payload?.sourceOfferId || '');
             sourceOfferNumber = String(payload?.sourceOfferNumber || '');
+            attachmentScopeId = resolveAttachmentScope(payload);
+            costingAttachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
             selectedRevision = null;
             currentCostingId = payload?.currentCostingId || null;
             rfqCostings = [];
@@ -658,6 +667,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             termsAndConditions = payload?.termsAndConditions || termsAndConditions;
             showCostingForm = true;
             recalculateLineItems();
+            void loadCostingAttachments(attachmentScopeId);
         } finally {
             suppressDraftPersistence = false;
         }
@@ -743,15 +753,20 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     async function loadData() {
         loading = true;
         try {
-            const [c, s, rfqs, pipeline, settingsResult] = await Promise.all([
+            const [c, s, rfqs, pipeline, settingsResult, currentUserResult] = await Promise.all([
                 ListCustomers(500, 0),
                 GetCostingSheets(20).catch(() => []),
                 GetRFQs(200, 0).catch(() => []),
                 GetPipelineOpportunities(500, 0).catch(() => []),
                 GetSettings().catch(() => null),
+                GetCurrentUserStub().catch(() => null),
             ]);
             customers = c || [];
             costingSheets = s || [];
+            currentPreparedByName = resolveUserDisplayName(currentUserResult);
+            if (currentPreparedByName && (!header.preparedBy || header.preparedBy.toLowerCase() === 'system')) {
+                header.preparedBy = currentPreparedByName;
+            }
             const pipelineNormalized = (pipeline || []).map(normalizePipelineOpportunity);
             const liveRfqs = (rfqs || [])
                 .filter((rfq: any) => String(rfq?.rfq_number || '').trim())
@@ -861,6 +876,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             rfqCostings = [];
             selectedRevision = null;
             currentCostingId = null;
+            attachmentScopeId = '';
+            costingAttachments = [];
             return;
         }
 
@@ -885,6 +902,9 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             const opportunityReference = getOpportunityUserReference(selectedOpportunity);
             const opportunityFolder = getOpportunityFolderReference(selectedOpportunity);
             const opportunitySubject = selectedOpportunity.title || selectedOpportunity.project_name || selectedOpportunity.project || '';
+            const formattedOpportunitySubject = opportunitySubject
+                ? `Sub: ${String(opportunitySubject).replace(/^Sub:\s*/i, '').trim()}`
+                : '';
 
             // Find matching customer in customers list
             const matchedCustomer = findMatchingCustomerByName(customerName);
@@ -899,10 +919,13 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     rfqReference: opportunityReference,
                     folderNumber: opportunityFolder,
                     costingId: opportunityReference || opportunityFolder,
-                    subject: opportunitySubject,
+                    subject: formattedOpportunitySubject,
                     division: nextDivision,
                     deliveryTerms: normaliseDeliveryTermsForDivision(header.deliveryTerms, nextDivision),
                 };
+                attachmentScopeId = resolveAttachmentScope();
+                costingAttachments = [];
+                void loadCostingAttachments(attachmentScopeId);
             }
 
             // ========================================
@@ -1004,7 +1027,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                 newCosting = await CloneCostingAsNewRevision(sourceId, header.preparedBy || 'System');
             } else {
                 // Create from current form data
-                const itemsJSON = JSON.stringify(buildExportData());
+                const itemsJSON = JSON.stringify(sanitiseCostingForSyncedPersistence(buildExportData()));
                 newCosting = await CreateCostingSheet(Number(selectedOpportunity.id), itemsJSON, header.preparedBy || 'System');
             }
 
@@ -1117,6 +1140,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         resumeDraftRestoreForSession();
         selectedOpportunityId = '';
         selectedOpportunity = null;
+        linkOpportunityId = '';
         sourceOfferId = '';
         sourceOfferNumber = '';
         showCostingForm = true;
@@ -1124,8 +1148,45 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         header = createDefaultHeader();
         lineItems = [createNewLineItem()];
         quotationBody = defaultQuotationBody;
+        attachmentScopeId = createDraftAttachmentScope();
+        costingAttachments = [];
         isDirty = true;
         persistCostingDraft();
+    }
+
+    function linkBlankCostingToOpportunity() {
+        const match = opportunities.find((opp: any) => String(opp.id) === String(linkOpportunityId));
+        if (!match) {
+            toast.warning('Select an opportunity to link this costing sheet.');
+            return;
+        }
+
+        selectedOpportunityId = String(match.id);
+        selectedOpportunity = match;
+
+        const customerName = match.client || match.customer || match.customer_name || header.customerName || '';
+        const projectName = match.project || match.project_name || match.title || '';
+        const opportunityReference = getOpportunityUserReference(match);
+        const opportunityFolder = getOpportunityFolderReference(match);
+        const customerResolution = resolveCustomerForCostingPayload('', customerName);
+
+        header = {
+            ...header,
+            customerId: customerResolution.customerId,
+            customerName: customerResolution.customerName || customerName,
+            rfqReference: opportunityReference,
+            folderNumber: opportunityFolder || opportunityReference,
+            costingId: opportunityReference || opportunityFolder || header.costingId,
+            subject: header.subject || (projectName ? `Sub: ${projectName}` : header.subject),
+            division: match.division || header.division || 'PH Trading',
+            paymentTerms: header.paymentTerms || match.payment_terms || '30 days from Date of Delivery',
+            deliveryTerms: header.deliveryTerms || match.delivery_terms || 'DAP Bahrain at your store or PH Trading',
+        };
+
+        linkOpportunityId = '';
+        isDirty = true;
+        persistCostingDraft();
+        toast.success(`Linked costing to ${getOpportunityDisplayReference(match)}`);
     }
 
     function returnToCostingList() {
@@ -1140,6 +1201,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         selectedRevision = null;
         currentCostingId = null;
         rfqCostings = [];
+        attachmentScopeId = '';
+        costingAttachments = [];
         refreshStoredDraftState();
         if (hasStoredDraft) {
             pauseDraftRestoreForSession();
@@ -1183,6 +1246,144 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             minimumFractionDigits: decimals,
             maximumFractionDigits: decimals
         });
+    }
+
+    function formatFileSize(bytes: unknown): string {
+        const size = toFiniteNumber(bytes);
+        if (size >= 1024 * 1024) {
+            return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+        }
+        if (size >= 1024) {
+            return `${(size / 1024).toFixed(0)} KB`;
+        }
+        return `${size.toFixed(0)} B`;
+    }
+
+    function serialiseCostingAttachment(attachment: any, includeLocalPath = false) {
+        const safeAttachment: any = {
+            id: attachment.id,
+            scope_id: attachment.scope_id,
+            costing_number: attachment.costing_number,
+            file_name: attachment.file_name,
+            file_ext: attachment.file_ext,
+            mime_type: attachment.mime_type,
+            file_size: attachment.file_size,
+            file_hash: attachment.file_hash,
+            storage_mode: attachment.storage_mode || 'database',
+            notes: attachment.notes,
+            uploaded_by: attachment.uploaded_by,
+            created_at: attachment.created_at,
+        };
+        if (includeLocalPath && safeAttachment.storage_mode === 'local_file') {
+            safeAttachment.local_path = attachment.local_path;
+        }
+        return safeAttachment;
+    }
+
+    function serialiseCostingAttachments(includeLocalPath = false) {
+        return costingAttachments.map((attachment) => serialiseCostingAttachment(attachment, includeLocalPath));
+    }
+
+    function sanitiseCostingForSyncedPersistence(data: any) {
+        return {
+            ...data,
+            attachments: (data.attachments || [])
+                .filter((attachment: any) => (attachment.storage_mode || 'database') !== 'local_file')
+                .map((attachment: any) => serialiseCostingAttachment(attachment, false)),
+        };
+    }
+
+    function createDraftAttachmentScope(): string {
+        const randomPart = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        return `draft-${randomPart}`;
+    }
+
+    function resolveAttachmentScope(fallbackPayload: any = null): string {
+        const existing = String(
+            attachmentScopeId ||
+            fallbackPayload?.attachmentScopeId ||
+            fallbackPayload?.attachment_scope_id ||
+            ''
+        ).trim();
+        if (existing) return existing;
+
+        const reference = String(
+            header.costingId ||
+            header.rfqReference ||
+            header.folderNumber ||
+            sourceOfferId ||
+            selectedRevision?.id ||
+            currentCostingId ||
+            selectedOpportunityId ||
+            ''
+        ).trim();
+        if (reference) {
+            return `costing-${reference.replace(/[^A-Za-z0-9_.:-]+/g, '-')}`;
+        }
+        return createDraftAttachmentScope();
+    }
+
+    async function loadCostingAttachments(scope = attachmentScopeId) {
+        const resolvedScope = String(scope || '').trim();
+        if (!resolvedScope) {
+            costingAttachments = [];
+            return;
+        }
+        try {
+            costingAttachments = await ListCostingSheetAttachments(resolvedScope) || [];
+        } catch (err) {
+            console.warn('Failed to load costing attachments:', err);
+            costingAttachments = [];
+        }
+    }
+
+    async function handleAttachDatasheet() {
+        attachmentScopeId = resolveAttachmentScope();
+        attachmentLoading = true;
+        try {
+            const attached = await AttachCostingSheetFileWithDialog(
+                attachmentScopeId,
+                header.costingId || header.rfqReference || header.folderNumber || sourceOfferNumber || 'Costing Sheet',
+                header.customerName || selectedOpportunity?.customer_name || selectedOpportunity?.customer || '',
+                ''
+            );
+            if (attached) {
+                await loadCostingAttachments(attachmentScopeId);
+                markDirty();
+                toast.success(attached.storage_mode === 'local_file'
+                    ? 'Large PDF stored locally and will be bundled when printing.'
+                    : 'Technical datasheet attached.');
+            }
+        } catch (err) {
+            toast.danger('Failed to attach datasheet: ' + String(err));
+        } finally {
+            attachmentLoading = false;
+        }
+    }
+
+    async function handleOpenAttachment(attachmentId: string) {
+        try {
+            await OpenCostingSheetAttachment(attachmentId);
+        } catch (err) {
+            toast.danger('Failed to open attachment: ' + String(err));
+        }
+    }
+
+    async function handleDeleteAttachment(attachmentId: string) {
+        if (!attachmentId || attachmentLoading) return;
+        attachmentLoading = true;
+        try {
+            await DeleteCostingSheetAttachment(attachmentId);
+            costingAttachments = costingAttachments.filter((attachment) => attachment.id !== attachmentId);
+            markDirty();
+            toast.success('Attachment removed.');
+        } catch (err) {
+            toast.danger('Failed to remove attachment: ' + String(err));
+        } finally {
+            attachmentLoading = false;
+        }
     }
 
     function normalisePersistedLineItem(item: any, index: number) {
@@ -1280,6 +1481,9 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         quotationBody = payload.body || defaultQuotationBody;
         termsAndConditions = payload.termsAndConditions || termsAndConditions;
         currentCostingId = revision.id || null;
+        attachmentScopeId = resolveAttachmentScope(payload);
+        costingAttachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+        void loadCostingAttachments(attachmentScopeId);
         recalculateLineItems();
         isDirty = false;
     }
@@ -1305,6 +1509,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         const rfqReference = header.rfqReference || opportunityReference;
         const folderNumber = header.folderNumber || getOpportunityFolderReference(selectedOpportunity);
         const costingId = header.costingId || rfqReference || folderNumber;
+        attachmentScopeId = resolveAttachmentScope();
 
         return {
             division: header.division,
@@ -1386,6 +1591,8 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
             projectName: selectedOpportunity?.title || selectedOpportunity?.project_name || selectedOpportunity?.project || '',
             body: quotationBody,
             termsAndConditions: termsAndConditions,
+            attachmentScopeId,
+            attachments: serialiseCostingAttachments(true),
             quoteType: header.quoteType || 'Quotation',
             vatRate: effectiveVatRate,
             hiddenCharges: effectiveHiddenCharges,
@@ -1465,11 +1672,11 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                     if (selectedRevision?.id || currentCostingId) {
                         await UpdateCostingSheet(selectedRevision?.id || currentCostingId, {
                             ...selectedRevision,
-                            items: JSON.stringify(persistedCosting),
+                            items: JSON.stringify(sanitiseCostingForSyncedPersistence(persistedCosting)),
                             created_by: header.preparedBy || 'System',
                         } as any);
                     } else {
-                        const saved = await CreateCostingSheet(rfqId, JSON.stringify(persistedCosting), header.preparedBy || 'System');
+                        const saved = await CreateCostingSheet(rfqId, JSON.stringify(sanitiseCostingForSyncedPersistence(persistedCosting)), header.preparedBy || 'System');
                         currentCostingId = saved?.id || null;
                     }
                 } catch (err) {
@@ -1646,6 +1853,19 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         <span class="label">Blank Costing</span>
                         <span class="hint">(not linked to an opportunity)</span>
                     </div>
+                    <div class="link-opportunity-control">
+                        <select bind:value={linkOpportunityId} class="input-sm" aria-label="Link blank costing to opportunity">
+                            <option value="">Link opportunity...</option>
+                            {#each opportunities as opp}
+                                <option value={String(opp.id)}>
+                                    {getOpportunityDisplayReference(opp)} • {opp.client || opp.customer || 'Unknown'} - {opp.project || opp.project_name || 'New RFQ'}
+                                </option>
+                            {/each}
+                        </select>
+                        <Button variant="secondary" size="sm" on:click={linkBlankCostingToOpportunity} disabled={!linkOpportunityId}>
+                            Link Opportunity
+                        </Button>
+                    </div>
                 {/if}
             </div>
 
@@ -1774,10 +1994,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                         </div>
                         <div class="field-group">
                             <span class="field-label">Prepared By</span>
-                            <select bind:value={header.preparedBy} class="input-sm">
-                                <option value="">Select...</option>
-                                {#each staffList as staff}<option value={staff.name}>{staff.name}</option>{/each}
-                            </select>
+                            <input type="text" value={header.preparedBy || currentPreparedByName || 'System'} class="input-sm readonly-input" aria-label="Prepared By" readonly />
                         </div>
                         <div class="field-group">
                             <span class="field-label">Doc Type</span>
@@ -1831,6 +2048,41 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                             <span class="field-label">PDF Body</span>
                             <textarea bind:value={quotationBody} class="input-sm textarea-sm" rows="4" placeholder="Opening body / cover note shown before the line items"></textarea>
                         </div>
+                    </div>
+
+                    <div class="technical-attachments">
+                        <div class="attachments-header">
+                            <div>
+                                <span class="field-label">Technical Datasheets</span>
+                            </div>
+                            <Button
+                                variant="secondary"
+                                size="sm"
+                                on:click={handleAttachDatasheet}
+                                disabled={attachmentLoading}
+                                aria-label="Attach PDF, JPG, JPEG, or PNG datasheet"
+                            >
+                                {attachmentLoading ? 'Attaching...' : '+ Attach File'}
+                            </Button>
+                        </div>
+                        {#if costingAttachments.length > 0}
+                            <div class="attachment-list">
+                                {#each costingAttachments as attachment}
+                                    <div class="attachment-row">
+                                        <div>
+                                            <strong>{attachment.file_name}</strong>
+                                            <span>{(attachment.storage_mode || 'database') === 'local_file' ? 'LOCAL PDF' : String(attachment.file_ext || '').toUpperCase()} · {formatFileSize(attachment.file_size)}</span>
+                                        </div>
+                                        <div class="attachment-actions">
+                                            <button on:click={() => handleOpenAttachment(attachment.id)}>Open</button>
+                                            <button class="danger" on:click={() => handleDeleteAttachment(attachment.id)} disabled={attachmentLoading}>Remove</button>
+                                        </div>
+                                    </div>
+                                {/each}
+                            </div>
+                        {:else}
+                            <p class="attachments-empty">No datasheets attached yet.</p>
+                        {/if}
                     </div>
 
                     <!-- Expandable: Compliance & certificates -->
@@ -1955,11 +2207,11 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
                                 <input type="number" bind:value={item.freightPercent} class="input-sm money" step="0.01" min="0" on:input={() => isDirty = true} on:change={calculateAll} placeholder="0.00" />
                             </div>
                             <div class="field-inline">
-                                <span class="field-label">Extra Cost</span>
+                                <span class="field-label">Misc Cost</span>
                                 <input type="number" bind:value={item.otherCosts} class="input-sm money" step="0.001" min="0" on:change={calculateAll} placeholder="0.000" title="Internal extra cost added before margin" />
                             </div>
                             <div class="field-inline">
-                                <span class="field-label">Manual Unit Price</span>
+                                <span class="field-label">Quote Price / Unit (BHD)</span>
                                 <input
                                     type="number"
                                     class="input-sm money sell-price"
@@ -2292,6 +2544,93 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
         line-height: 1.4;
     }
 
+    .technical-attachments {
+        margin: 10px 0 8px;
+        padding: 12px;
+        border: 1px solid var(--border-subtle, #e5e7eb);
+        border-radius: 6px;
+        background: var(--surface-elevated, #f8fafc);
+    }
+
+    .attachments-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 10px;
+    }
+
+    .attachments-empty {
+        margin: 3px 0 0;
+        color: var(--text-secondary, #6b7280);
+        font-size: 12px;
+        line-height: 1.4;
+    }
+
+    .attachment-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .attachment-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 10px;
+        border: 1px solid var(--border-subtle, #e5e7eb);
+        border-radius: 6px;
+        background: var(--surface-base, #fff);
+    }
+
+    .attachment-row strong {
+        display: block;
+        max-width: 520px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+        color: var(--text-primary, #111827);
+    }
+
+    .attachment-row span {
+        display: block;
+        margin-top: 2px;
+        font-size: 11px;
+        color: var(--text-secondary, #6b7280);
+    }
+
+    .attachment-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+    }
+
+    .attachment-actions button {
+        min-height: 28px;
+        padding: 4px 10px;
+        border: 1px solid var(--border-subtle, #e5e7eb);
+        border-radius: 5px;
+        background: var(--surface-base, #fff);
+        color: var(--text-primary, #111827);
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+    }
+
+    .attachment-actions button.danger {
+        color: #b91c1c;
+        background: #fef2f2;
+        border-color: #fee2e2;
+    }
+
+    .attachment-actions button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+    }
+
     .expand-toggle {
         background: none;
         border: none;
@@ -2392,7 +2731,7 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     /* Line Items */
     .line-items-header {
         display: grid;
-        /* Sl No | Equipment | Model | Qty | Currency | Unit Price | Freight | Extra Cost | Manual Unit Price | Total (BHD) | Remove */
+        /* Sl No | Equipment | Model | Qty | Currency | Unit Price | Freight | Misc Cost | Quote Price | Total (BHD) | Remove */
         grid-template-columns: 35px 2fr 120px 45px 60px 80px 70px 70px 85px 90px 28px;
         gap: 8px;
         padding: 8px 10px;
@@ -3014,6 +3353,19 @@ This quotation is governed by the laws of the Kingdom of Bahrain.`;
     .selected-info .hint {
         color: var(--text-muted);
         font-style: italic;
+    }
+
+    .link-opportunity-control {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: min(520px, 48vw);
+    }
+
+    .link-opportunity-control .input-sm {
+        flex: 1;
+        min-width: 220px;
     }
 
     .costing-backdrop {

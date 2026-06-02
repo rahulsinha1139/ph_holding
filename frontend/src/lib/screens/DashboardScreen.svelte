@@ -2,30 +2,78 @@
     import { onDestroy, onMount } from "svelte";
     import { fade } from "svelte/transition";
     import { toast } from "$lib/stores/toasts";
-    import { currentUser, permissions } from "../stores/authContext";
+    import { currentUser, permissions } from "$lib/stores/authContext";
     import { devLog } from "$lib/utils/devLog";
-    import { GetDashboardStats, ListFollowUps } from "../../../wailsjs/go/main/App";
+    import {
+        GetDashboardStats,
+        GetDashboardARAgingReportYTD,
+        GetDashboardPipelineByStageYTD,
+        GetMonthlyRevenueByCustomer,
+        ListFollowUps,
+    } from "../../../wailsjs/go/main/App";
     import { EventsOff, EventsOn } from "../../../wailsjs/runtime/runtime";
     import { main } from "../../../wailsjs/go/models";
     import ContextTaskModal from "../components/ContextTaskModal.svelte";
-    import { listMyTasks, listTeamTasks, refreshCollaborativeWorkspace, type CollaborativeTask } from "$lib/api/collaboration";
+    import ExecutiveRevenueChart from "../components/charts/ExecutiveRevenueChart.svelte";
+    import EChartsSurface from "../components/charts/EChartsSurface.svelte";
+    import {
+        listMyTasks,
+        listTeamTasks,
+        refreshCollaborativeWorkspace,
+        type CollaborativeTask,
+    } from "$lib/api/collaboration";
     import WabiSpinner from "../components/ui/WabiSpinner.svelte";
+    import type { RevenueChartData } from "$lib/types";
+    import type { EChartsOption } from "echarts";
+
+    type Tone = "positive" | "negative" | "warning" | "neutral";
+    type PipelineStage = {
+        stage: string;
+        label: string;
+        count: number;
+        value: number;
+        color: string;
+        share: number;
+    };
+    type AgingBucket = {
+        label: string;
+        value: number;
+        color: string;
+    };
+    const DASHBOARD_CHART_YEAR = 2026;
 
     let loading = true;
+    let chartsLoading = false;
     let now = new Date();
     let clockTimer: ReturnType<typeof setInterval> | undefined;
+    let chartsLoadedForPermissionKey = "";
 
     $: userName = formatUserName($currentUser);
     $: greeting = getTimeGreeting(now);
     $: activePermissions = Array.isArray($permissions) ? $permissions : [];
-    function hasPermission(permission: string): boolean {
-        const permissionList = Array.isArray(activePermissions) ? activePermissions : [];
+    $: currentRoleName = String(
+        ($currentUser as any)?.role_name ||
+            ($currentUser as any)?.role?.display_name ||
+            ($currentUser as any)?.role?.name ||
+            ($currentUser as any)?.job_title ||
+            "",
+    )
+        .trim()
+        .toLowerCase();
+    $: permissionKey = activePermissions.join("|");
+    function permissionMatches(permissionList: string[], permission: string): boolean {
         if (permissionList.includes("*") || permissionList.includes(permission)) return true;
         const [resource] = permission.split(":");
         return permissionList.includes(`${resource}:*`);
     }
-    $: canViewTasks = hasPermission("tasks:view");
-    $: canViewFinance = hasPermission("finance:view");
+    function hasPermission(permission: string): boolean {
+        const permissionList = Array.isArray(activePermissions) ? activePermissions : [];
+        if (["admin", "administrator"].includes(currentRoleName)) return true;
+        return permissionMatches(permissionList, permission);
+    }
+    $: isCurrentAdmin = ["admin", "administrator"].includes(currentRoleName);
+    $: canViewTasks = isCurrentAdmin || permissionMatches(activePermissions, "tasks:view");
+    $: canViewFinance = isCurrentAdmin || permissionMatches(activePermissions, "finance:view");
 
     let stats = {
         activeRFQs: 0,
@@ -53,14 +101,42 @@
     let taskModalOpen = false;
     let taskSignalsPermissionLoaded = false;
     let taskSignalRequestSeq = 0;
+    let taskSignalsRemoteRefreshing = false;
 
-    $: activeDashboardTasks = dashboardTasks
+    let revenueChartData: RevenueChartData[] = [];
+    let revenueChartAvailable = true;
+    let pipelineStages: PipelineStage[] = [];
+    let pipelineChartAvailable = true;
+    let financeChartAvailable = false;
+    let arAgingBuckets: AgingBucket[] = [];
+    let hoveredPipelineStage: string | null = null;
+    let hoveredAgingBucket: string | null = null;
+
+    $: activeDashboardTasks = (Array.isArray(dashboardTasks) ? dashboardTasks : [])
         .filter((task) => !["completed", "archived", "cancelled", "canceled"].includes((task.status || "").toLowerCase()))
         .slice(0, 5);
     $: followUpSummary = buildFollowUpSummary(followUpTasks, activeDashboardTasks);
     $: totalTaskSignals = followUpTasks.length + activeDashboardTasks.length;
+    $: pipelineStageTotal = pipelineStages.reduce((sum, stage) => sum + stage.count, 0);
+    $: arAgingTotal = arAgingBuckets.reduce((sum, bucket) => sum + bucket.value, 0);
+    $: pipelineStageValueTotal = pipelineStages.reduce((sum, stage) => sum + stage.value, 0);
+    $: revenueChartYear = Number(revenueChartData[0]?.year || DASHBOARD_CHART_YEAR);
+    $: revenueChartPeriod =
+        revenueChartYear === DASHBOARD_CHART_YEAR ? `YTD ${revenueChartYear}` : `FY ${revenueChartYear}`;
+    $: selectedPipelineStage =
+        hoveredPipelineStage
+            ? pipelineStages.find((stage) => stage.stage === hoveredPipelineStage) || pipelineStages[0]
+            : pipelineStages[0];
+    $: selectedAgingBucket =
+        hoveredAgingBucket
+            ? arAgingBuckets.find((bucket) => bucket.label === hoveredAgingBucket) || arAgingBuckets[0]
+            : arAgingBuckets[0];
+    $: pipelineOption = buildPipelineOption(pipelineStages);
+    $: agingOption = buildAgingOption(arAgingBuckets);
 
-    $: pressureLevel = canViewFinance
+    $: canShowFinance = canViewFinance || financeChartAvailable;
+
+    $: pressureLevel = canShowFinance
         ? stats.cashBalance > 0
             ? "Cash position is the primary decision surface today"
             : stats.pipelineValue > stats.outstandingAR
@@ -70,10 +146,10 @@
           ? "Follow-ups and pipeline conversion are the primary decision surface today"
           : "Pipeline conversion is the primary decision surface today";
 
-    $: kpis = canViewFinance
+    $: kpis = canShowFinance
         ? [
               {
-                  label: `Revenue FY${stats.activityYear}`,
+                  label: `Revenue YTD ${DASHBOARD_CHART_YEAR}`,
                   value: formatCompactCurrency(stats.totalRevenue),
                   meta: stats.revenueMeta,
                   tone: stats.revenueGrowth >= 0 ? "positive" : "negative",
@@ -135,20 +211,17 @@
               {
                   label: "Win Rate",
                   value: `${Math.round(stats.winRate)}%`,
-                  meta: `FY${stats.activityYear} closed opportunities`,
+                  meta: `YTD ${DASHBOARD_CHART_YEAR} closed opportunities`,
                   tone: stats.winRate >= 20 ? "positive" : "warning",
                   delta: "won / closed",
               },
-          ];
+          ] as { label: string; value: string; meta: string; tone: Tone; delta: string }[];
 
-    $: operatingFocus = canViewFinance
+    $: operatingFocus = canShowFinance
         ? [
               {
                   title: "Cash balance",
-                  detail:
-                      stats.cashPositionNote
-                          ? stats.cashPositionNote
-                          : `Bank cash is ${formatCurrency(stats.cashBalance)}`,
+                  detail: summarizeCashPosition(stats.cashPositionNote, stats.cashBalance),
                   tone: stats.cashPositionNote ? "warning" : "clear",
                   action: "Review",
                   actionId: "review_cash",
@@ -205,7 +278,7 @@
               },
           ];
 
-    $: alerts = canViewFinance
+    $: alerts = canShowFinance
         ? [
               {
                   label: "Statements",
@@ -261,7 +334,7 @@
                 stats.totalRevenue = rawStats.total_revenue || 0;
                 stats.revenueMeta =
                     rawStats.revenue_meta ||
-                    `Confirmed business FY${rawStats.activity_year || new Date().getFullYear()}`;
+                    `Confirmed business YTD ${DASHBOARD_CHART_YEAR}`;
                 stats.revenueGrowth = rawStats.month_growth || 0;
                 stats.activityYear = rawStats.activity_year || new Date().getFullYear();
                 stats.pipelineValue = rawStats.pipeline_value_bhd || 0;
@@ -273,15 +346,332 @@
                 stats.cashPositionNote = rawStats.cash_position_note || "";
                 stats.freshStartDate = rawStats.fresh_start_date || "";
             }
-
         } catch (err) {
-            const errorMsg = err?.message || String(err);
+            const errorMsg = errorMessage(err);
             toast.danger(`Failed to load dashboard data: ${errorMsg}`);
         } finally {
             loading = false;
         }
 
+        void loadDashboardCharts();
         void loadTaskSignals({ refreshRemote: true });
+    }
+
+    async function loadDashboardCharts() {
+        chartsLoading = true;
+        chartsLoadedForPermissionKey = permissionKey;
+
+        const [revenueResult, pipelineResult, agingResult] = await Promise.allSettled([
+            GetMonthlyRevenueByCustomer(),
+            loadPipelineStages(),
+            GetDashboardARAgingReportYTD(),
+        ]);
+
+        if (revenueResult.status === "fulfilled") {
+            revenueChartData = Array.isArray(revenueResult.value) ? revenueResult.value : [];
+            revenueChartAvailable = true;
+        } else {
+            revenueChartData = [];
+            revenueChartAvailable = !isPermissionError(revenueResult.reason);
+            devLog.warn("Dashboard revenue chart failed", revenueResult.reason);
+        }
+
+        if (pipelineResult.status === "fulfilled") {
+            pipelineStages = pipelineResult.value;
+            pipelineChartAvailable = true;
+        } else {
+            pipelineStages = fallbackPipelineStages();
+            pipelineChartAvailable = pipelineStages.length > 0 || !isPermissionError(pipelineResult.reason);
+            devLog.warn("Dashboard pipeline chart failed", pipelineResult.reason);
+        }
+
+        if (agingResult.status === "fulfilled" && agingResult.value) {
+            financeChartAvailable = true;
+            arAgingBuckets = normalizeAgingBuckets(agingResult.value as any);
+        } else {
+            financeChartAvailable = false;
+            arAgingBuckets = [];
+            if (agingResult.status === "rejected") {
+                devLog.warn("Dashboard AR aging chart failed", agingResult.reason);
+            }
+        }
+
+        chartsLoading = false;
+    }
+
+    async function loadPipelineStages(): Promise<PipelineStage[]> {
+        try {
+            const rows = await GetDashboardPipelineByStageYTD();
+            if (Array.isArray(rows) && rows.length > 0) {
+                return normalizePipelineRows(rows);
+            }
+        } catch (err) {
+            if (!isPermissionError(err)) {
+                devLog.warn("Dashboard pipeline stage query failed", err);
+            }
+        }
+
+        return [];
+    }
+
+    function normalizePipelineRows(rows: any[]): PipelineStage[] {
+        const total = rows.reduce((sum, row) => sum + Number(row?.count || 0), 0);
+        return rows
+            .map((row) => ({
+                stage: String(row?.stage || "Unstaged"),
+                label: formatStageLabel(row?.stage || "Unstaged"),
+                count: Number(row?.count || 0),
+                value: Number(row?.value || 0),
+                color: stageColor(row?.stage || "Unstaged"),
+                share: total > 0 ? (Number(row?.count || 0) / total) * 100 : 0,
+            }))
+            .filter((row) => row.count > 0)
+            .sort((a, b) => b.count - a.count);
+    }
+
+    function normalizeAgingBuckets(report: any): AgingBucket[] {
+        return [
+            { label: "Current", value: Number(report?.current || 0), color: "#3E8F47" },
+            { label: "30 Days", value: Number(report?.days_30 || 0), color: "#8BAA74" },
+            { label: "60 Days", value: Number(report?.days_60 || 0), color: "#C9A227" },
+            { label: "90 Days", value: Number(report?.days_90 || 0), color: "#D07A2D" },
+            { label: "120+ Days", value: Number(report?.days_120_plus || 0), color: "#C94B4B" },
+        ];
+    }
+
+    function fallbackPipelineStages(): PipelineStage[] {
+        if (stats.activeRFQs <= 0) return [];
+        return [
+            {
+                stage: "active",
+                label: "Active RFQs",
+                count: stats.activeRFQs,
+                value: stats.pipelineValue,
+                color: "#3E8F47",
+                share: 100,
+            },
+        ];
+    }
+
+    function stageColor(stage: string): string {
+        const normalized = String(stage || "").toLowerCase();
+        const colors: Record<string, string> = {
+            pending: "#C98D2E",
+            qualified: "#3E8F47",
+            proposal: "#5E7D68",
+            quoted: "#6E9A75",
+            negotiation: "#8A6F25",
+            won: "#2F8F4E",
+            lost: "#C94B4B",
+        };
+        return colors[normalized] || "#667569";
+    }
+
+    function formatStageLabel(stage: string): string {
+        return String(stage || "Unstaged")
+            .replace(/[_-]+/g, " ")
+            .replace(/\b\w/g, (match) => match.toUpperCase());
+    }
+
+    function buildPipelineOption(stages: PipelineStage[]): EChartsOption {
+        const totalCount = stages.reduce((sum, stage) => sum + stage.count, 0);
+        const totalValue = stages.reduce((sum, stage) => sum + stage.value, 0);
+        return {
+            backgroundColor: "transparent",
+            aria: { enabled: true },
+            animationDuration: 700,
+            animationEasing: "cubicOut",
+            color: stages.map((stage) => stage.color),
+            tooltip: {
+                trigger: "item",
+                backgroundColor: "rgba(37, 49, 43, 0.96)",
+                borderWidth: 0,
+                padding: [10, 12],
+                textStyle: { color: "#FFFFFF", fontSize: 12, fontWeight: 600 },
+                formatter(params: any) {
+                    const data = params?.data || {};
+                    return [
+                        `<strong>${escapeHtml(data.name || "Pipeline")}</strong>`,
+                        `Records: ${(Number(data.value || 0)).toLocaleString("en-US")}`,
+                        `Value: ${formatCurrency(Number(data.pipelineValue || 0))}`,
+                        `Share: ${Number(params?.percent || 0).toFixed(1)}%`,
+                    ].join("<br/>");
+                },
+            },
+            graphic: [
+                {
+                    type: "text",
+                    left: "center",
+                    top: "43%",
+                    style: {
+                        text: totalCount.toLocaleString("en-US"),
+                        fill: "#25312B",
+                        fontSize: 24,
+                        fontWeight: 850,
+                        align: "center",
+                    },
+                },
+                {
+                    type: "text",
+                    left: "center",
+                    top: "55%",
+                    style: {
+                        text: formatCompactCurrency(totalValue),
+                        fill: "#667569",
+                        fontSize: 11,
+                        fontWeight: 800,
+                        align: "center",
+                    },
+                },
+            ],
+            series: [
+                {
+                    name: "Pipeline",
+                    type: "pie",
+                    radius: ["56%", "78%"],
+                    center: ["50%", "50%"],
+                    minAngle: 3,
+                    avoidLabelOverlap: true,
+                    itemStyle: {
+                        borderColor: "#FFFFFF",
+                        borderRadius: 8,
+                        borderWidth: 3,
+                    },
+                    label: {
+                        color: "#25312B",
+                        fontSize: 11,
+                        fontWeight: 800,
+                        width: 80,
+                        overflow: "truncate",
+                        formatter(params: any) {
+                            return Number(params?.percent || 0) < 4 ? "" : String(params?.name || "");
+                        },
+                    },
+                    labelLine: {
+                        length: 10,
+                        length2: 6,
+                        lineStyle: { color: "#9AA89B" },
+                    },
+                    emphasis: {
+                        scale: true,
+                        scaleSize: 7,
+                        label: { fontSize: 12, fontWeight: 850 },
+                    },
+                    data: stages.map((stage) => ({
+                        name: stage.label,
+                        value: stage.count,
+                        stage: stage.stage,
+                        pipelineValue: stage.value,
+                        itemStyle: { color: stage.color },
+                    })),
+                },
+            ],
+        };
+    }
+
+    function buildAgingOption(buckets: AgingBucket[]): EChartsOption {
+        return {
+            backgroundColor: "transparent",
+            aria: { enabled: true },
+            animationDuration: 650,
+            animationEasing: "cubicOut",
+            grid: { top: 8, right: 18, bottom: 30, left: 84, containLabel: true },
+            tooltip: {
+                trigger: "axis",
+                axisPointer: { type: "shadow", shadowStyle: { color: "rgba(201, 75, 75, 0.06)" } },
+                backgroundColor: "rgba(37, 49, 43, 0.96)",
+                borderWidth: 0,
+                padding: [10, 12],
+                textStyle: { color: "#FFFFFF", fontSize: 12, fontWeight: 600 },
+                formatter(params: any) {
+                    const item = Array.isArray(params) ? params[0] : params;
+                    const bucket = buckets[item?.dataIndex || 0];
+                    if (!bucket) return "";
+                    return [
+                        `<strong>${escapeHtml(bucket.label)}</strong>`,
+                        `Outstanding: ${formatCurrency(bucket.value)}`,
+                        `Status: ${agingRiskLabel(bucket)}`,
+                    ].join("<br/>");
+                },
+            },
+            xAxis: {
+                type: "value",
+                axisLabel: {
+                    color: "#7B8A7D",
+                    fontSize: 10,
+                    margin: 10,
+                    hideOverlap: true,
+                    formatter: (value: number) => formatAxisCurrency(value),
+                },
+                splitLine: { lineStyle: { color: "rgba(93, 116, 94, 0.12)" } },
+                axisLine: { show: false },
+                axisTick: { show: false },
+            },
+            yAxis: {
+                type: "category",
+                inverse: true,
+                data: buckets.map((bucket) => bucket.label),
+                axisLabel: { color: "#25312B", fontSize: 11, fontWeight: 800 },
+                axisLine: { show: false },
+                axisTick: { show: false },
+            },
+            series: [
+                {
+                    name: "Receivables",
+                    type: "bar",
+                    barWidth: 15,
+                    itemStyle: {
+                        borderRadius: [0, 8, 8, 0],
+                        color(params: any) {
+                            return buckets[params.dataIndex]?.color || "#C94B4B";
+                        },
+                    },
+                    emphasis: {
+                        focus: "series",
+                        itemStyle: { shadowBlur: 15, shadowColor: "rgba(201, 75, 75, 0.2)" },
+                    },
+                    data: buckets.map((bucket) => ({
+                        value: Number(bucket.value || 0),
+                        bucketLabel: bucket.label,
+                    })),
+                },
+            ],
+        };
+    }
+
+    function handlePipelineChartHover(event: CustomEvent<any>) {
+        hoveredPipelineStage = event.detail?.data?.stage || null;
+    }
+
+    function handleAgingChartHover(event: CustomEvent<any>) {
+        hoveredAgingBucket = event.detail?.data?.bucketLabel || null;
+    }
+
+    function clearChartHover() {
+        hoveredPipelineStage = null;
+        hoveredAgingBucket = null;
+    }
+
+    function openDocumentCapture() {
+        window.dispatchEvent(new CustomEvent("document-capture:open"));
+    }
+
+    function agingRiskLabel(bucket?: AgingBucket): string {
+        if (!bucket) return "watch";
+        if (bucket.label === "Current") return "healthy";
+        if (bucket.label.includes("120")) return "critical";
+        if (bucket.label.includes("90")) return "high risk";
+        if (bucket.label.includes("60")) return "watch";
+        return "attention";
+    }
+
+    function errorMessage(err: unknown): string {
+        if (err instanceof Error) return err.message;
+        return String(err || "Unknown error");
+    }
+
+    function isPermissionError(err: unknown): boolean {
+        return /(permission|access denied|not authorized|unauthorized)/i.test(errorMessage(err));
     }
 
     async function loadTaskSignals(options: { refreshRemote?: boolean } = {}) {
@@ -292,12 +682,6 @@
                 dashboardTasks = [];
             }
             return;
-        }
-
-        if (options.refreshRemote) {
-            await refreshCollaborativeWorkspace({ minIntervalMs: 5_000 }).catch((err) => {
-                devLog.warn("Dashboard collaborative refresh failed", err);
-            });
         }
 
         const [legacyRows, myTaskRows] = await Promise.all([
@@ -314,10 +698,26 @@
         followUpTasks = legacyRows || [];
         dashboardTasks = myTaskRows || [];
         if (dashboardTasks.length === 0 && Array.isArray(activePermissions) && activePermissions.includes("*")) {
-            dashboardTasks = await listTeamTasks(false).catch((err) => {
+            dashboardTasks = (await listTeamTasks(false).catch((err) => {
                 devLog.warn("Dashboard team tasks failed", err);
                 return [];
-            });
+            })) || [];
+        }
+        if (options.refreshRemote) {
+            void refreshTaskSignalsFromRemote();
+        }
+    }
+
+    async function refreshTaskSignalsFromRemote() {
+        if (taskSignalsRemoteRefreshing) return;
+        taskSignalsRemoteRefreshing = true;
+        try {
+            await refreshCollaborativeWorkspace();
+            await loadTaskSignals();
+        } catch (err) {
+            devLog.warn("Dashboard collaborative refresh failed", err);
+        } finally {
+            taskSignalsRemoteRefreshing = false;
         }
     }
 
@@ -330,6 +730,10 @@
         void loadTaskSignals({ refreshRemote: true });
     }
 
+    $: if (!loading && permissionKey && permissionKey !== chartsLoadedForPermissionKey) {
+        void loadDashboardCharts();
+    }
+
     function formatCurrency(val: number): string {
         return `${Number(val || 0).toLocaleString("en-US", {
             minimumFractionDigits: 0,
@@ -339,7 +743,24 @@
 
     function formatCompactCurrency(val: number): string {
         const amount = Number(val || 0);
+        if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(1)}M BHD`;
+        if (amount >= 1_000) return `${Math.round(amount / 1_000).toLocaleString("en-US")}k BHD`;
         return `${amount.toLocaleString("en-US", { maximumFractionDigits: 0 })} BHD`;
+    }
+
+    function formatAxisCurrency(val: number): string {
+        const amount = Number(val || 0);
+        if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(1)}M`;
+        if (amount >= 1_000) return `${Math.round(amount / 1_000).toLocaleString("en-US")}k`;
+        return amount.toLocaleString("en-US", { maximumFractionDigits: 0 });
+    }
+
+    function escapeHtml(value: string): string {
+        return String(value || "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
     }
 
     function formatCount(val: number): string {
@@ -385,18 +806,35 @@
         return `${clipped.slice(0, lastSpace > 42 ? lastSpace : clipped.length)}...`;
     }
 
+    function summarizeCashPosition(note: string | undefined, cashBalance: number): string {
+        const compact = String(note || "").replace(/\s+/g, " ").trim();
+        if (!compact) return `Bank cash is ${formatCurrency(cashBalance)}`;
+        if (/no statement imported/i.test(compact)) {
+            const matches = [...compact.matchAll(/No statement imported for ([^.]+?)(?: latest statement|\.|$)/gi)]
+                .map((match) => String(match[1] || "").trim())
+                .filter(Boolean);
+            if (matches.length > 0) {
+                const first = matches[0];
+                const extra = matches.length > 1 ? ` +${matches.length - 1} more` : "";
+                return `Missing bank statement: ${summarizeText(first, 44)}${extra}`;
+            }
+            return "Missing bank statements need review";
+        }
+        return summarizeText(compact, 92);
+    }
+
     function buildFollowUpSummary(
         legacyFollowUps: main.FollowUpTask[],
         activeTasks: CollaborativeTask[],
     ): string {
         if (legacyFollowUps.length > 0) {
             const first = legacyFollowUps[0];
-            return `* ${summarizeText(first.title || first.description || first.notes || "Follow-up pending")}`;
+            return summarizeText(first.title || first.description || first.notes || "Follow-up pending");
         }
         if (activeTasks.length > 0) {
-            return `* ${summarizeText(activeTasks[0].title || activeTasks[0].description || "Task pending")}`;
+            return summarizeText(activeTasks[0].title || activeTasks[0].description || "Task pending");
         }
-        return "* No follow-up issues";
+        return "No follow-up issues";
     }
 
     function taskAge(task: any): string {
@@ -493,6 +931,10 @@
             <h1>{greeting}, {userName}</h1>
             <p class="dashboard-subtitle">{pressureLevel}</p>
         </div>
+        <div class="dashboard-actions">
+            <time datetime={now.toISOString()}>{formatDate(now)}</time>
+            <button type="button" class="capture-button" on:click={openDocumentCapture}>Browse</button>
+        </div>
         <time datetime={now.toISOString()}>{formatDate(now)}</time>
     </header>
 
@@ -555,11 +997,73 @@
                     </div>
                 </article>
 
-                {#if canViewFinance}
+                {#if revenueChartAvailable}
+                    <article class="panel chart-panel revenue-panel">
+                        <div class="panel-head">
+                            <span>Top Customer Revenue</span>
+                            <strong>{revenueChartPeriod}</strong>
+                        </div>
+                        <div class="revenue-chart-wrap">
+                            <ExecutiveRevenueChart data={revenueChartData} loading={chartsLoading} />
+                        </div>
+                    </article>
+                {/if}
+
+                {#if pipelineChartAvailable}
+                    <article class="panel chart-panel pipeline-panel">
+                        <div class="panel-head">
+                            <span>Pipeline by Stage</span>
+                            <strong>{pipelineStageTotal} YTD {DASHBOARD_CHART_YEAR} records</strong>
+                        </div>
+                        {#if chartsLoading}
+                            <div class="chart-empty">Loading chart data...</div>
+                        {:else if pipelineStages.length === 0}
+                            <div class="chart-empty">No pipeline data available</div>
+                        {:else}
+                            <div class="pipeline-executive">
+                                <div class="pipeline-chart-frame">
+                                    <EChartsSurface
+                                        option={pipelineOption}
+                                        height={255}
+                                        ariaLabel="Pipeline stage distribution interactive donut"
+                                        on:hover={handlePipelineChartHover}
+                                        on:leave={clearChartHover}
+                                    />
+                                </div>
+
+                                <div class="pipeline-ledger">
+                                    <div class="pipeline-selected">
+                                        <span>{selectedPipelineStage?.label || "Pipeline"}</span>
+                                        <strong>{formatCompactCurrency(selectedPipelineStage?.value || 0)}</strong>
+                                        <small>{selectedPipelineStage?.count || 0} records</small>
+                                    </div>
+                                    {#each pipelineStages as stage}
+                                        <button
+                                            class="pipeline-row"
+                                            class:active={hoveredPipelineStage === stage.stage}
+                                            type="button"
+                                            on:mouseenter={() => (hoveredPipelineStage = stage.stage)}
+                                            on:mouseleave={() => (hoveredPipelineStage = null)}
+                                            on:focus={() => (hoveredPipelineStage = stage.stage)}
+                                            on:blur={() => (hoveredPipelineStage = null)}
+                                        >
+                                            <span class="stage-dot" style={`background: ${stage.color}`}></span>
+                                            <span class="stage-name">{stage.label}</span>
+                                            <strong>{stage.count}</strong>
+                                            <em>{formatCompactCurrency(stage.value)}</em>
+                                        </button>
+                                    {/each}
+                                </div>
+                            </div>
+                        {/if}
+                    </article>
+                {/if}
+
+                {#if canShowFinance}
                     <article class="panel receivables-panel">
                         <div class="panel-head">
-                            <span>Collections</span>
-                            <strong>{stats.pendingInvoices} open</strong>
+                            <span>Receivables Aging</span>
+                            <strong>{stats.pendingInvoices} open · YTD {DASHBOARD_CHART_YEAR}</strong>
                         </div>
                         <div class="receivable-row primary">
                             <div>
@@ -577,10 +1081,33 @@
                             <span>At risk</span>
                             <strong>{formatCurrency(stats.outstandingAR)}</strong>
                         </div>
+
+                        {#if chartsLoading}
+                            <div class="chart-empty compact">Loading chart data...</div>
+                        {:else if arAgingTotal <= 0}
+                            <div class="chart-empty compact">No receivables aging data</div>
+                        {:else}
+                            <div class="aging-executive">
+                                <div class="aging-selected">
+                                    <span>{selectedAgingBucket?.label || "Receivables"}</span>
+                                    <strong>{formatCompactCurrency(selectedAgingBucket?.value || 0)}</strong>
+                                    <small>{agingRiskLabel(selectedAgingBucket)}</small>
+                                </div>
+                                <div class="aging-chart-frame">
+                                    <EChartsSurface
+                                        option={agingOption}
+                                        height={212}
+                                        ariaLabel="Receivables aging interactive bar chart"
+                                        on:hover={handleAgingChartHover}
+                                        on:leave={clearChartHover}
+                                    />
+                                </div>
+                            </div>
+                        {/if}
                     </article>
                 {/if}
 
-                <article class="panel activity-panel" class:wide={!canViewFinance}>
+                <article class="panel activity-panel" class:wide={!canShowFinance}>
                     <div class="panel-head">
                         <span>Tasks</span>
                         <button class="panel-action" type="button" on:click={openTaskModal}>New Task</button>
@@ -620,7 +1147,7 @@
         min-height: 100vh;
         padding: 22px 28px 28px;
         background: var(--bg-base);
-        color: #17202a;
+        color: var(--text-primary);
         box-sizing: border-box;
     }
 
@@ -634,30 +1161,53 @@
 
     .brand-kicker {
         margin: 0 0 12px;
-        color: #2d66bd;
-        font-size: 12px;
+        color: var(--brand-indigo, #3E8F47);
+        font-size: var(--text-12, 12px);
         font-weight: 700;
     }
 
     .dashboard-header h1 {
         margin: 0;
-        color: #43546b;
-        font-size: 28px;
+        color: var(--onyx, #25312B);
+        font-size: var(--text-28, 28px);
         font-weight: 500;
         line-height: 1.1;
     }
 
     .dashboard-subtitle {
         margin: 6px 0 0;
-        color: #708299;
-        font-size: 12px;
+        color: var(--text-secondary, #667569);
+        font-size: var(--text-12, 12px);
         font-weight: 600;
     }
 
+    .dashboard-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
     .dashboard-header time {
-        color: #7d8fa6;
-        font-size: 12px;
+        color: var(--text-muted, #8A978B);
+        font-size: var(--text-12, 12px);
         white-space: nowrap;
+    }
+
+    .capture-button {
+        border: 1px solid var(--border, #D6DED3);
+        border-radius: 8px;
+        background: var(--surface, #FFFFFF);
+        color: var(--brand-indigo, #3E8F47);
+        cursor: pointer;
+        font-size: var(--text-12, 12px);
+        font-weight: 700;
+        min-height: 34px;
+        padding: 0 14px;
+    }
+
+    .capture-button:hover {
+        border-color: var(--brand-indigo, #3E8F47);
+        background: var(--surface-raised, #F7FAF6);
     }
 
     .loading-state {
@@ -682,9 +1232,9 @@
     .metric-card,
     .panel {
         background: rgba(255, 255, 255, 0.78);
-        border: 1px solid rgba(205, 216, 226, 0.82);
+        border: 1px solid var(--border, #DDE8DD);
         border-radius: 8px;
-        box-shadow: 0 10px 28px rgba(39, 54, 73, 0.035);
+        box-shadow: 0 10px 28px rgba(36, 48, 39, 0.035);
     }
 
     .metric-card {
@@ -699,25 +1249,25 @@
         position: absolute;
         inset: 0 0 auto 0;
         height: 3px;
-        background: #d6e0ea;
+        background: #DCE8DC;
     }
 
     .metric-card[data-tone="positive"]::before {
-        background: #35a66f;
+        background: #3E8F47;
     }
 
     .metric-card[data-tone="negative"]::before {
-        background: #d94a59;
+        background: #C94B4B;
     }
 
     .metric-card[data-tone="warning"]::before {
-        background: #d99522;
+        background: #C98D2E;
     }
 
     .metric-label,
     .panel-head span {
-        color: #8190a2;
-        font-size: 10px;
+        color: var(--text-muted, #8A978B);
+        font-size: var(--text-10, 10px);
         font-weight: 800;
         letter-spacing: 0;
         text-transform: uppercase;
@@ -725,8 +1275,8 @@
 
     .metric-value {
         margin-top: 10px;
-        color: #253244;
-        font-size: 24px;
+        color: var(--onyx, #25312B);
+        font-size: var(--text-24, 24px);
         line-height: 1;
         font-weight: 700;
     }
@@ -736,23 +1286,23 @@
         justify-content: space-between;
         gap: 10px;
         margin-top: 8px;
-        color: #7a899b;
-        font-size: 11px;
+        color: var(--text-secondary, #667569);
+        font-size: var(--text-11, 11px);
         line-height: 1.3;
     }
 
     .metric-meta strong {
-        color: #2c8a5f;
+        color: var(--brand-indigo, #3E8F47);
         font-weight: 700;
         text-align: right;
     }
 
     .metric-card[data-tone="negative"] .metric-meta strong {
-        color: #ce3c4b;
+        color: #C94B4B;
     }
 
     .metric-card[data-tone="warning"] .metric-meta strong {
-        color: #b87511;
+        color: #8A6F25;
     }
 
     .decision-grid {
@@ -776,31 +1326,33 @@
     }
 
     .panel-head strong {
-        color: #8da0b4;
-        font-size: 11px;
+        color: var(--text-muted, #8A978B);
+        font-size: var(--text-11, 11px);
         font-weight: 700;
+        line-height: 1.25;
+        text-align: right;
     }
 
     .panel-action {
         padding: 6px 9px;
-        border: 1px solid #c9d6e4;
+        border: 1px solid var(--border, #DDE8DD);
         border-radius: 5px;
         background: #ffffff;
-        color: #2b5f9e;
-        font-size: 11px;
+        color: var(--brand-indigo, #3E8F47);
+        font-size: var(--text-11, 11px);
         font-weight: 800;
         cursor: pointer;
     }
 
     .panel-action:hover {
-        border-color: #8fb1d5;
-        background: #f4f8fc;
+        border-color: #9CB99D;
+        background: #F4F8F4;
     }
 
     .operating-panel h2 {
         margin: 0 0 18px;
-        color: #293447;
-        font-size: 18px;
+        color: var(--onyx, #25312B);
+        font-size: var(--text-18, 18px);
         line-height: 1.35;
         font-weight: 700;
     }
@@ -822,35 +1374,35 @@
         justify-content: space-between;
         gap: 16px;
         border-radius: 6px;
-        background: #f4f7fa;
+        background: #F3F7F2;
     }
 
     .focus-row {
         padding: 12px 14px;
-        border-left: 3px solid #a8bbd1;
+        border-left: 3px solid #AFC2AF;
     }
 
     .focus-row[data-tone="critical"] {
-        background: #fff0f1;
-        border-color: #dc3446;
+        background: #FFF0F1;
+        border-color: #C94B4B;
     }
 
     .focus-row[data-tone="warning"] {
-        background: #fff7e9;
-        border-color: #e69a22;
+        background: #FFF7E9;
+        border-color: #C98D2E;
     }
 
     .focus-row[data-tone="info"] {
-        background: #edf5ff;
-        border-color: #2f70c7;
+        background: #EEF7EE;
+        border-color: var(--brand-indigo, #3E8F47);
     }
 
     .focus-row strong,
     .activity-row strong,
     .receivable-row strong {
         display: block;
-        color: #2d394a;
-        font-size: 13px;
+        color: var(--onyx, #25312B);
+        font-size: var(--text-13, 13px);
         font-weight: 800;
     }
 
@@ -860,8 +1412,8 @@
     .alert-row span {
         display: block;
         margin-top: 4px;
-        color: #6d7e91;
-        font-size: 11px;
+        color: var(--text-secondary, #667569);
+        font-size: var(--text-11, 11px);
         line-height: 1.35;
     }
 
@@ -870,9 +1422,9 @@
         padding: 7px 10px;
         border: 0;
         border-radius: 5px;
-        background: #2265b9;
+        background: var(--brand-indigo, #3E8F47);
         color: white;
-        font-size: 11px;
+        font-size: var(--text-11, 11px);
         font-weight: 800;
         text-align: center;
         cursor: pointer;
@@ -883,13 +1435,13 @@
     }
 
     .focus-action:hover {
-        background: #1a5298;
-        box-shadow: 0 6px 14px rgba(34, 101, 185, 0.16);
+        background: var(--brand-indigo-hover, #2F7638);
+        box-shadow: 0 6px 14px rgba(62, 143, 71, 0.16);
         transform: translateY(-1px);
     }
 
     .focus-action:focus-visible {
-        outline: 2px solid #79a9df;
+        outline: 2px solid #98C99E;
         outline-offset: 2px;
     }
 
@@ -897,33 +1449,166 @@
         align-items: flex-start;
         justify-content: flex-start;
         padding: 12px 14px;
-        border-left: 3px solid #b8c7d7;
+        border-left: 3px solid #B7C8B5;
     }
 
     .alert-row[data-tone="critical"] {
-        background: #fff0f2;
-        border-color: #dc3446;
+        background: #FFF0F2;
+        border-color: #C94B4B;
     }
 
     .alert-row[data-tone="warning"] {
-        background: #fff7e8;
-        border-color: #e69a22;
+        background: #FFF7E8;
+        border-color: #C98D2E;
     }
 
     .alert-row[data-tone="info"] {
-        background: #eef6ff;
-        border-color: #4f89d8;
+        background: #EFF8EF;
+        border-color: var(--brand-indigo, #3E8F47);
     }
 
     .alert-row[data-tone="soft"] {
-        background: #f6f8fb;
-        border-color: #a9b8c8;
+        background: #F6F8F5;
+        border-color: #B9C8B8;
     }
 
     .alert-row strong {
         min-width: 96px;
-        color: #334154;
-        font-size: 12px;
+        color: var(--onyx, #25312B);
+        font-size: var(--text-12, 12px);
+    }
+
+    .chart-panel {
+        min-height: 300px;
+    }
+
+    .revenue-panel {
+        grid-column: 1 / -1;
+    }
+
+    .revenue-chart-wrap {
+        min-height: 300px;
+    }
+
+    .pipeline-executive {
+        display: grid;
+        grid-template-columns: minmax(250px, 0.95fr) minmax(0, 1fr);
+        gap: 18px;
+        align-items: center;
+    }
+
+    .pipeline-chart-frame,
+    .aging-chart-frame {
+        min-width: 0;
+        border: 1px solid rgba(93, 116, 94, 0.12);
+        border-radius: 8px;
+        background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 247, 0.94)),
+            #FFFFFF;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
+    }
+
+    .pipeline-ledger {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .pipeline-selected {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 4px 12px;
+        padding: 12px 14px;
+        border: 1px solid #D3E1D2;
+        border-radius: 8px;
+        background: linear-gradient(180deg, #FFFFFF 0%, #F7FAF7 100%);
+    }
+
+    .pipeline-selected span,
+    .aging-selected span {
+        color: var(--text-muted, #8A978B);
+        font-size: var(--text-10, 10px);
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0;
+    }
+
+    .pipeline-selected strong,
+    .aging-selected strong {
+        color: var(--onyx, #25312B);
+        font-size: var(--text-15, 15px);
+        font-weight: 850;
+        white-space: nowrap;
+    }
+
+    .pipeline-selected small,
+    .aging-selected small {
+        grid-column: 1 / -1;
+        color: var(--text-secondary, #667569);
+        font-size: var(--text-11, 11px);
+        font-weight: 700;
+        text-transform: capitalize;
+    }
+
+    .pipeline-row {
+        display: grid;
+        grid-template-columns: 10px minmax(0, 1fr) auto auto;
+        gap: 10px;
+        align-items: center;
+        width: 100%;
+        min-height: 34px;
+        padding: 8px 10px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        background: transparent;
+        color: inherit;
+        text-align: left;
+        cursor: pointer;
+        transition:
+            background 0.16s ease,
+            border-color 0.16s ease,
+            opacity 0.16s ease,
+            transform 0.16s ease;
+    }
+
+    .pipeline-row:hover,
+    .pipeline-row:focus-visible,
+    .pipeline-row.active {
+        border-color: #B9CEB8;
+        background: rgba(62, 143, 71, 0.07);
+        outline: none;
+        transform: translateX(2px);
+    }
+
+    .stage-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+    }
+
+    .stage-name {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--onyx, #25312B);
+        font-size: var(--text-12, 12px);
+        font-weight: 800;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .pipeline-row strong,
+    .pipeline-row em {
+        color: var(--text-secondary, #667569);
+        font-size: var(--text-11, 11px);
+        font-style: normal;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+    }
+
+    .pipeline-row em {
+        color: var(--text-muted, #8A978B);
     }
 
     .receivables-panel,
@@ -941,12 +1626,12 @@
     }
 
     .receivable-row.primary {
-        background: #fff7f8;
+        background: #FFF7F8;
     }
 
     .receivable-row small {
-        color: #ce3c4b;
-        font-size: 11px;
+        color: #C94B4B;
+        font-size: var(--text-11, 11px);
         font-weight: 800;
         white-space: nowrap;
     }
@@ -955,7 +1640,7 @@
         height: 8px;
         margin: 18px 0 14px;
         border-radius: 999px;
-        background: #dce6ef;
+        background: #E1E9DF;
         overflow: hidden;
     }
 
@@ -963,7 +1648,7 @@
         display: block;
         height: 100%;
         border-radius: inherit;
-        background: #35a66f;
+        background: var(--brand-indigo, #3E8F47);
     }
 
     .receivable-meta {
@@ -971,18 +1656,52 @@
         grid-template-columns: 1fr auto 1fr auto;
         gap: 8px;
         align-items: center;
-        color: #8190a2;
-        font-size: 11px;
+        color: var(--text-muted, #8A978B);
+        font-size: var(--text-11, 11px);
     }
 
     .receivable-meta strong {
-        color: #2d394a;
+        color: var(--onyx, #25312B);
+    }
+
+    .aging-executive {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 18px;
+    }
+
+    .aging-selected {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 4px 12px;
+        padding: 11px 13px;
+        border: 1px solid #E6D5D5;
+        border-radius: 8px;
+        background: linear-gradient(180deg, #FFFFFF 0%, #FFF8F8 100%);
+    }
+
+    .chart-empty {
+        min-height: 180px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-muted, #8A978B);
+        font-size: var(--text-12, 12px);
+        border: 1px dashed var(--border, #DDE8DD);
+        border-radius: 8px;
+        background: #F7FAF7;
+    }
+
+    .chart-empty.compact {
+        min-height: 84px;
+        margin-top: 18px;
     }
 
     .activity-row {
         padding: 10px 0;
         background: transparent;
-        border-bottom: 1px solid #e3ebf2;
+        border-bottom: 1px solid #E2EBE0;
     }
 
     .activity-row:last-child {
@@ -998,9 +1717,9 @@
         justify-content: center;
         box-sizing: border-box;
         border-radius: 5px;
-        background: #e8f1f8;
-        color: #47719c;
-        font-size: 10px;
+        background: #E8F1E5;
+        color: var(--brand-indigo, #3E8F47);
+        font-size: var(--text-10, 10px);
         font-weight: 800;
         line-height: 1;
         text-align: center;
@@ -1013,8 +1732,8 @@
     }
 
     .activity-row time {
-        color: #8da0b4;
-        font-size: 10px;
+        color: var(--text-muted, #8A978B);
+        font-size: var(--text-10, 10px);
         font-weight: 700;
         white-space: nowrap;
     }
@@ -1024,28 +1743,32 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        color: #8da0b4;
-        font-size: 12px;
+        color: var(--text-muted, #8A978B);
+        font-size: var(--text-12, 12px);
     }
 
     .empty-action {
         width: 100%;
-        border: 1px dashed #cbd8e4;
+        border: 1px dashed var(--border, #DDE8DD);
         border-radius: 6px;
-        background: #f8fbfd;
+        background: #F8FBF7;
         cursor: pointer;
     }
 
     .empty-action:hover {
-        color: #2b5f9e;
-        border-color: #9bb9d8;
-        background: #f3f8fd;
+        color: var(--brand-indigo, #3E8F47);
+        border-color: #9CB99D;
+        background: #F3F8F3;
     }
 
     @media (max-width: 1180px) {
         .kpi-strip,
         .decision-grid {
             grid-template-columns: 1fr 1fr;
+        }
+
+        .pipeline-executive {
+            grid-template-columns: 1fr;
         }
     }
 
@@ -1055,6 +1778,11 @@
         }
 
         .dashboard-header {
+            flex-direction: column;
+        }
+
+        .dashboard-actions {
+            align-items: flex-start;
             flex-direction: column;
         }
 
@@ -1072,6 +1800,20 @@
 
         .receivable-meta {
             grid-template-columns: 1fr auto;
+        }
+
+        .pipeline-row {
+            grid-template-columns: 10px minmax(0, 1fr) auto;
+        }
+
+        .pipeline-row em {
+            grid-column: 2 / -1;
+            text-align: left;
+        }
+
+        .pipeline-selected,
+        .aging-selected {
+            grid-template-columns: 1fr;
         }
     }
 </style>

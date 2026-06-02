@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -73,8 +74,7 @@ func (a *App) RecordPayment(invoiceID string, amount float64, method string, dat
 	}
 
 	// P1 FIX: Reject payments on non-payable invoices
-	nonPayableStatuses := map[string]bool{"Cancelled": true, "Void": true, "Proforma": true, "Paid": true}
-	if nonPayableStatuses[invoice.Status] {
+	if !canRecordCustomerInvoicePayment(invoice, time.Now()) {
 		tx.Rollback()
 		return nil, fmt.Errorf("cannot record payment on invoice with status '%s'", invoice.Status)
 	}
@@ -147,32 +147,11 @@ func (a *App) RecordPayment(invoiceID string, amount float64, method string, dat
 		newOutstanding = 0 // Floor at zero - no negative balances!
 	}
 
-	// Determine new invoice status
-	var newStatus string
-	if newOutstanding <= 0 {
-		newStatus = "Paid"
-		newOutstanding = 0 // Ensure no negative balances
-	} else {
-		// Check if this is the first payment
-		var paymentCount int64
-		tx.Model(&Payment{}).Where("invoice_id = ?", invoiceID).Count(&paymentCount)
-		if paymentCount > 1 {
-			newStatus = "PartiallyPaid"
-		} else {
-			// First payment, was invoice overdue?
-			if invoice.Status == "Overdue" {
-				newStatus = "PartiallyPaid"
-			} else {
-				newStatus = "PartiallyPaid"
-			}
-		}
-	}
-
-	// Update invoice (still in locked transaction)
-	if err := tx.Model(&invoice).Updates(map[string]interface{}{
-		"outstanding_bhd": newOutstanding,
-		"status":          newStatus,
-	}).Error; err != nil {
+	previousOutstanding := invoice.OutstandingBHD
+	previousStatus := invoice.Status
+	invoice.OutstandingBHD = newOutstanding
+	state, err := a.applyCustomerInvoicePaymentState(tx, &invoice)
+	if err != nil {
 		tx.Rollback()
 		return nil, newError("DB_UPDATE_FAILED", "Failed to update invoice", err.Error())
 	}
@@ -197,7 +176,7 @@ func (a *App) RecordPayment(invoiceID string, amount float64, method string, dat
 				"payment_method":      method,
 				"payment_date":        dateStr,
 				"reference":           reference,
-				"new_outstanding_bhd": newOutstanding,
+				"new_outstanding_bhd": state.OutstandingBHD,
 				"days_to_payment":     daysToPayment,
 			},
 		)
@@ -206,10 +185,10 @@ func (a *App) RecordPayment(invoiceID string, amount float64, method string, dat
 	log.Printf("💰 Payment recorded: %s BHD for Invoice %s (Method: %s, Days: %d)",
 		fmt.Sprintf("%.3f", amount), invoice.InvoiceNumber, method, daysToPayment)
 	log.Printf("📊 Invoice %s updated: Outstanding %.3f BHD → %.3f BHD, Status: %s → %s",
-		invoice.InvoiceNumber, invoice.OutstandingBHD, newOutstanding, invoice.Status, newStatus)
+		invoice.InvoiceNumber, previousOutstanding, state.OutstandingBHD, previousStatus, state.Status)
 
 	// If invoice is fully paid, check if order should progress to Complete
-	if newStatus == "Paid" && invoice.OrderID != "" {
+	if state.Status == "Paid" && invoice.OrderID != "" {
 		if err := a.checkOrderCompletion(invoice.OrderID); err != nil {
 			log.Printf("⚠️ Failed to check order completion for order %s: %v", invoice.OrderID, err)
 			// Don't fail the payment, just log warning
@@ -331,37 +310,45 @@ func (a *App) DeletePayment(id string) error {
 	newOutstanding := invoice.OutstandingBHD + payment.AmountBHD
 	newOutstanding = math.Round(newOutstanding*BHDPrecisionMultiplier) / BHDPrecisionMultiplier
 
-	// Determine new invoice status based on remaining payments
-	var remainingPayments []Payment
-	if err := tx.Where("invoice_id = ?", payment.InvoiceID).Find(&remainingPayments).Error; err != nil {
-		tx.Rollback()
-		return newError("DB_QUERY_FAILED", "Failed to query remaining payments", err.Error())
-	}
-
-	var newStatus string
-	if len(remainingPayments) == 0 {
-		// No payments left, revert to original status
-		if time.Now().After(invoice.DueDate) {
-			newStatus = "Overdue"
-		} else {
-			newStatus = "Sent"
-		}
-	} else {
-		// Still has payments
-		if newOutstanding <= 0 {
-			newStatus = "Paid"
-		} else {
-			newStatus = "PartiallyPaid"
-		}
-	}
-
-	// Update invoice
-	if err := tx.Model(&invoice).Updates(map[string]interface{}{
-		"outstanding_bhd": newOutstanding,
-		"status":          newStatus,
-	}).Error; err != nil {
+	previousOutstanding := invoice.OutstandingBHD
+	previousStatus := invoice.Status
+	invoice.OutstandingBHD = newOutstanding
+	state, err := a.applyCustomerInvoicePaymentState(tx, &invoice)
+	if err != nil {
 		tx.Rollback()
 		return newError("DB_UPDATE_FAILED", "Failed to update invoice", err.Error())
+	}
+
+	if payment.ReceiptID != nil && strings.TrimSpace(*payment.ReceiptID) != "" {
+		var receipt CustomerReceipt
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&receipt, "id = ?", strings.TrimSpace(*payment.ReceiptID)).Error; err == nil {
+			if err := tx.Where("payment_id = ?", payment.ID).Delete(&CustomerReceiptAllocation{}).Error; err != nil {
+				tx.Rollback()
+				return newError("DB_DELETE_FAILED", "Failed to delete receipt allocation", err.Error())
+			}
+			nextApplied := roundBHD(receipt.AppliedAmountBHD - payment.AmountBHD)
+			if nextApplied < 0 {
+				nextApplied = 0
+			}
+			nextUnapplied := roundBHD(receipt.AmountBHD - nextApplied)
+			nextStatus := "OnAccount"
+			if nextApplied > 0 && nextUnapplied > 0 {
+				nextStatus = "PartiallyApplied"
+			} else if nextApplied >= receipt.AmountBHD-0.001 {
+				nextStatus = "Applied"
+				nextUnapplied = 0
+			}
+			if err := tx.Model(&receipt).Updates(map[string]interface{}{
+				"applied_amount_bhd":   nextApplied,
+				"unapplied_amount_bhd": nextUnapplied,
+				"status":               nextStatus,
+				"updated_by":           a.getCurrentUserID(),
+				"updated_at":           time.Now(),
+			}).Error; err != nil {
+				tx.Rollback()
+				return newError("DB_UPDATE_FAILED", "Failed to update receipt balance", err.Error())
+			}
+		}
 	}
 
 	// Commit transaction
@@ -370,8 +357,8 @@ func (a *App) DeletePayment(id string) error {
 	}
 
 	log.Printf("🗑️ Payment deleted: %s BHD for Invoice %s", fmt.Sprintf("%.3f", payment.AmountBHD), payment.InvoiceNumber)
-	log.Printf("📊 Invoice %s restored: Outstanding %.3f BHD → %.3f BHD, Status: %s",
-		invoice.InvoiceNumber, invoice.OutstandingBHD, newOutstanding, newStatus)
+	log.Printf("📊 Invoice %s restored: Outstanding %.3f BHD → %.3f BHD, Status: %s → %s",
+		invoice.InvoiceNumber, previousOutstanding, state.OutstandingBHD, previousStatus, state.Status)
 
 	return nil
 }
@@ -624,9 +611,8 @@ func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 	}
 	payment.Division = normalizeDivisionName(invoice.Division)
 
-	// P2 FIX: Reject payments on non-payable invoices (same as RecordPayment)
-	nonPayableStatuses := map[string]bool{"Cancelled": true, "Void": true, "Proforma": true}
-	if nonPayableStatuses[invoice.Status] {
+	// P2 FIX: Reject payments on closed workflow invoices while still allowing edits on settled invoices.
+	if customerInvoiceClosedWorkflowStatuses[invoice.Status] {
 		tx.Rollback()
 		return nil, fmt.Errorf("cannot update payment on invoice with status '%s'", invoice.Status)
 	}
@@ -651,27 +637,17 @@ func (a *App) UpdatePayment(id string, payment Payment) (*Payment, error) {
 			newOutstanding = 0
 		}
 
-		// Determine new invoice status
-		var newStatus string
-		if newOutstanding <= 0 {
-			newStatus = "Paid"
-			newOutstanding = 0
-		} else if newOutstanding < invoice.GrandTotalBHD {
-			newStatus = "PartiallyPaid"
-		} else {
-			newStatus = invoice.Status
-		}
-
-		if err := tx.Model(&invoice).Updates(map[string]interface{}{
-			"outstanding_bhd": newOutstanding,
-			"status":          newStatus,
-		}).Error; err != nil {
+		previousOutstanding := invoice.OutstandingBHD
+		previousStatus := invoice.Status
+		invoice.OutstandingBHD = newOutstanding
+		state, err := a.applyCustomerInvoicePaymentState(tx, &invoice)
+		if err != nil {
 			tx.Rollback()
 			return nil, newError("DB_UPDATE_FAILED", "Failed to update invoice balance", err.Error())
 		}
 
 		log.Printf("AUDIT: Invoice %s balance recalculated: outstanding %.3f -> %.3f, status %s -> %s",
-			invoice.InvoiceNumber, invoice.OutstandingBHD, newOutstanding, invoice.Status, newStatus)
+			invoice.InvoiceNumber, previousOutstanding, state.OutstandingBHD, previousStatus, state.Status)
 	}
 
 	// Update payment inside transaction

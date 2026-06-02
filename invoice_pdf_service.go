@@ -51,7 +51,7 @@ type FieldVisibilitySettings struct {
 // parseFieldVisibility parses the JSON field visibility settings
 func parseFieldVisibility(jsonStr string) FieldVisibilitySettings {
 	// Default settings: show customer-facing fields, hide internal cost data
-	defaults := FieldVisibilitySettings{
+	settings := FieldVisibilitySettings{
 		ShowEquipment:     true,
 		ShowSpecification: true,
 		ShowDetailedDesc:  false,
@@ -67,13 +67,25 @@ func parseFieldVisibility(jsonStr string) FieldVisibilitySettings {
 	}
 
 	if jsonStr == "" {
-		return defaults
+		return settings
 	}
 
-	var settings FieldVisibilitySettings
 	if err := json.Unmarshal([]byte(jsonStr), &settings); err != nil {
 		log.Printf("⚠️ Failed to parse field visibility JSON, using defaults: %v", err)
-		return defaults
+		return FieldVisibilitySettings{
+			ShowEquipment:     true,
+			ShowSpecification: true,
+			ShowDetailedDesc:  false,
+			ShowFOB:           false,
+			ShowFreight:       false,
+			ShowCost:          false,
+			ShowMargin:        false,
+			ShowContact:       true,
+			ShowRFQ:           true,
+			ShowCurrency:      false,
+			ShowCountryOrigin: true,
+			ShowDeliveryWeeks: true,
+		}
 	}
 
 	return settings
@@ -111,8 +123,10 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 
 	profile := companyDocumentProfile(invoice.Division)
 
-	// 3. Fetch bank accounts for bank details section
-	bankAccounts, err := a.GetActiveBankAccounts()
+	// 3. Fetch bank accounts for bank details section. Document rendering has
+	// already passed invoices:view; it should not fail because the operator lacks
+	// general finance screen access.
+	bankAccounts, err := a.getActiveBankAccountsForDocuments()
 	if err != nil {
 		log.Printf("⚠️ Could not fetch bank accounts: %v", err)
 	}
@@ -602,18 +616,14 @@ func (a *App) GenerateInvoicePDF(invoiceID string) (string, error) {
 	declaration := "We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct."
 	pdf.MultiCell(90, 4, declaration, "", "", false)
 
-	// Right side: Signature box
+	// Right side: prepared-by signature block from PH's canonical signature list.
 	pdf.SetXY(130, declY)
 	pdf.SetFont("Helvetica", "B", 8)
 	pdf.SetTextColor(29, 29, 31)
 	pdf.Cell(60, 5, "For "+profile.LegalName)
-	pdf.Ln(20)
-	pdf.SetX(130)
-	pdf.Cell(60, 5, "________________________")
-	pdf.Ln(4)
-	pdf.SetX(130)
-	pdf.SetFont("Helvetica", "", 7)
-	pdf.Cell(60, 5, "Authorized Signatory")
+	signerName := a.resolveDocumentSignerName(invoice.IssuedBy, invoice.CreatedBy)
+	signatureBlock := a.resolvePreparedBySignatureBlock(signerName)
+	drawPHSignaturePDFLines(pdf, 130, declY+7, 60, 3.7, 6.7, signatureBlock, false)
 
 	// ========================================================================
 	// SECTION 9: BANK DETAILS

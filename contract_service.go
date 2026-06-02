@@ -62,13 +62,13 @@ func (ContractTemplate) TableName() string {
 // ContractClause defines individual clauses that can be included in contracts
 type ContractClause struct {
 	ID                  string    `gorm:"primaryKey;size:36" json:"id"`
-	Category            string    `gorm:"index;size:100" json:"category"` // "Payment", "Delivery", "Warranty", "Liability", "Termination"
-	Title               string    `gorm:"size:255" json:"title"`          // "Payment Terms", "Force Majeure", etc.
-	Text                string    `gorm:"type:text" json:"text"`          // Actual clause text
-	IsOptional          bool      `json:"is_optional"`                    // Can be excluded?
+	Category            string    `gorm:"index;size:100" json:"category"`       // "Payment", "Delivery", "Warranty", "Liability", "Termination"
+	Title               string    `gorm:"size:255" json:"title"`                // "Payment Terms", "Force Majeure", etc.
+	Text                string    `gorm:"type:text" json:"text"`                // Actual clause text
+	IsOptional          bool      `json:"is_optional"`                          // Can be excluded?
 	PaymentGradeMinimum string    `gorm:"size:10" json:"payment_grade_minimum"` // "A", "B", "C", "D" - minimum grade required
-	IsProtective        bool      `json:"is_protective"`                  // Is this a protective clause for PH Holdings?
-	DisplayOrder        int       `json:"display_order"`                  // Order in contract
+	IsProtective        bool      `json:"is_protective"`                        // Is this a protective clause for PH Holdings?
+	DisplayOrder        int       `json:"display_order"`                        // Order in contract
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
@@ -79,10 +79,10 @@ func (ContractClause) TableName() string {
 
 // Contract represents a generated contract document
 type Contract struct {
-	ID           string    `gorm:"primaryKey;size:36" json:"id"`
-	ContractNo   string    `gorm:"uniqueIndex;size:50" json:"contract_no"` // "CON25/001"
-	CustomerID   string    `gorm:"index;size:36" json:"customer_id"`
-	CustomerName string    `gorm:"index;size:255" json:"customer_name"`
+	ID           string `gorm:"primaryKey;size:36" json:"id"`
+	ContractNo   string `gorm:"uniqueIndex;size:50" json:"contract_no"` // "CON25/001"
+	CustomerID   string `gorm:"index;size:36" json:"customer_id"`
+	CustomerName string `gorm:"index;size:255" json:"customer_name"`
 
 	// Template and Type
 	TemplateID   string `gorm:"index;size:36" json:"template_id,omitempty"`
@@ -100,8 +100,8 @@ type Contract struct {
 	ExpiryDate    *time.Time `json:"expiry_date,omitempty"`
 
 	// Status
-	Status    string `gorm:"index;size:50" json:"status"` // "Draft", "Active", "Expired", "Terminated"
-	PDFPath   string `gorm:"size:1000" json:"pdf_path"`
+	Status  string `gorm:"index;size:50" json:"status"` // "Draft", "Active", "Expired", "Terminated"
+	PDFPath string `gorm:"size:1000" json:"pdf_path"`
 
 	// Clauses (JSON array of clause IDs)
 	SelectedClauses string `gorm:"type:text" json:"selected_clauses"` // JSON array
@@ -464,7 +464,7 @@ func (s *ContractService) RenderContractPDF(gen *PDFGenerator, contract *Contrac
 	gen.pdf.Cell(nil, "SERVICE PROVIDER:")
 	y += 15
 	gen.pdf.SetXY(70, y)
-	gen.pdf.Cell(nil, "PH Holdings WLL")
+	gen.pdf.Cell(nil, "PH Trading WLL")
 	y += 12
 	gen.pdf.SetXY(70, y)
 	gen.pdf.Cell(nil, "Building 1194, Road 4129, Block 341, Manama, Kingdom of Bahrain")
@@ -563,7 +563,7 @@ func (s *ContractService) RenderContractPDF(gen *PDFGenerator, contract *Contrac
 
 	y += 15
 	gen.pdf.SetXY(50, y)
-	gen.pdf.Cell(nil, "PH Holdings WLL")
+	gen.pdf.Cell(nil, "PH Trading WLL")
 	gen.pdf.SetXY(320, y)
 	gen.pdf.Cell(nil, customer.BusinessName)
 
@@ -725,7 +725,7 @@ func (s *ContractService) SeedContractClauses() error {
 		{
 			Category:            "Warranty",
 			Title:               "Manufacturer Warranty",
-			Text:                "Equipment is covered by manufacturer's standard warranty. PH Holdings will facilitate warranty claims as necessary.",
+			Text:                "Equipment is covered by manufacturer's standard warranty. PH Trading WLL will facilitate warranty claims as necessary.",
 			IsOptional:          false,
 			PaymentGradeMinimum: "D",
 			IsProtective:        false,
@@ -734,7 +734,7 @@ func (s *ContractService) SeedContractClauses() error {
 		{
 			Category:            "Warranty",
 			Title:               "Service Warranty - Extended",
-			Text:                "PH Holdings warrants installation and commissioning services for 12 months from completion. Grade A customers receive priority support.",
+			Text:                "PH Trading WLL warrants installation and commissioning services for 12 months from completion. Grade A customers receive priority support.",
 			IsOptional:          true,
 			PaymentGradeMinimum: "A",
 			IsProtective:        false,
@@ -745,7 +745,7 @@ func (s *ContractService) SeedContractClauses() error {
 		{
 			Category:            "Liability",
 			Title:               "Limitation of Liability",
-			Text:                "PH Holdings' total liability under this contract shall not exceed the contract value. No liability for consequential damages.",
+			Text:                "PH Trading WLL's total liability under this contract shall not exceed the contract value. No liability for consequential damages.",
 			IsOptional:          false,
 			PaymentGradeMinimum: "D",
 			IsProtective:        true,
@@ -783,7 +783,7 @@ func (s *ContractService) SeedContractClauses() error {
 		{
 			Category:            "Termination",
 			Title:               "Non-Payment Termination",
-			Text:                "PH Holdings may immediately terminate and retain all payments if Customer fails to make payment within 15 days of due date.",
+			Text:                "PH Trading WLL may immediately terminate and retain all payments if Customer fails to make payment within 15 days of due date.",
 			IsOptional:          false,
 			PaymentGradeMinimum: "C",
 			IsProtective:        true,

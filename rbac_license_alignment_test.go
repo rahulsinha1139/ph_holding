@@ -241,8 +241,10 @@ func TestSeedDefaultRoles_HybridFeaturePermissionsAreAssignedByRole(t *testing.T
 	require.Contains(t, managerRole.Permissions, "tasks:view")
 	require.Contains(t, managerRole.Permissions, "projects:view")
 	require.Contains(t, managerRole.Permissions, "notifications:view")
-	require.Contains(t, managerRole.Permissions, "expenses:view")
-	require.Contains(t, managerRole.Permissions, "payroll:view")
+	require.NotContains(t, managerRole.Permissions, "finance:view")
+	require.NotContains(t, managerRole.Permissions, "payments:view")
+	require.NotContains(t, managerRole.Permissions, "expenses:view")
+	require.NotContains(t, managerRole.Permissions, "payroll:view")
 	require.Contains(t, managerRole.Permissions, "hr:view")
 
 	var salesRole Role
@@ -271,6 +273,33 @@ func TestSeedDefaultRoles_HybridFeaturePermissionsAreAssignedByRole(t *testing.T
 	require.NotContains(t, staffRole.Permissions, "payroll:view")
 }
 
+func TestFinanceDashboardAccessExcludesManagementRoles(t *testing.T) {
+	app := setupTestApp(t)
+	app.currentUser = &User{
+		Base:     Base{ID: "sundar-user"},
+		Username: "sundar",
+		RoleName: "manager",
+		Role: Role{
+			Name:        "manager",
+			DisplayName: "Manager",
+			Permissions: `["dashboard:view","reports:view","orders:view"]`,
+		},
+	}
+	require.False(t, app.currentSessionCanViewFinanceDashboard())
+
+	app.currentUser = &User{
+		Base:     Base{ID: "finance-user"},
+		Username: "finance",
+		RoleName: "finance",
+		Role: Role{
+			Name:        "finance",
+			DisplayName: "Finance",
+			Permissions: `["finance:view"]`,
+		},
+	}
+	require.True(t, app.currentSessionCanViewFinanceDashboard())
+}
+
 func rolePermissionMapGrants(roleName, permission string) bool {
 	for _, granted := range rolePermissions[roleName] {
 		if permissionGranted(granted, permission) {
@@ -278,6 +307,13 @@ func rolePermissionMapGrants(roleName, permission string) bool {
 		}
 	}
 	return false
+}
+
+func TestPermissionGrantedDoesNotLetNormalPermissionsSatisfyWildcardAdminRequirement(t *testing.T) {
+	require.True(t, permissionGranted("*", "finance:view"))
+	require.True(t, permissionGranted("*", "*"))
+	require.False(t, permissionGranted("finance:view", "*"))
+	require.False(t, permissionGranted("dashboard:view", "*"))
 }
 
 func TestRBACWorkflowMatrixMatchesSeededRolesAndLicenseRoles(t *testing.T) {
@@ -292,15 +328,20 @@ func TestRBACWorkflowMatrixMatchesSeededRolesAndLicenseRoles(t *testing.T) {
 		{
 			role: "manager",
 			allow: []string{
-				"finance:view", "finance:create",
-				"payments:create", "payments:record",
 				"invoices:create", "invoices:update",
 				"po:create", "po:approve",
 				"delivery_notes:dispatch", "delivery_notes:confirm",
 				"documents:create", "documents:classify",
-				"reports:generate",
+				"reports:view",
 			},
-			deny: []string{"payments:delete", "users:manage"},
+			deny: []string{
+				"finance:view", "finance:create",
+				"payments:view", "payments:create", "payments:record", "payments:delete",
+				"expenses:view", "expenses:create",
+				"payroll:view", "payroll:create",
+				"reports:generate",
+				"offers:delete", "users:manage",
+			},
 		},
 		{
 			role: "sales",
@@ -316,6 +357,7 @@ func TestRBACWorkflowMatrixMatchesSeededRolesAndLicenseRoles(t *testing.T) {
 			},
 			deny: []string{
 				"finance:view", "finance:create",
+				"offers:delete",
 				"payments:create",
 				"delivery_notes:dispatch", "delivery_notes:confirm",
 				"users:view", "users:manage",
@@ -335,6 +377,7 @@ func TestRBACWorkflowMatrixMatchesSeededRolesAndLicenseRoles(t *testing.T) {
 			deny: []string{
 				"finance:view", "finance:create",
 				"payments:create",
+				"offers:delete",
 				"offers:create",
 				"users:view", "users:manage",
 			},
@@ -350,6 +393,7 @@ func TestRBACWorkflowMatrixMatchesSeededRolesAndLicenseRoles(t *testing.T) {
 			},
 			deny: []string{
 				"offers:create",
+				"offers:delete",
 				"orders:create", "invoices:create",
 				"po:create",
 				"delivery_notes:create",

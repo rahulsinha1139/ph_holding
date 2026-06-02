@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,10 @@ type Employee struct {
 	EmergencyContact  string     `gorm:"type:varchar(500)" json:"emergency_contact"`
 	Notes             string     `gorm:"type:text" json:"notes"`
 	IsActive          bool       `gorm:"index;default:true" json:"is_active"`
+	ArchivedAt        *time.Time `json:"archived_at"`
+	ArchivedBy        string     `gorm:"size:36" json:"archived_by"`
+	ArchiveReason     string     `gorm:"type:text" json:"archive_reason"`
+	ArchiveRequestID  string     `gorm:"size:36" json:"archive_request_id"`
 
 	ManagerName string `gorm:"-" json:"manager_name,omitempty"`
 }
@@ -51,15 +56,21 @@ func (EmployeeAccessLink) TableName() string { return "employee_access_links" }
 
 type Project struct {
 	Base
-	Name          string     `gorm:"index;size:255" json:"name"`
-	ProjectType   string     `gorm:"index;size:30;default:'internal'" json:"project_type"`
-	Description   string     `gorm:"type:text" json:"description"`
-	Status        string     `gorm:"index;size:30;default:'active'" json:"status"`
-	CustomerID    *string    `gorm:"index;size:36" json:"customer_id"`
-	OpportunityID *string    `gorm:"index;size:36" json:"opportunity_id"`
-	OrderID       *string    `gorm:"index;size:36" json:"order_id"`
-	StartsOn      *time.Time `json:"starts_on"`
-	EndsOn        *time.Time `json:"ends_on"`
+	Name             string     `gorm:"index;size:255" json:"name"`
+	ProjectType      string     `gorm:"index;size:30;default:'internal'" json:"project_type"`
+	Description      string     `gorm:"type:text" json:"description"`
+	Status           string     `gorm:"index;size:30;default:'active'" json:"status"`
+	CustomerID       *string    `gorm:"index;size:36" json:"customer_id"`
+	OpportunityID    *string    `gorm:"index;size:36" json:"opportunity_id"`
+	OrderID          *string    `gorm:"index;size:36" json:"order_id"`
+	CustomerName     string     `gorm:"size:255" json:"customer_name"`
+	EndUserName      string     `gorm:"size:255" json:"end_user_name"`
+	OpportunityKey   string     `gorm:"index;size:80" json:"opportunity_key"`
+	CustomerPOCName  string     `gorm:"size:255" json:"customer_poc_name"`
+	CustomerPOCEmail string     `gorm:"size:255" json:"customer_poc_email"`
+	CustomerPOCPhone string     `gorm:"size:50" json:"customer_poc_phone"`
+	StartsOn         *time.Time `json:"starts_on"`
+	EndsOn           *time.Time `json:"ends_on"`
 }
 
 func (Project) TableName() string { return "projects" }
@@ -198,6 +209,10 @@ type EmployeeContributionSummary struct {
 	BlockedTaskCount   int     `json:"blocked_task_count"`
 	OverdueTaskCount   int     `json:"overdue_task_count"`
 	CompletionRate     float64 `json:"completion_rate"`
+	OpportunityYTD     int     `json:"opportunity_ytd"`
+	OpportunityWonYTD  int     `json:"opportunity_won_ytd"`
+	OpportunityLostYTD int     `json:"opportunity_lost_ytd"`
+	RevenueYTD         float64 `json:"revenue_ytd"`
 	PrimaryLicenseKey  string  `json:"primary_license_key,omitempty"`
 	PrimaryDeviceName  string  `json:"primary_device_name,omitempty"`
 }
@@ -215,6 +230,7 @@ func (a *App) EnsureCollaborativeFoundation() error {
 		&Notification{},
 		&NotificationReceipt{},
 		&DeleteApprovalRequest{},
+		&EmployeeArchiveRequest{},
 		&TaskItem{},
 		&TaskComment{},
 		&TaskActivity{},
@@ -292,8 +308,10 @@ func (a *App) seedEmployeesFromLicenseKeys() error {
 			if link.UserID != "" {
 				updates["user_id"] = link.UserID
 			}
-			if err := a.db.Model(&existing).Updates(updates).Error; err != nil {
-				return fmt.Errorf("failed to update employee access link for %q: %w", name, err)
+			if employeeAccessLinkNeedsUpdate(existing, updates) {
+				if err := a.db.Model(&existing).Updates(updates).Error; err != nil {
+					return fmt.Errorf("failed to update employee access link for %q: %w", name, err)
+				}
 			}
 			continue
 		}
@@ -304,6 +322,33 @@ func (a *App) seedEmployeesFromLicenseKeys() error {
 	}
 
 	return nil
+}
+
+func employeeAccessLinkNeedsUpdate(existing EmployeeAccessLink, updates map[string]interface{}) bool {
+	for key, value := range updates {
+		switch key {
+		case "device_id":
+			if existing.DeviceID != fmt.Sprint(value) {
+				return true
+			}
+		case "access_status":
+			if existing.AccessStatus != fmt.Sprint(value) {
+				return true
+			}
+		case "is_primary":
+			boolValue, ok := value.(bool)
+			if !ok || existing.IsPrimary != boolValue {
+				return true
+			}
+		case "user_id":
+			if existing.UserID != fmt.Sprint(value) {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) generateEmployeeCode() (string, error) {
@@ -389,10 +434,21 @@ func (a *App) GetCurrentEmployeeContext() (CurrentEmployeeContext, error) {
 		if err := a.db.Where("user_id = ? AND access_status = ?", a.currentUserID, "active").Order("is_primary DESC").First(&link).Error; err == nil {
 			if err := a.db.First(&employee, "id = ?", link.EmployeeID).Error; err == nil {
 				perms, _ := a.GetUserPermissions(a.currentUserID)
+				licenseRole := ""
+				if strings.TrimSpace(link.LicenseKey) != "" {
+					var license LicenseKey
+					if err := a.db.Where("key = ?", link.LicenseKey).First(&license).Error; err == nil {
+						licenseRole = license.Role
+					}
+				}
+				if licenseRole == "" && a.currentUser != nil {
+					licenseRole = a.currentUser.RoleName
+				}
 				return CurrentEmployeeContext{
 					EmployeeID:   employee.ID,
 					EmployeeName: employee.FullName,
 					LicenseKey:   link.LicenseKey,
+					LicenseRole:  licenseRole,
 					DeviceID:     link.DeviceID,
 					UserID:       link.UserID,
 					ResolvedBy:   "user",
@@ -621,6 +677,9 @@ func (a *App) CreateEmployeeProfile(employee Employee) (Employee, error) {
 	if err := a.requirePermission("hr:create"); err != nil {
 		return Employee{}, err
 	}
+	if !a.currentSessionHasAdminRoleOnly() {
+		return Employee{}, fmt.Errorf("only admin can add employee profiles")
+	}
 	if a.db == nil {
 		return Employee{}, fmt.Errorf("database not initialized")
 	}
@@ -704,6 +763,66 @@ func (a *App) ListEmployeeProfiles(activeOnly bool) ([]Employee, error) {
 	return employees, nil
 }
 
+func (a *App) GetPreparedByOptions() ([]string, error) {
+	if err := a.requirePermission("offers:create"); err != nil {
+		if editErr := a.requirePermission("offers:edit"); editErr != nil {
+			if costingErr := a.requirePermission("costing:read"); costingErr != nil {
+				return nil, err
+			}
+		}
+	}
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	names := map[string]struct{}{}
+	addName := func(name string) {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+
+	for _, name := range defaultPHOfferSignatureNames() {
+		addName(name)
+	}
+
+	for _, name := range []string{
+		"Rahul",
+		"Daniel",
+		"Periyasamy N",
+		"Clinton",
+		"Support",
+		"Sales Test",
+	} {
+		addName(name)
+	}
+
+	var employees []Employee
+	if err := a.db.Order("full_name ASC").Find(&employees).Error; err != nil {
+		return nil, fmt.Errorf("failed to list prepared-by employee options: %w", err)
+	}
+	for _, employee := range employees {
+		addName(employee.FullName)
+		addName(employee.PreferredName)
+	}
+
+	var licenses []LicenseKey
+	if err := a.db.Where("display_name IS NOT NULL AND TRIM(display_name) != ''").Order("display_name ASC").Find(&licenses).Error; err != nil {
+		return nil, fmt.Errorf("failed to list prepared-by license options: %w", err)
+	}
+	for _, license := range licenses {
+		addName(license.DisplayName)
+	}
+
+	options := make([]string, 0, len(names))
+	for name := range names {
+		options = append(options, name)
+	}
+	sort.Strings(options)
+	return options, nil
+}
+
 func (a *App) UpdateEmployeeProfile(employee Employee) (Employee, error) {
 	if err := a.requirePermission("hr:update"); err != nil {
 		return Employee{}, err
@@ -734,6 +853,21 @@ func (a *App) UpdateEmployeeProfile(employee Employee) (Employee, error) {
 	}
 	if employee.EmployeeCode == "" {
 		employee.EmployeeCode = existing.EmployeeCode
+	}
+	archiveRequested := (existing.IsActive && !employee.IsActive) ||
+		(!strings.EqualFold(existing.EmploymentStatus, "archived") && strings.EqualFold(employee.EmploymentStatus, "archived"))
+	if archiveRequested {
+		if !a.currentSessionHasAdminRoleOnly() {
+			return Employee{}, fmt.Errorf("only admin can archive employees")
+		}
+		if _, err := a.RequestEmployeeArchive(existing.ID, "Archived from employee profile update"); err != nil {
+			return Employee{}, err
+		}
+		var archived Employee
+		if err := a.db.First(&archived, "id = ?", existing.ID).Error; err != nil {
+			return Employee{}, fmt.Errorf("failed to reload archived employee: %w", err)
+		}
+		return archived, nil
 	}
 
 	updates := map[string]interface{}{
@@ -802,6 +936,22 @@ func (a *App) SetEmployeeEmploymentState(employeeID string, isActive bool, emplo
 			employmentStatus = "active"
 		} else {
 			employmentStatus = "inactive"
+		}
+	}
+	normalizedStatus := strings.ToLower(employmentStatus)
+	if !isActive {
+		if !a.currentSessionHasAdminRoleOnly() {
+			return Employee{}, fmt.Errorf("only admin can change employee active state")
+		}
+		if normalizedStatus == "archived" || normalizedStatus == "removed" || normalizedStatus == "inactive" {
+			if _, err := a.RequestEmployeeArchive(employeeID, fmt.Sprintf("Archived from employment state update (%s)", employmentStatus)); err != nil {
+				return Employee{}, err
+			}
+			var archived Employee
+			if err := a.db.First(&archived, "id = ?", employeeID).Error; err != nil {
+				return Employee{}, fmt.Errorf("failed to reload archived employee: %w", err)
+			}
+			return archived, nil
 		}
 	}
 
@@ -980,6 +1130,10 @@ func (a *App) ListEmployeeContributionSummaries() ([]EmployeeContributionSummary
 	overdueCounts := map[string]int{}
 	licenseByEmployee := map[string]string{}
 	deviceByEmployee := map[string]string{}
+	opportunityCounts := map[string]int{}
+	wonOpportunityCounts := map[string]int{}
+	lostOpportunityCounts := map[string]int{}
+	revenueYTD := map[string]float64{}
 
 	var projectMembers []ProjectMember
 	if err := a.db.Where("employee_id IN ? AND is_active = ?", employeeIDs, true).Find(&projectMembers).Error; err == nil {
@@ -1007,6 +1161,45 @@ func (a *App) ListEmployeeContributionSummaries() ([]EmployeeContributionSummary
 				if task.DueDate != nil && task.DueDate.Before(now) {
 					overdueCounts[assigneeID]++
 				}
+			}
+		}
+	}
+
+	employeeLookup := map[string]string{}
+	for _, employee := range employees {
+		for _, candidate := range []string{employee.ID, employee.EmployeeCode, employee.FullName, employee.PreferredName, employee.Email} {
+			key := normalizeEmployeeLookupName(candidate)
+			if key != "" {
+				employeeLookup[key] = employee.ID
+			}
+		}
+	}
+	ytdStart := time.Date(time.Now().Year(), time.January, 1, 0, 0, 0, 0, time.Local)
+	ytdEnd := ytdStart.AddDate(1, 0, 0)
+	var opportunities []Opportunity
+	if err := a.db.Where(
+		"(offer_date >= ? AND offer_date < ?) OR (created_at >= ? AND created_at < ?)",
+		ytdStart, ytdEnd, ytdStart, ytdEnd,
+	).Find(&opportunities).Error; err == nil {
+		for _, opportunity := range opportunities {
+			matchedEmployeeID := ""
+			for _, candidate := range []string{opportunity.Salesperson, opportunity.CreatedBy} {
+				if employeeID := employeeLookup[normalizeEmployeeLookupName(candidate)]; employeeID != "" {
+					matchedEmployeeID = employeeID
+					break
+				}
+			}
+			if matchedEmployeeID == "" {
+				continue
+			}
+			opportunityCounts[matchedEmployeeID]++
+			stage := strings.ToLower(strings.TrimSpace(opportunity.Stage))
+			switch {
+			case closedWonStage(stage):
+				wonOpportunityCounts[matchedEmployeeID]++
+				revenueYTD[matchedEmployeeID] += opportunity.RevenueBHD
+			case stage == "lost":
+				lostOpportunityCounts[matchedEmployeeID]++
 			}
 		}
 	}
@@ -1077,6 +1270,10 @@ func (a *App) ListEmployeeContributionSummaries() ([]EmployeeContributionSummary
 			BlockedTaskCount:   blockedCounts[employee.ID],
 			OverdueTaskCount:   overdueCounts[employee.ID],
 			CompletionRate:     completionRate,
+			OpportunityYTD:     opportunityCounts[employee.ID],
+			OpportunityWonYTD:  wonOpportunityCounts[employee.ID],
+			OpportunityLostYTD: lostOpportunityCounts[employee.ID],
+			RevenueYTD:         roundTo3(revenueYTD[employee.ID]),
 			PrimaryLicenseKey:  licenseByEmployee[employee.ID],
 			PrimaryDeviceName:  deviceByEmployee[employee.ID],
 		})
@@ -1361,6 +1558,9 @@ func (a *App) ListNotificationFeed(limit int, unreadOnly bool) ([]Notification, 
 	query := a.db.Where("employee_id = ?", current.EmployeeID).Order("created_at DESC").Limit(limit)
 	if unreadOnly {
 		query = query.Where("status = ?", "unread")
+	} else {
+		readCutoff := time.Now().AddDate(0, 0, -30)
+		query = query.Where("status = ? OR read_at IS NULL OR read_at >= ?", "unread", readCutoff)
 	}
 
 	var notifications []Notification
@@ -1423,6 +1623,12 @@ func (a *App) CreateCollaborativeProject(project Project) (Project, error) {
 	if project.Status == "" {
 		project.Status = "active"
 	}
+	project.CustomerName = strings.TrimSpace(project.CustomerName)
+	project.EndUserName = strings.TrimSpace(project.EndUserName)
+	project.OpportunityKey = strings.TrimSpace(project.OpportunityKey)
+	project.CustomerPOCName = strings.TrimSpace(project.CustomerPOCName)
+	project.CustomerPOCEmail = strings.TrimSpace(project.CustomerPOCEmail)
+	project.CustomerPOCPhone = strings.TrimSpace(project.CustomerPOCPhone)
 	project.CreatedBy = a.getCurrentUserID()
 	if err := a.db.Create(&project).Error; err != nil {
 		return Project{}, fmt.Errorf("failed to create project: %w", err)
@@ -1447,13 +1653,120 @@ func (a *App) ListCollaborativeProjects(activeOnly bool) ([]Project, error) {
 	}
 	query := a.db.Order("updated_at DESC")
 	if activeOnly {
-		query = query.Where("status != ?", "archived")
+		query = query.Where("LOWER(COALESCE(status, '')) NOT IN ?", []string{"archived", "shelved", "deleted"})
 	}
 	var projects []Project
 	if err := query.Find(&projects).Error; err != nil {
 		return nil, fmt.Errorf("failed to list projects: %w", err)
 	}
 	return projects, nil
+}
+
+func (a *App) UpdateCollaborativeProject(projectID string, updates map[string]interface{}) (Project, error) {
+	if err := a.requirePermission("projects:update"); err != nil {
+		return Project{}, err
+	}
+	if a.db == nil {
+		return Project{}, fmt.Errorf("database not initialized")
+	}
+
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return Project{}, fmt.Errorf("project id is required")
+	}
+
+	allowed := map[string]bool{
+		"name": true, "project_type": true, "description": true, "status": true,
+		"customer_id": true, "opportunity_id": true, "order_id": true,
+		"customer_name": true, "end_user_name": true, "opportunity_key": true,
+		"customer_poc_name": true, "customer_poc_email": true, "customer_poc_phone": true,
+		"starts_on": true, "ends_on": true,
+	}
+	clean := make(map[string]interface{})
+	for key, value := range updates {
+		if !allowed[key] {
+			continue
+		}
+		if text, ok := value.(string); ok {
+			clean[key] = strings.TrimSpace(text)
+			continue
+		}
+		clean[key] = value
+	}
+	if len(clean) == 0 {
+		return Project{}, fmt.Errorf("no supported project updates supplied")
+	}
+	if name, ok := clean["name"].(string); ok && name == "" {
+		return Project{}, fmt.Errorf("project name is required")
+	}
+	if status, ok := clean["status"].(string); ok {
+		status = strings.ToLower(strings.TrimSpace(status))
+		clean["status"] = status
+		if status == "archived" || status == "shelved" || status == "deleted" {
+			if err := a.requirePermission("projects:delete"); err != nil {
+				return Project{}, fmt.Errorf("project archival/delete requires admin permission: %w", err)
+			}
+		}
+	}
+	clean["updated_at"] = time.Now()
+
+	var project Project
+	if err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&project, "id = ?", projectID).Error; err != nil {
+			return fmt.Errorf("project not found: %w", err)
+		}
+		if err := tx.Model(&Project{}).Where("id = ?", projectID).Updates(clean).Error; err != nil {
+			return fmt.Errorf("failed to update project: %w", err)
+		}
+		return tx.First(&project, "id = ?", projectID).Error
+	}); err != nil {
+		return Project{}, err
+	}
+
+	if payload, err := json.Marshal(project); err == nil {
+		a.enqueueCollaborativeOperation("project", project.ID, "update", string(payload))
+	}
+	a.emitCollaborationEvent("projects:updated", map[string]interface{}{"project_id": project.ID, "action": "update"})
+	a.queueCollaborativeSync("project_update")
+	return project, nil
+}
+
+func (a *App) ArchiveCollaborativeProject(projectID, reason string) (Project, error) {
+	return a.updateCollaborativeProjectStatus(projectID, "archived", reason)
+}
+
+func (a *App) ShelveCollaborativeProject(projectID, reason string) (Project, error) {
+	return a.updateCollaborativeProjectStatus(projectID, "shelved", reason)
+}
+
+func (a *App) DeleteCollaborativeProject(projectID, reason string) error {
+	if err := a.requirePermission("projects:delete"); err != nil {
+		return err
+	}
+	if a.db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return fmt.Errorf("project id is required")
+	}
+	archived, err := a.updateCollaborativeProjectStatus(projectID, "deleted", reason)
+	if err != nil {
+		return err
+	}
+	a.logAudit(nil, "delete", "project", &archived.ID, strings.TrimSpace(reason))
+	return nil
+}
+
+func (a *App) updateCollaborativeProjectStatus(projectID, status, reason string) (Project, error) {
+	project, err := a.UpdateCollaborativeProject(projectID, map[string]interface{}{
+		"status": status,
+	})
+	if err != nil {
+		return Project{}, err
+	}
+	a.logAudit(nil, status, "project", &project.ID, strings.TrimSpace(reason))
+	return project, nil
 }
 
 func (a *App) AddCollaborativeProjectMember(projectID, employeeID, role string) (ProjectMember, error) {
@@ -1526,6 +1839,7 @@ func (a *App) AddCollaborativeProjectMember(projectID, employeeID, role string) 
 			"employee_id": employeeID,
 			"action":      "member_update",
 		})
+		a.createProjectMemberNotification(employee.ID, project, currentProjectActorName(a), role, "updated")
 		a.queueCollaborativeSync("project_member_update")
 		return existing, nil
 	}
@@ -1542,6 +1856,7 @@ func (a *App) AddCollaborativeProjectMember(projectID, employeeID, role string) 
 		"employee_id": employeeID,
 		"action":      "member_create",
 	})
+	a.createProjectMemberNotification(employee.ID, project, currentProjectActorName(a), role, "added")
 	a.queueCollaborativeSync("project_member_create")
 	return member, nil
 }
@@ -2019,6 +2334,9 @@ func (a *App) ReassignCollaborativeTask(taskID, assigneeEmployeeID string) error
 		if err := a.db.First(&employee, "id = ?", assigneeEmployeeID).Error; err != nil {
 			return fmt.Errorf("assignee not found: %w", err)
 		}
+		if !employee.IsActive || strings.EqualFold(strings.TrimSpace(employee.EmploymentStatus), "archived") {
+			return fmt.Errorf("cannot assign task to archived or inactive employee %s", employee.FullName)
+		}
 		newAssigneeID = &employee.ID
 		newAssigneeName = employee.FullName
 	}
@@ -2047,7 +2365,7 @@ func (a *App) ReassignCollaborativeTask(taskID, assigneeEmployeeID string) error
 	}
 	_ = a.createTaskActivity(task.ID, current.EmployeeID, "reassigned", detail, meta)
 
-	if assigneeEmployeeID != "" && assigneeEmployeeID != current.EmployeeID {
+	if assigneeEmployeeID != "" {
 		a.createTaskNotification(assigneeEmployeeID, task, current.EmployeeName, "assigned")
 	}
 	if previousAssigneeID != "" && previousAssigneeID != current.EmployeeID && previousAssigneeID != assigneeEmployeeID {
@@ -2277,6 +2595,71 @@ func (a *App) createTaskNotification(employeeID string, task TaskItem, actorName
 		"employee_id":     employeeID,
 		"source_id":       task.ID,
 		"source_type":     "task",
+	})
+}
+
+func currentProjectActorName(a *App) string {
+	if a == nil {
+		return "Someone"
+	}
+	if current, err := a.GetCurrentEmployeeContext(); err == nil && strings.TrimSpace(current.EmployeeName) != "" {
+		return current.EmployeeName
+	}
+	if a.currentUser != nil && strings.TrimSpace(a.currentUser.Username) != "" {
+		return a.currentUser.Username
+	}
+	return "Someone"
+}
+
+func (a *App) createProjectMemberNotification(employeeID string, project Project, actorName, role, action string) {
+	if strings.TrimSpace(employeeID) == "" || a.db == nil {
+		return
+	}
+
+	role = strings.TrimSpace(role)
+	if role == "" {
+		role = "Member"
+	}
+	action = strings.TrimSpace(action)
+	if action == "" {
+		action = "added"
+	}
+	title := "Project assignment"
+	message := fmt.Sprintf("%s %s you as %s on project %q", fallbackDisplay(actorName, "Someone"), action, role, project.Name)
+	payload, _ := json.Marshal(map[string]interface{}{
+		"project_id":   project.ID,
+		"project_name": project.Name,
+		"role":         role,
+		"actor_name":   fallbackDisplay(actorName, "System"),
+		"action":       action,
+	})
+
+	notification := Notification{
+		Base:             Base{CreatedBy: a.getCurrentUserID()},
+		EmployeeID:       employeeID,
+		NotificationType: "project",
+		Title:            title,
+		Message:          message,
+		Status:           "unread",
+		SourceType:       "project",
+		SourceID:         project.ID,
+		ActionRoute:      "#work",
+		ActionPayload:    string(payload),
+	}
+	if err := a.db.Create(&notification).Error; err != nil {
+		log.Printf("⚠️ Failed to create project notification: %v", err)
+		return
+	}
+
+	a.recordNotificationReceipt(notification.ID, employeeID, "", "created")
+	if queuePayload, err := json.Marshal(notification); err == nil {
+		a.enqueueCollaborativeOperation("notification", notification.ID, "create", string(queuePayload))
+	}
+	a.emitCollaborationEvent("notifications:new", map[string]interface{}{
+		"notification_id": notification.ID,
+		"employee_id":     employeeID,
+		"source_id":       project.ID,
+		"source_type":     "project",
 	})
 }
 

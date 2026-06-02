@@ -116,12 +116,22 @@ type opportunityProductDetail struct {
 func TestManualAuditOneDriveImport(t *testing.T) {
 	dbPath := resolveOneDriveImportDBPath()
 
-	sourceExportDir := os.Getenv("ONEDRIVE_AUDIT_SOURCE_DIR")
-	if sourceExportDir == "" {
+	sourceExportDir := strings.TrimSpace(os.Getenv("ONEDRIVE_AUDIT_SOURCE_DIR"))
+	sourceFromEnv := sourceExportDir != ""
+	if !sourceFromEnv {
 		var err error
 		sourceExportDir, err = findLatestOneDriveReportDir("reports", "onedrive_seed_")
 		if err != nil {
-			t.Fatalf("failed to locate latest OneDrive seed report: %v", err)
+			t.Skipf("set ONEDRIVE_AUDIT_SOURCE_DIR to run the OneDrive post-import audit: %v", err)
+		}
+	}
+	for _, requiredFile := range []string{"opportunities.csv", "line_items.csv"} {
+		requiredPath := filepath.Join(sourceExportDir, requiredFile)
+		if _, err := os.Stat(requiredPath); err != nil {
+			if !sourceFromEnv && os.IsNotExist(err) {
+				t.Skipf("latest OneDrive seed report %s is missing %s; set ONEDRIVE_AUDIT_SOURCE_DIR to a complete staged export", sourceExportDir, requiredFile)
+			}
+			t.Fatalf("failed to inspect OneDrive audit source file %s: %v", requiredPath, err)
 		}
 	}
 

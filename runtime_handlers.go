@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"ph_holdings_app/pkg/runtime"
 	"strings"
@@ -64,17 +65,23 @@ func (a *App) ProcessInboxDocument(filePath string, rawText string) (*InboxProce
 	resp, err := client.ProcessInboxDocument(ctx, req)
 	if err != nil {
 		log.Printf("❌ Runtime inbox processing failed: %v", err)
-		// Return fallback result
+		if fallback, fallbackErr := a.processInboxDocumentLocally(filePath, rawText); fallbackErr == nil {
+			log.Printf("✅ Runtime unavailable; processed inbox document locally: %s", fallback.DetectedType)
+			return fallback, nil
+		} else {
+			log.Printf("⚠ Local inbox OCR fallback failed: %v", fallbackErr)
+		}
 		return &InboxProcessResult{
 			DocumentID:               filepath.Base(filePath),
-			DetectedType:             "unknown",
+			DetectedType:             detectDocumentType(filePath),
 			ClassificationConfidence: 0.0,
 			ExtractedText:            rawText,
 			Entities:                 make(map[string]string),
 			SuggestedActions:         []string{"Review manually"},
 			ProcessedAt:              time.Now(),
+			NeedsReview:              true,
 			Error:                    err.Error(),
-		}, nil // Don't fail - return fallback
+		}, nil
 	}
 
 	// Convert Runtime response to our format
@@ -104,6 +111,80 @@ func (a *App) ProcessInboxDocument(filePath string, rawText string) (*InboxProce
 		resp.ClassificationConfidence*100,
 		resp.OcrConfidence*100)
 
+	return result, nil
+}
+
+func (a *App) processInboxDocumentLocally(filePath string, rawText string) (*InboxProcessResult, error) {
+	text := rawText
+	confidence := 0.35
+	engine := "raw-text"
+	extractedData := map[string]interface{}{}
+
+	absPath, pathErr := filepath.Abs(filePath)
+	if pathErr != nil {
+		return nil, fmt.Errorf("invalid file path: %w", pathErr)
+	}
+	if _, statErr := os.Stat(absPath); statErr != nil {
+		if strings.TrimSpace(rawText) == "" {
+			return nil, fmt.Errorf("file unavailable and no raw text supplied: %w", statErr)
+		}
+	} else {
+		if a.ocrService == nil {
+			return nil, fmt.Errorf("OCR service not initialized")
+		}
+		result, ocrErr := a.ocrService.ProcessDocument(absPath, "auto")
+		if ocrErr != nil {
+			if strings.TrimSpace(rawText) == "" {
+				return nil, ocrErr
+			}
+			log.Printf("⚠ Local OCR failed; using supplied raw text: %v", ocrErr)
+		} else {
+			text = result.Text
+			confidence = result.Confidence
+			engine = result.Engine
+			for key, value := range result.ExtractedData {
+				extractedData[key] = value
+			}
+		}
+	}
+
+	classification := a.AIClassifyDocumentType(text, filepath.Base(filePath))
+	if classification == nil {
+		classification = a.classifyDocumentForOCR(text, filepath.Base(filePath))
+	}
+
+	docType := detectDocumentType(filePath)
+	classificationConfidence := confidence
+	if classification != nil {
+		docType = classification.DocumentType
+		if classification.Confidence > 0 {
+			classificationConfidence = classification.Confidence
+		}
+	}
+	normalizedType := normalizeOCRDocumentType(docType)
+
+	for key, value := range extractBasicFields(text, docType) {
+		extractedData[key] = value
+	}
+	extractedData["engine"] = engine
+	extractedData["source"] = "local_ocr_fallback"
+
+	result := &InboxProcessResult{
+		DocumentID:               filepath.Base(filePath),
+		DetectedType:             normalizedType,
+		ClassificationConfidence: classificationConfidence,
+		ExtractedText:            text,
+		Entities:                 convertExtractedData(extractedData),
+		SuggestedActions:         generateSuggestedActions(normalizedType),
+		ProcessedAt:              time.Now(),
+		NeedsReview:              classificationConfidence < 0.70,
+		OcrConfidence:            confidence,
+	}
+	if a.db != nil {
+		if err := a.saveInboxDocument(result); err != nil {
+			log.Printf("⚠ Failed to save local inbox fallback document: %v", err)
+		}
+	}
 	return result, nil
 }
 
@@ -207,17 +288,17 @@ type InboxStats struct {
 
 // InboxDocument represents a document in the inbox
 type InboxDocument struct {
-	ID                       uint              `json:"id" gorm:"primaryKey"`
-	DocumentID               string            `json:"document_id" gorm:"index"`
-	FileName                 string            `json:"file_name"`
-	FilePath                 string            `json:"file_path"`
-	DocumentType             string            `json:"document_type"`
-	Status                   string            `json:"status"` // Ready, NeedsReview, Processed
-	Confidence               float64           `json:"confidence"`
-	ExtractedData            map[string]string `json:"extracted_data" gorm:"serializer:json"`
-	SuggestedActions         []string          `json:"suggested_actions" gorm:"serializer:json"`
-	ProcessedAt              time.Time         `json:"processed_at"`
-	CreatedAt                time.Time         `json:"created_at"`
+	ID               uint              `json:"id" gorm:"primaryKey"`
+	DocumentID       string            `json:"document_id" gorm:"index"`
+	FileName         string            `json:"file_name"`
+	FilePath         string            `json:"file_path"`
+	DocumentType     string            `json:"document_type"`
+	Status           string            `json:"status"` // Ready, NeedsReview, Processed
+	Confidence       float64           `json:"confidence"`
+	ExtractedData    map[string]string `json:"extracted_data" gorm:"serializer:json"`
+	SuggestedActions []string          `json:"suggested_actions" gorm:"serializer:json"`
+	ProcessedAt      time.Time         `json:"processed_at"`
+	CreatedAt        time.Time         `json:"created_at"`
 }
 
 // MarkInboxDocumentProcessed marks a document as processed
@@ -329,14 +410,14 @@ type AlternativeMargin struct {
 
 // PricingRecommendation represents AI-generated pricing insight
 type PricingRecommendation struct {
-	Customer           string               `json:"customer"`
-	RecommendedMargin  float64              `json:"recommended_margin"`
-	Strategy           string               `json:"strategy"` // "aggressive", "balanced", "premium"
-	Reasoning          string               `json:"reasoning"`
-	RiskLevel          string               `json:"risk_level"` // "low", "medium", "high"
-	ConfidenceScore    float64              `json:"confidence_score"`
-	AlternativeMargins []AlternativeMargin  `json:"alternative_margins"`
-	GeneratedAt        time.Time            `json:"generated_at"`
+	Customer           string              `json:"customer"`
+	RecommendedMargin  float64             `json:"recommended_margin"`
+	Strategy           string              `json:"strategy"` // "aggressive", "balanced", "premium"
+	Reasoning          string              `json:"reasoning"`
+	RiskLevel          string              `json:"risk_level"` // "low", "medium", "high"
+	ConfidenceScore    float64             `json:"confidence_score"`
+	AlternativeMargins []AlternativeMargin `json:"alternative_margins"`
+	GeneratedAt        time.Time           `json:"generated_at"`
 }
 
 // SimulateMargin simulates margin impact using AI prediction
@@ -394,13 +475,13 @@ Respond in JSON format.`,
 
 // MarginSimulation represents margin simulation result
 type MarginSimulation struct {
-	Customer           string  `json:"customer"`
-	ProposedMargin     float64 `json:"proposed_margin"`
-	CurrentWinRate     float64 `json:"current_win_rate"`
-	EstimatedWinRate   float64 `json:"estimated_win_rate"`
-	Confidence         float64 `json:"confidence"`
-	RecommendedAction  string  `json:"recommended_action"`
-	Warning            string  `json:"warning,omitempty"`
+	Customer          string  `json:"customer"`
+	ProposedMargin    float64 `json:"proposed_margin"`
+	CurrentWinRate    float64 `json:"current_win_rate"`
+	EstimatedWinRate  float64 `json:"estimated_win_rate"`
+	Confidence        float64 `json:"confidence"`
+	RecommendedAction string  `json:"recommended_action"`
+	Warning           string  `json:"warning,omitempty"`
 }
 
 // ============================================================================
@@ -424,9 +505,9 @@ func (a *App) StoreCustomerGraph(customerID string, businessName string, propert
 		Type: "customer",
 		ID:   customerID,
 		Props: map[string]interface{}{
-			"name":         businessName,
-			"created_at":   time.Now().Format(time.RFC3339),
-			"properties":   properties,
+			"name":       businessName,
+			"created_at": time.Now().Format(time.RFC3339),
+			"properties": properties,
 		},
 	}
 
@@ -462,6 +543,10 @@ func detectDocumentType(filePath string) string {
 		return "email"
 	case ".xlsx", ".xls":
 		return "spreadsheet"
+	case ".docx", ".rtf":
+		return "document"
+	case ".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".webp":
+		return "image"
 	default:
 		return "unknown"
 	}

@@ -901,105 +901,86 @@
 </script>
 
 {#if embedded}
-  <!-- Embedded mode - full delivery-note list grouped by year -->
+  <!-- Embedded mode in Operations Hub: full DN workspace without nested page chrome -->
   <div class="delivery-notes-embedded">
-    <div class="embedded-header">
-      <h3>All Delivery Notes ({deliveryNotes.length})</h3>
-      <div class="embedded-stats">
-        <span class="embedded-stat">{stats.delivered} delivered</span>
-        <span class="embedded-stat">{stats.inTransit} in transit</span>
-        <span class="embedded-stat">{stats.partial} partial</span>
+    <div class="embedded-summary">
+      <div class="stat-item">
+        <span class="stat-value">{stats.total}</span>
+        <span class="stat-label">Total DNs</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value">{stats.inTransit}</span>
+        <span class="stat-label">In Transit</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value">{stats.partial}</span>
+        <span class="stat-label">Partial</span>
       </div>
     </div>
 
-    <div class="embedded-filters">
-      <input
-        type="text"
-        placeholder="Search delivery notes..."
-        bind:value={searchQuery}
-        class="embedded-search"
-      />
-      <select class="embedded-select" bind:value={activeFilter}>
-        <option value="All">All Status</option>
+    <div class="controls-bar embedded-controls">
+      <div class="filter-tabs">
+        <button
+          class="filter-tab"
+          class:active={activeFilter === 'All'}
+          on:click={() => activeFilter = 'All'}
+        >
+          All ({deliveryNotes.length})
+        </button>
         {#each DELIVERY_STATUSES as status}
-          <option value={status.key}>{status.label}</option>
+          <button
+            class="filter-tab"
+            class:active={activeFilter === status.key}
+            on:click={() => activeFilter = status.key}
+          >
+            {status.label} ({deliveryNotes.filter(dn => dn.status === status.key).length})
+          </button>
         {/each}
-      </select>
+      </div>
+
+      <div class="search-box">
+        <input
+          type="text"
+          placeholder="Search delivery notes..."
+          bind:value={searchQuery}
+          class="search-input"
+        />
+      </div>
     </div>
 
-    {#if loading}
-      <div class="loading-container">
-        <WabiSpinner size="md" />
-      </div>
-    {:else if filteredDeliveryNotes.length === 0}
-      <p class="empty-message">No delivery notes found</p>
-    {:else}
-      {#each availableYears as year}
-        {@const yearNotes = filteredDeliveryNotes.filter(note => {
-          const deliveryDate = getDeliveryDateValue(note.delivery_date);
-          return deliveryDate ? deliveryDate.getFullYear().toString() === year : false;
-        })}
-        {#if yearNotes.length > 0}
-          <div class="year-group">
-            <div class="year-header">
-              <span class="year-label">{year}</span>
-              <span class="year-count">{yearNotes.length} delivery notes</span>
-            </div>
-            <div class="notes-list">
-              {#each yearNotes as note}
-                <div
-                  class="note-item"
-                  role="button"
-                  tabindex="0"
-                  on:click={() => handleRowClick(note)}
-                  on:keydown={(event) => (event.key === "Enter" || event.key === " ") && handleRowClick(note)}
-                >
-                  <div class="note-left">
-                    <span class="note-number">{note.dn_number}</span>
-                    <span class="note-customer">{note.customer_name || ''}</span>
-                    <span class="note-ref">Order: {note.order_reference || 'N/A'}</span>
-                  </div>
-                  <div class="note-right">
-                    <StatusBadge status={note.status} size="sm" />
-                    <span class="note-date">{formatDate(note.delivery_date)}</span>
-                  </div>
-                </div>
-              {/each}
-            </div>
-          </div>
-        {/if}
-      {/each}
-
-      {@const undatedNotes = filteredDeliveryNotes.filter(note => !getDeliveryDateValue(note.delivery_date))}
-      {#if undatedNotes.length > 0}
-        <div class="year-group">
-          <div class="year-header">
-            <span class="year-label">No Date</span>
-            <span class="year-count">{undatedNotes.length} delivery notes</span>
-          </div>
-          <div class="notes-list">
-            {#each undatedNotes as note}
-              <div
-                class="note-item"
-                role="button"
-                tabindex="0"
-                on:click={() => handleRowClick(note)}
-                on:keydown={(event) => (event.key === "Enter" || event.key === " ") && handleRowClick(note)}
-              >
-                <div class="note-left">
-                  <span class="note-number">{note.dn_number}</span>
-                  <span class="note-customer">{note.customer_name || ''}</span>
-                  <span class="note-ref">Order: {note.order_reference || 'N/A'}</span>
-                </div>
-                <div class="note-right">
-                  <StatusBadge status={note.status} size="sm" />
-                </div>
-              </div>
-            {/each}
-          </div>
+    <Card padding="sm">
+      {#if loading}
+        <div class="loading-container">
+          <WabiSpinner size="lg" />
         </div>
+      {:else}
+        <DataTable
+          {columns}
+          data={filteredDeliveryNotes}
+          {loading}
+          emptyMessage="No delivery notes found"
+          onRowClick={handleRowClick}
+          keyField="id"
+          stickyHeader={true}
+          maxHeight="calc(100vh - 360px)"
+          showBorder={false}
+        >
+          <div slot="cell" let:column let:row let:value>
+            {#if column.key === 'status'}
+              <StatusBadge status={value} />
+            {:else if column.key === 'delivery_info'}
+              <div class="delivery-badge">
+                {formatDeliveryInfo(row)}
+              </div>
+            {:else if column.key === 'transport_method'}
+              <span class="transport-value">{value || '—'}</span>
+            {:else}
+              {value}
+            {/if}
+          </div>
+        </DataTable>
       {/if}
-    {/if}
+    </Card>
   </div>
 {:else}
   <!-- Full screen mode with DataTable -->
@@ -1212,10 +1193,12 @@
                 {/each}
               </tbody>
             </table>
-          {:else if fulfillmentLoadFailed}
-            <p class="empty-fulfillment">Order items could not be loaded. Re-select the order or refresh the screen.</p>
-          {:else if formData.orderId && fulfillmentLoaded}
-            <p class="empty-fulfillment">All items in this order have been fully shipped.</p>
+          {:else if formData.orderId}
+            {#if fulfillmentLoadFailed}
+              <p class="empty-fulfillment">Order items could not be loaded. Re-select the order or refresh the screen.</p>
+            {:else}
+              <p class="empty-fulfillment">All items in this order have been fully shipped.</p>
+            {/if}
           {/if}
         </div>
       {/if}
@@ -1468,162 +1451,27 @@
   /* Embedded Mode */
   .delivery-notes-embedded {
     padding: 16px;
-    max-height: calc(100vh - 200px);
-    overflow-y: auto;
-  }
-
-  .embedded-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 16px;
-    margin-bottom: 12px;
-  }
-
-  .delivery-notes-embedded h3 {
-    margin: 0;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  .embedded-stats {
-    display: flex;
-    gap: 16px;
-  }
-
-  .embedded-stat {
-    font-size: 11px;
-    color: var(--text-secondary);
-    font-family: var(--font-mono, monospace);
-    white-space: nowrap;
-  }
-
-  .embedded-filters {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 16px;
-  }
-
-  .embedded-search {
-    flex: 1;
-    padding: 6px 10px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md, 6px);
-    font-size: 12px;
-    outline: none;
-  }
-
-  .embedded-search:focus {
-    border-color: var(--primary, #4F46E5);
-  }
-
-  .embedded-select {
-    padding: 6px 10px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md, 6px);
-    font-size: 12px;
-    background: transparent;
-    outline: none;
-    cursor: pointer;
-    min-width: 120px;
-  }
-
-  .year-group {
-    margin-bottom: 20px;
-  }
-
-  .year-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 8px 0;
-    border-bottom: 2px solid var(--text-primary, #1a1a1a);
-    margin-bottom: 8px;
-  }
-
-  .year-label {
-    font-size: 18px;
-    font-weight: 700;
-    color: var(--text-primary);
-    font-family: var(--font-mono, monospace);
-  }
-
-  .year-count {
-    font-size: 11px;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .notes-list {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-  }
-
-  .note-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px 12px;
-    background: var(--surface, #fafafa);
-    border: 1px solid var(--border, #e5e5e5);
-    border-radius: var(--radius-md, 6px);
-    cursor: pointer;
-    transition: all 0.15s;
     gap: 16px;
   }
 
-  .note-item:hover {
-    background: var(--bg-hover, #f0f0f0);
-    border-color: var(--text-muted, #999);
-  }
-
-  .note-left {
+  .embedded-summary {
     display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
+    justify-content: flex-end;
+    gap: 24px;
+    min-height: 28px;
   }
 
-  .note-number {
-    font-size: 12px;
-    font-weight: 600;
-    font-family: var(--font-mono, monospace);
-    color: var(--text-primary);
-    white-space: nowrap;
+  .embedded-controls {
+    margin-bottom: 0;
   }
 
-  .note-customer {
-    font-size: 12px;
-    color: var(--text-secondary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 260px;
-  }
-
-  .note-ref {
-    font-size: 11px;
-    color: var(--text-muted);
-    font-family: var(--font-mono, monospace);
-    white-space: nowrap;
-  }
-
-  .note-right {
-    display: flex;
-    flex-direction: row;
-    align-items: flex-end;
-    gap: 12px;
-    flex-shrink: 0;
-  }
-
-  .note-date {
-    font-size: 11px;
-    font-family: var(--font-mono, monospace);
-    color: var(--text-secondary);
-    white-space: nowrap;
+  @media (max-width: 900px) {
+    .embedded-summary {
+      justify-content: flex-start;
+      flex-wrap: wrap;
+    }
   }
 
   /* Full Screen Mode */
@@ -1721,13 +1569,6 @@
     display: flex;
     justify-content: center;
     padding: 48px;
-  }
-
-  .empty-message {
-    text-align: center;
-    padding: 24px;
-    color: var(--text-secondary);
-    font-size: 13px;
   }
 
   /* Custom cells */
