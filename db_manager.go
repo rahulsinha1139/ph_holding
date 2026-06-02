@@ -492,33 +492,6 @@ func (m *DBManager) StartPeriodicSync(interval time.Duration) {
 		}
 	}
 
-	runCycle := func() {
-		// Try to connect if not online
-		if !m.IsOnline() {
-			if err := m.ConnectRemote(); err != nil {
-				return
-			}
-		}
-
-		// Check connectivity
-		if !m.CheckConnectivity() {
-			return
-		}
-
-		// Perform sync
-		lastSync := m.getLastSyncTime()
-		if pushed, err := m.SyncToRemote(lastSync); err != nil {
-			log.Printf("Sync push completed with errors after %d records: %v", pushed, err)
-		} else if pushed > 0 {
-			log.Printf("Sync: pushed %d records to Supabase", pushed)
-		}
-		if pulled, err := m.SyncFromRemote(lastSync); err != nil {
-			log.Printf("Sync pull completed with errors after %d records: %v", pulled, err)
-		} else if pulled > 0 {
-			log.Printf("Sync: pulled %d records from Supabase", pulled)
-		}
-	}
-
 	m.wg.Add(1)
 	go func() {
 		defer func() {

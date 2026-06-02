@@ -71,6 +71,7 @@ func TestCreateRFQWithReferenceUsesUserReference(t *testing.T) {
 func TestSaveCostingAsOfferPropagatesReferenceToLinkedOpportunity(t *testing.T) {
 	app := setupTestApp(t)
 	migrateWorkflowRegressionTables(t, app)
+	validDate := time.Now().AddDate(0, 0, 30).Format("2006-01-02")
 
 	opportunity := Opportunity{
 		Base:         Base{ID: uuid.New().String(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
@@ -82,7 +83,7 @@ func TestSaveCostingAsOfferPropagatesReferenceToLinkedOpportunity(t *testing.T) 
 	require.NoError(t, app.db.Create(&opportunity).Error)
 
 	offer, err := app.SaveCostingAsOffer(CostingExportData{
-		Date:                "2026-05-02",
+		Date:                validDate,
 		PreparedBy:          "Peri",
 		CustomerName:        "BAPCO",
 		RfqReference:        "EH-REF-2026-777",
@@ -129,9 +130,10 @@ func TestSaveCostingAsOfferPropagatesReferenceToLinkedOpportunity(t *testing.T) 
 func TestSaveCostingAsOfferUsesFolderNumberAsOfferNumber(t *testing.T) {
 	app := setupTestApp(t)
 	migrateWorkflowRegressionTables(t, app)
+	validDate := time.Now().AddDate(0, 0, 30).Format("2006-01-02")
 
 	offer, err := app.SaveCostingAsOffer(CostingExportData{
-		Date:         "2026-05-02",
+		Date:         validDate,
 		PreparedBy:   "Peri",
 		CustomerName: "BAPCO",
 		RfqReference: "EH-REF-2026-888",

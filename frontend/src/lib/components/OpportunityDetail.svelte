@@ -142,10 +142,15 @@
         return isCurrencyCode(unit) ? "" : unit;
     }
 
-    function formatQuantity(item: LineItem): string {
-        const quantity = item.quantity || 1;
-        const unit = normalizeLineUnit(item.unit);
-        return unit ? `${quantity} ${unit}` : `${quantity}`;
+    function formatQuantity(value?: LineItem | number): string {
+        if (typeof value === "object" && value) {
+            const quantity = value.quantity || 1;
+            const unit = normalizeLineUnit(value.unit);
+            return unit ? `${quantity} ${unit}` : `${quantity}`;
+        }
+        const numeric = Number(value || 1);
+        if (!Number.isFinite(numeric)) return "1";
+        return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(3).replace(/\.?0+$/, "");
     }
 
     async function loadUserRole() {
@@ -289,12 +294,6 @@
     function canDeleteComment(comment: any) {
         const id = String(comment?.id || "");
         return isPipelineOpportunity && canDeleteManagementComments && id && !id.startsWith("legacy-");
-    }
-
-    function formatQuantity(value?: number) {
-        const numeric = Number(value || 1);
-        if (!Number.isFinite(numeric)) return "1";
-        return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(3).replace(/\.?0+$/, "");
     }
 
     async function handleDeleteComment(comment: any) {

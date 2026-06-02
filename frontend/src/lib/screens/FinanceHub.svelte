@@ -17,13 +17,10 @@
     import FXRevaluationScreen from "./FXRevaluationScreen.svelte";
     import AHSDashboard from "./AHSDashboard.svelte";
     import ErrorBoundary from "../components/ErrorBoundary.svelte";
-    import AHSDashboard from "./AHSDashboard.svelte";
 
     export let params: { tab?: string; company?: string } = {};
 
     type CompanyName = "PH Trading" | "AHS Trading";
-
-    export let params = {};
 
     let activeTab = "dashboard";
     let lastAppliedRouteKey = "";

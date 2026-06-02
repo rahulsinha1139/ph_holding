@@ -50,8 +50,6 @@
   $: embedded;
   const dispatch = createEventDispatcher();
 
-  const dispatch = createEventDispatcher();
-
   // State
   let loading = true;
   let saving = false;
@@ -530,15 +528,6 @@
     } finally {
       exportingPilotBundle = false;
     }
-  }
-
-  function openDeploymentWorkspace() {
-    dispatch("navigate", { screen: "deployment" });
-  }
-
-  function handleTextScaleSlider(event: Event) {
-    const input = event.currentTarget as HTMLInputElement;
-    setTextScale(Number(input.value) / 100);
   }
 
   function formatIssue(issue: string): string {

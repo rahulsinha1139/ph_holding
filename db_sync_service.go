@@ -241,28 +241,6 @@ func activeDBSyncTables() []string {
 	return tables
 }
 
-func activeDBSyncTables() []string {
-	excluded := map[string]bool{}
-	for _, raw := range strings.Split(os.Getenv("ASYMMFLOW_SYNC_EXCLUDE_TABLES"), ",") {
-		table := strings.TrimSpace(raw)
-		if table != "" {
-			excluded[table] = true
-		}
-	}
-	if len(excluded) == 0 {
-		return append([]string(nil), dbSyncTables...)
-	}
-
-	tables := make([]string, 0, len(dbSyncTables))
-	for _, table := range dbSyncTables {
-		if excluded[table] {
-			continue
-		}
-		tables = append(tables, table)
-	}
-	return tables
-}
-
 // emitDBSyncProgress sends a sync progress event to the frontend
 func (a *App) emitDBSyncProgress(progress DBSyncProgress) {
 	if a.ctx != nil {
@@ -614,14 +592,6 @@ func (a *App) syncTablePush(table string, since time.Time) (int, error) {
 		log.Printf("Skipping push sync for %s: local table has no updated_at column for incremental sync", table)
 		return 0, nil
 	}
-	localColumnTypes, err := syncDBColumnTypes(a.db, table)
-	if err != nil {
-		return 0, fmt.Errorf("inspect local %s columns: %w", table, err)
-	}
-	if !syncColumnExists(localColumnTypes, "updated_at") {
-		log.Printf("Skipping push sync for %s: local table has no updated_at column for incremental sync", table)
-		return 0, nil
-	}
 
 	// Count records to sync
 	baseQuery := a.db.Table(table).Where("updated_at > ?", since)
@@ -723,19 +693,6 @@ func (a *App) syncTablePull(table string, since time.Time) (int, error) {
 		log.Printf("Skipping pull sync for %s: remote table has no updated_at column for incremental sync", table)
 		return 0, nil
 	}
-	if isUserActivitySyncTable(table) && !a.currentSessionCanAccessActivityMonitoring() {
-		log.Printf("Skipping pull sync for %s: confidential activity monitoring is restricted to Rahul/Mentor", table)
-		return 0, nil
-	}
-	remoteColumnTypes, err := syncDBColumnTypes(a.dbManager.Remote(), table)
-	if err != nil {
-		return 0, fmt.Errorf("inspect remote %s columns: %w", table, err)
-	}
-	if !syncColumnExists(remoteColumnTypes, "updated_at") {
-		log.Printf("Skipping pull sync for %s: remote table has no updated_at column for incremental sync", table)
-		return 0, nil
-	}
-
 	// Count records to sync
 	var count int64
 	if err := remoteDB.Table(table).Where("updated_at > ?", since).Count(&count).Error; err != nil {

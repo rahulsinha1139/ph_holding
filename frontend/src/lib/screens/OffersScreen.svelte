@@ -28,6 +28,9 @@
     AddOfferNote,
     GetOfferNotes,
     GetUnifiedOfferThread,
+    AddOfferFollowUp,
+    CompleteOfferFollowUp,
+    GetPendingFollowUps,
     DeleteOfferNote,
     DeleteOffer,
     GetOffersWithNoItems
@@ -70,7 +73,6 @@
     sent_at?: any;
     created_at?: any;
     updated_at?: any;
-    division?: string;
     estimated_margin?: number;
     items?: any[];
     division?: string;
@@ -145,6 +147,12 @@
   let notesLoading = false;
 
   let pdfLoading = false;
+  let showFollowUpModal = false;
+  let followUpOffer: OfferDisplay | null = null;
+  let followUpDate = '';
+  let followUpNotes = '';
+  let followUpLoading = false;
+  let pendingFollowUps: any[] = [];
 
   async function openFollowUpModal(offer: OfferDisplay) {
     followUpOffer = offer;
@@ -507,6 +515,7 @@
   function handleCompanySelect(company: string) {
     selectedCompany = company === 'AHS Trading' ? 'AHS Trading' : 'PH Trading';
     formData.division = selectedCompany;
+    selectedStage = 'all';
   }
 
   async function loadOffers() {
@@ -566,7 +575,6 @@
       sent_at: offer.sent_at,
       created_at: offer.created_at,
       updated_at: offer.updated_at,
-      division: offer.division || 'PH Trading',
       items: offer.items || [],
       division: offer.division || 'PH Trading',
       days_until_expiry: daysUntilExpiry,
@@ -603,11 +611,6 @@
 
   function normalizeName(value: string) {
     return (value || '').trim().toLowerCase().replace(/\s+/g, ' ');
-  }
-
-  function handleCompanySelect(company: string) {
-    selectedCompany = company === 'AHS Trading' ? 'AHS Trading' : 'PH Trading';
-    selectedStage = 'all';
   }
 
   function resolveCustomerFromOffer(customerId: string, customerName: string) {

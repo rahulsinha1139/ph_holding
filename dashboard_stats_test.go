@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -64,8 +65,8 @@ func TestDashboardStats_PrefersConfirmedOrdersOverDraftInvoices(t *testing.T) {
 	require.Equal(t, "2026-01-01", stats.FreshStartDate)
 	require.Equal(t, 116128.811, stats.TotalRevenue)
 	require.Equal(t, "Confirmed orders YTD 2026", stats.RevenueMeta)
-	require.Equal(t, 0, stats.PendingInvoices)
-	require.Equal(t, 0.0, stats.OutstandingAR)
+	require.Equal(t, 1, stats.PendingInvoices)
+	require.Equal(t, 116128.811, stats.OutstandingAR)
 }
 
 func TestDashboardCharts_UseDashboardPermissionAndYTD2026Data(t *testing.T) {

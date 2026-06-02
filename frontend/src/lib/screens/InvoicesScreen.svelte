@@ -577,10 +577,6 @@
     dispatch('navigate', { tab: 'bank_recon', source: 'customer_invoices' });
   }
 
-  function matchesCompany(division?: string) {
-    return (division || 'PH Trading') === company;
-  }
-
   // Parse Go time.Time to JS Date
   function parseGoDate(dateValue: any): Date {
     if (!dateValue) return new Date(0);

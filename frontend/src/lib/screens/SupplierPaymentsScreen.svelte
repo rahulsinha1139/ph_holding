@@ -203,13 +203,6 @@
         return new Date(invoice.due_date).getTime() < Date.now();
       });
 
-      const filteredInvoices = (supplierInvoicesRes || []).filter((invoice: any) => matchesCompany(invoice.division));
-      const outstandingInvoices = filteredInvoices.filter((invoice: any) => String(invoice?.payment_status || '').toLowerCase() !== 'paid');
-      const overdueInvoices = outstandingInvoices.filter((invoice: any) => {
-        if (!invoice?.due_date) return false;
-        return new Date(invoice.due_date).getTime() < Date.now();
-      });
-
       summary = {
         total_paid_bhd: supplierPaymentRows.reduce((sum: number, row: any) => sum + (Number(row.amount_bhd) || 0), 0) + paidExpenseTotal,
         outstanding_bhd: outstandingInvoices.reduce((sum: number, invoice: any) => sum + (Number(invoice.outstanding_bhd || invoice.total_bhd || 0) || 0), 0) + unpaidExpenseEntries.reduce((sum: number, entry: ExpenseEntry) => sum + (Number(entry.total_amount) || 0), 0),

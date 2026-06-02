@@ -933,31 +933,6 @@
     </div>
 {/if}
 
-{#if permissionRole}
-    <div class="modal-backdrop" role="button" tabindex="0" on:click={() => (permissionRole = null)} on:keydown={(event) => event.key === "Escape" && (permissionRole = null)}>
-        <div class="modal-card permissions-card" role="presentation" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
-            <div class="modal-head">
-                <div>
-                    <h2>{roleLabel(permissionRole)}</h2>
-                    <p>{permissionRole.description || "Role permissions"}</p>
-                </div>
-                <button class="btn-sm" on:click={() => (permissionRole = null)}>Close</button>
-            </div>
-            {#if loadingRolePermissions}
-                <div class="loading"><WabiSpinner size="sm" /></div>
-            {:else if rolePermissions.length === 0}
-                <p class="dim">No permissions configured.</p>
-            {:else}
-                <div class="permission-grid">
-                    {#each rolePermissions as permission}
-                        <span class="permission-chip">{permission}</span>
-                    {/each}
-                </div>
-            {/if}
-        </div>
-    </div>
-{/if}
-
 <style>
     .page {
         padding: var(--page-padding);

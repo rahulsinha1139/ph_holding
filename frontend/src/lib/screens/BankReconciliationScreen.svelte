@@ -725,62 +725,6 @@
     return String(value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ').trim();
   }
 
-  function getCandidateAmount(candidate: any, type: string) {
-    if (type === 'CUSTOMER_INVOICE') return Number(candidate.outstanding_bhd || candidate.grand_total_bhd || 0);
-    if (type === 'SUPPLIER_PAYMENT') return Number(candidate.amount_bhd || 0);
-    if (type === 'PAYROLL_PAYOUT') return Number(candidate.amount || 0);
-    if (type === 'EXPENSE') return Number(candidate.total_amount || ((Number(candidate.amount) || 0) + (Number(candidate.vat_amount) || 0)) || candidate.amount || 0);
-    return Number(candidate.total_bhd || 0);
-  }
-
-  function allocationKey(type: string, entityId: string) {
-    return `${type}:${entityId}`;
-  }
-
-  function isCandidateAllocated(candidate: any) {
-    return matchAllocations.some((allocation) => allocation.key === allocationKey(matchingType, candidate.id));
-  }
-
-  function addMatchAllocation(candidate: any) {
-    if (!matchingLine || !candidate?.id || isCandidateAllocated(candidate)) return;
-    if (matchingType === 'SUPPLIER_PAYMENT' || matchingType === 'PAYROLL_PAYOUT') {
-      toast.warning('Bulk allocation is available for invoices and expenses. Match payouts one at a time.');
-      return;
-    }
-
-    const candidateAmount = roundAmount(getCandidateAmount(candidate, matchingType));
-    const remaining = matchAllocations.length === 0 ? formatMatchAmount(matchingLine) : matchAllocationRemaining;
-    const defaultAmount = roundAmount(Math.max(0, Math.min(candidateAmount || remaining, remaining > 0 ? remaining : candidateAmount)));
-    matchAllocations = [
-      ...matchAllocations,
-      {
-        key: allocationKey(matchingType, candidate.id),
-        allocation_type: matchingType,
-        entity_id: candidate.id,
-        label: buildMatchCandidateLabel(candidate, matchingType),
-        allocated_amount: defaultAmount,
-        max_amount: candidateAmount
-      }
-    ];
-    matchingCandidateId = '';
-  }
-
-  function updateMatchAllocationAmount(key: string, event: Event) {
-    const target = event.currentTarget as HTMLInputElement;
-    const value = roundAmount(Number(target.value) || 0);
-    matchAllocations = matchAllocations.map((allocation) =>
-      allocation.key === key ? { ...allocation, allocated_amount: value } : allocation
-    );
-  }
-
-  function removeMatchAllocation(key: string) {
-    matchAllocations = matchAllocations.filter((allocation) => allocation.key !== key);
-  }
-
-  function normalizeCandidateText(value: any) {
-    return String(value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ').trim();
-  }
-
   function getFilteredMatchCandidates() {
     const search = normalizeCandidateText(matchingSearch);
     const source = matchingType === 'CUSTOMER_INVOICE'

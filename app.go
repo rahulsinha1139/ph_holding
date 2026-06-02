@@ -2957,11 +2957,6 @@ func (a *App) GetDashboardStats() (DashboardStats, error) {
 		}
 	}
 
-	collectibleValue := invoiceRevenue + stats.OutstandingAR
-	if collectibleValue > 0 {
-		stats.CollectionRate = math.Round((invoiceRevenue/collectibleValue)*1000) / 10
-	}
-
 	if outstandingAR <= 0 {
 		orderReceivableFallback, ordersPendingInvoice, err := a.calculateUninvoicedOrderExposure(operationalStart, yearEnd)
 		if err != nil {

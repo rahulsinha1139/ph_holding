@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import {
-    DeleteExpenseCategory,
     DeleteExpenseEntry,
     DeleteExpenseVendor,
     DeleteRecurringExpense,
@@ -20,7 +19,6 @@
     deleteExpenseEntry,
     deleteExpenseVendor,
     createRecurringExpense,
-    deleteRecurringExpense,
     generateRecurringExpenses,
     getExpenseDashboardSummary,
     listBankExpenseCandidates,
@@ -254,37 +252,6 @@
     }
   }
 
-  async function handleDeleteCategory(category: ExpenseCategory) {
-    if (!category?.id) {
-      return;
-    }
-
-    if (confirmDeleteCategoryID !== category.id) {
-      confirmDeleteCategoryID = category.id;
-      confirmDeleteVendorID = "";
-      toast.warning(`Press delete again to remove category "${category.name}". This only works if nothing is using it.`);
-      return;
-    }
-
-    deletingCategoryID = category.id;
-    try {
-      await DeleteExpenseCategory(category.id);
-      if (categoryID === category.id) {
-        categoryID = "";
-      }
-      if (recurringCategoryID === category.id) {
-        recurringCategoryID = "";
-      }
-      await load();
-      toast.success("Expense category deleted");
-    } catch (err) {
-      toast.danger(`Failed to delete category: ${String(err)}`);
-    } finally {
-      confirmDeleteCategoryID = "";
-      deletingCategoryID = "";
-    }
-  }
-
   async function handleCreateExpense() {
     if (!description.trim()) {
       toast.warning("Expense description is required");
@@ -460,30 +427,6 @@
       toast.success(`${generated.length} recurring expense entries generated`);
     } catch (err) {
       toast.danger(`Failed to generate recurring expenses: ${String(err)}`);
-    }
-  }
-
-  async function handleDeleteRecurring(item: RecurringExpense) {
-    if (!item?.id) {
-      return;
-    }
-
-    if (confirmDeleteRecurringID !== item.id) {
-      confirmDeleteRecurringID = item.id;
-      toast.warning(`Press delete again to remove recurring schedule "${item.name}". Existing generated expenses will stay in the ledger.`);
-      return;
-    }
-
-    deletingRecurringID = item.id;
-    try {
-      await deleteRecurringExpense(item.id);
-      await load();
-      toast.success("Recurring expense deleted");
-    } catch (err) {
-      toast.danger(`Failed to delete recurring expense: ${String(err)}`);
-    } finally {
-      confirmDeleteRecurringID = "";
-      deletingRecurringID = "";
     }
   }
 

@@ -2,6 +2,8 @@
     import { createEventDispatcher } from "svelte";
     import { fade, scale } from "svelte/transition";
     import { toast } from "$lib/stores/toasts";
+    import WabiSpinner from "$lib/components/ui/WabiSpinner.svelte";
+    import { formatNumber } from "$lib/utils/formatters";
     import { AnalyzeDocumentWithButler, CheckDuplicateOpportunity, CheckDuplicateRFQ, GetActiveBankAccounts, ListCustomers, ListSuppliers } from "../../../wailsjs/go/main/App";
 
     export let show = false;
@@ -71,8 +73,6 @@
         period_start: "",
         period_end: "",
     };
-
-    $: filteredBankAccounts = bankAccounts.filter((account) => (account.division || "PH Trading") === editableData.division);
 
     // Load customers and suppliers when modal opens
     async function loadEntities() {
@@ -1247,12 +1247,6 @@
         if (e.key === 'Escape') handleClose();
     }
 
-    function handleBackdropKeydown(event: KeyboardEvent, callback: () => void) {
-        if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            callback();
-        }
-    }
 </script>
 
 <svelte:window on:keydown={handleKeydown} />

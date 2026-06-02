@@ -116,7 +116,7 @@
             + New Purchase Order
           </Button>
         {:else if activeTab === 'supplier-invoices'}
-          <Button variant="primary" on:click={handleNewInvoice}>
+          <Button variant="primary" on:click={handleNewSupplierInvoice}>
             + New Supplier Invoice
           </Button>
         {:else if activeTab === 'delivery-notes'}

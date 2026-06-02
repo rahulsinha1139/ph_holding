@@ -628,26 +628,6 @@
         }));
     }
 
-    function handleOpenCostingFromDetail(event: CustomEvent) {
-        const opportunity = event.detail?.opportunity || selected;
-        const pendingPayload = event.detail?.pendingPayload || {
-            id: String(opportunity?.id || ""),
-            customer_name: opportunity?.client || opportunity?.customer || "",
-            folder_number: opportunity?.folder_number || opportunity?.rfq_number || "",
-            rfq_ref: opportunity?.rfq_ref || opportunity?.eh_ref || "",
-            title: opportunity?.project || opportunity?.project_name || opportunity?.title || "",
-        };
-        if (pendingPayload?.id) {
-            sessionStorage.setItem("asymmflow.pendingCostingOpportunity", JSON.stringify(pendingPayload));
-        }
-        showTaskModal = false;
-        showOpportunityModal = false;
-        dispatch("navigate", { screen: "opportunities", tab: "costing" });
-        window.dispatchEvent(new CustomEvent("navigateToScreen", {
-            detail: { screen: "opportunities", tab: "costing" }
-        }));
-    }
-
     async function handleCreate() {
         if (!createForm.customer || !createForm.project) {
             toast.warning("Customer and Prospect/Project fields are required");
