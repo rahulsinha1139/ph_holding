@@ -802,9 +802,9 @@
         );
 
         // P0-4 FIX: Check permission before navigating
-        if (!hasScreenPermission(screen)) {
-            toast.danger(`Access denied: You don't have permission to view ${screen}`);
-            console.warn(`Navigation blocked: no permission for ${screen}`);
+        if (!hasScreenPermission(screenID)) {
+            toast.danger(`Access denied: You don't have permission to view ${screenID}`);
+            console.warn(`Navigation blocked: no permission for ${screenID}`);
             return;
         }
 

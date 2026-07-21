@@ -24,6 +24,8 @@
         unit_price?: number;
         total_price?: number;
         part_number?: string;
+        currency?: string;
+        unit?: string;
         source_currency?: string;
     }
 

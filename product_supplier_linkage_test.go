@@ -125,6 +125,47 @@ func TestInferSupplierForOrderItems_FallsBackToSupplierCodeLink(t *testing.T) {
 	require.Equal(t, supplier.ID, inferred.ID)
 }
 
+func TestInferSupplierForOrderItems_UsesProductCodeWithoutProductID(t *testing.T) {
+	app := setupTestApp(t)
+	require.NoError(t, app.db.AutoMigrate(&ProductMaster{}))
+
+	supplier, _, err := app.ensureSeedSupplier(supplierSeedSpec{
+		Name:         "Product Code Supplier",
+		Code:         "PCS",
+		Country:      "Bahrain",
+		PaymentTerms: "Net 30",
+		SupplierType: "Manufacturer",
+		Rating:       5,
+	})
+	require.NoError(t, err)
+
+	product := ProductMaster{
+		ProductCode:      "PCS-MODEL-1",
+		ProductName:      "Product code routed product",
+		SupplierID:       supplier.ID,
+		SupplierCode:     supplier.SupplierCode,
+		StandardCostBHD:  10,
+		StandardPriceBHD: 15,
+		IsActive:         true,
+	}
+	require.NoError(t, app.db.Create(&product).Error)
+
+	order := Order{
+		Items: []OrderItem{
+			{
+				Base:        Base{ID: "item-product-code-only"},
+				ProductCode: product.ProductCode,
+				Model:       product.ProductCode,
+				Quantity:    1,
+			},
+		},
+	}
+
+	inferred, err := app.inferSupplierForOrderItems(order, nil)
+	require.NoError(t, err)
+	require.Equal(t, supplier.ID, inferred.ID)
+}
+
 func TestInferSupplierForOrderItems_FallsBackToCommercialText(t *testing.T) {
 	app := setupTestApp(t)
 	require.NoError(t, app.db.AutoMigrate(&ProductMaster{}))

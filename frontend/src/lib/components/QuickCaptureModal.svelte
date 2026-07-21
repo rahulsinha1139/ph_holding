@@ -821,7 +821,6 @@
         const labels: Record<string, string> = {
             division: "Company",
             customer_name: "Customer",
-            division: "Company",
             supplier_name: "Supplier",
             project: "Project Name",
             invoice_number: "Invoice #",

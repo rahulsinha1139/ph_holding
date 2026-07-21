@@ -90,6 +90,13 @@ deploy_package/data/ph_holdings.db
 *.backup
 nul
 
+# === Go Build Cache ===
+.gocache/
+
+# === Output Artifacts ===
+outputs/*/node_modules
+outputs/*/node_modules/
+
 # === Business Documents (NEVER commit) ===
 Bank_Statements/
 Costing_Sheets/

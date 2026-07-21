@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -646,6 +648,62 @@ func TestUpdateRFQNotes_AllowsClearingNotes(t *testing.T) {
 	var stored RFQData
 	require.NoError(t, app.db.First(&stored, "id = ?", rfq.ID).Error)
 	require.Equal(t, "", stored.Notes)
+}
+
+func TestUpdateRFQEditsReferenceCustomerProjectValueAndStage(t *testing.T) {
+	app := setupTestApp(t)
+	migrateWorkflowRegressionTables(t, app)
+
+	rfq := RFQData{
+		RFQNumber: "90-26",
+		RFQRef:    "90-26",
+		Client:    "Wrong Customer",
+		Project:   "Wrong folder",
+		Value:     100,
+		Notes:     "old notes",
+		Status:    "New",
+		Stage:     "RFQ Received",
+	}
+	require.NoError(t, app.db.Create(&rfq).Error)
+
+	updated, err := app.UpdateRFQ(rfq.ID, RFQUpdateRequest{
+		Client:  "BAPCO",
+		Project: "Corrected folder scope",
+		RFQRef:  "94-26",
+		Value:   2500,
+		Notes:   "corrected notes",
+		Status:  "Offer Sent",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "BAPCO", updated.Client)
+	require.Equal(t, "Corrected folder scope", updated.Project)
+	require.Equal(t, "94-26", updated.RFQRef)
+	require.Equal(t, "94-26", updated.RFQNumber)
+	require.InDelta(t, 2500, updated.Value, 0.001)
+	require.Equal(t, "corrected notes", updated.Notes)
+	require.Equal(t, "Offer Sent", updated.Status)
+	require.Equal(t, "Offer Sent", updated.Stage)
+
+	var stored RFQData
+	require.NoError(t, app.db.First(&stored, "id = ?", rfq.ID).Error)
+	require.Equal(t, "94-26", stored.RFQNumber)
+	require.Equal(t, "Offer Sent", stored.Stage)
+}
+
+func TestCostingExportFileStemAvoidsRepeatedReferenceTokens(t *testing.T) {
+	require.Equal(t, "EHS_25-26_MWW", costingExportFileStem("EHS 25-26 MWW", "Fallback Customer", "25-26 MWW"))
+	require.Equal(t, "SA-05-26", costingExportFileStem("SA-05-26", "Fallback Customer", "SA-05-26"))
+	require.Equal(t, "Analyzer_Skid_T-29", costingExportFileStem("Analyzer Skid", "Fallback Customer", "T-29"))
+	require.Equal(t, "Fallback_Customer_T-29", costingExportFileStem("", "Fallback Customer", "T-29"))
+}
+
+func TestCostingExportOutputPathDoesNotOverwriteExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "Quotation_EHS_25-26_MWW.pdf")
+	require.NoError(t, os.WriteFile(first, []byte("%PDF-1.4\nexisting\n"), 0600))
+
+	next := uniqueCostingAttachmentPath(first)
+	require.Equal(t, filepath.Join(dir, "Quotation_EHS_25-26_MWW_2.pdf"), next)
 }
 
 func TestSeedDefaultRoles_SalesCanCreatePurchaseOrders(t *testing.T) {

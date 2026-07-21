@@ -446,8 +446,6 @@
     { value: 'Lost', label: 'Lost', count: 0 }
   ];
 
-  $: companyScopedOffers = offers.filter((offer) => (offer.division || 'PH Trading') === selectedCompany);
-
   // Computed: Update tab counts
   $: companyScopedOffers = offers.filter((offer) => (offer.division || 'PH Trading') === selectedCompany);
 

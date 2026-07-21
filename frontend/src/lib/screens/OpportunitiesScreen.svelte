@@ -79,6 +79,7 @@
 
     const priorityOptions = ["Normal", "Urgent", "Critical"];
     const STATUS_OPTIONS = ["All", "RFQ Received", "New", "Qualified", "Proposal", "Quoted", "Won", "Lost", "On Hold"];
+    const DEPRECATED_STAGE_LABELS = new Set(["New", "Pending", "Qualified", "Proposal", "Negotiation", "In Progress", "On Hold"]);
     const SORT_OPTIONS = [
         { id: "date", label: "Recent" },
         { id: "key", label: "Key" },
@@ -587,7 +588,7 @@
     }
 
     function handleOpportunityCardKeydown(event: KeyboardEvent, opp: any) {
-        if (event.key !== "Enter" && event.key !== " ") return;
+        if (event.key !== "Enter") return;
         if (event.target !== event.currentTarget) return;
         event.preventDefault();
         selectOpportunity(opp);

@@ -785,8 +785,9 @@
 
     isProcessingAction = true;
     try {
-      const po = await CreatePOFromOrder(order.id, '', []);
-      toast.success(`Supplier order ${po.po_number} created`);
+      const pos = await CreatePOsFromOrder(order.id, []);
+      const poNumbers = (pos || []).map((po) => po.po_number).filter(Boolean).join(', ');
+      toast.success(poNumbers ? `Supplier order ${poNumbers} created` : `${(pos || []).length} supplier order(s) created`);
       showDetailModal = false;
       window.dispatchEvent(new CustomEvent('navigateToScreen', {
         detail: { screen: 'operations', tab: 'pos' }

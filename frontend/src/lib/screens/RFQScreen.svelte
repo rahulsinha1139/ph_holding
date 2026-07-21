@@ -30,7 +30,8 @@
   import WabiSpinner from '$lib/components/ui/WabiSpinner.svelte';
 
   // Backend APIs
-  import { GetRFQs, CreateRFQ, UpdateRFQStatus, UpdateRFQStage, DeleteRFQ, ListCustomers, ExportReport, OpenExportedFile } from '../../../wailsjs/go/main/App';
+  import { GetRFQs, CreateRFQ, UpdateRFQ, UpdateRFQStatus, UpdateRFQStage, DeleteRFQ, ListCustomers, ExportReport, OpenExportedFile } from '../../../wailsjs/go/main/App';
+  import { main } from '../../../wailsjs/go/models';
 
   // Toast notifications
   import { toast } from '$lib/stores/toasts';
@@ -53,6 +54,14 @@
   let showCreateModal = false;
   let showEditModal = false;
   let editingRFQ: any = null;
+  let editRFQForm = {
+    client: '',
+    project: '',
+    rfqRef: '',
+    value: 0,
+    notes: '',
+    status: ''
+  };
 
   // Form state
   let formData = {
@@ -107,6 +116,24 @@
     'Won': { variant: 'success', color: '#10B981' },
     'Lost': { variant: 'danger', color: '#EF4444' }
   };
+
+  const rfqLifecycleOptions = [
+    { value: 'RFQ Received', label: 'RFQ Received' },
+    { value: 'Qualified', label: 'Qualified' },
+    { value: 'Proposal', label: 'Proposal' },
+    { value: 'Quoted', label: 'Quoted' },
+    { value: 'Offer Sent', label: 'Offer Sent' },
+    { value: 'Follow-up/Eval', label: 'Follow-up/Eval' },
+    { value: 'PO/LOI Received', label: 'PO/LOI Received' },
+    { value: 'Order Placed', label: 'Order Placed' },
+    { value: 'In Process', label: 'In Process' },
+    { value: 'Delivered', label: 'Delivered' },
+    { value: 'Closed (Payment)', label: 'Closed (Payment)' },
+    { value: 'Closed (Lost)', label: 'Closed (Lost)' },
+    { value: 'Won', label: 'Won' },
+    { value: 'Lost', label: 'Lost' },
+    { value: 'On Hold', label: 'On Hold' }
+  ];
 
   // ========================================
   // DATA TABLE CONFIGURATION
@@ -337,6 +364,14 @@
 
   function openEditModal(rfq: any) {
     editingRFQ = rfq;
+    editRFQForm = {
+      client: rfq.client || rfq.customer_name || '',
+      project: rfq.project || '',
+      rfqRef: rfq.rfq_ref || rfq.rfq_number || '',
+      value: Number(rfq.value || 0),
+      notes: rfq.notes || '',
+      status: rfq.status || rfq.stage || 'RFQ Received'
+    };
     formData = {
       customer: String(rfq.customer_id || ''),
       products: [], // TODO: Parse from RFQ data
@@ -465,6 +500,40 @@
       toast.danger(`Failed to update stage: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       stageUpdating = false;
+    }
+  }
+
+  async function handleSaveRFQEdit() {
+    if (!editingRFQ || rfqSaving) return;
+
+    const client = editRFQForm.client.trim();
+    const project = editRFQForm.project.trim();
+    if (!client || !project) {
+      toast.warning('Customer and project are required');
+      return;
+    }
+
+    rfqSaving = true;
+    try {
+      const updated = await UpdateRFQ(
+        Number(editingRFQ.id),
+        main.RFQUpdateRequest.createFrom({
+          client,
+          project,
+          rfq_ref: editRFQForm.rfqRef.trim(),
+          value: Number(editRFQForm.value || 0),
+          notes: editRFQForm.notes.trim(),
+          status: editRFQForm.status
+        })
+      );
+      toast.success(`RFQ-${String(updated.id).padStart(4, '0')} updated`);
+      await loadData();
+      closeEditModal();
+    } catch (err) {
+      console.error('Failed to update RFQ:', err);
+      toast.danger(`Failed to update RFQ: ${err instanceof Error ? err.message : String(err || 'Unknown error')}`);
+    } finally {
+      rfqSaving = false;
     }
   }
 
@@ -721,17 +790,21 @@
       <p class="info-text">Editing RFQ-{String(editingRFQ.id).padStart(4, '0')}</p>
 
       <div class="form-row">
-        <Select
-          label="Update Stage"
-          options={[
-            { value: 'Pending', label: 'Pending' },
-            { value: 'Qualified', label: 'Qualified' },
-            { value: 'Proposal', label: 'Proposal' },
-            { value: 'Negotiation', label: 'Negotiation' },
-          ]}
-          value={editingRFQ.status}
-          on:change={(e) => handleUpdateStage(editingRFQ.id, e.detail.value)}
-        />
+        <Input label="Customer" bind:value={editRFQForm.client} required={true} />
+        <Input label="Folder / RFQ Reference" bind:value={editRFQForm.rfqRef} placeholder="e.g. SA-05-26 or T-29" />
+      </div>
+
+      <div class="form-row">
+        <Input label="Project / Scope" bind:value={editRFQForm.project} required={true} />
+        <CurrencyInput label="Estimated Value (BHD)" bind:value={editRFQForm.value} />
+      </div>
+
+      <div class="form-row">
+        <Select label="Lifecycle Stage" options={rfqLifecycleOptions} bind:value={editRFQForm.status} />
+      </div>
+
+      <div class="form-row">
+        <Textarea label="Notes" bind:value={editRFQForm.notes} rows={4} />
       </div>
 
       <p class="info-hint">Won/Lost status is set automatically when the linked offer is marked as Won or Lost in the Offers screen.</p>
@@ -740,6 +813,9 @@
 
   <div slot="footer" class="modal-actions">
     <Button variant="ghost" on:click={closeEditModal}>Close</Button>
+    <Button variant="primary" on:click={handleSaveRFQEdit} disabled={rfqSaving}>
+      {rfqSaving ? 'Saving...' : 'Save RFQ'}
+    </Button>
   </div>
 </WabiModal>
 

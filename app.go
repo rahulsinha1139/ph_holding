@@ -7679,6 +7679,95 @@ func buildOfferItemsFromCostingData(offerID string, data CostingExportData) []Of
 	return items
 }
 
+func (a *App) resolveProductForCommercialItem(productID string, candidates ...string) (ProductMaster, bool) {
+	if a == nil || a.db == nil {
+		return ProductMaster{}, false
+	}
+
+	if productID = strings.TrimSpace(productID); productID != "" {
+		var product ProductMaster
+		if err := a.db.First(&product, "id = ?", productID).Error; err == nil {
+			return product, true
+		}
+	}
+
+	seen := make(map[string]struct{})
+	cleanCandidates := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		key := strings.ToUpper(candidate)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		cleanCandidates = append(cleanCandidates, candidate)
+	}
+
+	for _, candidate := range cleanCandidates {
+		var product ProductMaster
+		if err := a.db.Where("product_code = ? OR sku = ? OR part_number = ?", candidate, candidate, candidate).
+			First(&product).Error; err == nil {
+			return product, true
+		}
+	}
+
+	for _, candidate := range cleanCandidates {
+		like := "%" + escapeLikeWildcards(candidate) + "%"
+		var product ProductMaster
+		if err := a.db.Where("product_name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\'", like, like).
+			First(&product).Error; err == nil {
+			return product, true
+		}
+	}
+
+	return ProductMaster{}, false
+}
+
+func (a *App) attachProductReferencesToOfferItems(items []OfferItem) {
+	for i := range items {
+		product, ok := a.resolveProductForCommercialItem(
+			items[i].ProductID,
+			items[i].ProductCode,
+			items[i].Model,
+			items[i].LongCode,
+			items[i].Equipment,
+			items[i].Description,
+		)
+		if !ok {
+			continue
+		}
+		items[i].ProductID = product.ID
+		if strings.TrimSpace(items[i].ProductCode) == "" {
+			items[i].ProductCode = product.ProductCode
+		}
+		if strings.TrimSpace(items[i].Model) == "" {
+			items[i].Model = product.ProductCode
+		}
+	}
+}
+
+func (a *App) resolveCustomerForCommercialDocument(customerName string) (CustomerMaster, bool) {
+	customerName = strings.TrimSpace(customerName)
+	if a == nil || a.db == nil || customerName == "" {
+		return CustomerMaster{}, false
+	}
+
+	var customer CustomerMaster
+	if err := a.db.Where("business_name = ?", customerName).First(&customer).Error; err == nil {
+		return customer, true
+	}
+	if err := a.db.Where("LOWER(business_name) = LOWER(?)", customerName).First(&customer).Error; err == nil {
+		return customer, true
+	}
+	if err := a.db.Where("business_name LIKE ?", "%"+customerName+"%").First(&customer).Error; err == nil {
+		return customer, true
+	}
+	return CustomerMaster{}, false
+}
+
 // SaveCostingAsOffer creates a proper Offer with OfferItems from costing sheet data
 func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 	if strings.TrimSpace(data.OfferID) != "" {
@@ -7741,11 +7830,8 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 
 	// Find customer ID from name
 	customerID := ""
-	if data.CustomerName != "" {
-		var customer CustomerMaster
-		if err := a.db.Where("business_name LIKE ? ESCAPE '\\\\'", "%"+escapeLikeWildcards(data.CustomerName)+"%").First(&customer).Error; err == nil {
-			customerID = customer.ID
-		}
+	if customer, ok := a.resolveCustomerForCommercialDocument(data.CustomerName); ok {
+		customerID = customer.ID
 	}
 
 	// Calculate margin
@@ -7825,6 +7911,7 @@ func (a *App) SaveCostingAsOffer(data CostingExportData) (*Offer, error) {
 	// Create offer items from costing line items (with full costing data for viewing).
 	// Line totals are already BHD sale prices.
 	offer.Items = buildOfferItemsFromCostingData(offer.ID, data)
+	a.attachProductReferencesToOfferItems(offer.Items)
 	if len(offer.Items) == 0 {
 		return nil, fmt.Errorf("cannot create offer: no valid line items after filtering")
 	}
@@ -7949,6 +8036,7 @@ func (a *App) updateOfferFromCostingData(data CostingExportData) (*Offer, error)
 	}
 
 	items := buildOfferItemsFromCostingData(offer.ID, data)
+	a.attachProductReferencesToOfferItems(items)
 	if len(items) == 0 {
 		return nil, fmt.Errorf("cannot update offer: no valid line items after filtering")
 	}
@@ -9289,12 +9377,30 @@ func (a *App) MarkOfferWon(offerID string, customerPO string) (*Order, error) {
 			if model == "" {
 				model = offerItem.ProductCode
 			}
+			productID := offerItem.ProductID
+			productCode := offerItem.ProductCode
+			if product, ok := a.resolveProductForCommercialItem(
+				offerItem.ProductID,
+				offerItem.ProductCode,
+				offerItem.Model,
+				offerItem.LongCode,
+				offerItem.Equipment,
+				offerItem.Description,
+			); ok {
+				productID = product.ID
+				if strings.TrimSpace(productCode) == "" {
+					productCode = product.ProductCode
+				}
+				if strings.TrimSpace(model) == "" {
+					model = product.ProductCode
+				}
+			}
 			orderItem := OrderItem{
 				Base:        Base{ID: uuid.New().String()},
 				OrderID:     newOrder.ID,
 				LineNumber:  offerItem.LineNumber,
-				ProductID:   offerItem.ProductID,
-				ProductCode: offerItem.ProductCode,
+				ProductID:   productID,
+				ProductCode: productCode,
 				Description: offerItem.Description,
 				Quantity:    offerItem.Quantity,
 				UnitPrice:   offerItem.UnitPrice,
@@ -18957,6 +19063,29 @@ func costingUserReference(data CostingExportData) string {
 	return limitReferenceRunes(firstNonEmptyString(data.RfqReference, data.FolderNumber, data.CostingId), 100)
 }
 
+func normalizedExportNameToken(value string) string {
+	return strings.ToLower(regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(value, ""))
+}
+
+func costingExportFileStem(costingID, customerName, reference string) string {
+	baseSource := strings.TrimSpace(costingID)
+	if baseSource == "" {
+		baseSource = strings.TrimSpace(customerName)
+	}
+	if baseSource == "" {
+		baseSource = "Costing"
+	}
+	base := sanitizeFileName(baseSource)
+
+	ref := sanitizeFileName(reference)
+	baseToken := normalizedExportNameToken(base)
+	refToken := normalizedExportNameToken(ref)
+	if ref != "" && refToken != "" && baseToken != "" && !strings.Contains(baseToken, refToken) && !strings.Contains(refToken, baseToken) {
+		base = fmt.Sprintf("%s_%s", base, ref)
+	}
+	return base
+}
+
 func roundTo3(value float64) float64 {
 	return math.Round(value*1000) / 1000
 }
@@ -18993,20 +19122,7 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 	// Get letterhead path (shared helper finds it in DB cache, project root, or exe dir)
 	letterheadPath := a.gopdfLetterheadPathForDivision(division)
 
-	// Combined filename: {CostingId}_{CustomerName}.pdf
-	cleanCostingId := sanitizeFileName(data.CostingId)
-	cleanCustomer := sanitizeFileName(data.CustomerName)
-	userRef := ""
-	if data.RfqReference != "" {
-		userRef = sanitizeFileName(data.RfqReference)
-	}
-	fileName := cleanCostingId
-	if fileName == "" {
-		fileName = cleanCustomer
-	}
-	if userRef != "" {
-		fileName = fmt.Sprintf("%s_%s", fileName, userRef)
-	}
+	fileName := costingExportFileStem(data.CostingId, data.CustomerName, costingUserReference(data))
 	filePrefix := "Quotation"
 	if data.QuoteType != "" && data.QuoteType != "Quotation" {
 		filePrefix = sanitizeFileName(data.QuoteType)
@@ -19016,7 +19132,7 @@ func (a *App) exportCostingToPDF(data CostingExportData, category string) (strin
 	// Save to structured folder: <exports>/<division>/Customers/<CustomerName>/<category>/
 	docYear := time.Now().Year()
 	outputDir := a.getExportDir("customer", data.CustomerName, category, docYear)
-	outputPath := filepath.Join(outputDir, fileName)
+	outputPath := uniqueCostingAttachmentPath(filepath.Join(outputDir, fileName))
 
 	// Create PDF directly with gopdf for clean quotation layout
 	pdf := &gopdf.GoPdf{}
@@ -19636,20 +19752,7 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 		return "", err
 	}
 
-	cleanCostingId := sanitizeFileName(data.CostingId)
-	cleanCustomer := sanitizeFileName(data.CustomerName)
-	userRef := ""
-	if data.RfqReference != "" {
-		userRef = sanitizeFileName(data.RfqReference)
-	}
-
-	xlsxFileName := cleanCostingId
-	if xlsxFileName == "" {
-		xlsxFileName = cleanCustomer
-	}
-	if userRef != "" {
-		xlsxFileName = fmt.Sprintf("%s_%s", xlsxFileName, userRef)
-	}
+	xlsxFileName := costingExportFileStem(data.CostingId, data.CustomerName, costingUserReference(data))
 	xlsxFileName = fmt.Sprintf("Costing_%s.xlsx", xlsxFileName)
 
 	paths := a.getAppPaths()
@@ -19658,7 +19761,7 @@ func (a *App) ExportCostingToExcel(data CostingExportData) (string, error) {
 		division = "PH Trading"
 	}
 	outputDir := a.getExportDir("customer", data.CustomerName, "RFQ", time.Now().Year())
-	outputPath := filepath.Join(outputDir, xlsxFileName)
+	outputPath := uniqueCostingAttachmentPath(filepath.Join(outputDir, xlsxFileName))
 
 	workbook, templateSource, err := openCostingTemplateWorkbook(paths.ProjectRoot)
 	if err != nil {

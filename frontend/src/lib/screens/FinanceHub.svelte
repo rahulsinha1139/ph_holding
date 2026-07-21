@@ -26,17 +26,14 @@
     let lastAppliedRouteKey = "";
 
     // E2: Company selector - 'PH Trading' is the default, 'AHS Trading' is the sister company
-    /** @typedef {"PH Trading" | "AHS Trading"} CompanyName */
-    /** @type {CompanyName} */
-    let selectedCompany = "PH Trading";
-    /** @type {CompanyName[]} */
-    const companies = ["PH Trading", "AHS Trading"];
+    let selectedCompany: CompanyName = "PH Trading";
+    const companies: CompanyName[] = ["PH Trading", "AHS Trading"];
 
     /**
      * @param {unknown} value
      * @returns {CompanyName | null}
      */
-    function normalizeCompanyName(value) {
+    function normalizeCompanyName(value: unknown): CompanyName | null {
         if (value === "PH Trading" || value === "AHS Trading") {
             return value;
         }
@@ -59,7 +56,7 @@
         { id: "fx", label: "FX" },
     ];
 
-    function normalizeFinanceTab(value) {
+    function normalizeFinanceTab(value: unknown) {
         const raw = String(value || "");
         if (raw === "bank-recon" || raw === "book-bank" || raw === "book_bank") {
             return "bank_recon";
@@ -67,14 +64,14 @@
         return raw;
     }
 
-    function handleNavigate(event) {
+    function handleNavigate(event: CustomEvent<{ tab?: string }>) {
         const nextTab = normalizeFinanceTab(event?.detail?.tab);
         if (nextTab && tabs.some((tab) => tab.id === nextTab)) {
             activeTab = nextTab;
         }
     }
 
-    function handleFinanceNavigate(event) {
+    function handleFinanceNavigate(event: CustomEvent<{ tab?: string; company?: string }>) {
         const nextTab = normalizeFinanceTab(event?.detail?.tab);
         const nextCompany = event?.detail?.company;
         if (nextTab && tabs.some((tab) => tab.id === nextTab)) {

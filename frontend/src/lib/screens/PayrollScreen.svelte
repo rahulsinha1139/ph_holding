@@ -82,10 +82,13 @@
     account_name: string;
     account_number: string;
     currency?: string;
-    division?: string;
   };
 
   $: visibleBankAccounts = bankAccounts.filter((account) => (account.division || "PH Trading") === company);
+
+  function matchesCompany(division?: string) {
+    return (division || "PH Trading") === company;
+  }
 
   function toISODate(value: string) {
     return value ? `${value}T00:00:00Z` : undefined;

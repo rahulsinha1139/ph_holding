@@ -158,11 +158,15 @@ func (a *App) inferSupplierForOrderItem(orderItem OrderItem) (*SupplierMaster, e
 
 	for _, lookup := range orderItemProductLookupValues(orderItem) {
 		var product ProductMaster
-		like := "%" + escapeLikeWildcards(lookup) + "%"
 		if err := a.db.Select("id", "product_code", "supplier_id", "supplier_code").
-			Where("product_code = ? OR sku = ? OR part_number = ? OR product_name LIKE ? ESCAPE '\\\\' OR description LIKE ? ESCAPE '\\\\'", lookup, lookup, lookup, like, like).
+			Where("product_code = ? OR sku = ? OR part_number = ?", lookup, lookup, lookup).
 			First(&product).Error; err != nil {
-			continue
+			like := "%" + escapeLikeWildcards(lookup) + "%"
+			if err := a.db.Select("id", "product_code", "supplier_id", "supplier_code").
+				Where("product_name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\'", like, like).
+				First(&product).Error; err != nil {
+				continue
+			}
 		}
 		if supplier, err := a.resolveSupplierForProduct(product); err == nil {
 			return supplier, nil
@@ -346,7 +350,7 @@ func (a *App) findSupplierByCommercialToken(token string) (*SupplierMaster, erro
 	for _, term := range terms {
 		likeTerm := "%" + escapeLikeWildcards(term) + "%"
 		if err := a.db.Where(
-			"supplier_name LIKE ? ESCAPE '\\\\' OR brands_handled LIKE ? ESCAPE '\\\\' OR product_types LIKE ? ESCAPE '\\\\'",
+			"supplier_name LIKE ? ESCAPE '\\' OR brands_handled LIKE ? ESCAPE '\\' OR product_types LIKE ? ESCAPE '\\'",
 			likeTerm,
 			likeTerm,
 			likeTerm,
